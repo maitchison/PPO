@@ -41,7 +41,7 @@ class NormalizeObservationWrapper(gym.Wrapper):
         self.epsilon = 0.00001
         self.counter = 0
 
-        new_space = gym.spaces.Box(
+        self.observation_space = gym.spaces.Box(
             low = -clip,
             high = clip,
             shape = env.observation_space.shape,
@@ -57,7 +57,7 @@ class NormalizeObservationWrapper(gym.Wrapper):
         self.history.append(obs)
 
         #note: this will be slow for large observation spaces, would be better to do a running average.
-        if (self.counter % (self._update_every)) == 0:
+        if (self.counter % self._update_every) == 0:
             self.means = np.mean(np.asarray(self.history), axis=0)
             self.stds = np.std(np.asarray(self.history), axis=0)
 
@@ -83,6 +83,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.history = deque(maxlen=self._n)
         self.clip = clip
         self.epsilon = 0.00001
+        self.counter = 0
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -266,10 +267,11 @@ class CNNModel(nn.Module):
         super(CNNModel, self).__init__()
         self.actions = actions
         h, w, c = input_dims
-        self.conv1 = nn.Conv2d(c, 16, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
-        d = prod((32, 9, 9))
-        self.fc = nn.Linear(d, 256)
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.d = prod((64, 7, 7))
+        self.fc = nn.Linear(self.d, 256)
         self.fc_policy = nn.Linear(256, actions)
         self.fc_value = nn.Linear(256, 1)
         self.to(DEVICE)
@@ -283,7 +285,8 @@ class CNNModel(nn.Module):
         x = torch.from_numpy(x).float().to(DEVICE)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = F.relu(self.fc(x.view(-1)))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc(x.view(-1, self.d)))
         return x
 
     def policy(self, x):
@@ -317,8 +320,11 @@ def smooth(X, alpha=0.95):
 
 
 def export_video(filename, frames, scale=4):
+
     if len(frames) == 0:
         return
+
+    print("Exporting {}".format(filename))
 
     height, width, channels = frames[0].shape
 
@@ -516,9 +522,6 @@ def train(env_name, model: nn.Module):
         # normalize batch advantages
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
 
-        # export video preview of agent.
-        # export_video("preview.mp4", video_frames)
-
         total_loss_clip = 0
         total_loss_value = 0
         total_loss_entropy = 0
@@ -571,7 +574,7 @@ def train(env_name, model: nn.Module):
                  history_string)
             )
 
-        step_time = (time.time() - start_time) / (n_steps * agents)
+        step_time = (time.time() - start_time) / batch_size
 
         if step == 0:
             print("Training at {:.1f}fps".format(1.0 / step_time))
@@ -590,7 +593,6 @@ def train(env_name, model: nn.Module):
                 training_log[-1][5],
                 training_log[-1][6]
             ))
-            # print([float(x) for x in [target, pred_value]])
 
         if step % 50 == 0:
             xs = [x * batch_size for x in range(len(training_log))]
@@ -603,10 +605,10 @@ def train(env_name, model: nn.Module):
             plt.ylabel("Loss")
             plt.xlabel("Step")
             plt.savefig('loss.png')
+            plt.close()
 
             plt.figure(figsize=(8, 8))
             plt.plot(xs, smooth([x[4] for x in training_log]), label='reward')
-            plt.legend()
             plt.ylabel("Reward")
             plt.xlabel("Step")
             plt.savefig('reward.png')
@@ -621,7 +623,7 @@ def run_experiment(env_name, Model):
     n_actions = env.action_space.n
     obs_space = env.observation_space.shape
 
-    print("Playing {} with {} obs space and {} actions.".format(env_name, obs_space, n_actions))
+    print("Playing {} with {} obs_space and {} actions.".format(env_name, obs_space, n_actions))
 
     model = Model(obs_space, n_actions)
     log = train(env_name, model)
@@ -637,6 +639,6 @@ def run_experiment(env_name, Model):
 
 if __name__ == "__main__":
     show_cuda_info()
-    #run_experiment("Pong-v4", CNNModel)
-    run_experiment("CartPole-v0", MLPModel)
+    run_experiment("Pong-v4", CNNModel)
+    #run_experiment("CartPole-v0", MLPModel)
 
