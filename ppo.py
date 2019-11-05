@@ -37,7 +37,9 @@ class NormalizeObservationWrapper(gym.Wrapper):
         super().__init__(env)
         self.clip = clip
         self._n = 1000
+        self._update_every = 100
         self.epsilon = 0.00001
+        self.counter = 0
 
         new_space = gym.spaces.Box(
             low = -clip,
@@ -55,11 +57,14 @@ class NormalizeObservationWrapper(gym.Wrapper):
         self.history.append(obs)
 
         #note: this will be slow for large observation spaces, would be better to do a running average.
-        self.means = np.mean(np.asarray(self.history), axis=0)
-        self.stds = np.std(np.asarray(self.history), axis=0)
+        if (self.counter % (self._update_every)) == 0:
+            self.means = np.mean(np.asarray(self.history), axis=0)
+            self.stds = np.std(np.asarray(self.history), axis=0)
 
         obs = np.asarray(obs, dtype=np.float32)
         obs = np.clip((obs - self.means) / (self.stds + self.epsilon), -self.clip, +self.clip)
+
+        self.counter += 1
 
         return obs, reward, done, info
 
@@ -74,6 +79,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
         self.env = env
         self._n = 10000
+        self._update_every = 100
         self.history = deque(maxlen=self._n)
         self.clip = clip
         self.epsilon = 0.00001
@@ -83,12 +89,12 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
         self.history.append(reward)
 
-        self.mean = np.mean(self.history, axis=0)
-        self.std = np.std(self.history, axis=0)
+        if (self.counter % (self._update_every)) == 0:
+            self.mean = np.mean(self.history, axis=0)
+            self.std = np.std(self.history, axis=0)
 
         last_raw_reward = reward
         reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
-        print(reward, last_raw_reward, self.std, self.history)
 
         info["raw_reward"] = last_raw_reward
 
@@ -202,7 +208,7 @@ def trace(s):
 
 def sample_action(p):
     """ Returns integer [0..len(probs)-1] based on probabilities. """
-    p = p.double()
+    p = np.asarray(p, dtype=np.float64)
     p /= p.sum()  # probs are sometimes off by a little due to precision error
     return np.random.choice(range(len(p)), p=p)
 
@@ -249,7 +255,7 @@ class MLPModel(nn.Module):
 
     def value(self, x):
         x = self.forward(x)
-        x = self.fc_value(x)
+        x = self.fc_value(x).squeeze(dim=1)
         return x
 
 
@@ -288,7 +294,7 @@ class CNNModel(nn.Module):
 
     def value(self, x):
         x = self.forward(x)
-        x = self.fc_value(x)
+        x = self.fc_value(x).squeeze(dim=1)
         return x
 
 
@@ -343,178 +349,8 @@ def export_video(filename, frames, scale=4):
 def safe_mean(X):
     return np.mean(X) if len(X) > 0 else 0
 
-def update_params(optimizer, epochs, n_batches, agent_history, agent_advantage, epsilon, gamma, model, VF_coef,
-                  ent_bonus, training_log, score_history, len_history):
 
-    mini_batch_size = len(agent_advantage) // n_batches
-
-    for i in range(epochs):
-
-        ordering = list(range(len(agent_history)))
-        np.random.shuffle(ordering)
-        agent_history = np.array([agent_history[i] for i in ordering])
-        agent_advantage = np.array([agent_advantage[i] for i in ordering])
-
-        agent_advantage = (agent_advantage - agent_advantage.mean()) / (agent_advantage.std() + 1e-8)
-
-        reward_sum = 0
-
-        total_loss = 0
-        total_loss_clip = 0
-        total_loss_value = 0
-        total_loss_entropy = 0
-        total_reward_sum = 0
-
-        for j in range(n_batches):
-
-            optimizer.zero_grad()
-            # compute losses
-            loss_clip = 0.0
-            loss_value = 0.0
-            loss_entropy = 0.0
-
-            batch_start = j * mini_batch_size
-            batch_end = (j + 1) * mini_batch_size
-
-            batch_sample = range(batch_start, batch_end)
-
-            for sample in batch_sample:
-                prev_observation, action, observation, reward, value_estimate, probs, isterminal = agent_history[
-                    sample]
-                advantage = agent_advantage[sample]
-
-                forward = model.policy(prev_observation)[0]
-
-                ratio = (forward[action] / probs[action])
-                loss_clip += torch.min(ratio * advantage, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantage)
-
-                # td lambda for this would be better...
-                target = reward if isterminal else reward + gamma * model.value(observation)[0].detach()
-                pred_value = model.value(prev_observation)[0]
-                td = target - pred_value
-
-                loss_value -= VF_coef * (td * td)
-                loss_entropy += ent_bonus * entropy(forward)
-                reward_sum += reward
-
-            loss = -(loss_clip + loss_value + loss_entropy) / mini_batch_size  # gradient ascent.
-
-            loss.backward()
-            optimizer.step()
-
-            total_loss_clip += loss_clip
-            total_loss_value += loss_value
-            total_loss_entropy += loss_entropy
-            total_loss += loss
-            total_reward_sum += reward_sum
-
-        history_string = "{}".format(
-            [round(float(x), 2) for x in score_history[-5:]]
-        )
-
-        training_log.append(
-            (float(total_loss),
-             float(total_loss_clip),
-             float(total_loss_value),
-             float(total_loss_entropy),
-             safe_mean(score_history[-100:]),
-             safe_mean(len_history[-100:]),
-             history_string)
-        )
-
-
-def update_params_batch(optimizer, epochs, n_batches, agent_history, agent_advantage, epsilon, gamma, model, VF_coef,
-                  ent_bonus, training_log, score_history, len_history):
-
-    mini_batch_size = len(agent_advantage) // n_batches
-
-    # put data in tensors
-    prev_observations = np.asarray(x[0] for x in agent_history)
-    actions = np.asarray(x[1] for x in agent_history)
-    next_observations = np.asarray(x[2] for x in agent_history)
-    rewards = np.asarray(x[3] for x in agent_history)
-    value_estimates = np.asarray(x[4] for x in agent_history)
-    policy_probs = np.asarray(x[5] for x in agent_history)
-    terminals = np.asarray(x[6] for x in agent_history)
-    advantages = np.asarray(agent_advantage)
-
-    for i in range(epochs):
-
-        ordering = list(range(len(agent_history)))
-        np.random.shuffle(ordering)
-
-        for x in [prev_observations, actions, next_observations, rewards, value_estimates, policy_probs, terminals, advantages]:
-            x = x[ordering]
-
-        agent_history = np.array([agent_history[i] for i in ordering])
-        agent_advantage = np.array([agent_advantage[i] for i in ordering])
-
-        agent_advantage = (agent_advantage - agent_advantage.mean()) / (agent_advantage.std() + 1e-8)
-
-
-        reward_sum = 0
-
-        total_loss = 0
-        total_loss_clip = 0
-        total_loss_value = 0
-        total_loss_entropy = 0
-        total_reward_sum = 0
-
-        for j in range(n_batches):
-
-            optimizer.zero_grad()
-
-            batch_start = j * mini_batch_size
-            batch_end = (j + 1) * mini_batch_size
-
-            # collect sample
-            prev_observation = agent_history[batch_start:batch_end]
-
-            for sample in batch_sample:
-                prev_observation, action, observation, reward, value_estimate, probs, isterminal = agent_history[
-                    sample]
-                advantage = agent_advantage[sample]
-
-                forward = model.policy(prev_observation)[0]
-
-                ratio = (forward[action] / probs[action])
-                loss_clip += torch.min(ratio * advantage, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantage)
-
-                # td lambda for this would be better...
-                target = reward if isterminal else reward + gamma * model.value(observation)[0].detach()
-                pred_value = model.value(prev_observation)[0]
-                td = target - pred_value
-
-                loss_value -= VF_coef * (td * td)
-                loss_entropy += ent_bonus * entropy(forward)
-                reward_sum += reward
-
-            loss = -(loss_clip + loss_value + loss_entropy) / mini_batch_size  # gradient ascent.
-
-            loss.backward()
-            optimizer.step()
-
-            total_loss_clip += loss_clip
-            total_loss_value += loss_value
-            total_loss_entropy += loss_entropy
-            total_loss += loss
-            total_reward_sum += reward_sum
-
-        history_string = "{}".format(
-            [round(float(x), 2) for x in score_history[-5:]]
-        )
-
-        training_log.append(
-            (float(total_loss),
-             float(total_loss_clip),
-             float(total_loss_value),
-             float(total_loss_entropy),
-             safe_mean(score_history[-100:]),
-             safe_mean(len_history[-100:]),
-             history_string)
-        )
-
-def train_minibatch(model, optimizer, gamma, epsilon, VF_coef, ent_bonus, prev_states, actions, next_states, rewards, value_estimates, policy_probs, terminals, advantages):
+def __train_minibatch(model, optimizer, gamma, epsilon, VF_coef, ent_bonus, prev_states, actions, next_states, rewards, value_estimates, policy_probs, terminals, advantages):
 
     loss_clip = 0
     loss_value = 0
@@ -522,6 +358,8 @@ def train_minibatch(model, optimizer, gamma, epsilon, VF_coef, ent_bonus, prev_s
     reward_sum = 0
 
     mini_batch_size = len(prev_states)
+
+    optimizer.zero_grad()
 
     for prev_state, action, state, reward, value_estimate, probs, is_terminal, advantage in zip(
             prev_states, actions, next_states, rewards, value_estimates, policy_probs, terminals, advantages):
@@ -546,7 +384,61 @@ def train_minibatch(model, optimizer, gamma, epsilon, VF_coef, ent_bonus, prev_s
     loss.backward()
     optimizer.step()
 
-    return (float(x) for x in [loss, loss_clip, loss_value, loss_entropy, reward_sum])
+    return (float(x) for x in [loss, loss_clip/ mini_batch_size, loss_value/ mini_batch_size, loss_entropy/ mini_batch_size, reward_sum])
+
+
+def inspect(x):
+    if isinstance(x, int):
+        print("Python interger")
+    elif isinstance(x, float):
+        print("Python float")
+    elif isinstance(x, np.ndarray):
+        print("Numpy", x.shape, x.dtype)
+    elif isinstance(x, torch.Tensor):
+        print("{:<10}{:<25}{:<18}{:<14}".format("torch", str(x.shape), str(x.dtype), str(x.device)))
+    else:
+        print(type(x))
+
+
+def train_minibatch(model, optimizer, gamma, epsilon, VF_coef, ent_bonus, prev_states, actions, next_states, rewards, value_estimates, policy_probs, terminals, advantages):
+
+    optimizer.zero_grad()
+
+    policy_probs = torch.tensor(policy_probs, dtype=torch.float32).to(DEVICE)
+    advantages = torch.tensor(advantages, dtype=torch.float32).to(DEVICE)
+    rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
+    not_terminals = torch.tensor(1-terminals, dtype=torch.float32).to(DEVICE)
+
+    # these are definitely wrong, as they are being updated as we go... should precompute them!
+    predicted_next_state_values = model.value(next_states).detach() * not_terminals
+
+    mini_batch_size = len(prev_states)
+
+    forward = model.policy(prev_states)
+
+    ratio = forward[range(mini_batch_size), actions] / policy_probs[range(mini_batch_size), actions]
+
+    loss_clip = torch.sum(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
+
+    # also precomputed targets, will be faster, and can use TD-lambda...
+    targets = rewards + gamma * predicted_next_state_values
+    pred_value = model.value(prev_states)
+
+
+    td = targets - pred_value
+
+    loss_value = - VF_coef * torch.sum(td * td)
+
+    loss_entropy = ent_bonus * entropy(forward).sum()
+
+    reward_sum = torch.sum(rewards)
+
+    loss = -(loss_clip + loss_value + loss_entropy) / mini_batch_size # gradient ascent.
+
+    loss.backward()
+    optimizer.step()
+
+    return (float(x) for x in [loss, loss_clip/ mini_batch_size, loss_value/ mini_batch_size, loss_entropy/ mini_batch_size, reward_sum])
 
 
 def train(env_name, model: nn.Module):
@@ -594,8 +486,6 @@ def train(env_name, model: nn.Module):
         # value estimation *before* taking action
         # probabilities of taking these actions.
 
-        start_time = time.time()
-
         agent_history = []
         agent_advantage = []
 
@@ -608,7 +498,7 @@ def train(env_name, model: nn.Module):
 
             for t in range(n_steps):
 
-                probs = model.policy(state)[0].detach().cpu()
+                probs = model.policy(state)[0].detach().cpu().numpy()
                 action = sample_action(probs)
                 value_estimate = model.value(state)[0].detach().cpu()
 
@@ -639,27 +529,6 @@ def train(env_name, model: nn.Module):
 
             advantages = []
 
-            """
-            for t in range(nsteps):
-                advantage_t = history[t][3] - history[t][4] 
-
-                factor = 1
-
-                for i in range(t+1, nsteps-1):
-                    _, _, _, reward_i, value_i, _, terminal_i = history[i]
-                    _, _, _, _, value_next_i, _, terminal_next_i = history[i+1]
-
-                    factor *= (gamma)
-                    advantage_t += factor * reward_i
-
-                    if terminal_i:
-                        break
-                else:
-                    advantage_t += factor * value_i
-
-                advantages.append(advantage_t)
-            """
-
             for t in range(n_steps):
                 advantage_t = 0
                 for i in range(t, n_steps - 1):
@@ -679,12 +548,10 @@ def train(env_name, model: nn.Module):
             agent_history.extend(history)
             agent_advantage.extend(advantages)
 
-        step_time = time.time() - start_time
-
         agent_history = np.array(agent_history)
         agent_advantage = np.array(agent_advantage)
 
-        # normalize advantages
+        # normalize batch advantages
         agent_advantage = (agent_advantage - agent_advantage.mean()) / (agent_advantage.std() + 1e-8)
 
         # export video preview of agent.
@@ -708,7 +575,8 @@ def train(env_name, model: nn.Module):
                 # put together a minibatch.
                 batch_start = j * mini_batch_size
                 batch_end = (j + 1) * mini_batch_size
-                slices = (x[batch_start:batch_end] for x in [*zip(*agent_history), agent_advantage])
+
+                slices = (np.asarray(x[batch_start:batch_end]) for x in [*zip(*agent_history), agent_advantage])
 
                 loss, loss_clip, loss_value, loss_entropy, reward_sum = train_minibatch(model, optimizer, gamma, epsilon, VF_coef, ent_bonus, *slices)
 
@@ -734,7 +602,7 @@ def train(env_name, model: nn.Module):
 
         step_time = (time.time() - start_time) / (n_steps * agents)
 
-        if step == 0:
+        if step % 10 == 0:
             print("Training at {:.1f}fps".format(1.0 / step_time))
 
         if step % 100 == 0:
