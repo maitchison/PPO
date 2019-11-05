@@ -99,6 +99,8 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
         info["raw_reward"] = last_raw_reward
 
+        self.counter += 1
+
         return obs, reward, done, info
 
 
@@ -324,8 +326,6 @@ def export_video(filename, frames, scale=4):
     if len(frames) == 0:
         return
 
-    print("Exporting {}".format(filename))
-
     height, width, channels = frames[0].shape
 
     processed_frames = []
@@ -336,11 +336,6 @@ def export_video(filename, frames, scale=4):
 
         if channels == 1:
             frame = np.concatenate([frame] * 3, axis=2)
-
-        # frame marking
-        frame[1, 1, 0] = 0
-        frame[1, 1, 1] = np.random.randint(0, 255)
-        frame[1, 1, 2] = np.random.randint(0, 255)
 
         if scale != 1:
             frame = cv2.resize(frame, (height * scale, width * scale), interpolation=cv2.INTER_NEAREST)
@@ -369,7 +364,7 @@ def inspect(x):
         print(type(x))
 
 
-def train_minibatch(model, optimizer, epsilon, VF_coef, ent_bonus, prev_states, actions, rewards, returns, policy_probs, advantages):
+def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, prev_states, actions, rewards, returns, policy_probs, advantages):
 
     optimizer.zero_grad()
 
@@ -387,7 +382,11 @@ def train_minibatch(model, optimizer, epsilon, VF_coef, ent_bonus, prev_states, 
     loss_clip = torch.sum(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
 
     td = model.value(prev_states) - returns
-    loss_value = - VF_coef * torch.sum(td * td)
+
+    # people do this in different ways, I'm going to go for huber loss.
+    #loss_value = - vf_coef * torch.sum(td * td)
+
+    loss_value = - vf_coef * torch.sum(torch.min(td * td, torch.abs(td)))
 
     loss_entropy = ent_bonus * entropy(forward).sum()
 
@@ -401,17 +400,94 @@ def train_minibatch(model, optimizer, epsilon, VF_coef, ent_bonus, prev_states, 
     return (float(x) for x in [-loss, loss_clip/ mini_batch_size, loss_value/ mini_batch_size, loss_entropy/ mini_batch_size, reward_sum])
 
 
+def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_history, len_history, global_step, video_frames):
+    """
+    Runs agents given number of steps, using a single thread.
+    :param envs:
+    :return:
+    """
+
+    batch_prev_state = []
+    batch_action = []
+    batch_next_state = []
+    batch_reward = []
+    batch_policy = []
+    batch_terminal = []
+
+    for i, env in enumerate(envs):
+
+        state = states[i]
+
+        for t in range(n_steps):
+
+            probs = model.policy(state)[0].detach().cpu().numpy()
+            action = sample_action(probs)
+
+            prev_state = state.copy()
+
+            state, reward, done, info = env.step(action)
+
+            raw_reward = info.get("raw_reward", reward)
+
+            batch_prev_state.append(prev_state)
+            batch_action.append(action)
+            batch_next_state.append(state)
+            batch_reward.append(reward)
+            batch_policy.append(probs)
+            batch_terminal.append(done)
+
+            episode_score[i] += raw_reward
+            episode_len[i] += 1
+
+            if i == 0:
+                video_frames.append(state[:,:,-1])
+
+            if done:
+                _ = env.reset()
+                score_history.append(episode_score[i])
+                len_history.append(episode_len[i])
+                episode_score[i] = 0
+                episode_len[i] = 0
+                if i == 0:
+                    export_video("video {}.mp4".format(global_step), video_frames)
+                    video_frames = []
+
+        states[i] = state
+
+    return batch_prev_state, batch_action, batch_next_state, batch_reward, batch_policy, batch_terminal
+
+
 def train(env_name, model: nn.Module):
     trace("Training started.")
+
+    """
+    Default parameters from stable baselines
+    
+    https://stable-baselines.readthedocs.io/en/master/modules/ppo2.html
+    
+    gamma             0.99
+    n_steps            128
+    ent_coef          0.01
+    learning_rate   2.5e-4
+    vf_coef            0.5
+    max_grad_norm      0.5 (not used...)
+    lam               0.95
+    nminibatches         4
+    noptepoch            4
+    cliprange          0.1 
+    
+    atari usually requires ~10M steps 
+    
+    """
 
     n_steps = 128  # steps per update
     gamma = 0.99  # discount (0.99)
     lam = 0.95  # GAE parameter (0.95)
     n_batches = 4
     epsilon = 0.1
-    VF_coef = 1.0  # how much loss to take from value function
+    vf_coef = 0.5  # how much loss to take from value function
     agents = 8
-    epochs = 3
+    epochs = 4
     ent_bonus = 0.01
     alpha = 2.5e-4
 
@@ -441,57 +517,8 @@ def train(env_name, model: nn.Module):
 
         # collect experience
 
-        # history is
-        # previous observation
-        # action a at t
-        # observation
-        # reward for taking action a at time t
-        # value estimation *before* taking action
-        # probabilities of taking these actions.
-
-        batch_prev_state = []
-        batch_action = []
-        batch_next_state = []
-        batch_reward = []
-        batch_policy = []
-        batch_terminal = []
-
-        for i, env in enumerate(envs):
-
-            state = states[i]
-
-            for t in range(n_steps):
-
-                probs = model.policy(state)[0].detach().cpu().numpy()
-                action = sample_action(probs)
-
-                prev_state = state.copy()
-
-                state, reward, done, info = env.step(action)
-
-                raw_reward = info.get("raw_reward", reward)
-
-                batch_prev_state.append(prev_state)
-                batch_action.append(action)
-                batch_next_state.append(state)
-                batch_reward.append(reward)
-                batch_policy.append(probs)
-                batch_terminal.append(done)
-
-                episode_score[i] += raw_reward
-                episode_len[i] += 1
-
-                if done:
-                    _ = env.reset()
-                    score_history.append(episode_score[i])
-                    len_history.append(episode_len[i])
-                    episode_score[i] = 0
-                    episode_len[i] = 0
-                    if i == 0:
-                        export_video("video {}.mp4".format(step), video_frames)
-                        video_frames = []
-
-            states[i] = state
+        batch_prev_state, batch_action, batch_next_state, batch_reward, batch_policy, batch_terminal = run_agents(
+            n_steps, model, envs, states, episode_score, episode_len, score_history, len_history, step, video_frames)
 
         # calculate returns and advantages
 
@@ -499,7 +526,6 @@ def train(env_name, model: nn.Module):
         # note, this can be done much faster, but this will do for the moment.
 
         batch_value = model.value(np.asarray(batch_prev_state)).detach().cpu().numpy()
-        batch_returns = np.zeros([batch_size], dtype=np.float32)
         batch_advantage = np.zeros([batch_size], dtype=np.float32)
 
         # we calculate the advantages by going backwards..
@@ -552,7 +578,7 @@ def train(env_name, model: nn.Module):
                 slices = (x[sample] for x in batch_arrays)
 
                 loss, loss_clip, loss_value, loss_entropy, reward_sum = train_minibatch(
-                    model, optimizer, epsilon, VF_coef, ent_bonus, *slices)
+                    model, optimizer, epsilon, vf_coef, ent_bonus, *slices)
 
                 total_loss_clip += loss_clip
                 total_loss_value += loss_value
