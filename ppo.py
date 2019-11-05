@@ -386,8 +386,7 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, prev_states, 
     td = model.value(prev_states) - returns
 
     # people do this in different ways, I'm going to go for huber loss.
-    #loss_value = - vf_coef * torch.sum(td * td)
-
+    # loss_value = - vf_coef * torch.sum(td * td)
     loss_value = - vf_coef * torch.sum(torch.min(td * td, torch.abs(td)))
 
     loss_entropy = ent_bonus * entropy(forward).sum()
@@ -402,71 +401,96 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, prev_states, 
     return (float(x) for x in [-loss, loss_clip/ mini_batch_size, loss_value/ mini_batch_size, loss_entropy/ mini_batch_size, reward_sum])
 
 
-def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_history, len_history, global_step, video_frames):
+def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_history, len_history,
+               state_shape, state_dtype, policy_shape):
     """
-    Runs agents given number of steps, using a single thread.
+    Runs agents given number of steps, using a single thread, but batching the updates
     :param envs:
     :return:
+        N is number of steps per run
+        A is number of agents
+
+        batch_prev_state [N, A, (obs dims)]
+        ...
+
     """
 
-    batch_prev_state = []
-    batch_action = []
-    batch_next_state = []
-    batch_reward = []
-    batch_policy = []
-    batch_terminal = []
+    N = n_steps
+    A = len(envs)
 
-    for i, env in enumerate(envs):
+    batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
+    batch_action = np.zeros([N, A], dtype=np.int32)
+    batch_reward = np.zeros([N, A], dtype=np.float32)
+    batch_policy = np.zeros([N, A, *policy_shape], dtype=np.float32)
+    batch_terminal = np.zeros([N, A], dtype=np.bool)
 
-        state = states[i]
+    rewards = np.zeros([A], dtype=np.float32)
+    dones = np.zeros([A], dtype=np.bool)
 
-        for t in range(n_steps):
+    for t in range(N):
 
-            probs = model.policy(state)[0].detach().cpu().numpy()
-            action = sample_action(probs)
+        probs = model.policy(states).detach().cpu().numpy()
+        actions = np.asarray([sample_action(prob) for prob in probs], dtype=np.int32)
 
-            prev_state = state.copy()
+        prev_states = states.copy()
 
-            state, reward, done, info = env.step(action)
+        for i in range(A):
+            _state, _reward, _done, _info = envs[i].step(actions[i])
+            states[i] = _state
+            rewards[i] = _reward
+            dones[i] = _done
 
-            raw_reward = info.get("raw_reward", reward)
-
-            batch_prev_state.append(prev_state)
-            batch_action.append(action)
-            batch_next_state.append(state)
-            batch_reward.append(reward)
-            batch_policy.append(probs)
-            batch_terminal.append(done)
-
+            raw_reward = _info.get("raw_reward", _reward)
             episode_score[i] += raw_reward
             episode_len[i] += 1
 
-            if i == 0:
-
-                frame = state[:,:,3:3+1]
-
-                if frame.dtype == np.float32:
-                    frame = np.asarray(frame * 255, np.uint8)
-
-                video_frames.append(frame)
-
-            if done:
-                _ = env.reset()
+            # handle end of episode
+            if _done:
+                _ = envs[i].reset()
                 score_history.append(episode_score[i])
                 len_history.append(episode_len[i])
                 episode_score[i] = 0
                 episode_len[i] = 0
-                if i == 0:
-                    export_video("video {}.mp4".format(global_step), video_frames)
-                    video_frames.clear()
 
-        states[i] = state
 
-    return batch_prev_state, batch_action, batch_next_state, batch_reward, batch_policy, batch_terminal
+        batch_prev_state[t] = prev_states
+        batch_action[t] = actions
+        batch_reward[t] = rewards
+        batch_policy[t] = probs
+        batch_terminal[t] = dones
+
+    return (batch_prev_state, batch_action, batch_reward, batch_policy, batch_terminal)
 
 
 def with_default(x, default):
     return x if x is not None else default
+
+
+def export_movie(model, env_name, filename):
+    """ Exports a movie of agent playing game. """
+
+    env = make_environment(env_name)
+    state = env.reset()
+    done = False
+
+    video_frames = deque(maxlen=4000)
+
+    # play the game...
+    while not done:
+        action = sample_action(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
+        state, reward, done, info = env.step(action)
+
+        # translate frame
+        width, height, channels = state.shape
+        if channels == 4:
+            state = state[:, :, 3:4]
+        
+
+        print(state.dtype)
+
+        video_frames.append(state)
+
+    export_video(filename, video_frames)
 
 
 def train(env_name, model: nn.Module):
@@ -492,13 +516,21 @@ def train(env_name, model: nn.Module):
     
     """
 
-    n_steps = 128  # steps per update
+    # get shapes and dtypes
+    _env = make_environment(env_name)
+    obs = _env.reset()
+    state_shape = obs.shape
+    state_dtype = obs.dtype
+    policy_shape = model.policy(obs[np.newaxis])[0].shape
+    _env.close()
+
+    n_steps = 128  # steps per update (128)
     gamma = 0.99  # discount (0.99)
     lam = 0.95  # GAE parameter (0.95)
     n_batches = 4
     epsilon = 0.1
     vf_coef = 0.5  # how much loss to take from value function
-    agents = 8
+    agents = 8 # (8)
     epochs = 4
     ent_bonus = 0.01
     alpha = 2.5e-4
@@ -511,7 +543,7 @@ def train(env_name, model: nn.Module):
     envs = [make_environment(env_name) for _ in range(agents)]
 
     # initialize agent
-    states = [env.reset() for env in envs]
+    states = np.asarray([env.reset() for env in envs])
 
     episode_score = [0 for _ in envs]
     episode_len = [0 for _ in envs]
@@ -521,33 +553,34 @@ def train(env_name, model: nn.Module):
     score_history = []
     len_history = []
 
-    video_frames = []
-
     for step in range(100000):
+
+        # the idea here is that all our batch arrays are of dims
+        # N, A, ...,
+        # Where n is the numer of steps, and A is the number of agents.
+        # this means we can process each step as a vector
 
         start_time = time.time()
 
         # collect experience
+        batch_prev_state, batch_action, batch_reward, batch_policy, batch_terminal = run_agents(
+            n_steps, model, envs, states, episode_score, episode_len, score_history, len_history,
+            state_shape, state_dtype, policy_shape)
 
-        batch_prev_state, batch_action, batch_next_state, batch_reward, batch_policy, batch_terminal = run_agents(
-            n_steps, model, envs, states, episode_score, episode_len, score_history, len_history, step, video_frames)
-
-        # calculate returns and advantages
-
-        # generate advantage estimates
-        # note, this can be done much faster, but this will do for the moment.
-
-        batch_value = model.value(np.asarray(batch_prev_state)).detach().cpu().numpy()
-        batch_advantage = np.zeros([batch_size], dtype=np.float32)
+        # estimate values
+        # note: we need to manipulate the dims into a batch first.
+        batch_value = model.value(batch_prev_state.reshape([batch_size, *state_shape])).detach().cpu().numpy()
+        batch_value = batch_value.reshape([n_steps, agents])
+        batch_advantage = np.zeros([n_steps, agents], dtype=np.float32)
 
         # we calculate the advantages by going backwards..
         # estimated return is the estimated return being in state i
         # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
-        final_state = batch_next_state[-1]
-        value_next_i = model.value(final_state)[0].detach().cpu()
-        terminal_next_i = False
-        prev_adv = 0
-        for i in reversed(range(batch_size)):
+        value_next_i = model.value(states).detach().cpu().numpy()
+        terminal_next_i = np.asarray([False] * agents)
+        prev_adv = np.zeros([agents], dtype=np.float32)
+
+        for i in reversed(range(n_steps)):
             delta = batch_reward[i] + gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
 
             batch_advantage[i] = prev_adv = delta + gamma * lam * (1.0-terminal_next_i) * prev_adv
@@ -567,12 +600,12 @@ def train(env_name, model: nn.Module):
         total_reward_sum = 0
 
         batch_arrays = [
-            np.asarray(batch_prev_state),
-            np.asarray(batch_action),
-            np.asarray(batch_reward),
-            np.asarray(batch_returns),
-            np.asarray(batch_policy),
-            np.asarray(batch_advantage)
+            np.asarray(batch_prev_state.reshape([batch_size, *state_shape])),
+            np.asarray(batch_action.reshape(batch_size)),
+            np.asarray(batch_reward.reshape(batch_size)),
+            np.asarray(batch_returns.reshape(batch_size)),
+            np.asarray(batch_policy.reshape([batch_size, *policy_shape])),
+            np.asarray(batch_advantage.reshape(batch_size))
         ]
 
         for i in range(epochs):
@@ -632,6 +665,9 @@ def train(env_name, model: nn.Module):
                 with_default(training_log[-1][6], 0)
             ))
 
+        if step in [0, 50] or step % 100 == 0:
+            export_movie(model, env_name, "{} {:07}".format(env_name, step))
+
         if step % 50 == 0:
 
             xs = [x * batch_size for x in range(len(training_log))]
@@ -675,6 +711,7 @@ def run_experiment(env_name, Model):
 
     model = Model(obs_space, n_actions)
     log = train(env_name, model)
+    """
     xs = range(len(log))
     plt.plot(xs, smooth([x for x, y, z, u, v in log]),label='loss')
     plt.plot(xs, smooth([y for x, y, z, u, v in log]),label='loss_clip')
@@ -684,6 +721,7 @@ def run_experiment(env_name, Model):
     plt.plot(xs, smooth([u for x, y, z, u, v in log]), label='reward')
     plt.legend()
     plt.show()
+    """
 
 if __name__ == "__main__":
     show_cuda_info()
