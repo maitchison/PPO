@@ -322,6 +322,7 @@ def smooth(X, alpha=0.95):
 def export_video(filename, frames, scale=4):
 
     if len(frames) == 0:
+        print("No frames for video")
         return
 
     if (frames[0].dtype != np.uint8):
@@ -466,31 +467,46 @@ def with_default(x, default):
     return x if x is not None else default
 
 
-def export_movie(model, env_name, filename):
-    """ Exports a movie of agent playing game. """
+def prep_for_video(frame):
+    width, height, channels = frame.shape
+    if channels == 4:
+        frame = frame[:, :, 3:4]
+
+    if frame.dtype == np.float32:
+        frame = np.asarray(frame * 255, np.uint8)
+    return frame
+
+def export_movie(model, env_name, name, which_frames="model"):
+    """ Exports a movie of agent playing game.
+        which_frames: model, real, or both
+    """
+
+    which_frames = which_frames.lower()
+
+    assert which_frames in ["model", "real", "both"]
 
     env = make_environment(env_name)
     state = env.reset()
     done = False
 
-    video_frames = deque(maxlen=4000)
+    model_video_frames = deque(maxlen=4000)
+    real_video_frames = deque(maxlen=4000)
 
     # play the game...
     while not done:
         action = sample_action(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
         state, reward, done, info = env.step(action)
 
-        # translate frame
-        width, height, channels = state.shape
-        if channels == 4:
-            state = state[:, :, 3:4]
-        
+        if which_frames in ["model", "both"]:
+            model_video_frames.append(prep_for_video(state))
+        if which_frames in ["real", "both"]:
+            real_video_frames.append(info.get("raw_obs", state))
 
-        print(state.dtype)
+    if which_frames in ["model", "both"]:
+        export_video(name+"[model].mp4", model_video_frames)
+    if which_frames in ["real", "both"]:
+        export_video(name+"[real].mp4", real_video_frames)
 
-        video_frames.append(state)
-
-    export_video(filename, video_frames)
 
 
 def train(env_name, model: nn.Module):
@@ -666,7 +682,7 @@ def train(env_name, model: nn.Module):
             ))
 
         if step in [0, 50] or step % 100 == 0:
-            export_movie(model, env_name, "{} {:07}".format(env_name, step))
+            export_movie(model, env_name, "{}_{:04}".format(env_name, step), which_frames="both")
 
         if step % 50 == 0:
 
