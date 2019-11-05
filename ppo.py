@@ -219,8 +219,6 @@ def sample_action(p):
 def write_cv2_video(filename, frames):
     height, width, channels = frames[0].shape
 
-    # print("writing video "+filename+" "+str(frames[0].shape)+" "+str(len(frames)))
-
     # Define the codec and create VideoWriter object.The output is stored in 'outpy.avi' file.
     out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
 
@@ -326,6 +324,13 @@ def export_video(filename, frames, scale=4):
     if len(frames) == 0:
         return
 
+    if (frames[0].dtype != np.uint8):
+        print("Video files must be in uint8 format")
+    if (len(frames[0].shape) != 3):
+        print("Video frames must have dims 3, (shape is {})".format(frames[0].shape))
+    if (frames[0].shape[-1] not in [1,3]):
+        print("Video frames must have either 3 or 1 channels (shape {})".format(frames[0]))
+
     height, width, channels = frames[0].shape
 
     processed_frames = []
@@ -333,14 +338,11 @@ def export_video(filename, frames, scale=4):
     for frame in frames:
 
         # convert single channel grayscale to rgb grayscale
-
         if channels == 1:
             frame = np.concatenate([frame] * 3, axis=2)
 
         if scale != 1:
             frame = cv2.resize(frame, (height * scale, width * scale), interpolation=cv2.INTER_NEAREST)
-
-        frame = np.uint8(frame)
 
         processed_frames.append(frame)
 
@@ -348,7 +350,7 @@ def export_video(filename, frames, scale=4):
 
 
 def safe_mean(X):
-    return np.mean(X) if len(X) > 0 else 0
+    return np.mean(X) if len(X) > 0 else None
 
 
 def inspect(x):
@@ -440,7 +442,13 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
             episode_len[i] += 1
 
             if i == 0:
-                video_frames.append(state[:,:,-1])
+
+                frame = state[:,:,3:3+1]
+
+                if frame.dtype == np.float32:
+                    frame = np.asarray(frame * 255, np.uint8)
+
+                video_frames.append(frame)
 
             if done:
                 _ = env.reset()
@@ -450,11 +458,15 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
                 episode_len[i] = 0
                 if i == 0:
                     export_video("video {}.mp4".format(global_step), video_frames)
-                    video_frames = []
+                    video_frames.clear()
 
         states[i] = state
 
     return batch_prev_state, batch_action, batch_next_state, batch_reward, batch_policy, batch_terminal
+
+
+def with_default(x, default):
+    return x if x is not None else default
 
 
 def train(env_name, model: nn.Module):
@@ -530,7 +542,7 @@ def train(env_name, model: nn.Module):
 
         # we calculate the advantages by going backwards..
         # estimated return is the estimated return being in state i
-        # this is largly based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
+        # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
         final_state = batch_next_state[-1]
         value_next_i = model.value(final_state)[0].detach().cpu()
         terminal_next_i = False
@@ -615,12 +627,13 @@ def train(env_name, model: nn.Module):
                 training_log[-1][1],
                 training_log[-1][2],
                 training_log[-1][3],
-                training_log[-1][4],
-                training_log[-1][5],
-                training_log[-1][6]
+                with_default(training_log[-1][4], 0),
+                with_default(training_log[-1][5], 0),
+                with_default(training_log[-1][6], 0)
             ))
 
         if step % 50 == 0:
+
             xs = [x * batch_size for x in range(len(training_log))]
             plt.figure(figsize=(8, 8))
             plt.plot(xs, smooth([x[0] for x in training_log]), label='loss')
@@ -633,12 +646,21 @@ def train(env_name, model: nn.Module):
             plt.savefig('loss.png')
             plt.close()
 
-            plt.figure(figsize=(8, 8))
-            plt.plot(xs, smooth([x[4] for x in training_log]), label='reward')
-            plt.ylabel("Reward")
-            plt.xlabel("Step")
-            plt.savefig('reward.png')
-            plt.close()
+            xs = []
+            rewards = []
+            for i, x in enumerate(training_log):
+                if x[4] is None:
+                    continue
+                xs.append(i * batch_size)
+                rewards.append(x[4])
+
+            if len(rewards) > 10:
+                plt.figure(figsize=(8, 8))
+                plt.plot(xs, smooth(rewards), label='reward')
+                plt.ylabel("Reward")
+                plt.xlabel("Step")
+                plt.savefig('reward.png')
+                plt.close()
 
     return training_log
 
