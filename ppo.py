@@ -20,11 +20,14 @@ import cv2
 import time
 import itertools
 import csv
-from collections import deque
-
-from mpeg_creator import MPEGCreator
-
+import json
 import uuid
+from collections import deque, defaultdict
+
+_game_envs = defaultdict(set)
+for env in gym.envs.registry.all():
+    env_type = env.entry_point.split(':')[0].split('.')[-1]
+    _game_envs[env_type].add(env.id)
 
 DEVICE = "cuda"
 
@@ -157,7 +160,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
     def __init__(self, env, clip=5.0):
         """
-        Normalizes rewards
+        Normalizes returns
         """
         super().__init__(env)
 
@@ -168,13 +171,17 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.clip = clip
         self.epsilon = 0.00001
         self.counter = 0
+        self.current_return = 0
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
 
-        self.history.append(reward)
+        self.current_return = self.current_return * 0.99 + reward
 
-        if (self.counter % (self._update_every)) == 0:
+        self.history.append(self.current_return)
+
+        # note: would be better to switch to a running mean / std
+        if (self.counter < 100) or (self.counter % (self._update_every)) == 0:
             self.mean = np.mean(self.history, axis=0)
             self.std = np.std(self.history, axis=0)
 
@@ -186,6 +193,10 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.counter += 1
 
         return obs, reward, done, info
+
+    def reset(self):
+        self.current_return = 0
+        return self.env.reset()
 
 
 class AtariWrapper(gym.Wrapper):
@@ -203,10 +214,10 @@ class AtariWrapper(gym.Wrapper):
         self._width, self._height = 84, 84
 
         self.observation_space = gym.spaces.Box(
-            low=0.0,
-            high=1.0,
+            low=0,
+            high=255,
             shape=(self._height, self._width, self.nstacks),
-            dtype=np.float32,
+            dtype=np.uint8,
         )
 
     def _push_raw_obs(self, obs):
@@ -220,7 +231,7 @@ class AtariWrapper(gym.Wrapper):
             self.history = self.history[1:]
 
     def _get_stacked_obs(self):
-        stack = np.concatenate(self.history, axis=2).astype(np.float32) / 255.0
+        stack = np.concatenate(self.history, axis=2)
         return stack
 
     def step(self, action):
@@ -240,7 +251,7 @@ class DiscretizeActionWrapper(gym.Wrapper):
 
     def __init__(self, env, bins=10):
         """
-        Convert continious action space into discrete.
+        Convert continuous action space into discrete.
         """
         super().__init__(env)
         self.env = env
@@ -271,17 +282,28 @@ class DiscretizeActionWrapper(gym.Wrapper):
 
 def make_environment(env_name):
     """ Construct environment of given name, including any required """
+
+    env_type = None
+
+    for k,v in _game_envs.items():
+        if env_name in v:
+            env_type = k
+
     env = gym.make(env_name)
-    if "Pong" in env_name:
-        assert "NoFrameskip" in env.spec.id
+    if env_type == "atari":
+        assert "NoFrameskip" in env_name
         env = NoopResetWrapper(env, noop_max=30)
         env = MaxAndSkipWrapper(env, skip=4)
         env = AtariWrapper(env)
-        #env = NormalizeRewardWrapper(env)
-    elif "CartPole" in env_name:
+        env = NormalizeRewardWrapper(env)
+    elif env_type == "classic_control":
         env = NormalizeObservationWrapper(env)
+    else:
+        raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))
+
     if isinstance(env.action_space, gym.spaces.Box):
         env = DiscretizeActionWrapper(env)
+
     return env
 
 
@@ -328,7 +350,7 @@ class MLPModel(nn.Module):
         self.to(DEVICE)
 
     def forward(self, x):
-        x = torch.from_numpy(x).float().to(DEVICE)
+        x = torch.from_numpy(x).to(DEVICE).float() / 255.0
         x = x.reshape(-1, self.d)
         x = torch.tanh(self.fc1(x))
         x = torch.tanh(self.fc2(x))
@@ -367,9 +389,14 @@ class CNNModel(nn.Module):
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
+
+        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
+        assert len(x.shape) == 4, "input should be (N,W,H,C)"
+        assert x.shape[1] == 84 and x.shape[2] == 84, "dims should be  (N,82,82,C) found {}".format(x.shape)
+
         # need NCHW, but input is NHWC
         x = np.swapaxes(x, 1, 3)
-        x = torch.from_numpy(x).float().to(DEVICE)
+        x = torch.from_numpy(x).to(DEVICE).float() / 255.0
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -457,11 +484,10 @@ def nice_display(X, title):
     print("{:<20}{}".format(title, [round(float(x),2) for x in X[:5]]))
 
 def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm,
-                    prev_states, actions, rewards, returns, policy_probs, advantages, values):
+                    prev_states, actions, returns, policy_probs, advantages, values):
 
     policy_probs = torch.tensor(policy_probs, dtype=torch.float32).to(DEVICE)
     advantages = torch.tensor(advantages, dtype=torch.float32).to(DEVICE)
-    rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
     returns = torch.tensor(returns, dtype=torch.float32).to(DEVICE)
     old_pred_values = torch.tensor(values, dtype=torch.float32).to(DEVICE)
 
@@ -472,7 +498,6 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
     ratio = forward[range(mini_batch_size), actions] / policy_probs[range(mini_batch_size), actions]
 
     loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
-
 
     # people do this in different ways, I'm going to go for huber loss.
     #td = model.value(prev_states) - returns
@@ -604,7 +629,7 @@ def export_movie(model, env_name, name, which_frames="model"):
         if which_frames in ["real", "both"]:
             real_frame = info.get("raw_obs", state)
             if len(real_frame.shape) in [2,3]:
-                real_video_frames.append()
+                real_video_frames.append(real_frame)
 
     if which_frames in ["model", "both"] and len(model_video_frames) > 0:
         export_video(name+"[model].mp4", model_video_frames)
@@ -662,6 +687,24 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     ent_bonus = kwargs.get("ent_bonus", 0.01)
     alpha = kwargs.get("lr", 2.5e-4)
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
+
+    # save parameters
+    params = {
+        "n_steps": n_steps,
+        "gamma": gamma,
+        "lambda": lam,
+        "n_batches": n_batches,
+        "epsilon": epsilon,
+        "vf_coef": vf_coef,
+        "agents": agents,
+        "epochs": epochs,
+        "ent_bouns": ent_bonus,
+        "lr": alpha,
+        "max_grad_norm": max_grad_norm
+    }
+
+    with open(os.path.join(LOG_FOLDER, "params.txt"),"w") as f:
+        f.write(json.dumps(params))
 
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
@@ -733,7 +776,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         batch_arrays = [
             np.asarray(batch_prev_state.reshape([batch_size, *state_shape])),
             np.asarray(batch_action.reshape(batch_size)),
-            np.asarray(batch_reward.reshape(batch_size)),
             np.asarray(batch_returns.reshape(batch_size)),
             np.asarray(batch_policy.reshape([batch_size, *policy_shape])),
             np.asarray(batch_advantage.reshape(batch_size)),
@@ -765,9 +807,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         step_time = (time.time() - start_time) / batch_size
 
         fps = 1.0 / step_time
-
-        if step == 0:
-            print("Training at {:.1f}fps".format(fps))
 
         history_string = "{}".format(
             [round(float(x), 2) for x in score_history[-5:]]
@@ -864,6 +903,12 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
 def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
 
+    global LOG_FOLDER
+    LOG_FOLDER = "{} [{}]".format(env_name, GUID[-8:])
+
+    print("Logging to folder", LOG_FOLDER)
+    os.makedirs(LOG_FOLDER)
+
     env = make_environment(env_name)
     n_actions = env.action_space.n
     obs_space = env.observation_space.shape
@@ -874,9 +919,8 @@ def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
     train(env_name, model, n_iterations, **kwargs)
 
 if __name__ == "__main__":
-    print("Logging to folder", LOG_FOLDER)
-    os.makedirs(LOG_FOLDER)
     show_cuda_info()
     #run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.01)
-    run_experiment("PongNoFrameskip-v4", CNNModel, 10*1000, argents=16)
+    #run_experiment("PongNoFrameskip-v4", CNNModel, 10*1000, argents=16)
+    run_experiment("AlienNoFrameskip-v4", CNNModel, 10*1000, argents=16)
 
