@@ -1,3 +1,15 @@
+import os
+
+# using more than 2 threads locks up all the cpus and does not seem to improve performance.
+# the gain from 2 CPUs to 1 is very minor too. (~10%)
+
+threads = "1"
+os.environ["OMP_NUM_THREADS"] = threads
+os.environ["OPENBLAS_NUM_THREADS"] = threads
+os.environ["MKL_NUM_THREADS"] = threads
+os.environ["VECLIB_MAXIMUM_THREADS"] = threads
+os.environ["NUMEXPR_NUM_THREADS"] = threads
+
 import numpy as np
 import matplotlib.pyplot as plt
 import gym
@@ -7,11 +19,18 @@ import torch.nn.functional as F
 import cv2
 import time
 import itertools
+import csv
 from collections import deque
 
 from mpeg_creator import MPEGCreator
 
+import uuid
+
 DEVICE = "cuda"
+
+GUID = uuid.uuid4().hex
+
+LOG_FOLDER = "run [{}]".format(GUID[-8:])
 
 def show_cuda_info():
 
@@ -28,6 +47,71 @@ def show_cuda_info():
 ------------------------------------------------------------------------------------------------------------------------
 """
 
+
+class NoopResetWrapper(gym.Wrapper):
+    """
+    from
+    https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
+    """
+    def __init__(self, env, noop_max=30):
+        """Sample initial states by taking random number of no-ops on reset.
+        No-op is assumed to be action 0.
+        """
+        gym.Wrapper.__init__(self, env)
+        self.noop_max = noop_max
+        self.override_num_noops = None
+        self.noop_action = 0
+        assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
+
+    def reset(self, **kwargs):
+        """ Do no-op action for a number of steps in [1, noop_max]."""
+        self.env.reset(**kwargs)
+        if self.override_num_noops is not None:
+            noops = self.override_num_noops
+        else:
+            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
+        assert noops > 0
+        obs = None
+        for _ in range(noops):
+            obs, _, done, _ = self.env.step(self.noop_action)
+            if done:
+                obs = self.env.reset(**kwargs)
+        return obs
+
+    def step(self, ac):
+        return self.env.step(ac)
+
+class MaxAndSkipWrapper(gym.Wrapper):
+    """
+    from
+    https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
+    """
+    def __init__(self, env, skip=4):
+        """Return only every `skip`-th frame"""
+        gym.Wrapper.__init__(self, env)
+        # most recent raw observations (for max pooling across time steps)
+        self._obs_buffer = np.zeros((2,)+env.observation_space.shape, dtype=np.uint8)
+        self._skip       = skip
+
+    def step(self, action):
+        """Repeat action, sum reward, and max over last observations."""
+        total_reward = 0.0
+        done = None
+        for i in range(self._skip):
+            obs, reward, done, info = self.env.step(action)
+            if i == self._skip - 2: self._obs_buffer[0] = obs
+            if i == self._skip - 1: self._obs_buffer[1] = obs
+            total_reward += reward
+            if done:
+                break
+        # Note that the observation on the done=True frame
+        # doesn't matter
+        max_frame = self._obs_buffer.max(axis=0)
+
+        return max_frame, total_reward, done, info
+
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
 
 class NormalizeObservationWrapper(gym.Wrapper):
     def __init__(self, env, clip=5.0):
@@ -106,7 +190,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
 class AtariWrapper(gym.Wrapper):
 
-    def __init__(self, env):
+    def __init__(self, env: gym.Env):
         """
         Stack and do other stuff...
         """
@@ -128,7 +212,6 @@ class AtariWrapper(gym.Wrapper):
     def _push_raw_obs(self, obs):
 
         obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-        obs = obs[30:-10]
         obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
         obs = obs[:, :, np.newaxis]
 
@@ -190,8 +273,11 @@ def make_environment(env_name):
     """ Construct environment of given name, including any required """
     env = gym.make(env_name)
     if "Pong" in env_name:
+        assert "NoFrameskip" in env.spec.id
+        env = NoopResetWrapper(env, noop_max=30)
+        env = MaxAndSkipWrapper(env, skip=4)
         env = AtariWrapper(env)
-        env = NormalizeRewardWrapper(env)
+        #env = NormalizeRewardWrapper(env)
     elif "CartPole" in env_name:
         env = NormalizeObservationWrapper(env)
     if isinstance(env.action_space, gym.spaces.Box):
@@ -271,16 +357,17 @@ class CNNModel(nn.Module):
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
         self.d = prod((64, 7, 7))
-        self.fc = nn.Linear(self.d, 256)
-        self.fc_policy = nn.Linear(256, actions)
-        self.fc_value = nn.Linear(256, 1)
+        self.fc = nn.Linear(self.d, 512)
+        self.fc_policy = nn.Linear(512, actions)
+        self.fc_value = nn.Linear(512, 1)
         self.to(DEVICE)
 
     def forward(self, x):
-        # need NCHW, but input is HWC
+
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
+        # need NCHW, but input is NHWC
         x = np.swapaxes(x, 1, 3)
         x = torch.from_numpy(x).float().to(DEVICE)
         x = F.relu(self.conv1(x))
@@ -302,7 +389,7 @@ class CNNModel(nn.Module):
 
 
 def entropy(p):
-    return (-p * p.log2()).sum()
+    return -torch.sum(p * p.log2())
 
 
 def log_entropy(logp):
@@ -310,7 +397,7 @@ def log_entropy(logp):
     return (-p * p.log2()).sum()
 
 
-def smooth(X, alpha=0.95):
+def smooth(X, alpha=0.98):
     y = X[0]
     results = []
     for x in X:
@@ -366,15 +453,17 @@ def inspect(x):
     else:
         print(type(x))
 
+def nice_display(X, title):
+    print("{:<20}{}".format(title, [round(float(x),2) for x in X[:5]]))
 
-def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, prev_states, actions, rewards, returns, policy_probs, advantages):
-
-    optimizer.zero_grad()
+def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm,
+                    prev_states, actions, rewards, returns, policy_probs, advantages, values):
 
     policy_probs = torch.tensor(policy_probs, dtype=torch.float32).to(DEVICE)
     advantages = torch.tensor(advantages, dtype=torch.float32).to(DEVICE)
     rewards = torch.tensor(rewards, dtype=torch.float32).to(DEVICE)
     returns = torch.tensor(returns, dtype=torch.float32).to(DEVICE)
+    old_pred_values = torch.tensor(values, dtype=torch.float32).to(DEVICE)
 
     mini_batch_size = len(prev_states)
 
@@ -382,24 +471,36 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, prev_states, 
 
     ratio = forward[range(mini_batch_size), actions] / policy_probs[range(mini_batch_size), actions]
 
-    loss_clip = torch.sum(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
+    loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
 
-    td = model.value(prev_states) - returns
 
     # people do this in different ways, I'm going to go for huber loss.
-    # loss_value = - vf_coef * torch.sum(td * td)
-    loss_value = - vf_coef * torch.sum(torch.min(td * td, torch.abs(td)))
+    #td = model.value(prev_states) - returns
+    #loss_value = - vf_coef * torch.mean(td * td)
+    #loss_value = - vf_coef * torch.mean(torch.min(td * td, torch.abs(td)))
 
-    loss_entropy = ent_bonus * entropy(forward).sum()
+    # this one is taken from PPO2 baseline, reduces variance but not sure why? does it stop the values from moving
+    # too much?
+    value_prediction = model.value(prev_states)
+    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -epsilon, +epsilon)
 
-    reward_sum = torch.sum(rewards)
+    vf_losses1 = (value_prediction - returns).pow(2)
+    vf_losses2 = (value_prediction_clipped - returns).pow(2)
+    loss_value = - vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
 
-    loss = -(loss_clip + loss_value + loss_entropy) / mini_batch_size # gradient ascent.
+    loss_entropy = ent_bonus * entropy(forward) / mini_batch_size
 
+    loss = -(loss_clip + loss_value + loss_entropy)  # gradient ascent.
+
+    optimizer.zero_grad()
     loss.backward()
+
+    if max_grad_norm is not None:
+        nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
     optimizer.step()
 
-    return (float(x) for x in [-loss, loss_clip/ mini_batch_size, loss_value/ mini_batch_size, loss_entropy/ mini_batch_size, reward_sum])
+    return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy])
 
 
 def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_history, len_history,
@@ -489,8 +590,8 @@ def export_movie(model, env_name, name, which_frames="model"):
     state = env.reset()
     done = False
 
-    model_video_frames = deque(maxlen=4000)
-    real_video_frames = deque(maxlen=4000)
+    model_video_frames = deque(maxlen=6000)
+    real_video_frames = deque(maxlen=6000)
 
     # play the game...
     while not done:
@@ -498,20 +599,30 @@ def export_movie(model, env_name, name, which_frames="model"):
         state, reward, done, info = env.step(action)
 
         if which_frames in ["model", "both"]:
-            model_video_frames.append(prep_for_video(state))
+            if len(state.shape) in [2,3]:
+                model_video_frames.append(prep_for_video(state))
         if which_frames in ["real", "both"]:
-            real_video_frames.append(info.get("raw_obs", state))
+            real_frame = info.get("raw_obs", state)
+            if len(real_frame.shape) in [2,3]:
+                real_video_frames.append()
 
-    if which_frames in ["model", "both"]:
+    if which_frames in ["model", "both"] and len(model_video_frames) > 0:
         export_video(name+"[model].mp4", model_video_frames)
-    if which_frames in ["real", "both"]:
+    if which_frames in ["real", "both"] and len(real_video_frames) > 0:
         export_video(name+"[real].mp4", real_video_frames)
 
 
+def save_training_log(filename, training_log):
+    with open(filename, mode='w') as f:
+        csv_writer = csv.writer(f, delimiter=',')
+        csv_writer.writerow(["Loss", "Loss_Clip", "Loss_Value", "Loss_Entropy", "Ep_Score", "Ep_Len",
+                             "Elapsed", "Iteration", "Step", "FPS", "History"])
 
-def train(env_name, model: nn.Module):
-    trace("Training started.")
+        for row in training_log:
+            csv_writer.writerow(row)
 
+
+def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
     Default parameters from stable baselines
     
@@ -540,16 +651,17 @@ def train(env_name, model: nn.Module):
     policy_shape = model.policy(obs[np.newaxis])[0].shape
     _env.close()
 
-    n_steps = 128  # steps per update (128)
-    gamma = 0.99  # discount (0.99)
-    lam = 0.95  # GAE parameter (0.95)
-    n_batches = 4
-    epsilon = 0.1
-    vf_coef = 0.5  # how much loss to take from value function
-    agents = 8 # (8)
-    epochs = 4
-    ent_bonus = 0.01
-    alpha = 2.5e-4
+    n_steps = kwargs.get("n_steps",128)  # steps per update (128)
+    gamma = kwargs.get("gamma", 0.99)   # discount (0.99)
+    lam = kwargs.get("lambda", 0.95)     # GAE parameter (0.95)
+    n_batches = kwargs.get("n_batches", 4)
+    epsilon = kwargs.get("epsilon", 0.1)
+    vf_coef = kwargs.get("vf_coef", 0.5)  # how much loss to take from value function
+    agents = kwargs.get("agents", 16)    # (8)
+    epochs = kwargs.get("epochs", 4)
+    ent_bonus = kwargs.get("ent_bonus", 0.01)
+    alpha = kwargs.get("lr", 2.5e-4)
+    max_grad_norm = kwargs.get("max_grad_norm", 0.5)
 
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
@@ -557,6 +669,8 @@ def train(env_name, model: nn.Module):
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha)
 
     envs = [make_environment(env_name) for _ in range(agents)]
+
+    print("Training for {:.1f}k iterations {:.2f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
 
     # initialize agent
     states = np.asarray([env.reset() for env in envs])
@@ -569,7 +683,9 @@ def train(env_name, model: nn.Module):
     score_history = []
     len_history = []
 
-    for step in range(100000):
+    initial_start_time = time.time()
+
+    for step in range(n_iterations+1):
 
         # the idea here is that all our batch arrays are of dims
         # N, A, ...,
@@ -613,7 +729,6 @@ def train(env_name, model: nn.Module):
         total_loss_value = 0
         total_loss_entropy = 0
         total_loss = 0
-        total_reward_sum = 0
 
         batch_arrays = [
             np.asarray(batch_prev_state.reshape([batch_size, *state_shape])),
@@ -621,7 +736,8 @@ def train(env_name, model: nn.Module):
             np.asarray(batch_reward.reshape(batch_size)),
             np.asarray(batch_returns.reshape(batch_size)),
             np.asarray(batch_policy.reshape([batch_size, *policy_shape])),
-            np.asarray(batch_advantage.reshape(batch_size))
+            np.asarray(batch_advantage.reshape(batch_size)),
+            np.asarray(batch_value.reshape(batch_size))
         ]
 
         for i in range(epochs):
@@ -638,86 +754,115 @@ def train(env_name, model: nn.Module):
 
                 slices = (x[sample] for x in batch_arrays)
 
-                loss, loss_clip, loss_value, loss_entropy, reward_sum = train_minibatch(
-                    model, optimizer, epsilon, vf_coef, ent_bonus, *slices)
+                loss, loss_clip, loss_value, loss_entropy = train_minibatch(
+                    model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
 
-                total_loss_clip += loss_clip
-                total_loss_value += loss_value
-                total_loss_entropy += loss_entropy
-                total_loss += loss
-                total_reward_sum += reward_sum
-
-            history_string = "{}".format(
-                [round(float(x), 2) for x in score_history[-5:]]
-            )
-
-            training_log.append(
-                (float(total_loss),
-                 float(total_loss_clip),
-                 float(total_loss_value),
-                 float(total_loss_entropy),
-                 safe_mean(score_history[-100:]),
-                 safe_mean(len_history[-100:]),
-                 history_string)
-            )
+                total_loss_clip += loss_clip / (epochs*n_batches)
+                total_loss_value += loss_value / (epochs*n_batches)
+                total_loss_entropy += loss_entropy / (epochs*n_batches)
+                total_loss += loss / (epochs*n_batches)
 
         step_time = (time.time() - start_time) / batch_size
 
+        fps = 1.0 / step_time
+
         if step == 0:
-            print("Training at {:.1f}fps".format(1.0 / step_time))
+            print("Training at {:.1f}fps".format(fps))
+
+        history_string = "{}".format(
+            [round(float(x), 2) for x in score_history[-5:]]
+        )
+
+        training_log.append(
+            (float(total_loss),
+             float(total_loss_clip),
+             float(total_loss_value),
+             float(total_loss_entropy),
+             safe_mean(score_history[-100:]),
+             safe_mean(len_history[-100:]),
+             time.time()-initial_start_time,
+             step,
+             step * batch_size,
+             fps,
+             history_string
+             )
+        )
 
         if step % 100 == 0:
-            print("{:<11}{:<11}{:<11}{:<11}{:<11}{:<11}{:<11}".format("step", "loss", "loss_clip", "loss_value",
-                                                                      "loss_ent", "ep_score", "ep_len"))
+            print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
+                                                                      "l_ent", "ep_score", "ep_len", "elapsed", "fps"))
+            print("-"*120)
         if step % 10 == 0:
-            print("{:<11}{:<11.3f}{:<11.3f}{:<11.3f}{:<11.3f}{:<11.3f}{:<11.3f}{:<11}".format(
-                str(step) + " " + str(step * n_steps * agents // 1000) + "K",
+            print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
+                str(step),
+                "{:.2f}M".format(step * n_steps * agents / 1000 / 1000),
                 training_log[-1][0],
                 training_log[-1][1],
                 training_log[-1][2],
                 training_log[-1][3],
                 with_default(training_log[-1][4], 0),
                 with_default(training_log[-1][5], 0),
-                with_default(training_log[-1][6], 0)
+                "{:.0f} min".format(training_log[-1][6]/60),
+                training_log[-1][9],
+                with_default(training_log[-1][10], 0)
             ))
 
-        if step in [0, 50] or step % 100 == 0:
-            export_movie(model, env_name, "{}_{:04}".format(env_name, step), which_frames="both")
+        if step in [0, 50, 100, 250, 500] or step % 1000 == 0:
+            export_movie(model, env_name, "{}_{:04}".format(os.path.join(LOG_FOLDER, env_name), step), which_frames="both")
 
         if step % 50 == 0:
 
+            save_training_log(os.path.join(LOG_FOLDER, "training_log.csv"), training_log)
+
             xs = [x * batch_size for x in range(len(training_log))]
             plt.figure(figsize=(8, 8))
-            plt.plot(xs, smooth([x[0] for x in training_log]), label='loss')
-            plt.plot(xs, smooth([x[1] for x in training_log]), label='loss_clip')
-            plt.plot(xs, smooth([x[2] for x in training_log]), label='loss_value')
-            plt.plot(xs, smooth([x[3] for x in training_log]), label='loss_entropy')
+            plt.grid()
+
+            labels = ["loss", "loss_clip", "loss_value", "loss_entropy"]
+            ys = [[x[i] for x in training_log] for i in range(4)]
+            colors = ["red", "green", "blue", "black"]
+
+            for label, y, c in zip(labels, ys, colors):
+                plt.plot(xs, y, alpha=0.2, c=c)
+                plt.plot(xs, smooth(y), label=label, c=c)
+
             plt.legend()
             plt.ylabel("Loss")
             plt.xlabel("Step")
-            plt.savefig('loss.png')
+            plt.savefig(os.path.join(LOG_FOLDER, "losses.png"))
             plt.close()
 
             xs = []
             rewards = []
+            lengths = []
             for i, x in enumerate(training_log):
                 if x[4] is None:
                     continue
                 xs.append(i * batch_size)
                 rewards.append(x[4])
+                lengths.append(x[5])
 
             if len(rewards) > 10:
                 plt.figure(figsize=(8, 8))
-                plt.plot(xs, smooth(rewards), label='reward')
+                plt.grid()
+                plt.plot(xs, rewards)
                 plt.ylabel("Reward")
                 plt.xlabel("Step")
-                plt.savefig('reward.png')
+                plt.savefig(os.path.join(LOG_FOLDER, "ep_reward.png"))
+                plt.close()
+
+                plt.figure(figsize=(8, 8))
+                plt.grid()
+                plt.plot(xs, lengths)
+                plt.ylabel("Episode Length")
+                plt.xlabel("Step")
+                plt.savefig(os.path.join(LOG_FOLDER, "ep_length.png"))
                 plt.close()
 
     return training_log
 
 
-def run_experiment(env_name, Model):
+def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
 
     env = make_environment(env_name)
     n_actions = env.action_space.n
@@ -726,21 +871,12 @@ def run_experiment(env_name, Model):
     print("Playing {} with {} obs_space and {} actions.".format(env_name, obs_space, n_actions))
 
     model = Model(obs_space, n_actions)
-    log = train(env_name, model)
-    """
-    xs = range(len(log))
-    plt.plot(xs, smooth([x for x, y, z, u, v in log]),label='loss')
-    plt.plot(xs, smooth([y for x, y, z, u, v in log]),label='loss_clip')
-    plt.plot(xs, smooth([z for x, y, z, u, v in log]),label='loss_value')
-    plt.legend()
-    plt.show()
-    plt.plot(xs, smooth([u for x, y, z, u, v in log]), label='reward')
-    plt.legend()
-    plt.show()
-    """
+    train(env_name, model, n_iterations, **kwargs)
 
 if __name__ == "__main__":
+    print("Logging to folder", LOG_FOLDER)
+    os.makedirs(LOG_FOLDER)
     show_cuda_info()
-    run_experiment("Pong-v4", CNNModel)
-    #run_experiment("CartPole-v0", MLPModel)
+    #run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.01)
+    run_experiment("PongNoFrameskip-v4", CNNModel, 10*1000, argents=16)
 
