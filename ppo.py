@@ -39,6 +39,8 @@ LOG_FOLDER = "run [{}]".format(GUID[-8:])
 
 NATS_TO_BITS = 1.0/math.log(2)
 
+EXPORT_MOVIES = False
+
 def show_cuda_info():
 
     global DEVICE
@@ -225,19 +227,27 @@ class AtariWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env):
         """
         Stack and do other stuff...
+        Input should be (210, 160, 3)
+        Output is a stack of shape (nstacks, 84, 84)
         """
+
         super().__init__(env)
 
-        self.history = []
         self.env = env
 
         self.nstacks = 4
         self._width, self._height = 84, 84
 
+        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
+
+        self.stack = np.zeros((self.nstacks, self._height, self._width), dtype=np.uint8)
+
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(self._height, self._width, self.nstacks),
+            shape=(self.nstacks, self._height, self._width),
             dtype=np.uint8,
         )
 
@@ -245,27 +255,21 @@ class AtariWrapper(gym.Wrapper):
 
         obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
         obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
-        obs = obs[:, :, np.newaxis]
 
-        self.history.append(obs)
-        if len(self.history) > self.nstacks:
-            self.history = self.history[1:]
-
-    def _get_stacked_obs(self):
-        stack = np.concatenate(self.history, axis=2)
-        return stack
+        np.roll(self.stack, shift=-1, axis=0)
+        self.stack[0,:,:] = obs
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self._push_raw_obs(obs)
         info["raw_obs"] = obs
-        return self._get_stacked_obs(), reward, done, info
+        return self.stack, reward, done, info
 
     def reset(self):
         obs = self.env.reset()
         for _ in range(self.nstacks):
             self._push_raw_obs(obs)
-        return self._get_stacked_obs()
+        return self.stack
 
 
 class DiscretizeActionWrapper(gym.Wrapper):
@@ -402,7 +406,7 @@ class CNNModel(nn.Module):
     def __init__(self, input_dims, actions):
         super(CNNModel, self).__init__()
         self.actions = actions
-        h, w, c = input_dims
+        c, h, w = input_dims
         self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
@@ -419,11 +423,9 @@ class CNNModel(nn.Module):
             x = x[np.newaxis, :, :, :]
 
         assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
-        assert len(x.shape) == 4, "input should be (N,W,H,C)"
-        assert x.shape[1] == 84 and x.shape[2] == 84, "dims should be  (N,82,82,C) found {}".format(x.shape)
+        assert len(x.shape) == 4, "input should be (N,C,W,H)"
+        assert x.shape[2] == 84 and x.shape[3] == 84, "dims should be  (N,C,84,84) found {}".format(x.shape)
 
-        # need NCHW, but input is NHWC
-        x = np.swapaxes(x, 1, 3)
         x = torch.from_numpy(x).to(DEVICE).float() / 255.0
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
@@ -557,8 +559,7 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
 
     return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy])
 
-
-def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_history, len_history,
+def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, score_history, len_history,
                state_shape, state_dtype, policy_shape):
     """
     Runs agents given number of steps, using a single thread, but batching the updates
@@ -573,7 +574,7 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
     """
 
     N = n_steps
-    A = len(envs)
+    A = vec_envs.num_envs
 
     batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
     batch_action = np.zeros([N, A], dtype=np.int32)
@@ -581,34 +582,26 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
 
-    rewards = np.zeros([A], dtype=np.float32)
-    dones = np.zeros([A], dtype=np.bool)
-
     for t in range(N):
 
         logprobs = model.policy(states).detach().cpu().numpy()
         actions = np.asarray([sample_action(np.exp(prob)) for prob in logprobs], dtype=np.int32)
-
         prev_states = states.copy()
 
-        for i in range(A):
-            _state, _reward, _done, _info = envs[i].step(actions[i])
-            states[i] = _state
-            rewards[i] = _reward
-            dones[i] = _done
+        states, rewards, dones, infos = vec_envs.step(actions)
 
-            raw_reward = _info.get("raw_reward", _reward)
-            episode_score[i] += raw_reward
-            episode_len[i] += 1
+        raw_rewards = [info.get("raw_reward", reward) for reward, info in zip(rewards, infos)]
 
-            # handle end of episode
-            if _done:
-                _ = envs[i].reset()
-                score_history.append(episode_score[i])
-                len_history.append(episode_len[i])
-                episode_score[i] = 0
-                episode_len[i] = 0
+        episode_score += raw_rewards
+        episode_len += 1
 
+        for i, done in enumerate(dones):
+            # reset is handled automatically by vectorized environments
+            # so just need to keep track of book-keeping
+            score_history.append(episode_score[i])
+            len_history.append(episode_len[i])
+            episode_score[i] = 0
+            episode_len[i] = 0
 
         batch_prev_state[t] = prev_states
         batch_action[t] = actions
@@ -718,6 +711,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     ent_bonus = kwargs.get("ent_bonus", 0.01)
     alpha = kwargs.get("lr", 2.5e-4)
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
+    async_envs = True
 
     # save parameters
     params = {
@@ -743,15 +737,18 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
-    envs = [make_environment(env_name) for _ in range(agents)]
+    env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
+    vec_env = gym.vector.AsyncVectorEnv(env_fns) if async_envs  else gym.vector.SyncVectorEnv(env_fns)
+
+    print("Generated {} agents [{}]".format(agents, "async" if async_envs else "sync"))
 
     print("Training for {:.1f}k iterations {:.2f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
 
     # initialize agent
-    states = np.asarray([env.reset() for env in envs])
+    states = vec_env.reset()
 
-    episode_score = [0 for _ in envs]
-    episode_len = [0 for _ in envs]
+    episode_score = np.zeros([agents], dtype = np.float32)
+    episode_len = np.zeros([agents], dtype = np.int32)
 
     training_log = []
 
@@ -770,8 +767,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         start_time = time.time()
 
         # collect experience
-        batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal = run_agents(
-            n_steps, model, envs, states, episode_score, episode_len, score_history, len_history,
+        batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal = run_agents_vec(
+            n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
             state_shape, state_dtype, policy_shape)
 
         # estimate values
@@ -880,7 +877,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 with_default(training_log[-1][12], 0)
             ))
 
-        if step in [0, 50, 100, 250, 500] or step % 1000 == 0:
+        if EXPORT_MOVIES and (step in [0, 50, 100, 250, 500] or step % 1000 == 0):
             export_movie(model, env_name, "{}_{:06}".format(os.path.join(LOG_FOLDER, env_name), step), which_frames="both")
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
@@ -971,8 +968,10 @@ if __name__ == "__main__":
 
     experiment = args.experiment.lower()
 
-    if experiment == "pong":
-        run_experiment("PongNoFrameskip-v4", CNNModel, 10*1000, agents=16)
+    if experiment == "pong_small":
+        run_experiment("PongNoFrameskip-v4", CNNModel, 10, agents=16)
+    elif experiment == "pong":
+        run_experiment("PongNoFrameskip-v4", CNNModel, 100*1000, agents=16)
     elif experiment == "seaquest":
         run_experiment("SeaquestNoFrameskip-v4", CNNModel, 100*1000, agents=16)
     elif experiment == "alien":
@@ -980,7 +979,7 @@ if __name__ == "__main__":
     elif experiment == "breakout":
         run_experiment("BreakoutNoFrameskip-v4", CNNModel, 100*1000, agents=16)
     elif experiment == "cartpole":
-        run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.01)
+        run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.0001)
     else:
         print("Invalid experiment {}.".format(experiment))
 
