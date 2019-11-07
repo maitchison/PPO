@@ -22,6 +22,8 @@ import itertools
 import csv
 import json
 import uuid
+import argparse
+import math
 from collections import deque, defaultdict
 
 _game_envs = defaultdict(set)
@@ -35,14 +37,16 @@ GUID = uuid.uuid4().hex
 
 LOG_FOLDER = "run [{}]".format(GUID[-8:])
 
+NATS_TO_BITS = 1.0/math.log(2)
+
 def show_cuda_info():
 
     global DEVICE
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-    device_id = torch.cuda.current_device()
     print("Device:", DEVICE)
-    print(torch.cuda.get_device_name(device_id))
+    if DEVICE == "cuda":
+        device_id = torch.cuda.current_device()
+        print(torch.cuda.get_device_name(device_id))
 
 """
 ------------------------------------------------------------------------------------------------------------------------
@@ -84,34 +88,43 @@ class NoopResetWrapper(gym.Wrapper):
     def step(self, ac):
         return self.env.step(ac)
 
-class MaxAndSkipWrapper(gym.Wrapper):
+
+class FrameSkipWrapper(gym.Wrapper):
     """
     from
     https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
     """
-    def __init__(self, env, skip=4):
+    def __init__(self, env, min_skip=4, max_skip=None, reduce_op=np.max):
         """Return only every `skip`-th frame"""
         gym.Wrapper.__init__(self, env)
-        # most recent raw observations (for max pooling across time steps)
+        if max_skip is None:
+            max_skip = min_skip
+        assert env.observation_space.dtype == "uint8"
+        assert min_skip >= 1
+        assert max_skip >= min_skip
+        # most recent raw observations
         self._obs_buffer = np.zeros((2,)+env.observation_space.shape, dtype=np.uint8)
-        self._skip       = skip
+        self._min_skip = min_skip
+        self._max_skip = max_skip
+        self._reduce_op = reduce_op
 
     def step(self, action):
-        """Repeat action, sum reward, and max over last observations."""
+        """Repeat action, sum reward, and mean over last observations."""
         total_reward = 0.0
         done = None
-        for i in range(self._skip):
+        skip = np.random.randint(self._min_skip, self._max_skip+1)
+        for i in range(skip):
             obs, reward, done, info = self.env.step(action)
-            if i == self._skip - 2: self._obs_buffer[0] = obs
-            if i == self._skip - 1: self._obs_buffer[1] = obs
+            if i == skip - 2: self._obs_buffer[0] = obs
+            if i == skip - 1: self._obs_buffer[1] = obs
             total_reward += reward
             if done:
                 break
         # Note that the observation on the done=True frame
         # doesn't matter
-        max_frame = self._obs_buffer.max(axis=0)
+        reduce_frame = self._reduce_op(self._obs_buffer, axis=0)
 
-        return max_frame, total_reward, done, info
+        return reduce_frame, total_reward, done, info
 
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -158,7 +171,7 @@ class NormalizeObservationWrapper(gym.Wrapper):
 
 class NormalizeRewardWrapper(gym.Wrapper):
 
-    def __init__(self, env, clip=5.0):
+    def __init__(self, env, clip=2.0):
         """
         Normalizes returns
         """
@@ -189,6 +202,14 @@ class NormalizeRewardWrapper(gym.Wrapper):
         reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
 
         info["raw_reward"] = last_raw_reward
+
+        # if reward != 0:
+        #     print("{:<8.2f} {:<8.2f} {:<8.2f} {:<8.2f} {:<8.2f} {:<8.2f}".format(
+        #         last_raw_reward, reward, self.std,
+        #         self.history[-3] if len(self.history) > 3 else 0,
+        #         self.history[-2] if len(self.history) > 3 else 0,
+        #         self.history[-1] if len(self.history) > 3 else 0,
+        #     ))
 
         self.counter += 1
 
@@ -293,7 +314,7 @@ def make_environment(env_name):
     if env_type == "atari":
         assert "NoFrameskip" in env_name
         env = NoopResetWrapper(env, noop_max=30)
-        env = MaxAndSkipWrapper(env, skip=4)
+        env = FrameSkipWrapper(env, min_skip=2, max_skip=4, reduce_op=np.max)
         env = AtariWrapper(env)
         env = NormalizeRewardWrapper(env)
     elif env_type == "classic_control":
@@ -319,7 +340,13 @@ def trace(s):
 
 def sample_action(p):
     """ Returns integer [0..len(probs)-1] based on probabilities. """
+
     p = np.asarray(p, dtype=np.float64)
+
+    # this shouldn't happen, but sometimes does
+    if any(np.isnan(p)):
+        raise Exception("Found nans in probabilities", p)
+
     p /= p.sum()  # probs are sometimes off by a little due to precision error
     return np.random.choice(range(len(p)), p=p)
 
@@ -357,9 +384,10 @@ class MLPModel(nn.Module):
         return x
 
     def policy(self, x):
+        """ Returns logprobs"""
         x = self.forward(x)
         x = self.fc_policy(x)
-        x = F.softmax(x, dim=1)
+        x = F.log_softmax(x, dim=1)
         return x
 
     def value(self, x):
@@ -406,7 +434,7 @@ class CNNModel(nn.Module):
     def policy(self, x):
         x = self.forward(x)
         x = self.fc_policy(x)
-        x = F.softmax(x, dim=1)
+        x = F.log_softmax(x, dim=1)
         return x
 
     def value(self, x):
@@ -418,10 +446,9 @@ class CNNModel(nn.Module):
 def entropy(p):
     return -torch.sum(p * p.log2())
 
-
 def log_entropy(logp):
-    p = logp.exp()
-    return (-p * p.log2()).sum()
+    """entropy of logits, where logits are in nats."""
+    return -(logp.exp() * logp).sum() * (NATS_TO_BITS)
 
 
 def smooth(X, alpha=0.98):
@@ -484,18 +511,21 @@ def nice_display(X, title):
     print("{:<20}{}".format(title, [round(float(x),2) for x in X[:5]]))
 
 def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm,
-                    prev_states, actions, returns, policy_probs, advantages, values):
+                    prev_states, actions, returns, policy_logprobs, advantages, values):
 
-    policy_probs = torch.tensor(policy_probs, dtype=torch.float32).to(DEVICE)
+    # todo:
+    # sample from logps
+
+    policy_logprobs = torch.tensor(policy_logprobs, dtype=torch.float32).to(DEVICE)
     advantages = torch.tensor(advantages, dtype=torch.float32).to(DEVICE)
     returns = torch.tensor(returns, dtype=torch.float32).to(DEVICE)
     old_pred_values = torch.tensor(values, dtype=torch.float32).to(DEVICE)
 
     mini_batch_size = len(prev_states)
 
-    forward = model.policy(prev_states)
+    logps = model.policy(prev_states)
 
-    ratio = forward[range(mini_batch_size), actions] / policy_probs[range(mini_batch_size), actions]
+    ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
 
     loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
 
@@ -513,7 +543,7 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
     vf_losses2 = (value_prediction_clipped - returns).pow(2)
     loss_value = - vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
 
-    loss_entropy = ent_bonus * entropy(forward) / mini_batch_size
+    loss_entropy = ent_bonus * log_entropy(logps) / mini_batch_size
 
     loss = -(loss_clip + loss_value + loss_entropy)  # gradient ascent.
 
@@ -548,7 +578,7 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
     batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
     batch_action = np.zeros([N, A], dtype=np.int32)
     batch_reward = np.zeros([N, A], dtype=np.float32)
-    batch_policy = np.zeros([N, A, *policy_shape], dtype=np.float32)
+    batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
 
     rewards = np.zeros([A], dtype=np.float32)
@@ -556,8 +586,8 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
 
     for t in range(N):
 
-        probs = model.policy(states).detach().cpu().numpy()
-        actions = np.asarray([sample_action(prob) for prob in probs], dtype=np.int32)
+        logprobs = model.policy(states).detach().cpu().numpy()
+        actions = np.asarray([sample_action(np.exp(prob)) for prob in logprobs], dtype=np.int32)
 
         prev_states = states.copy()
 
@@ -583,10 +613,10 @@ def run_agents(n_steps, model, envs, states, episode_score, episode_len, score_h
         batch_prev_state[t] = prev_states
         batch_action[t] = actions
         batch_reward[t] = rewards
-        batch_policy[t] = probs
+        batch_logpolicy[t] = logprobs
         batch_terminal[t] = dones
 
-    return (batch_prev_state, batch_action, batch_reward, batch_policy, batch_terminal)
+    return (batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal)
 
 
 def with_default(x, default):
@@ -629,6 +659,7 @@ def export_movie(model, env_name, name, which_frames="model"):
         if which_frames in ["real", "both"]:
             real_frame = info.get("raw_obs", state)
             if len(real_frame.shape) in [2,3]:
+                real_frame = real_frame[...,::-1] # get colors around the right way...
                 real_video_frames.append(real_frame)
 
     if which_frames in ["model", "both"] and len(model_video_frames) > 0:
@@ -709,7 +740,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=alpha)
+    # epsilon = 1e-5 is required for stability.
+    optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
     envs = [make_environment(env_name) for _ in range(agents)]
 
@@ -738,7 +770,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         start_time = time.time()
 
         # collect experience
-        batch_prev_state, batch_action, batch_reward, batch_policy, batch_terminal = run_agents(
+        batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal = run_agents(
             n_steps, model, envs, states, episode_score, episode_len, score_history, len_history,
             state_shape, state_dtype, policy_shape)
 
@@ -777,7 +809,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             np.asarray(batch_prev_state.reshape([batch_size, *state_shape])),
             np.asarray(batch_action.reshape(batch_size)),
             np.asarray(batch_returns.reshape(batch_size)),
-            np.asarray(batch_policy.reshape([batch_size, *policy_shape])),
+            np.asarray(batch_logpolicy.reshape([batch_size, *policy_shape])),
             np.asarray(batch_advantage.reshape(batch_size)),
             np.asarray(batch_value.reshape(batch_size))
         ]
@@ -819,6 +851,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              float(total_loss_entropy),
              safe_mean(score_history[-100:]),
              safe_mean(len_history[-100:]),
+             safe_mean(score_history[-10:]),
+             safe_mean(len_history[-10:]),
              time.time()-initial_start_time,
              step,
              step * batch_size,
@@ -841,24 +875,26 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 training_log[-1][3],
                 with_default(training_log[-1][4], 0),
                 with_default(training_log[-1][5], 0),
-                "{:.0f} min".format(training_log[-1][6]/60),
-                training_log[-1][9],
-                with_default(training_log[-1][10], 0)
+                "{:.0f} min".format(training_log[-1][8]/60),
+                training_log[-1][11],
+                with_default(training_log[-1][12], 0)
             ))
 
         if step in [0, 50, 100, 250, 500] or step % 1000 == 0:
-            export_movie(model, env_name, "{}_{:04}".format(os.path.join(LOG_FOLDER, env_name), step), which_frames="both")
+            export_movie(model, env_name, "{}_{:06}".format(os.path.join(LOG_FOLDER, env_name), step), which_frames="both")
 
-        if step % 50 == 0:
+        if step in [10, 20, 30, 40] or step % 50 == 0:
 
             save_training_log(os.path.join(LOG_FOLDER, "training_log.csv"), training_log)
 
-            xs = [x * batch_size for x in range(len(training_log))]
+            clean_training_log = training_log[10:] if len(training_log) >= 10 else training_log  # first sample is usually extreme.
+
+            xs = [x[10] for x in clean_training_log]
             plt.figure(figsize=(8, 8))
             plt.grid()
 
             labels = ["loss", "loss_clip", "loss_value", "loss_entropy"]
-            ys = [[x[i] for x in training_log] for i in range(4)]
+            ys = [[x[i] for x in clean_training_log] for i in range(4)]
             colors = ["red", "green", "blue", "black"]
 
             for label, y, c in zip(labels, ys, colors):
@@ -874,16 +910,21 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             xs = []
             rewards = []
             lengths = []
-            for i, x in enumerate(training_log):
+            rewards10 = []
+            lengths10 = []
+            for i, x in enumerate(clean_training_log):
                 if x[4] is None:
                     continue
-                xs.append(i * batch_size)
+                xs.append(x[8])
                 rewards.append(x[4])
                 lengths.append(x[5])
+                rewards10.append(x[6])
+                lengths10.append(x[7])
 
             if len(rewards) > 10:
                 plt.figure(figsize=(8, 8))
                 plt.grid()
+                plt.plot(xs, rewards10, alpha=0.2)
                 plt.plot(xs, rewards)
                 plt.ylabel("Reward")
                 plt.xlabel("Step")
@@ -892,6 +933,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
                 plt.figure(figsize=(8, 8))
                 plt.grid()
+                plt.plot(xs, lengths10, alpha=0.2)
                 plt.plot(xs, lengths)
                 plt.ylabel("Episode Length")
                 plt.xlabel("Step")
@@ -919,8 +961,28 @@ def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
     train(env_name, model, n_iterations, **kwargs)
 
 if __name__ == "__main__":
+
     show_cuda_info()
-    #run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.01)
-    #run_experiment("PongNoFrameskip-v4", CNNModel, 10*1000, argents=16)
-    run_experiment("AlienNoFrameskip-v4", CNNModel, 10*1000, argents=16)
+
+    parser  = argparse.ArgumentParser(description="Trainer for PPO2")
+    parser.add_argument("experiment")
+
+    args = parser.parse_args()
+
+    experiment = args.experiment.lower()
+
+    if experiment == "pong":
+        run_experiment("PongNoFrameskip-v4", CNNModel, 10*1000, agents=16)
+    elif experiment == "seaquest":
+        run_experiment("SeaquestNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+    elif experiment == "alien":
+        run_experiment("AlienNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+    elif experiment == "breakout":
+        run_experiment("BreakoutNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+    elif experiment == "cartpole":
+        run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.01)
+    else:
+        print("Invalid experiment {}.".format(experiment))
+
+
 
