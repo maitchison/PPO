@@ -39,7 +39,7 @@ LOG_FOLDER = "run [{}]".format(GUID[-8:])
 
 NATS_TO_BITS = 1.0/math.log(2)
 
-EXPORT_MOVIES = False
+EXPORT_MOVIES = True
 
 def show_cuda_info():
 
@@ -256,7 +256,7 @@ class AtariWrapper(gym.Wrapper):
         obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
         obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
 
-        np.roll(self.stack, shift=-1, axis=0)
+        self.stack = np.roll(self.stack, shift=-1, axis=0)
         self.stack[0,:,:] = obs
 
     def step(self, action):
@@ -473,7 +473,7 @@ def export_video(filename, frames, scale=4):
     if (len(frames[0].shape) != 3):
         print("Video frames must have dims 3, (shape is {})".format(frames[0].shape))
     if (frames[0].shape[-1] not in [1,3]):
-        print("Video frames must have either 3 or 1 channels (shape {})".format(frames[0]))
+        print("Video frames must have either 3 or 1 channels (shape {})".format(frames[0].shape))
 
     height, width, channels = frames[0].shape
 
@@ -617,12 +617,17 @@ def with_default(x, default):
 
 
 def prep_for_video(frame):
+
+    frame = np.swapaxes(frame, 0, 2)
+    frame = np.swapaxes(frame, 0, 1)
     width, height, channels = frame.shape
-    if channels == 4:
+
+    if channels > 3:
         frame = frame[:, :, 3:4]
 
     if frame.dtype == np.float32:
         frame = np.asarray(frame * 255, np.uint8)
+
     return frame
 
 def export_movie(model, env_name, name, which_frames="model"):
