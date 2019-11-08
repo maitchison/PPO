@@ -1,9 +1,40 @@
 import os
-
+import sys
+import argparse
 # using more than 2 threads locks up all the cpus and does not seem to improve performance.
 # the gain from 2 CPUs to 1 is very minor too. (~10%)
 
-threads = "1"
+
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Trainer for PPO2")
+
+    parser.add_argument("experiment")
+    parser.add_argument("--agents", type=int, default=8)
+    parser.add_argument("--n_steps", type=int, default=128)
+    parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
+    parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--experiment_name", type=str, default="experiment")
+
+    return parser
+
+parser = build_parser()
+args = parser.parse_args()
+
+# must be done before import numpy...
+threads = str(args.threads)
 os.environ["OMP_NUM_THREADS"] = threads
 os.environ["OPENBLAS_NUM_THREADS"] = threads
 os.environ["MKL_NUM_THREADS"] = threads
@@ -32,14 +63,13 @@ for env in gym.envs.registry.all():
     _game_envs[env_type].add(env.id)
 
 DEVICE = "cuda"
-
 GUID = uuid.uuid4().hex
-
-LOG_FOLDER = "run [{}]".format(GUID[-8:])
-
+LOG_FOLDER = "/run/experiment [{}]".format(GUID[-8:])
 NATS_TO_BITS = 1.0/math.log(2)
-
 EXPORT_MOVIES = True
+RES_X = 84
+RES_Y = 84
+USE_COLOR = False
 
 def show_cuda_info():
 
@@ -224,40 +254,53 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
 class AtariWrapper(gym.Wrapper):
 
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
-        Output is a stack of shape (nstacks, 84, 84)
+        Output is a stack of shape (nstacks, width, height)
         """
 
         super().__init__(env)
 
         self.env = env
 
-        self.nstacks = 4
-        self._width, self._height = 84, 84
+        self.n_stacks = 4
+        self._width, self._height = width, height
 
         assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
         assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
-        self.stack = np.zeros((self.nstacks, self._height, self._width), dtype=np.uint8)
+        self.grayscale = grayscale
+        self.n_channels = self.n_stacks * (1 if self.grayscale else 3)
+        self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
 
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(self.nstacks, self._height, self._width),
+            shape=(self.n_channels, self._width, self._height),
             dtype=np.uint8,
         )
 
     def _push_raw_obs(self, obs):
 
-        obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-        obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
+        if self.grayscale:
+            obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+            obs = obs[:, :, np.newaxis]
 
-        self.stack = np.roll(self.stack, shift=-1, axis=0)
-        self.stack[0,:,:] = obs
+        width, height, channels = obs.shape
+
+        if (width, height) != (self._width, self._height):
+            obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
+
+        self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
+        if self.grayscale:
+            self.stack[0, :, :] = obs
+        else:
+            obs = np.swapaxes(obs, 0, 2)
+            obs = np.swapaxes(obs, 1, 2)
+            self.stack[0:3, :, :] = obs
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -267,7 +310,7 @@ class AtariWrapper(gym.Wrapper):
 
     def reset(self):
         obs = self.env.reset()
-        for _ in range(self.nstacks):
+        for _ in range(self.n_stacks):
             self._push_raw_obs(obs)
         return self.stack
 
@@ -319,7 +362,7 @@ def make_environment(env_name):
         assert "NoFrameskip" in env_name
         env = NoopResetWrapper(env, noop_max=30)
         env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
-        env = AtariWrapper(env)
+        env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
         env = NormalizeRewardWrapper(env)
     elif env_type == "classic_control":
         env = NormalizeObservationWrapper(env)
@@ -363,7 +406,7 @@ def sample_action_from_logp(logp):
 
 
 def write_cv2_video(filename, frames):
-    height, width, channels = frames[0].shape
+    width, height, channels = frames[0].shape
 
     # Define the codec and create VideoWriter object.The output is stored in 'outpy.avi' file.
     out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
@@ -413,11 +456,22 @@ class CNNModel(nn.Module):
     def __init__(self, input_dims, actions):
         super(CNNModel, self).__init__()
         self.actions = actions
-        c, h, w = input_dims
+        c, w, h = input_dims
         self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.d = prod((64, 7, 7))
+
+        w = (w - (8-1) - 1) // 4 + 1
+        w = (w - (4-1) - 1) // 2 + 1
+        w = (w - (3-1) - 1) // 1 + 1
+
+        h = (h - (8-1) - 1) // 4 + 1
+        h = (h - (4-1) - 1) // 2 + 1
+        h = (h - (3-1) - 1) // 1 + 1
+
+        self.out_shape = (64, w, h)
+
+        self.d = prod(self.out_shape)
         self.fc = nn.Linear(self.d, 512)
         self.fc_policy = nn.Linear(512, actions)
         self.fc_value = nn.Linear(512, 1)
@@ -431,13 +485,15 @@ class CNNModel(nn.Module):
 
         assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
         assert len(x.shape) == 4, "input should be (N,C,W,H)"
-        assert x.shape[2] == 84 and x.shape[3] == 84, "dims should be  (N,C,84,84) found {}".format(x.shape)
+
+        n = x.shape[0]
 
         x = torch.from_numpy(x).to(DEVICE).float() / 255.0
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = F.relu(self.fc(x.view(-1, self.d)))
+
+        x = F.relu(self.fc(x.view(n, self.d)))
         return x
 
     def policy(self, x):
@@ -482,7 +538,7 @@ def export_video(filename, frames, scale=4):
     if (frames[0].shape[-1] not in [1,3]):
         print("Video frames must have either 3 or 1 channels (shape {})".format(frames[0].shape))
 
-    height, width, channels = frames[0].shape
+    width, height, channels = frames[0].shape
 
     processed_frames = []
 
@@ -493,7 +549,7 @@ def export_video(filename, frames, scale=4):
             frame = np.concatenate([frame] * 3, axis=2)
 
         if scale != 1:
-            frame = cv2.resize(frame, (height * scale, width * scale), interpolation=cv2.INTER_NEAREST)
+            frame = cv2.resize(frame, (width * scale, height * scale), interpolation=cv2.INTER_NEAREST)
 
         processed_frames.append(frame)
 
@@ -728,7 +784,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     ent_bonus = kwargs.get("ent_bonus", 0.01)
     alpha = kwargs.get("lr", 2.5e-4)
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
-    async_envs = kwargs.get("async", True)
+    sync_envs = kwargs.get("sync", False)
 
     # save parameters
     params = {
@@ -755,9 +811,9 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
-    vec_env = gym.vector.AsyncVectorEnv(env_fns) if async_envs  else gym.vector.SyncVectorEnv(env_fns)
+    vec_env = gym.vector.AsyncVectorEnv(env_fns) if not sync_envs  else gym.vector.SyncVectorEnv(env_fns)
 
-    print("Generated {} agents [{}]".format(agents, "async" if async_envs else "sync"))
+    print("Generated {} agents [{}]".format(agents, "async" if not sync_envs else "sync"))
 
     print("Training for {:.1f}k iterations {:.2f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
 
@@ -961,13 +1017,13 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     return training_log
 
 
-def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
+def run_experiment(experiment_name, env_name, Model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
-    LOG_FOLDER = "{} [{}]".format(env_name, GUID[-8:])
+    LOG_FOLDER = "runs/{}/{} [{}]".format(experiment_name, env_name, GUID[-8:])
 
     print("Logging to folder", LOG_FOLDER)
-    os.makedirs(LOG_FOLDER)
+    os.makedirs(LOG_FOLDER, exist_ok=True)
 
     env = make_environment(env_name)
     n_actions = env.action_space.n
@@ -978,70 +1034,76 @@ def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
     model = Model(obs_space, n_actions)
     train(env_name, model, n_iterations, **kwargs)
 
+
 def set_default(dict, key, value):
     if key not in dict:
         dict[key] = value
 
-def str2bool(v):
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def set_num_frames(frames):
     set_default(exp_args, "n_iterations", int(frames) // (args.agents * args.n_steps))
-
 
 if __name__ == "__main__":
 
     show_cuda_info()
 
-    parser  = argparse.ArgumentParser(description="Trainer for PPO2")
-
-    parser.add_argument("experiment")
-    parser.add_argument("--agents",type=int, default=8)
-    parser.add_argument("--n_steps", type=int, default=128)
-    parser.add_argument("--async", type=str2bool, nargs='?', const=True, default=True)
-
-    args = parser.parse_args()
-
     exp_args = vars(args)
 
     experiment = args.experiment.lower()
 
+    args.resolution = args.resolution.lower()
+
+    if args.resolution == "full":
+        RES_X, RES_Y = 210, 160
+    elif args.resolution == "standard":
+        RES_X, RES_Y = 84, 84
+    elif args.resolution == "half":
+        RES_X, RES_Y = 42, 42
+    else:
+        raise Exception("Invalid resolution"+args.resolution)
+
+    USE_COLOR = args.color
+
+    # debugging experiments
+
     if experiment == "pong_small":
         set_default(exp_args, "n_iterations", 10)
-        run_experiment("PongNoFrameskip-v4", CNNModel, **exp_args)
+        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
     if experiment == "pong_mlp":
         set_default(exp_args, "n_iterations", 10)
-        run_experiment("PongNoFrameskip-v4", MLPModel, **exp_args)
-
+        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
+        set_default(exp_args, "Model", MLPModel)
     elif experiment == "pong_20":
         set_num_frames(2e7)
-        run_experiment("PongNoFrameskip-v4", CNNModel,**exp_args)
+        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
+
+    # atari games
 
     elif experiment == "pong":
         set_num_frames(2e8)
-        run_experiment("PongNoFrameskip-v4", CNNModel, **exp_args)
+        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
     elif experiment == "seaquest":
         set_num_frames(2e8)
-        run_experiment("SeaquestNoFrameskip-v4", CNNModel, **exp_args)
+        set_default(exp_args, "env_name", "SeaquestNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
     elif experiment == "alien":
         set_num_frames(2e8)
-        run_experiment("AlienNoFrameskip-v4", CNNModel, **exp_args)
+        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
     elif experiment == "breakout":
         set_num_frames(2e8)
-        run_experiment("BreakoutNoFrameskip-v4", CNNModel, **exp_args)
+        set_default(exp_args, "env_name", "BreakoutNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
     elif experiment == "cartpole":
         set_default(exp_args, "n_iterations", 2*1000)
         set_default(exp_args, "vf_coef", 0.0001)
-        run_experiment("CartPole-v0", MLPModel, **exp_args)
+        set_default(exp_args, "env_name", "CartPole-v0")
+        set_default(exp_args, "Model", MLPModel)
     else:
         print("Invalid experiment {}.".format(experiment))
 
-
+    run_experiment(**exp_args)
 
