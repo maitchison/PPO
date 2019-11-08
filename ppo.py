@@ -342,10 +342,17 @@ def prod(X):
 def trace(s):
     print(s)
 
-def sample_action(p):
-    """ Returns integer [0..len(probs)-1] based on probabilities. """
 
-    p = np.asarray(p, dtype=np.float64)
+def sample_action_from_logp(logp):
+    """ Returns integer [0..len(probs)-1] based on log probabilities. """
+
+    # this would probably work
+    # u = tf.random_uniform(tf.shape(self.logits), dtype=self.logits.dtype)
+    # return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
+
+    # todo make this sample directly without exponentiation
+
+    p = np.asarray(np.exp(logp), dtype=np.float64)
 
     # this shouldn't happen, but sometimes does
     if any(np.isnan(p)):
@@ -496,6 +503,8 @@ def export_video(filename, frames, scale=4):
 def safe_mean(X):
     return np.mean(X) if len(X) > 0 else None
 
+def safe_round(x, digits):
+    return round(x, digits) if x is not None else x
 
 def inspect(x):
     if isinstance(x, int):
@@ -585,7 +594,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     for t in range(N):
 
         logprobs = model.policy(states).detach().cpu().numpy()
-        actions = np.asarray([sample_action(np.exp(prob)) for prob in logprobs], dtype=np.int32)
+        actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
         prev_states = states.copy()
 
         states, rewards, dones, infos = vec_envs.step(actions)
@@ -649,7 +658,7 @@ def export_movie(model, env_name, name, which_frames="model"):
 
     # play the game...
     while not done:
-        action = sample_action(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
+        action = sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
         state, reward, done, info = env.step(action)
 
         if which_frames in ["model", "both"]:
@@ -858,10 +867,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              float(total_loss_clip),
              float(total_loss_value),
              float(total_loss_entropy),
-             round(safe_mean(score_history[-100:]), 2),
-             round(safe_mean(len_history[-100:]),2),
-             round(safe_mean(score_history[-10:]), 2),
-             round(safe_mean(len_history[-10:]),2),
+             safe_round(safe_mean(score_history[-100:]), 2),
+             safe_round(safe_mean(len_history[-100:]),2),
+             safe_round(safe_mean(score_history[-10:]), 2),
+             safe_round(safe_mean(len_history[-10:]),2),
              time.time()-initial_start_time,
              step,
              step * batch_size,
