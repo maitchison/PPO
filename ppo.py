@@ -318,7 +318,7 @@ def make_environment(env_name):
     if env_type == "atari":
         assert "NoFrameskip" in env_name
         env = NoopResetWrapper(env, noop_max=30)
-        env = FrameSkipWrapper(env, min_skip=2, max_skip=4, reduce_op=np.max)
+        env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
         env = AtariWrapper(env)
         env = NormalizeRewardWrapper(env)
     elif env_type == "classic_control":
@@ -590,18 +590,19 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         states, rewards, dones, infos = vec_envs.step(actions)
 
-        raw_rewards = [info.get("raw_reward", reward) for reward, info in zip(rewards, infos)]
+        raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
         episode_score += raw_rewards
         episode_len += 1
 
         for i, done in enumerate(dones):
-            # reset is handled automatically by vectorized environments
-            # so just need to keep track of book-keeping
-            score_history.append(episode_score[i])
-            len_history.append(episode_len[i])
-            episode_score[i] = 0
-            episode_len[i] = 0
+            if done:
+                # reset is handled automatically by vectorized environments
+                # so just need to keep track of book-keeping
+                score_history.append(episode_score[i])
+                len_history.append(episode_len[i])
+                episode_score[i] = 0
+                episode_len[i] = 0
 
         batch_prev_state[t] = prev_states
         batch_action[t] = actions
@@ -716,7 +717,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     ent_bonus = kwargs.get("ent_bonus", 0.01)
     alpha = kwargs.get("lr", 2.5e-4)
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
-    async_envs = True
+    async_envs = kwargs.get("async", True)
 
     # save parameters
     params = {
@@ -761,6 +762,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     len_history = []
 
     initial_start_time = time.time()
+
+    fps_history = deque(maxlen=10)
 
     for step in range(n_iterations+1):
 
@@ -842,6 +845,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         fps = 1.0 / step_time
 
+        fps_history.append(fps)
+
         history_string = "{}".format(
             [round(float(x), 2) for x in score_history[-5:]]
         )
@@ -858,7 +863,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              time.time()-initial_start_time,
              step,
              step * batch_size,
-             fps,
+             np.mean(fps_history),
              history_string
              )
         )
@@ -962,29 +967,68 @@ def run_experiment(env_name, Model, n_iterations = 10000, **kwargs):
     model = Model(obs_space, n_actions)
     train(env_name, model, n_iterations, **kwargs)
 
+def set_default(dict, key, value):
+    if key not in dict:
+        dict[key] = value
+
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+def set_num_frames(frames):
+    set_default(exp_args, "n_iterations", int(frames) // (args.agents * args.n_steps))
+
+
 if __name__ == "__main__":
 
     show_cuda_info()
 
     parser  = argparse.ArgumentParser(description="Trainer for PPO2")
+
     parser.add_argument("experiment")
+    parser.add_argument("--agents",type=int, default=8)
+    parser.add_argument("--n_steps", type=int, default=128)
+    parser.add_argument("--async", type=str2bool, nargs='?', const=True, default=True)
 
     args = parser.parse_args()
+
+    exp_args = vars(args)
 
     experiment = args.experiment.lower()
 
     if experiment == "pong_small":
-        run_experiment("PongNoFrameskip-v4", CNNModel, 10, agents=16)
+        set_default(exp_args, "n_iterations", 10)
+        run_experiment("PongNoFrameskip-v4", CNNModel, **exp_args)
+    if experiment == "pong_mlp":
+        set_default(exp_args, "n_iterations", 10)
+        run_experiment("PongNoFrameskip-v4", MLPModel, **exp_args)
+
+    elif experiment == "pong_20":
+        set_num_frames(2e7)
+        run_experiment("PongNoFrameskip-v4", CNNModel,**exp_args)
+
     elif experiment == "pong":
-        run_experiment("PongNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+        set_num_frames(2e8)
+        run_experiment("PongNoFrameskip-v4", CNNModel, **exp_args)
     elif experiment == "seaquest":
-        run_experiment("SeaquestNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+        set_num_frames(2e8)
+        run_experiment("SeaquestNoFrameskip-v4", CNNModel, **exp_args)
     elif experiment == "alien":
-        run_experiment("AlienNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+        set_num_frames(2e8)
+        run_experiment("AlienNoFrameskip-v4", CNNModel, **exp_args)
     elif experiment == "breakout":
-        run_experiment("BreakoutNoFrameskip-v4", CNNModel, 100*1000, agents=16)
+        set_num_frames(2e8)
+        run_experiment("BreakoutNoFrameskip-v4", CNNModel, **exp_args)
     elif experiment == "cartpole":
-        run_experiment("CartPole-v0", MLPModel, 2*1000, agents=4, vf_coef=0.0001)
+        set_default(exp_args, "n_iterations", 2*1000)
+        set_default(exp_args, "vf_coef", 0.0001)
+        run_experiment("CartPole-v0", MLPModel, **exp_args)
     else:
         print("Invalid experiment {}.".format(experiment))
 
