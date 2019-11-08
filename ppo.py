@@ -366,7 +366,7 @@ def make_environment(env_name):
         assert "NoFrameskip" in env_name
         env = NoopResetWrapper(env, noop_max=30)
         env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
-        env = AtariWrapper(env, n_stacks=N_STACKS, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
+        env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
         env = NormalizeRewardWrapper(env)
     elif env_type == "classic_control":
         env = NormalizeObservationWrapper(env)
