@@ -1047,7 +1047,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 def run_experiment(run_name, experiment_name, env_name, Model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
-    LOG_FOLDER = "runs/{}/[{}] {}".format(run_name, GUID[-8:], experiment_name)
+    LOG_FOLDER = "runs/{}/{} [{}]".format(run_name, experiment_name, GUID[-16:])
 
     print("Logging to folder", LOG_FOLDER)
     os.makedirs(LOG_FOLDER, exist_ok=True)
