@@ -254,7 +254,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
 class AtariWrapper(gym.Wrapper):
 
-    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84):
+    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
@@ -265,7 +265,7 @@ class AtariWrapper(gym.Wrapper):
 
         self.env = env
 
-        self.n_stacks = 4
+        self.n_stacks = n_stacks
         self._width, self._height = width, height
 
         assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
@@ -294,9 +294,13 @@ class AtariWrapper(gym.Wrapper):
         if (width, height) != (self._width, self._height):
             obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
 
+        if len(obs.shape) == 2:
+            obs = obs[:, :, np.newaxis]
+
         self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
+
         if self.grayscale:
-            self.stack[0, :, :] = obs
+            self.stack[0:1, :, :] = obs[:, :, 0]
         else:
             obs = np.swapaxes(obs, 0, 2)
             obs = np.swapaxes(obs, 1, 2)
@@ -362,7 +366,7 @@ def make_environment(env_name):
         assert "NoFrameskip" in env_name
         env = NoopResetWrapper(env, noop_max=30)
         env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
-        env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
+        env = AtariWrapper(env, n_stacks=N_STACKS, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
         env = NormalizeRewardWrapper(env)
     elif env_type == "classic_control":
         env = NormalizeObservationWrapper(env)
@@ -403,18 +407,6 @@ def sample_action_from_logp(logp):
 
     p /= p.sum()  # probs are sometimes off by a little due to precision error
     return np.random.choice(range(len(p)), p=p)
-
-
-def write_cv2_video(filename, frames):
-    width, height, channels = frames[0].shape
-
-    # Define the codec and create VideoWriter object.The output is stored in 'outpy.avi' file.
-    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
-
-    for frame in frames:
-        out.write(frame)
-
-    out.release()
 
 
 class MLPModel(nn.Module):
@@ -523,37 +515,6 @@ def smooth(X, alpha=0.98):
         y = (1 - alpha) * x + (alpha) * y
         results.append(y)
     return results
-
-
-def export_video(filename, frames, scale=4):
-
-    if len(frames) == 0:
-        print("No frames for video")
-        return
-
-    if (frames[0].dtype != np.uint8):
-        print("Video files must be in uint8 format")
-    if (len(frames[0].shape) != 3):
-        print("Video frames must have dims 3, (shape is {})".format(frames[0].shape))
-    if (frames[0].shape[-1] not in [1,3]):
-        print("Video frames must have either 3 or 1 channels (shape {})".format(frames[0].shape))
-
-    width, height, channels = frames[0].shape
-
-    processed_frames = []
-
-    for frame in frames:
-
-        # convert single channel grayscale to rgb grayscale
-        if channels == 1:
-            frame = np.concatenate([frame] * 3, axis=2)
-
-        if scale != 1:
-            frame = cv2.resize(frame, (width * scale, height * scale), interpolation=cv2.INTER_NEAREST)
-
-        processed_frames.append(frame)
-
-    write_cv2_video(filename, processed_frames)
 
 
 def safe_mean(X):
@@ -682,54 +643,119 @@ def with_default(x, default):
     return x if x is not None else default
 
 
-def prep_for_video(frame):
+def compose_frame(state_frame, rendered_frame):
+    """ Puts together a composite frame containing rendered frame and state. """
 
-    frame = np.swapaxes(frame, 0, 2)
-    frame = np.swapaxes(frame, 0, 1)
-    width, height, channels = frame.shape
+    # note: untested on non-stacked states.
 
-    if channels > 3:
-        frame = frame[:, :, 3:4]
+    # assume state is C, W, H
+    # assume rendered frame is  is W, H, C
+    assert state_frame.shape[0] < max(state_frame.shape), "Channels should be first on state {}".format(state_frame.shape)
+    assert rendered_frame.shape[2] < max(state_frame.shape), "Channels should be last on rendered {}".format(
+        rendered_frame.shape)
 
-    if frame.dtype == np.float32:
-        frame = np.asarray(frame * 255, np.uint8)
+    # ---------------------------------------
+    # preprocess frames
+
+    # state was CWH but needs to be WHC
+    state_frame = np.swapaxes(state_frame, 0, 2)
+    state_frame = np.swapaxes(state_frame, 0, 1)
+    # rendered frame is BGR but should be RGB
+    rendered_frame = rendered_frame[...,::-1] # get colors around the right way...
+
+    assert rendered_frame.dtype == np.uint8
+    assert state_frame.dtype == np.uint8
+    assert len(state_frame.shape) == 3
+    assert len(rendered_frame.shape) == 3
+    assert rendered_frame.shape[2] == 3, "Invalid rendered shape " + str(rendered_frame.shape)
+
+    s_h, s_w, s_c = state_frame.shape
+    r_h, r_w, r_c = rendered_frame.shape
+
+    is_stacked = s_c % 4 == 0
+    is_color = s_c % 3 == 0
+
+    full_width = r_w + s_w * (2 if is_stacked else 1)
+    full_height = max(r_h, s_h * (2 if is_stacked else 1))
+
+    frame = np.zeros([full_height, full_width, 3], dtype=np.uint8)
+    frame[:, :, :] += 30 # dark gray background.
+
+    # place the rendered frame
+    ofs_y = (full_height - r_h) // 2
+    frame[ofs_y:ofs_y+r_h, 0:r_w] = rendered_frame
+
+    # place state frames
+    y_pad = (full_height - (s_h * 2)) // 2
+    if is_stacked:
+        i = 0
+        for x in range(2):
+            for y in range(2):
+                dx = x * s_w + r_w
+                dy = y * s_h + y_pad
+                factor = 1 if x==0 and y==0 else 2 # darken all but first state for clarity
+                if is_color:
+                    frame[dy:dy+s_h, dx:dx+s_w, :] = state_frame[:, :, i*3:(i+1)*3] // factor
+                else:
+                    for c in range(3):
+                        frame[dy:dy+s_h, dx:dx+s_w, c] = state_frame[:, :, i] // factor
+                i += 1
+    else:
+        dx = r_w
+        dy = y_pad
+        if is_color:
+            frame[dy:dy+s_h, dx:dx+s_w, :] = state_frame[:, :, :]
+        else:
+            for c in range(3):
+                frame[dy:dy+s_h, dx:dx+s_w, c] = state_frame[:, :, :]
 
     return frame
 
-def export_movie(model, env_name, name, which_frames="model"):
+
+def export_movie(model, env_name, filename):
     """ Exports a movie of agent playing game.
         which_frames: model, real, or both
     """
 
-    which_frames = which_frames.lower()
-
-    assert which_frames in ["model", "real", "both"]
+    filename += ".mp4"
+    scale = 2
 
     env = make_environment(env_name)
-    state = env.reset()
-    done = False
+    _ = env.reset()
+    state, reward, done, info = env.step(0)
+    rendered_frame = info.get("raw_obs", state)
 
-    model_video_frames = deque(maxlen=6000)
-    real_video_frames = deque(maxlen=6000)
+    # work out our height
+    first_frame = compose_frame(state, rendered_frame)
+    height, width, channels = first_frame.shape
+    width = (width * scale) // 4 * 4 # make sure these are multiples of 4
+    height = (height * scale) // 4 * 4
+
+    print("Creating video {}x{}".format(width,height))
+
+    # create video recorder
+    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+
+    state = env.reset()
 
     # play the game...
     while not done:
         action = sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
         state, reward, done, info = env.step(action)
+        rendered_frame = info.get("raw_obs", state)
 
-        if which_frames in ["model", "both"]:
-            if len(state.shape) in [2,3]:
-                model_video_frames.append(prep_for_video(state))
-        if which_frames in ["real", "both"]:
-            real_frame = info.get("raw_obs", state)
-            if len(real_frame.shape) in [2,3]:
-                real_frame = real_frame[...,::-1] # get colors around the right way...
-                real_video_frames.append(real_frame)
+        frame = compose_frame(state, rendered_frame)
+        if frame.shape[0] != width or frame.shape[1] != height:
+            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
-    if which_frames in ["model", "both"] and len(model_video_frames) > 0:
-        export_video(name+"[model].mp4", model_video_frames)
-    if which_frames in ["real", "both"] and len(real_video_frames) > 0:
-        export_video(name+"[real].mp4", real_video_frames)
+        assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
+
+
+        video_out.write(frame)
+
+    print("done")
+
+    video_out.release()
 
 
 def save_training_log(filename, training_log):
@@ -801,8 +827,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "max_grad_norm": max_grad_norm
     }
 
+    params.update(kwargs)
+
     with open(os.path.join(LOG_FOLDER, "params.txt"),"w") as f:
-        f.write(json.dumps(params))
+        f.write(json.dumps(params, indent=4))
 
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
@@ -955,7 +983,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             ))
 
         if EXPORT_MOVIES and (step in [0, 50, 100, 250, 500] or step % 1000 == 0):
-            export_movie(model, env_name, "{}_{:06}".format(os.path.join(LOG_FOLDER, env_name), step), which_frames="both")
+            export_movie(model, env_name, "{}_{:06}".format(os.path.join(LOG_FOLDER, env_name), step))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
