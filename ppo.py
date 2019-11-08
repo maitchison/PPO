@@ -1070,7 +1070,7 @@ if __name__ == "__main__":
         set_default(exp_args, "n_iterations", 10)
         set_default(exp_args, "env_name", "PongNoFrameskip-v4")
         set_default(exp_args, "Model", CNNModel)
-    if experiment == "pong_mlp":
+    elif experiment == "pong_mlp":
         set_default(exp_args, "n_iterations", 10)
         set_default(exp_args, "env_name", "PongNoFrameskip-v4")
         set_default(exp_args, "Model", MLPModel)
@@ -1103,7 +1103,7 @@ if __name__ == "__main__":
         set_default(exp_args, "env_name", "CartPole-v0")
         set_default(exp_args, "Model", MLPModel)
     else:
-        print("Invalid experiment {}.".format(experiment))
+        raise Exception("Invalid experiment {}.".format(experiment))
 
     run_experiment(**exp_args)
 
