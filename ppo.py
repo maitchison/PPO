@@ -670,7 +670,9 @@ def export_movie(model, env_name, name, which_frames="model"):
 def save_training_log(filename, training_log):
     with open(filename, mode='w') as f:
         csv_writer = csv.writer(f, delimiter=',')
-        csv_writer.writerow(["Loss", "Loss_Clip", "Loss_Value", "Loss_Entropy", "Ep_Score", "Ep_Len",
+        csv_writer.writerow(["Loss", "Loss_Clip", "Loss_Value", "Loss_Entropy",
+                             "Ep_Score (100)", "Ep_Len (100)",
+                             "Ep_Score (10)", "Ep_Len (10)",
                              "Elapsed", "Iteration", "Step", "FPS", "History"])
 
         for row in training_log:
@@ -856,14 +858,14 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              float(total_loss_clip),
              float(total_loss_value),
              float(total_loss_entropy),
-             safe_mean(score_history[-100:]),
-             safe_mean(len_history[-100:]),
-             safe_mean(score_history[-10:]),
-             safe_mean(len_history[-10:]),
+             round(safe_mean(score_history[-100:]), 2),
+             round(safe_mean(len_history[-100:]),2),
+             round(safe_mean(score_history[-10:]), 2),
+             round(safe_mean(len_history[-10:]),2),
              time.time()-initial_start_time,
              step,
              step * batch_size,
-             np.mean(fps_history),
+             int(np.mean(fps_history)),
              history_string
              )
         )
@@ -922,7 +924,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             for i, x in enumerate(clean_training_log):
                 if x[4] is None:
                     continue
-                xs.append(x[8])
+                xs.append(x[10])
                 rewards.append(x[4])
                 lengths.append(x[5])
                 rewards10.append(x[6])
