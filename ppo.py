@@ -26,7 +26,8 @@ def build_parser():
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--experiment_name", type=str, default="experiment")
+    parser.add_argument("--run_name", type=str, default="experiments")
+    parser.add_argument("--experiment_name", type=str)
 
     return parser
 
@@ -731,8 +732,6 @@ def export_movie(model, env_name, filename):
     width = (width * scale) // 4 * 4 # make sure these are multiples of 4
     height = (height * scale) // 4 * 4
 
-    print("Creating video {}x{}".format(width,height))
-
     # create video recorder
     video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
 
@@ -1005,7 +1004,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
             plt.legend()
             plt.ylabel("Loss")
-            plt.xlabel("Step")
+            plt.xlabel("Env Step")
             plt.savefig(os.path.join(LOG_FOLDER, "losses.png"))
             plt.close()
 
@@ -1029,7 +1028,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 plt.plot(xs, rewards10, alpha=0.2)
                 plt.plot(xs, rewards)
                 plt.ylabel("Reward")
-                plt.xlabel("Step")
+                plt.xlabel("Env Step")
                 plt.savefig(os.path.join(LOG_FOLDER, "ep_reward.png"))
                 plt.close()
 
@@ -1038,17 +1037,17 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 plt.plot(xs, lengths10, alpha=0.2)
                 plt.plot(xs, lengths)
                 plt.ylabel("Episode Length")
-                plt.xlabel("Step")
+                plt.xlabel("Env Step")
                 plt.savefig(os.path.join(LOG_FOLDER, "ep_length.png"))
                 plt.close()
 
     return training_log
 
 
-def run_experiment(experiment_name, env_name, Model, n_iterations = 10000, **kwargs):
+def run_experiment(run_name, experiment_name, env_name, Model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
-    LOG_FOLDER = "runs/{}/{} [{}]".format(experiment_name, env_name, GUID[-8:])
+    LOG_FOLDER = "runs/{}/[{}] {}".format(run_name, GUID[-8:], experiment_name)
 
     print("Logging to folder", LOG_FOLDER)
     os.makedirs(LOG_FOLDER, exist_ok=True)
@@ -1132,6 +1131,8 @@ if __name__ == "__main__":
         set_default(exp_args, "Model", MLPModel)
     else:
         raise Exception("Invalid experiment {}.".format(experiment))
+
+    set_default(exp_args, "run_name", exp_args["env_name"])
 
     run_experiment(**exp_args)
 

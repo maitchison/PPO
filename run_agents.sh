@@ -1,0 +1,1 @@
+python ppo.py alien --run_name=agents --experiment_name=agents\=$1 --agents=$1
