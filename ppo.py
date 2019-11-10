@@ -752,8 +752,6 @@ def export_movie(model, env_name, filename):
 
         video_out.write(frame)
 
-    print("done")
-
     video_out.release()
 
 
