@@ -896,6 +896,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         batch_returns = batch_advantage + batch_value
 
+        movie_every = 5*1000*1000 // batch_size # 1 movie every 5m environment steps
+
         # normalize batch advantages
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
 
@@ -981,8 +983,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 with_default(training_log[-1][12], 0)
             ))
 
-        if EXPORT_MOVIES and (step in [0, 50, 100, 250, 500] or step % 1000 == 0):
-            export_movie(model, env_name, "{}_{:06}".format(os.path.join(LOG_FOLDER, env_name), step))
+        if EXPORT_MOVIES and (step in [0, 50, 100, 250, 500] or step % movie_every == 0):
+            export_movie(model, env_name, "{}_{:03}m".format(os.path.join(LOG_FOLDER, env_name), step*batch_size//1000//1000))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
@@ -1082,6 +1084,8 @@ if __name__ == "__main__":
 
     if args.resolution == "full":
         RES_X, RES_Y = 210, 160
+    elif args.resolution == "high":
+        RES_X, RES_Y = 128, 128
     elif args.resolution == "standard":
         RES_X, RES_Y = 84, 84
     elif args.resolution == "half":
@@ -1101,10 +1105,6 @@ if __name__ == "__main__":
         set_default(exp_args, "n_iterations", 10)
         set_default(exp_args, "env_name", "PongNoFrameskip-v4")
         set_default(exp_args, "Model", MLPModel)
-    elif experiment == "pong_20":
-        set_num_frames(2e7)
-        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
 
     # atari games
 
@@ -1118,6 +1118,10 @@ if __name__ == "__main__":
         set_default(exp_args, "Model", CNNModel)
     elif experiment == "alien":
         set_num_frames(2e8)
+        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
+    elif experiment == "alien_50":
+        set_num_frames(5e7)
         set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
         set_default(exp_args, "Model", CNNModel)
     elif experiment == "breakout":
