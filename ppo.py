@@ -28,6 +28,7 @@ def build_parser():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--run_name", type=str, default="experiments")
     parser.add_argument("--experiment_name", type=str)
+    parser.add_argument("--output_folder", type=str)
 
     return parser
 
@@ -71,6 +72,7 @@ EXPORT_MOVIES = True
 RES_X = 84
 RES_Y = 84
 USE_COLOR = False
+OUTPUT_FOLDER = "runs"
 
 def show_cuda_info():
 
@@ -766,6 +768,15 @@ def save_training_log(filename, training_log):
         for row in training_log:
             csv_writer.writerow(row)
 
+def zero_format_number(x):
+    if x < 1e3:
+        return "{:03.0f} ".format(x)
+    elif x < 1e6:
+        return "{:03.0f}K".format(x//1e3)
+    elif x < 1e9:
+        return "{:03.0f}M".format(x//1e6)
+    else:
+        return "{:03.0f}B".format(x//1e9)
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
@@ -966,7 +977,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
                                                                       "l_ent", "ep_score", "ep_len", "elapsed", "fps"))
             print("-"*120)
-        if step % 10 == 0:
+        if step % 10 == 0 or step == n_iterations:
             print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
                 str(step),
                 "{:.2f}M".format(step * n_steps * agents / 1000 / 1000),
@@ -981,8 +992,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 with_default(training_log[-1][12], 0)
             ))
 
-        if EXPORT_MOVIES and (step in [x // batch_size for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
-            export_movie(model, env_name, "{}_{:05.1f}M".format(os.path.join(LOG_FOLDER, env_name), step*batch_size//1000//1000))
+        if EXPORT_MOVIES and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
+            export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number(step*batch_size)))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
@@ -1047,7 +1058,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 def run_experiment(run_name, experiment_name, env_name, Model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
-    LOG_FOLDER = "runs/{}/{} [{}]".format(run_name, experiment_name, GUID[-16:])
+    LOG_FOLDER = "{}/{}/{} [{}]".format(OUTPUT_FOLDER, run_name, experiment_name, GUID[-16:])
 
     print("Logging to folder", LOG_FOLDER)
     os.makedirs(LOG_FOLDER, exist_ok=True)
@@ -1090,6 +1101,11 @@ if __name__ == "__main__":
         RES_X, RES_Y = 42, 42
     else:
         raise Exception("Invalid resolution"+args.resolution)
+
+    if args.output_folder is not None:
+        print("outputting to folder", args.output_folder)
+        assert os.path.isdir(args.output_folder), "Can not find path "+args.output_folder
+        OUTPUT_FOLDER = args.output_folder
 
     USE_COLOR = args.color
 
