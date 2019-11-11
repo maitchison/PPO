@@ -981,8 +981,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 with_default(training_log[-1][12], 0)
             ))
 
-        if EXPORT_MOVIES and (step in [0, 50, 100, 250, 500] or step % movie_every == 0):
-            export_movie(model, env_name, "{}_{:03}M".format(os.path.join(LOG_FOLDER, env_name), step*batch_size//1000//1000))
+        if EXPORT_MOVIES and (step in [x // batch_size for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
+            export_movie(model, env_name, "{}_{:05.1f}M".format(os.path.join(LOG_FOLDER, env_name), step*batch_size//1000//1000))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
