@@ -476,11 +476,14 @@ class CNNModel(nn.Module):
 
     def forward(self, x):
 
+        # todo: tidy up the casting of input here
+        # need to handle, NP, CUDA (but wrong device), uint8, and float32
+
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        assert x.dtype in [np.uint8, np.float32], "invalid dtype for input, found {} expected {}.".format(x.dtype, "[uint8, float32]")
+        assert x.dtype in [np.uint8, np.float32, torch.float32], "invalid dtype for input, found {} expected {}.".format(x.dtype, "[uint8, float32]")
         assert len(x.shape) == 4, "input should be (N,C,W,H)"
 
         n = x.shape[0]
@@ -972,9 +975,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 sample = ordering[batch_start:batch_end]
 
                 slices = [x[sample] for x in batch_arrays]
-
-                print(slices[0].shape)
-                print(prod(slices[0].shape)*4/1024/1024/1024)
 
                 loss, loss_clip, loss_value, loss_entropy = train_minibatch(
                     model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
