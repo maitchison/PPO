@@ -485,7 +485,14 @@ class CNNModel(nn.Module):
 
         n = x.shape[0]
 
-        x = torch.from_numpy(x).to(DEVICE).float() / 255.0
+        if type(x) is np.ndarray:
+            if x.dtype == np.uint8:
+                x = torch.from_numpy(x).to(DEVICE).float() / 255.0
+            elif x.dtype == np.float32:
+                x = torch.from_numpy(x).to(DEVICE)
+            else:
+                raise Exception("invalid input dtype ",x.dtype)
+
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -549,10 +556,14 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
     # todo:
     # sample from logps
 
-    policy_logprobs = torch.tensor(policy_logprobs, dtype=torch.float32).to(DEVICE)
-    advantages = torch.tensor(advantages, dtype=torch.float32).to(DEVICE)
-    returns = torch.tensor(returns, dtype=torch.float32).to(DEVICE)
-    old_pred_values = torch.tensor(values, dtype=torch.float32).to(DEVICE)
+    prev_states = torch.tensor(prev_states, dtype=torch.float32, device=DEVICE)
+    policy_logprobs = torch.tensor(policy_logprobs, dtype=torch.float32, device = DEVICE)
+    advantages = torch.tensor(advantages, dtype=torch.float32, device = DEVICE)
+    returns = torch.tensor(returns, dtype=torch.float32, device = DEVICE)
+    old_pred_values = torch.tensor(values, dtype=torch.float32, device = DEVICE)
+
+    #stub:
+    print("Cuda memory", torch.cuda.memory_allocated(0), len(prev_states))
 
     mini_batch_size = len(prev_states)
 
@@ -852,6 +863,9 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
 
+    vram_size = mini_batch_size * 4 * prod(state_shape)
+    print("Training for {} epochs on minibatchs of size {} requiring {:.1f}GB VRAM".format(epochs, mini_batch_size, vram_size/1024/1024/1024))
+
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
@@ -945,7 +959,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 batch_end = (j + 1) * mini_batch_size
                 sample = ordering[batch_start:batch_end]
 
-                slices = (x[sample] for x in batch_arrays)
+                slices = [x[sample] for x in batch_arrays]
+
+                print(slices[0].shape)
+                print(prod(slices[0].shape)*4/1024/1024/1024)
 
                 loss, loss_clip, loss_value, loss_entropy = train_minibatch(
                     model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
