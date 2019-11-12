@@ -296,7 +296,7 @@ class AtariWrapper(gym.Wrapper):
         width, height, channels = obs.shape
 
         if (width, height) != (self._width, self._height):
-            obs = cv2.resize(obs, (self._width, self._height), interpolation=cv2.INTER_AREA)
+            obs = cv2.resize(obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
 
         if len(obs.shape) == 2:
             obs = obs[:, :, np.newaxis]
