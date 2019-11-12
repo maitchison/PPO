@@ -791,6 +791,21 @@ def zero_format_number(x):
     else:
         return "{:03.0f}B".format(x//1e9)
 
+
+def get_batch_values(model, states, mini_batch_size = 512):
+    """ Gets value estimates for given states, but without any derivatives, and done with minibatches"""
+
+    results = []
+    mini_batches = len(states)//mini_batch_size
+    for i in range(mini_batches):
+        results.extend(model.value(states[i*mini_batch_size:(i+1)*mini_batch_size]).detach().cpu().numpy())
+
+    # last batch.
+    if len(states[mini_batches * mini_batch_size:]) > 0:
+        results.extend(model.value(states[mini_batches * mini_batch_size:]).detach().cpu().numpy())
+
+    return np.asarray(results)
+
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
     Default parameters from stable baselines
@@ -906,8 +921,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             state_shape, state_dtype, policy_shape)
 
         # estimate values
-        # note: we need to manipulate the dims into a batch first.
-        batch_value = model.value(batch_prev_state.reshape([batch_size, *state_shape])).detach().cpu().numpy()
+        # note: we need to manipulate the dims into a batch first, from [N,A,State] to [N*A,State]
+        batch_value = get_batch_values(model, batch_prev_state.reshape([batch_size, *state_shape]))
         batch_value = batch_value.reshape([n_steps, agents])
         batch_advantage = np.zeros([n_steps, agents], dtype=np.float32)
 
