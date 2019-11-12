@@ -22,6 +22,7 @@ def build_parser():
     parser.add_argument("experiment")
     parser.add_argument("--agents", type=int, default=8)
     parser.add_argument("--n_steps", type=int, default=128)
+    parser.add_argument("--n_batches", type=int, default=4)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
