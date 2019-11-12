@@ -480,7 +480,7 @@ class CNNModel(nn.Module):
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
+        assert x.dtype in [np.uint8, np.float32], "invalid dtype for input, found {} expected {}.".format(x.dtype, "[uint8, float32]")
         assert len(x.shape) == 4, "input should be (N,C,W,H)"
 
         n = x.shape[0]
@@ -556,14 +556,11 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
     # todo:
     # sample from logps
 
-    prev_states = torch.tensor(prev_states, dtype=torch.float32, device=DEVICE)
-    policy_logprobs = torch.tensor(policy_logprobs, dtype=torch.float32, device = DEVICE)
-    advantages = torch.tensor(advantages, dtype=torch.float32, device = DEVICE)
-    returns = torch.tensor(returns, dtype=torch.float32, device = DEVICE)
+    prev_states = torch.tensor(prev_states, dtype = torch.float32, device = DEVICE)
+    policy_logprobs = torch.tensor(policy_logprobs, dtype = torch.float32, device = DEVICE)
+    advantages = torch.tensor(advantages, dtype = torch.float32, device = DEVICE)
+    returns = torch.tensor(returns, dtype =  torch.float32, device = DEVICE)
     old_pred_values = torch.tensor(values, dtype=torch.float32, device = DEVICE)
-
-    #stub:
-    print("Cuda memory", torch.cuda.memory_allocated(0), len(prev_states))
 
     mini_batch_size = len(prev_states)
 
@@ -879,7 +876,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     mini_batch_size = batch_size // n_batches
 
     vram_size = mini_batch_size * 4 * prod(state_shape)
-    print("Training for {} epochs on minibatchs of size {} requiring {:.1f}GB VRAM".format(epochs, mini_batch_size, vram_size/1024/1024/1024))
+    print("Training for {} epochs on minibatchs of size {}.".format(epochs, mini_batch_size))
 
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
