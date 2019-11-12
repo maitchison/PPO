@@ -57,6 +57,7 @@ import json
 import uuid
 import argparse
 import math
+import shutil
 from collections import deque, defaultdict
 
 _game_envs = defaultdict(set)
@@ -837,8 +838,15 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     params.update(kwargs)
 
+    # make a copy of params
     with open(os.path.join(LOG_FOLDER, "params.txt"),"w") as f:
         f.write(json.dumps(params, indent=4))
+
+    # make a copy of training script for reference
+    try:
+        shutil.copyfile("./ppo.py", os.path.join(LOG_FOLDER, "ppo.py"))
+    except Exception as e:
+        print("Failed to copy training file to log folder.", e)
 
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
@@ -1095,6 +1103,8 @@ if __name__ == "__main__":
         RES_X, RES_Y = 210, 160
     elif args.resolution == "high":
         RES_X, RES_Y = 128, 128
+    elif args.resolution == "half-full":
+        RES_X, RES_Y = 105, 80
     elif args.resolution == "standard":
         RES_X, RES_Y = 84, 84
     elif args.resolution == "half":
