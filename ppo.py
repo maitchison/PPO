@@ -935,7 +935,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         batch_returns = batch_advantage + batch_value
 
-        rollout_time = (time.time() - start_time)
+        rollout_time = (time.time() - start_time) / batch_size
 
         start_train_time = time.time()
 
@@ -980,11 +980,11 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 total_loss_entropy += loss_entropy / (epochs*n_batches)
                 total_loss += loss / (epochs*n_batches)
 
-        train_time = (time.time() - start_train_time)
+        train_time = (time.time() - start_train_time) / batch_size
 
-        step_time = (time.time() - start_time)
+        step_time = (time.time() - start_time) / batch_size
 
-        fps = 1.0 / (step_time / batch_size)
+        fps = 1.0 / (step_time)
 
         if PROFILE_INFO:
 
@@ -993,7 +993,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             else:
                 cuda_memory = 0
 
-            timing_log.append((step, rollout_time, train_time, step_time, batch_size, fps, cuda_memory/1024/1024))
+            timing_log.append((step, rollout_time * 1000, train_time * 1000, step_time * 1000, batch_size, fps, cuda_memory/1024/1024))
 
         fps_history.append(fps)
 
@@ -1099,15 +1099,15 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     if PROFILE_INFO:
 
-        step_times = np.asarray([step_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
-        rollout_times = np.asarray([rollout_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
-        train_times = np.asarray([train_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
+        step_times = np.asarray([step_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
+        rollout_times = np.asarray([rollout_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
+        train_times = np.asarray([train_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
 
-        print("Average timings: {:.2f}ms /{:.2f}ms /{:.2f}ms".format(*(np.mean(x) for x in [step_times, rollout_times, train_times])))
+        print("Average timings: {:.2f}ms / {:.2f}ms / {:.2f}ms".format(*(np.mean(x) for x in [step_times, rollout_times, train_times])))
 
         with open(os.path.join(LOG_FOLDER, "timing_info.csv"), "w") as f:
             csv_writer = csv.writer(f, delimiter=',')
-            csv_writer.writerow(["Step", "Rollout", "Train", "Step", "Batch_Size", "FPS", "CUDA_Memory"])
+            csv_writer.writerow(["Step", "Rollout_Time", "Train_Time", "Step_Time", "Batch_Size", "FPS", "CUDA_Memory"])
             for row in timing_log:
                 csv_writer.writerow(row)
 
@@ -1170,7 +1170,7 @@ if __name__ == "__main__":
         raise Exception("Invalid resolution "+args.resolution)
 
     if args.output_folder is not None:
-        print("outputting to folder", args.output_folder)
+        print("Outputting to folder", args.output_folder)
         assert os.path.isdir(args.output_folder), "Can not find path "+args.output_folder
         OUTPUT_FOLDER = args.output_folder
 
