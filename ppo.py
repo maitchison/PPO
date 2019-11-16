@@ -27,6 +27,7 @@ def build_parser():
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--export_video", type=str2bool, default=False)
     parser.add_argument("--run_name", type=str, default="experiments")
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--output_folder", type=str)
@@ -70,16 +71,19 @@ DEVICE = "cuda"
 GUID = uuid.uuid4().hex
 LOG_FOLDER = "/run/experiment [{}]".format(GUID[-8:])
 NATS_TO_BITS = 1.0/math.log(2)
-EXPORT_MOVIES = True
 RES_X = 84
 RES_Y = 84
 USE_COLOR = False
 OUTPUT_FOLDER = "runs"
+DTYPE = torch.float
+PROFILE_INFO = False
+PRINT_EVERY = 10
+VERBOSE = True
 
 def show_cuda_info():
 
     global DEVICE
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    DEVICE = "cuda:1" if torch.cuda.is_available() else "cpu"
     print("Device:", DEVICE)
     if DEVICE == "cuda":
         device_id = torch.cuda.current_device()
@@ -239,14 +243,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
         reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
 
         info["raw_reward"] = last_raw_reward
-
-        # if reward != 0:
-        #     print("{:<8.2f} {:<8.2f} {:<8.2f} {:<8.2f} {:<8.2f} {:<8.2f}".format(
-        #         last_raw_reward, reward, self.std,
-        #         self.history[-3] if len(self.history) > 3 else 0,
-        #         self.history[-2] if len(self.history) > 3 else 0,
-        #         self.history[-1] if len(self.history) > 3 else 0,
-        #     ))
 
         self.counter += 1
 
@@ -474,27 +470,27 @@ class CNNModel(nn.Module):
         self.fc_value = nn.Linear(512, 1)
         self.to(DEVICE)
 
-    def forward(self, x):
+        if DTYPE == torch.half:
+            self.half()
+        elif DTYPE == torch.float:
+            self.float()
+        elif DTYPE == torch.double:
+            self.double()
+        else:
+            raise Exception("Invalid dtype {} for model.".format(DTYPE))
 
-        # todo: tidy up the casting of input here
-        # need to handle, NP, CUDA (but wrong device), uint8, and float32
+    def forward(self, x):
 
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        assert x.dtype in [np.uint8, np.float32, torch.float32], "invalid dtype for input, found {} expected {}.".format(x.dtype, "[uint8, float32]")
+        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
         assert len(x.shape) == 4, "input should be (N,C,W,H)"
 
         n = x.shape[0]
 
-        if type(x) is np.ndarray:
-            if x.dtype == np.uint8:
-                x = torch.from_numpy(x).to(DEVICE).float() / 255.0
-            elif x.dtype == np.float32:
-                x = torch.from_numpy(x).to(DEVICE)
-            else:
-                raise Exception("invalid input dtype ",x.dtype)
+        x = prep_for_model(x) * (1.0/255.0)
 
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
@@ -553,17 +549,19 @@ def inspect(x):
 def nice_display(X, title):
     print("{:<20}{}".format(title, [round(float(x),2) for x in X[:5]]))
 
+def prep_for_model(x):
+    return torch.from_numpy(x).to(DEVICE, non_blocking=True).to(dtype=DTYPE)
+
 def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm,
                     prev_states, actions, returns, policy_logprobs, advantages, values):
 
     # todo:
     # sample from logps
 
-    prev_states = torch.tensor(prev_states, dtype = torch.float32, device = DEVICE)
-    policy_logprobs = torch.tensor(policy_logprobs, dtype = torch.float32, device = DEVICE)
-    advantages = torch.tensor(advantages, dtype = torch.float32, device = DEVICE)
-    returns = torch.tensor(returns, dtype =  torch.float32, device = DEVICE)
-    old_pred_values = torch.tensor(values, dtype=torch.float32, device = DEVICE)
+    policy_logprobs = prep_for_model(policy_logprobs)
+    advantages = prep_for_model(advantages)
+    returns = prep_for_model(returns)
+    old_pred_values = prep_for_model(values)
 
     mini_batch_size = len(prev_states)
 
@@ -780,6 +778,7 @@ def save_training_log(filename, training_log):
 
         for row in training_log:
             csv_writer.writerow(row)
+        csv_writer.close()
 
 def zero_format_number(x):
     if x < 1e3:
@@ -791,20 +790,10 @@ def zero_format_number(x):
     else:
         return "{:03.0f}B".format(x//1e9)
 
+def mma(X):
+    """ returns string containing min, max, average, etc... """
+    return "{2:<8.2f} [{0:<8.2f}-{1:<8.2f}] (std={3:<8.2f})".format(np.min(X), np.max(X), np.mean(X), np.std(X))
 
-def get_batch_values(model, states, mini_batch_size = 512):
-    """ Gets value estimates for given states, but without any derivatives, and done with minibatches"""
-
-    results = []
-    mini_batches = len(states)//mini_batch_size
-    for i in range(mini_batches):
-        results.extend(model.value(states[i*mini_batch_size:(i+1)*mini_batch_size]).detach().cpu().numpy())
-
-    # last batch.
-    if len(states[mini_batches * mini_batch_size:]) > 0:
-        results.extend(model.value(states[mini_batches * mini_batch_size:]).detach().cpu().numpy())
-
-    return np.asarray(results)
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
@@ -878,9 +867,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     batch_size = (n_steps * agents)
     mini_batch_size = batch_size // n_batches
 
-    vram_size = mini_batch_size * 4 * prod(state_shape)
-    print("Training for {} epochs on minibatchs of size {}.".format(epochs, mini_batch_size))
-
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
@@ -898,9 +884,11 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     episode_len = np.zeros([agents], dtype = np.int32)
 
     training_log = []
+    timing_log = []
 
     score_history = []
     len_history = []
+
 
     initial_start_time = time.time()
 
@@ -921,8 +909,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             state_shape, state_dtype, policy_shape)
 
         # estimate values
-        # note: we need to manipulate the dims into a batch first, from [N,A,State] to [N*A,State]
-        batch_value = get_batch_values(model, batch_prev_state.reshape([batch_size, *state_shape]))
+        # note: we need to manipulate the dims into a batch first.
+        batch_value = model.value(batch_prev_state.reshape([batch_size, *state_shape])).detach().cpu().numpy()
         batch_value = batch_value.reshape([n_steps, agents])
         batch_advantage = np.zeros([n_steps, agents], dtype=np.float32)
 
@@ -933,6 +921,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         terminal_next_i = np.asarray([False] * agents)
         prev_adv = np.zeros([agents], dtype=np.float32)
 
+        
         for i in reversed(range(n_steps)):
             delta = batch_reward[i] + gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
 
@@ -942,6 +931,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             terminal_next_i = batch_terminal[i]
 
         batch_returns = batch_advantage + batch_value
+
+        rollout_time = (time.time() - start_time)
+
+        start_train_time = time.time()
 
         movie_every = 5*1000*1000 // batch_size # 1 movie every 5m environment steps
 
@@ -974,7 +967,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 batch_end = (j + 1) * mini_batch_size
                 sample = ordering[batch_start:batch_end]
 
-                slices = [x[sample] for x in batch_arrays]
+                slices = (x[sample] for x in batch_arrays)
 
                 loss, loss_clip, loss_value, loss_entropy = train_minibatch(
                     model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
@@ -984,9 +977,14 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 total_loss_entropy += loss_entropy / (epochs*n_batches)
                 total_loss += loss / (epochs*n_batches)
 
-        step_time = (time.time() - start_time) / batch_size
+        train_time = (time.time() - start_train_time)
 
-        fps = 1.0 / step_time
+        step_time = (time.time() - start_time)
+
+        fps = 1.0 / (step_time / batch_size)
+
+        if PROFILE_INFO:
+            timing_log.append((step, rollout_time, train_time, step_time, batch_size, fps))
 
         fps_history.append(fps)
 
@@ -1011,11 +1009,11 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              )
         )
 
-        if step % 100 == 0:
+        if PRINT_EVERY and step % (PRINT_EVERY * 10) == 0:
             print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
                                                                       "l_ent", "ep_score", "ep_len", "elapsed", "fps"))
             print("-"*120)
-        if step % 10 == 0 or step == n_iterations:
+        if PRINT_EVERY and step % PRINT_EVERY == 0 or step == n_iterations:
             print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
                 str(step),
                 "{:.2f}M".format(step * n_steps * agents / 1000 / 1000),
@@ -1030,7 +1028,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 with_default(training_log[-1][12], 0)
             ))
 
-        if EXPORT_MOVIES and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
+        if args.export_video and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
             export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number(step*batch_size)))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
@@ -1090,6 +1088,23 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 plt.savefig(os.path.join(LOG_FOLDER, "ep_length.png"))
                 plt.close()
 
+    if PROFILE_INFO:
+
+        step_times = np.asarray([step_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
+        rollout_times = np.asarray([rollout_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
+        train_times = np.asarray([train_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
+
+        print("Average timings:")
+        print(" - step:", mma(step_times),"(ms)")
+        print(" - rollout:", mma(rollout_times),"(ms)")
+        print(" - train:", mma(train_times),"(ms)")
+
+        csv_writer = csv.writer(open(os.path.join(LOG_FOLDER, "timing_info.csv"), "w"), delimiter=',')
+        csv_writer.writerow(["Step", "Rollout", "Train", "Step", "Batch_Size", "FPS"])
+        for row in timing_log:
+            csv_writer.writerow(row)
+        csv_writer.close()
+
     return training_log
 
 
@@ -1140,7 +1155,7 @@ if __name__ == "__main__":
     elif args.resolution == "half":
         RES_X, RES_Y = 42, 42
     else:
-        raise Exception("Invalid resolution"+args.resolution)
+        raise Exception("Invalid resolution "+args.resolution)
 
     if args.output_folder is not None:
         print("outputting to folder", args.output_folder)
@@ -1159,6 +1174,12 @@ if __name__ == "__main__":
         set_default(exp_args, "n_iterations", 10)
         set_default(exp_args, "env_name", "PongNoFrameskip-v4")
         set_default(exp_args, "Model", MLPModel)
+    elif experiment == "benchmark":
+        set_default(exp_args, "n_iterations", 10)
+        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
+        set_default(exp_args, "Model", CNNModel)
+        PROFILE_INFO = True
+        PRINT_EVERY = 0
 
     # atari games
 
