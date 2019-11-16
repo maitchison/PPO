@@ -29,6 +29,7 @@ def build_parser():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--export_video", type=str2bool, default=False)
     parser.add_argument("--run_name", type=str, default="experiments")
+    parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--output_folder", type=str)
 
@@ -62,12 +63,13 @@ import math
 import shutil
 from collections import deque, defaultdict
 
+torch.set_num_threads(int(threads))
+
 _game_envs = defaultdict(set)
 for env in gym.envs.registry.all():
     env_type = env.entry_point.split(':')[0].split('.')[-1]
     _game_envs[env_type].add(env.id)
 
-DEVICE = "cuda"
 GUID = uuid.uuid4().hex
 LOG_FOLDER = "/run/experiment [{}]".format(GUID[-8:])
 NATS_TO_BITS = 1.0/math.log(2)
@@ -80,10 +82,12 @@ PROFILE_INFO = False
 PRINT_EVERY = 10
 VERBOSE = True
 
+def get_auto_device():
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
+
 def show_cuda_info():
 
     global DEVICE
-    DEVICE = "cuda:1" if torch.cuda.is_available() else "cpu"
     print("Device:", DEVICE)
     if DEVICE == "cuda":
         device_id = torch.cuda.current_device()
@@ -778,7 +782,6 @@ def save_training_log(filename, training_log):
 
         for row in training_log:
             csv_writer.writerow(row)
-        csv_writer.close()
 
 def zero_format_number(x):
     if x < 1e3:
@@ -792,7 +795,7 @@ def zero_format_number(x):
 
 def mma(X):
     """ returns string containing min, max, average, etc... """
-    return "{2:<8.2f} [{0:<8.2f}-{1:<8.2f}] (std={3:<8.2f})".format(np.min(X), np.max(X), np.mean(X), np.std(X))
+    return "{2:.2f} [{0:.2f}-{1:.2f}] (std={3:.2f})".format(np.min(X), np.max(X), np.mean(X), np.std(X))
 
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
@@ -984,7 +987,13 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         fps = 1.0 / (step_time / batch_size)
 
         if PROFILE_INFO:
-            timing_log.append((step, rollout_time, train_time, step_time, batch_size, fps))
+
+            if "cuda" in DEVICE:
+                cuda_memory = torch.cuda.max_memory_allocated()
+            else:
+                cuda_memory = 0
+
+            timing_log.append((step, rollout_time, train_time, step_time, batch_size, fps, cuda_memory/1024/1024))
 
         fps_history.append(fps)
 
@@ -1094,16 +1103,13 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         rollout_times = np.asarray([rollout_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
         train_times = np.asarray([train_time for step, rollout_time, train_time, step_time, batch_size, FPS in timing_log]) / batch_size * 1000
 
-        print("Average timings:")
-        print(" - step:", mma(step_times),"(ms)")
-        print(" - rollout:", mma(rollout_times),"(ms)")
-        print(" - train:", mma(train_times),"(ms)")
+        print("Average timings: {:.2f}ms /{:.2f}ms /{:.2f}ms".format(*(np.mean(x) for x in [step_times, rollout_times, train_times])))
 
-        csv_writer = csv.writer(open(os.path.join(LOG_FOLDER, "timing_info.csv"), "w"), delimiter=',')
-        csv_writer.writerow(["Step", "Rollout", "Train", "Step", "Batch_Size", "FPS"])
-        for row in timing_log:
-            csv_writer.writerow(row)
-        csv_writer.close()
+        with open(os.path.join(LOG_FOLDER, "timing_info.csv"), "w") as f:
+            csv_writer = csv.writer(f, delimiter=',')
+            csv_writer.writerow(["Step", "Rollout", "Train", "Step", "Batch_Size", "FPS", "CUDA_Memory"])
+            for row in timing_log:
+                csv_writer.writerow(row)
 
     return training_log
 
@@ -1136,9 +1142,15 @@ def set_num_frames(frames):
 
 if __name__ == "__main__":
 
-    show_cuda_info()
 
     exp_args = vars(args)
+
+    if args.device.lower() == "auto":
+        DEVICE = get_auto_device()
+    else:
+        DEVICE = args.device
+
+    show_cuda_info()
 
     experiment = args.experiment.lower()
 
