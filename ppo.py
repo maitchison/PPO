@@ -1,9 +1,9 @@
 import os
 import sys
 import argparse
+
 # using more than 2 threads locks up all the cpus and does not seem to improve performance.
 # the gain from 2 CPUs to 1 is very minor too. (~10%)
-
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -22,6 +22,7 @@ def build_parser():
     parser.add_argument("experiment")
     parser.add_argument("--agents", type=int, default=8)
     parser.add_argument("--n_steps", type=int, default=128)
+    parser.add_argument("--n_iterations", type=int)
     parser.add_argument("--n_batches", type=int, default=4)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
@@ -83,15 +84,24 @@ PRINT_EVERY = 10
 VERBOSE = True
 
 def get_auto_device():
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
+    """ Returns the best device, CPU if no CUDA, otherwise GPU with most free memory. """
+    if not torch.cuda.is_available():
+        return "cpu"
+
+    if torch.cuda.device_count() == 1:
+        return "cuda"
+    else:
+        # use the device with the most free memory.
+        try:
+            os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
+            memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+            return "cuda:"+str(np.argmax(memory_available))
+        except:
+            print("Warning: Failed to auto detect best GPU.")
+            return "cuda"
 
 def show_cuda_info():
-
-    global DEVICE
-    print("Device:", DEVICE)
-    if DEVICE == "cuda":
-        device_id = torch.cuda.current_device()
-        print(torch.cuda.get_device_name(device_id))
+    print("Using Device:", DEVICE)
 
 """
 ------------------------------------------------------------------------------------------------------------------------
@@ -99,6 +109,43 @@ def show_cuda_info():
 ------------------------------------------------------------------------------------------------------------------------
 """
 
+
+class RunningMeanStd(object):
+    # from https://github.com/openai/baselines/blob/1b092434fc51efcb25d6650e287f07634ada1e08/baselines/common/running_mean_std.py
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = np.zeros(shape, 'float64')
+        self.var = np.ones(shape, 'float64')
+        self.count = epsilon
+
+    def update(self, x):
+
+        if type(x) in [float, int]:
+            batch_mean = x
+            batch_var = 0
+            batch_count = 1
+        else:
+            batch_mean = np.mean(x, axis=0)
+            batch_var = np.var(x, axis=0)
+            batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        self.mean, self.var, self.count = update_mean_var_count_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
+
+def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
+    delta = batch_mean - mean
+    tot_count = count + batch_count
+
+    new_mean = mean + delta * batch_count / tot_count
+    m_a = var * count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
+    new_var = M2 / tot_count
+    new_count = tot_count
+
+    return new_mean, new_var, new_count
 
 class NoopResetWrapper(gym.Wrapper):
     """
@@ -216,41 +263,36 @@ class NormalizeObservationWrapper(gym.Wrapper):
 
 class NormalizeRewardWrapper(gym.Wrapper):
 
-    def __init__(self, env, clip=2.0):
+    def __init__(self, env, clip=5.0):
         """
         Normalizes returns
+
         """
         super().__init__(env)
 
         self.env = env
         self._n = 10000
         self._update_every = 100
-        self.history = deque(maxlen=self._n)
         self.clip = clip
-        self.epsilon = 0.00001
-        self.counter = 0
+        self.epsilon = 1e-4
         self.current_return = 0
+        self.ret_rms = RunningMeanStd(shape=())
 
     def step(self, action):
+
         obs, reward, done, info = self.env.step(action)
 
         self.current_return = self.current_return * 0.99 + reward
 
-        self.history.append(self.current_return)
+        self.ret_rms.update(self.current_return)
 
-        # note: would be better to switch to a running mean / std
-        if (self.counter < 100) or (self.counter % (self._update_every)) == 0:
-            self.mean = np.mean(self.history, axis=0)
-            self.std = np.std(self.history, axis=0)
+        self.mean = self.ret_rms.mean
+        self.std = math.sqrt(self.ret_rms.var)
 
-        last_raw_reward = reward
-        reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
+        info["raw_reward"] = reward
+        scaled_reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
 
-        info["raw_reward"] = last_raw_reward
-
-        self.counter += 1
-
-        return obs, reward, done, info
+        return obs, scaled_reward, done, info
 
     def reset(self):
         self.current_return = 0
@@ -414,7 +456,20 @@ def sample_action_from_logp(logp):
     return np.random.choice(range(len(p)), p=p)
 
 
-class MLPModel(nn.Module):
+class PolicyModel(nn.Module):
+
+    def forward(self, x):
+        raise NotImplemented()
+
+    def policy(self, x):
+        policy, value = self.forward(x)
+        return policy
+
+    def value(self, x):
+        policy, value = self.forward(x)
+        return value
+
+class MLPModel(PolicyModel):
     """ A very simple Multi Layer Perceptron """
 
     def __init__(self, input_dims, actions):
@@ -432,22 +487,12 @@ class MLPModel(nn.Module):
         x = x.reshape(-1, self.d)
         x = torch.tanh(self.fc1(x))
         x = torch.tanh(self.fc2(x))
-        return x
 
-    def policy(self, x):
-        """ Returns logprobs"""
-        x = self.forward(x)
-        x = self.fc_policy(x)
-        x = F.log_softmax(x, dim=1)
-        return x
+        policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
+        return policy, value
 
-    def value(self, x):
-        x = self.forward(x)
-        x = self.fc_value(x).squeeze(dim=1)
-        return x
-
-
-class CNNModel(nn.Module):
+class CNNModel(PolicyModel):
     """ Nature paper inspired CNN """
 
     def __init__(self, input_dims, actions):
@@ -484,6 +529,7 @@ class CNNModel(nn.Module):
             raise Exception("Invalid dtype {} for model.".format(DTYPE))
 
     def forward(self, x):
+        """ forwards input through model, returns policy and value estimate. """
 
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
@@ -501,19 +547,11 @@ class CNNModel(nn.Module):
         x = F.relu(self.conv3(x))
 
         x = F.relu(self.fc(x.view(n, self.d)))
-        return x
 
-    def policy(self, x):
-        x = self.forward(x)
-        x = self.fc_policy(x)
-        x = F.log_softmax(x, dim=1)
-        return x
+        policy = F.log_softmax(self.fc_value(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
 
-    def value(self, x):
-        x = self.forward(x)
-        x = self.fc_value(x).squeeze(dim=1)
-        return x
-
+        return policy, value
 
 def entropy(p):
     return -torch.sum(p * p.log2())
@@ -569,20 +607,14 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
 
     mini_batch_size = len(prev_states)
 
-    logps = model.policy(prev_states)
+    logps, value_prediction = model.forward(prev_states)
 
     ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
 
     loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
 
-    # people do this in different ways, I'm going to go for huber loss.
-    #td = model.value(prev_states) - returns
-    #loss_value = - vf_coef * torch.mean(td * td)
-    #loss_value = - vf_coef * torch.mean(torch.min(td * td, torch.abs(td)))
-
     # this one is taken from PPO2 baseline, reduces variance but not sure why? does it stop the values from moving
     # too much?
-    value_prediction = model.value(prev_states)
     value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -epsilon, +epsilon)
 
     vf_losses1 = (value_prediction - returns).pow(2)
@@ -625,10 +657,15 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     batch_reward = np.zeros([N, A], dtype=np.float32)
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
+    batch_value = np.zeros([N, A], dtype=np.float32)
 
     for t in range(N):
 
-        logprobs = model.policy(states).detach().cpu().numpy()
+        logprobs, value = model.forward(states)
+
+        logprobs = logprobs.detach().cpu().numpy()
+        value = value.detach().cpu().numpy()
+
         actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
         prev_states = states.copy()
 
@@ -653,8 +690,9 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         batch_reward[t] = rewards
         batch_logpolicy[t] = logprobs
         batch_terminal[t] = dones
+        batch_value[t] = value
 
-    return (batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal)
+    return (batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value)
 
 
 def with_default(x, default):
@@ -783,6 +821,27 @@ def save_training_log(filename, training_log):
         for row in training_log:
             csv_writer.writerow(row)
 
+def save_profile_log(filename, timing_log):
+    with open(filename, "w") as f:
+        csv_writer = csv.writer(f, delimiter=',')
+        csv_writer.writerow(["Step", "Rollout_Time", "Train_Time", "Step_Time", "Batch_Size", "FPS", "CUDA_Memory"])
+        for row in timing_log:
+            csv_writer.writerow(row)
+
+def print_profile_info(timing_log, title="Performance results:"):
+
+    timing_log = np.asarray(timing_log)
+
+    rollout_time = timing_log[:, 1].mean()
+    train_time = timing_log[:, 2].mean()
+    step_time = timing_log[:, 3].mean()
+    fps = timing_log[:, 5].mean()
+    fps_std_error = timing_log[:, 5].std(ddof=1) / math.sqrt(len(timing_log))
+
+    print(title+": {:.2f}ms / {:.2f}ms / {:.2f}ms  [{:.0f} FPS +- {:.1f}]".format(
+        step_time, rollout_time, train_time, fps, fps_std_error))
+
+
 def zero_format_number(x):
     if x < 1e3:
         return "{:03.0f} ".format(x)
@@ -890,7 +949,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     initial_start_time = time.time()
 
-    fps_history = deque(maxlen=10)
+    fps_history = deque(maxlen=10 if not PROFILE_INFO else None)
 
     for step in range(n_iterations+1):
 
@@ -902,24 +961,20 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         start_time = time.time()
 
         # collect experience
-        batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal = run_agents_vec(
+        batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value = run_agents_vec(
             n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
             state_shape, state_dtype, policy_shape)
 
-        # estimate values
-        # note: we need to manipulate the dims into a batch first.
-        batch_value = model.value(batch_prev_state.reshape([batch_size, *state_shape])).detach().cpu().numpy()
-        batch_value = batch_value.reshape([n_steps, agents])
-        batch_advantage = np.zeros([n_steps, agents], dtype=np.float32)
+        # estimate advantages
 
         # we calculate the advantages by going backwards..
         # estimated return is the estimated return being in state i
         # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
+        batch_advantage = np.zeros([n_steps, agents], dtype=np.float32)
         value_next_i = model.value(states).detach().cpu().numpy()
         terminal_next_i = np.asarray([False] * agents)
         prev_adv = np.zeros([agents], dtype=np.float32)
 
-        
         for i in reversed(range(n_steps)):
             delta = batch_reward[i] + gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
 
@@ -989,6 +1044,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 cuda_memory = 0
 
             timing_log.append((step, rollout_time * 1000, train_time * 1000, step_time * 1000, batch_size, fps, cuda_memory/1024/1024))
+
+            # print early timing information from second iteration.
+            if step == 1:
+                print_profile_info(timing_log, "Early timing results")
 
         fps_history.append(fps)
 
@@ -1094,18 +1153,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 plt.close()
 
     if PROFILE_INFO:
-
-        step_times = np.asarray([step_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
-        rollout_times = np.asarray([rollout_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
-        train_times = np.asarray([train_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
-
-        print("Average timings: {:.2f}ms / {:.2f}ms / {:.2f}ms  [{:.0f} FPS".format(*(np.mean(x) for x in [step_times, rollout_times, train_times, fps_history])))
-
-        with open(os.path.join(LOG_FOLDER, "timing_info.csv"), "w") as f:
-            csv_writer = csv.writer(f, delimiter=',')
-            csv_writer.writerow(["Step", "Rollout_Time", "Train_Time", "Step_Time", "Batch_Size", "FPS", "CUDA_Memory"])
-            for row in timing_log:
-                csv_writer.writerow(row)
+        print_profile_info(timing_log, "Final timing results")
+        save_profile_log(os.path.join(LOG_FOLDER, "timing_info.csv"), timing_log)
 
     return training_log
 
@@ -1183,7 +1232,7 @@ if __name__ == "__main__":
         set_default(exp_args, "env_name", "PongNoFrameskip-v4")
         set_default(exp_args, "Model", MLPModel)
     elif experiment == "benchmark":
-        set_default(exp_args, "n_iterations", 10)
+        set_default(exp_args, "n_iterations", 100)
         set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
         set_default(exp_args, "Model", CNNModel)
         PROFILE_INFO = True
