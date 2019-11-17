@@ -21,6 +21,6 @@ assert len(sys.argv) == 2
 BENCHMARK_NAME = sys.argv[1]
 
 for color in [True, False]:
-    for agents in [1,2,4,8,16,32,64,128,256]:
+    for agents in [1,2,4,8,16,32,64,128,256,512,1024]:
         for resolution in ['half', 'standard', 'full']:
             run_benchmark(color, resolution, agents)

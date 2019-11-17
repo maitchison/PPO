@@ -793,11 +793,6 @@ def zero_format_number(x):
     else:
         return "{:03.0f}B".format(x//1e9)
 
-def mma(X):
-    """ returns string containing min, max, average, etc... """
-    return "{2:.2f} [{0:.2f}-{1:.2f}] (std={3:.2f})".format(np.min(X), np.max(X), np.mean(X), np.std(X))
-
-
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
     Default parameters from stable baselines
@@ -1018,24 +1013,25 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              )
         )
 
-        if PRINT_EVERY and step % (PRINT_EVERY * 10) == 0:
-            print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
+        if PRINT_EVERY:
+            if step % (PRINT_EVERY * 10) == 0:
+                print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
                                                                       "l_ent", "ep_score", "ep_len", "elapsed", "fps"))
-            print("-"*120)
-        if PRINT_EVERY and step % PRINT_EVERY == 0 or step == n_iterations:
-            print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
-                str(step),
-                "{:.2f}M".format(step * n_steps * agents / 1000 / 1000),
-                training_log[-1][0],
-                training_log[-1][1],
-                training_log[-1][2],
-                training_log[-1][3],
-                with_default(training_log[-1][4], 0),
-                with_default(training_log[-1][5], 0),
-                "{:.0f} min".format(training_log[-1][8]/60),
-                training_log[-1][11],
-                with_default(training_log[-1][12], 0)
-            ))
+                print("-"*120)
+            if step % PRINT_EVERY == 0 or step == n_iterations:
+                print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
+                    str(step),
+                    "{:.2f}M".format(step * n_steps * agents / 1000 / 1000),
+                    training_log[-1][0],
+                    training_log[-1][1],
+                    training_log[-1][2],
+                    training_log[-1][3],
+                    with_default(training_log[-1][4], 0),
+                    with_default(training_log[-1][5], 0),
+                    "{:.0f} min".format(training_log[-1][8]/60),
+                    training_log[-1][11],
+                    with_default(training_log[-1][12], 0)
+                ))
 
         if args.export_video and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
             export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number(step*batch_size)))
@@ -1103,7 +1099,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         rollout_times = np.asarray([rollout_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
         train_times = np.asarray([train_time for step, rollout_time, train_time, step_time, batch_size, FPS, ram in timing_log]) / batch_size * 1000
 
-        print("Average timings: {:.2f}ms / {:.2f}ms / {:.2f}ms".format(*(np.mean(x) for x in [step_times, rollout_times, train_times])))
+        print("Average timings: {:.2f}ms / {:.2f}ms / {:.2f}ms  [{:.0f} FPS".format(*(np.mean(x) for x in [step_times, rollout_times, train_times, fps_history])))
 
         with open(os.path.join(LOG_FOLDER, "timing_info.csv"), "w") as f:
             csv_writer = csv.writer(f, delimiter=',')
