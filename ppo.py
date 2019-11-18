@@ -21,14 +21,15 @@ def build_parser():
 
     parser.add_argument("experiment")
     parser.add_argument("--agents", type=int, default=8)
+    parser.add_argument("--n_cpus", type=int, default=32)
     parser.add_argument("--n_steps", type=int, default=128)
     parser.add_argument("--n_iterations", type=int)
-    parser.add_argument("--n_batches", type=int, default=4)
+    parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--export_video", type=str2bool, default=False)
+    parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--run_name", type=str, default="experiments")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--experiment_name", type=str)
@@ -271,8 +272,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
         super().__init__(env)
 
         self.env = env
-        self._n = 10000
-        self._update_every = 100
         self.clip = clip
         self.epsilon = 1e-4
         self.current_return = 0
@@ -291,6 +290,9 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
         info["raw_reward"] = reward
         scaled_reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
+
+        #stub
+        #print(scaled_reward, reward, self.mean, self.std, self.current_return)
 
         return obs, scaled_reward, done, info
 
@@ -548,7 +550,7 @@ class CNNModel(PolicyModel):
 
         x = F.relu(self.fc(x.view(n, self.d)))
 
-        policy = F.log_softmax(self.fc_value(x), dim=1)
+        policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
 
         return policy, value
@@ -635,6 +637,53 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
 
     return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy])
 
+class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
+    """ Async vector env, that limits the number of worker threads spawned """
+
+    def __init__(self, env_fns, max_cpus=8, **kwargs):
+        if len(env_fns) <= max_cpus:
+            # this is just a standard vec env
+            super(HybridAsyncVectorEnv, self).__init__(env_fns, **kwargs)
+            self.is_batched = False
+        else:
+            # create sequential envs for each worker
+            assert len(env_fns) % max_cpus == 0, "Number of environments ({}) must be a multiple of the CPU count ({}).".format(len(env_fns), max_cpus)
+            self.n_sequential = len(env_fns) // max_cpus
+            self.n_parallel = max_cpus
+            vec_functions = []
+            for i in range(self.n_parallel):
+                vec_functions.append(lambda : gym.vector.SyncVectorEnv(env_fns[i*self.n_sequential:(i+1)*self.n_sequential], **kwargs))
+
+            print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
+            super(HybridAsyncVectorEnv, self).__init__(vec_functions, **kwargs)
+
+            self.is_batched = True
+
+    def reset(self):
+        if self.is_batched:
+            obs = super(HybridAsyncVectorEnv, self).reset()
+            return np.reshape(obs, [-1, *obs.shape[2:]])
+        else:
+            return super(HybridAsyncVectorEnv, self).reset()
+
+    def step(self, actions):
+        if self.is_batched:
+
+            # put actions into 2d python array.
+            actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
+            actions = [list(actions[i]) for i in range(len(actions))]
+
+            observations_list, rewards, dones, infos = super(HybridAsyncVectorEnv, self).step(actions)
+
+            return (
+                np.reshape(observations_list, [-1, *observations_list.shape[2:]]),
+                np.reshape(rewards, [-1]),
+                np.reshape(dones, [-1]),
+                np.reshape(infos, [-1])
+            )
+        else:
+            return super(HybridAsyncVectorEnv, self).step(actions)
+
 def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, score_history, len_history,
                state_shape, state_dtype, policy_shape):
     """
@@ -650,7 +699,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     """
 
     N = n_steps
-    A = vec_envs.num_envs
+    A = args.agents
 
     batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
     batch_action = np.zeros([N, A], dtype=np.int32)
@@ -884,7 +933,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     n_steps = kwargs.get("n_steps",128)  # steps per update (128)
     gamma = kwargs.get("gamma", 0.99)   # discount (0.99)
     lam = kwargs.get("lambda", 0.95)     # GAE parameter (0.95)
-    n_batches = kwargs.get("n_batches", 4)
+    mini_batch_size = kwargs.get("mini_batch_size", 256)
     epsilon = kwargs.get("epsilon", 0.1)
     vf_coef = kwargs.get("vf_coef", 0.5)  # how much loss to take from value function
     agents = kwargs.get("agents", 16)    # (8)
@@ -899,14 +948,15 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "n_steps": n_steps,
         "gamma": gamma,
         "lambda": lam,
-        "n_batches": n_batches,
+        "mini_batch_size": mini_batch_size,
         "epsilon": epsilon,
         "vf_coef": vf_coef,
         "agents": agents,
         "epochs": epochs,
         "ent_bouns": ent_bonus,
         "lr": alpha,
-        "max_grad_norm": max_grad_norm
+        "max_grad_norm": max_grad_norm,
+        "n_iterations": n_iterations
     }
 
     params.update(kwargs)
@@ -922,13 +972,14 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         print("Failed to copy training file to log folder.", e)
 
     batch_size = (n_steps * agents)
-    mini_batch_size = batch_size // n_batches
 
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
-    vec_env = gym.vector.AsyncVectorEnv(env_fns) if not sync_envs  else gym.vector.SyncVectorEnv(env_fns)
+
+    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.n_cpus, copy=False) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
+    #vec_env = gym.vector.AsyncVectorEnv(env_fns) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
     print("Generated {} agents [{}]".format(agents, "async" if not sync_envs else "sync"))
 
@@ -1012,6 +1063,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
             ordering = list(range(batch_size))
             np.random.shuffle(ordering)
+
+            n_batches = math.ceil(batch_size / mini_batch_size)
 
             for j in range(n_batches):
 
@@ -1178,7 +1231,7 @@ def run_experiment(run_name, experiment_name, env_name, Model, n_iterations = 10
 
 
 def set_default(dict, key, value):
-    if key not in dict:
+    if key not in dict or dict[key] is None:
         dict[key] = value
 
 

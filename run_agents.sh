@@ -1,1 +1,1 @@
-python ppo.py alien --run_name=agents --experiment_name=agents\=$1 --agents=$1
+python ppo.py pong --run_name=agents_v2 --experiment_name=agents\=$1 --agents=$1 --output_folder=/home/matthew/Dropbox/Experiments/ppo/
