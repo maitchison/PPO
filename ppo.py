@@ -495,8 +495,10 @@ class MLPModel(PolicyModel):
         value = self.fc_value(x).squeeze(dim=1)
         return policy, value
 
+
 class CNNModel(PolicyModel):
-    """ Nature paper inspired CNN """
+    """ Nature paper inspired CNN
+    """
 
     def __init__(self, input_dims, actions):
         super(CNNModel, self).__init__()
