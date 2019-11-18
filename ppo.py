@@ -28,6 +28,7 @@ def build_parser():
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--ent_bonus", type=float, default=0.01)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--run_name", type=str, default="experiments")
@@ -892,10 +893,8 @@ def print_profile_info(timing_log, title="Performance results:"):
 
 
 def zero_format_number(x):
-    if x < 1e3:
-        return "{:03.0f} ".format(x)
-    elif x < 1e6:
-        return "{:03.0f}K".format(x//1e3)
+    if x < 1e6:
+        return "{:03.3f}M".format(x//1e6)
     elif x < 1e9:
         return "{:03.0f}M".format(x//1e6)
     else:
@@ -1146,7 +1145,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 ))
 
         if args.export_video and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
-            export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number(step*batch_size)))
+            export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number((step+1)*batch_size)))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
