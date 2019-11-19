@@ -19,11 +19,12 @@ def str2bool(v):
 def build_parser():
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
-    parser.add_argument("experiment")
+    parser.add_argument("environment")
     parser.add_argument("--agents", type=int, default=8)
-    parser.add_argument("--n_cpus", type=int, default=-1)
-    parser.add_argument("--n_steps", type=int, default=128)
-    parser.add_argument("--n_iterations", type=int)
+    parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
+    parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
+    parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
+    parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
@@ -36,6 +37,8 @@ def build_parser():
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--output_folder", type=str)
+    parser.add_argument("--sticky_actions", type=str2bool, default=False)
+    parser.add_argument("--model", type=str, default="cnn", help="['cnn', 'improved_cnn']")
 
     return parser
 
@@ -474,28 +477,20 @@ class PolicyModel(nn.Module):
         policy, value = self.forward(x)
         return value
 
-class MLPModel(PolicyModel):
-    """ A very simple Multi Layer Perceptron """
+    def set_device_and_dtype(self, device, dtype):
 
-    def __init__(self, input_dims, actions):
-        super(MLPModel, self).__init__()
-        self.actions = actions
-        self.d = prod(input_dims)
-        self.fc1 = nn.Linear(self.d, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc_policy = nn.Linear(64, actions)
-        self.fc_value = nn.Linear(64, 1)
-        self.to(DEVICE)
+        self.to(device)
 
-    def forward(self, x):
-        x = torch.from_numpy(x).to(DEVICE).float() / 255.0
-        x = x.reshape(-1, self.d)
-        x = torch.tanh(self.fc1(x))
-        x = torch.tanh(self.fc2(x))
+        if dtype == torch.half:
+            self.half()
+        elif dtype == torch.float:
+            self.float()
+        elif dtype == torch.double:
+            self.double()
+        else:
+            raise Exception("Invalid dtype {} for model.".format(dtype))
 
-        policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=1)
-        return policy, value
+        self.device, self.dtype = device, dtype
 
 
 def get_CNN_output_size(input_size, kernel_sizes, strides):
@@ -531,11 +526,23 @@ class ImprovedCNNModel(PolicyModel):
     """ An improved CNN model that uses 3x3 filters and smaller strides.
     """
 
-    def __init__(self, input_dims, actions):
+    name = "Improved_CNN"
+
+    def __init__(self, input_dims, actions, include_xy=True):
+
         super(ImprovedCNNModel, self).__init__()
+
+
+
         self.actions = actions
         c, w, h = input_dims
-        self.conv1 = nn.Conv2d(c+2, 32, kernel_size=3, stride=2)
+
+        self.include_xy = include_xy
+
+        if self.include_xy:
+            c = c + 2
+
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=3, stride=2)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
         self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
@@ -549,16 +556,8 @@ class ImprovedCNNModel(PolicyModel):
         self.fc = nn.Linear(self.d, 512)
         self.fc_policy = nn.Linear(512, actions)
         self.fc_value = nn.Linear(512, 1)
-        self.to(DEVICE)
 
-        if DTYPE == torch.half:
-            self.half()
-        elif DTYPE == torch.float:
-            self.float()
-        elif DTYPE == torch.double:
-            self.double()
-        else:
-            raise Exception("Invalid dtype {} for model.".format(DTYPE))
+        self.set_device_and_dtype(DEVICE, DTYPE)
 
     def forward(self, x):
         """ forwards input through model, returns policy and value estimate. """
@@ -574,8 +573,9 @@ class ImprovedCNNModel(PolicyModel):
 
         x = prep_for_model(x) * (1.0 / 255.0)
 
-        # give filters access to x,y
-        x = add_xy(x)
+        # give filters access to x,y location
+        if self.include_xy:
+            x = add_xy(x)
 
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
@@ -594,8 +594,12 @@ class CNNModel(PolicyModel):
     """ Nature paper inspired CNN
     """
 
+    name = "CNN"
+
     def __init__(self, input_dims, actions):
+
         super(CNNModel, self).__init__()
+
         self.actions = actions
         c, w, h = input_dims
         self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
@@ -611,16 +615,8 @@ class CNNModel(PolicyModel):
         self.fc = nn.Linear(self.d, 512)
         self.fc_policy = nn.Linear(512, actions)
         self.fc_value = nn.Linear(512, 1)
-        self.to(DEVICE)
 
-        if DTYPE == torch.half:
-            self.half()
-        elif DTYPE == torch.float:
-            self.float()
-        elif DTYPE == torch.double:
-            self.double()
-        else:
-            raise Exception("Invalid dtype {} for model.".format(DTYPE))
+        self.set_device_and_dtype(DEVICE, DTYPE)
 
     def forward(self, x):
         """ forwards input through model, returns policy and value estimate. """
@@ -632,13 +628,15 @@ class CNNModel(PolicyModel):
         assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
         assert len(x.shape) == 4, "input should be (N,C,W,H)"
 
-        n = x.shape[0]
+        n,c,w,h = x.shape
 
         x = prep_for_model(x) * (1.0/255.0)
 
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
+
+        assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
 
         x = F.relu(self.fc(x.view(n, self.d)))
 
@@ -1032,7 +1030,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     epsilon = kwargs.get("epsilon", 0.1)
     vf_coef = kwargs.get("vf_coef", 0.5)  # how much loss to take from value function
     agents = kwargs.get("agents", 16)    # (8)
-    epochs = kwargs.get("epochs", 4)
+    batch_epochs = kwargs.get("batch_epochs", 4)
     ent_bonus = kwargs.get("ent_bonus", 0.01)
     alpha = kwargs.get("lr", 2.5e-4)
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
@@ -1047,7 +1045,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "epsilon": epsilon,
         "vf_coef": vf_coef,
         "agents": agents,
-        "epochs": epochs,
+        "model": model.name,
+        "batch_epochs": batch_epochs,
         "ent_bouns": ent_bonus,
         "lr": alpha,
         "max_grad_norm": max_grad_norm,
@@ -1073,10 +1072,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
 
-    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.n_cpus, copy=False) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
+    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, copy=False) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
     #vec_env = gym.vector.AsyncVectorEnv(env_fns) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
-    print("Generated {} agents [{}]".format(agents, "async" if not sync_envs else "sync"))
+    print("Generated {} agents ({}) using {} ({}) model.".format(agents, "async" if not sync_envs else "sync", model.name, model.dtype))
 
     print("Training for {:.1f}k iterations {:.2f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
 
@@ -1155,7 +1154,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             np.asarray(batch_value.reshape(batch_size))
         ]
 
-        for i in range(epochs):
+        for i in range(batch_epochs):
 
             ordering = list(range(batch_size))
             np.random.shuffle(ordering)
@@ -1174,10 +1173,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                 loss, loss_clip, loss_value, loss_entropy = train_minibatch(
                     model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
 
-                total_loss_clip += loss_clip / (epochs*n_batches)
-                total_loss_value += loss_value / (epochs*n_batches)
-                total_loss_entropy += loss_entropy / (epochs*n_batches)
-                total_loss += loss / (epochs*n_batches)
+                total_loss_clip += loss_clip / (batch_epochs*n_batches)
+                total_loss_value += loss_value / (batch_epochs*n_batches)
+                total_loss_entropy += loss_entropy / (batch_epochs*n_batches)
+                total_loss += loss / (batch_epochs*n_batches)
 
         train_time = (time.time() - start_train_time) / batch_size
 
@@ -1312,7 +1311,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     return training_log
 
 
-def run_experiment(run_name, experiment_name, env_name, Model, n_iterations = 10000, **kwargs):
+def run_experiment(run_name, experiment_name, env_name, model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
     LOG_FOLDER = "{}/{}/{} [{}]".format(OUTPUT_FOLDER, run_name, experiment_name, GUID[-16:])
@@ -1326,20 +1325,21 @@ def run_experiment(run_name, experiment_name, env_name, Model, n_iterations = 10
 
     print("Playing {} with {} obs_space and {} actions.".format(env_name, obs_space, n_actions))
 
-    model = Model(obs_space, n_actions)
-    train(env_name, model, n_iterations, **kwargs)
+    train(env_name, model(obs_space, n_actions), n_iterations, **kwargs)
 
 
 def set_default(dict, key, value):
     if key not in dict or dict[key] is None:
         dict[key] = value
 
+def get_environment_name(environment, sticky_actions=False):
+    environment = environment.capitalize()
+    return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
 
 def set_num_frames(frames):
-    set_default(exp_args, "n_iterations", int(frames) // (args.agents * args.n_steps))
+    set_default(exp_args, "n_iterations", round(int(frames) / (args.agents * args.n_steps)))
 
 if __name__ == "__main__":
-
 
     exp_args = vars(args)
 
@@ -1348,12 +1348,10 @@ if __name__ == "__main__":
     else:
         DEVICE = args.device
 
-    if args.n_cpus < 0:
-        args.n_cpus = multiprocessing.cpu_count()
+    if args.workers < 0:
+        args.workers = multiprocessing.cpu_count()
 
     show_cuda_info()
-
-    experiment = args.experiment.lower()
 
     args.resolution = args.resolution.lower()
 
@@ -1370,63 +1368,31 @@ if __name__ == "__main__":
     else:
         raise Exception("Invalid resolution "+args.resolution)
 
+    # get model
+    if args.model.lower() == "cnn":
+        args.model = CNNModel
+    elif args.model.lower() == "improved_cnn":
+        args.model = ImprovedCNNModel
+    else:
+        raise Exception("Invalid model name '{}', please use [cnn, improved_cnn]".format(args.model))
+
+    # special environments
+    if args.environment == "benchmark":
+        set_default(exp_args, "n_iterations", 10)
+        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
+        set_default(exp_args, "model", CNNModel)
+        PROFILE_INFO = True
+        PRINT_EVERY = 0
+    else:
+        args.env_name = get_environment_name(args.environment, args.sticky_actions)
+        set_num_frames(args.epochs * 1e6)
+
     if args.output_folder is not None:
         print("Outputting to folder", args.output_folder)
         assert os.path.isdir(args.output_folder), "Can not find path "+args.output_folder
         OUTPUT_FOLDER = args.output_folder
 
     USE_COLOR = args.color
-
-    # debugging experiments
-
-    if experiment == "pong_small":
-        set_default(exp_args, "n_iterations", 10)
-        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-    elif experiment == "pong_mlp":
-        set_default(exp_args, "n_iterations", 10)
-        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
-        set_default(exp_args, "Model", MLPModel)
-    elif experiment == "benchmark":
-        set_default(exp_args, "n_iterations", 100)
-        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-        PROFILE_INFO = True
-        PRINT_EVERY = 0
-
-    # atari games
-
-    elif experiment == "pong":
-        set_num_frames(2e8)
-        set_default(exp_args, "env_name", "PongNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-    elif experiment == "seaquest":
-        set_num_frames(2e8)
-        set_default(exp_args, "env_name", "SeaquestNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-    elif experiment == "alien":
-        set_num_frames(2e8)
-        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-    elif experiment == "alien_improved":
-        set_num_frames(2e8)
-        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
-        set_default(exp_args, "Model", ImprovedCNNModel)
-    elif experiment == "alien_50":
-        set_num_frames(5e7)
-        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-    elif experiment == "breakout":
-        set_num_frames(2e8)
-        set_default(exp_args, "env_name", "BreakoutNoFrameskip-v4")
-        set_default(exp_args, "Model", CNNModel)
-    elif experiment == "cartpole":
-        set_default(exp_args, "n_iterations", 2*1000)
-        set_default(exp_args, "vf_coef", 0.0001)
-        set_default(exp_args, "env_name", "CartPole-v0")
-        set_default(exp_args, "Model", MLPModel)
-    else:
-        raise Exception("Invalid experiment {}.".format(experiment))
 
     set_default(exp_args, "run_name", exp_args["env_name"])
 
