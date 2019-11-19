@@ -33,6 +33,7 @@ def build_parser():
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--run_name", type=str, default="experiments")
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--save_checkpoints", type=str2bool, default=True)
     parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--output_folder", type=str)
 
@@ -983,12 +984,17 @@ def print_profile_info(timing_log, title="Performance results:"):
 
 
 def zero_format_number(x):
-    if x < 1e6:
-        return "{:03.3f}M".format(x//1e6)
-    elif x < 1e9:
-        return "{:03.0f}M".format(x//1e6)
-    else:
-        return "{:03.0f}B".format(x//1e9)
+    return "{:03.0f}M".format(round(x/1e6))
+
+def save_checkpoint(step, model, optimizer):
+
+    filename = "checkpoint-{}.pt".format(zero_format_number(step))
+
+    torch.save({
+        'step': step ,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, os.path.join(LOG_FOLDER, filename))
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
@@ -1086,10 +1092,13 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     score_history = []
     len_history = []
 
-
     initial_start_time = time.time()
 
     fps_history = deque(maxlen=10 if not PROFILE_INFO else None)
+
+    movie_every = 5 * 1000 * 1000 // batch_size  # 1 movie every 5m environment steps
+    checkpoint_every = 5 * 1000 * 1000 # for some reason one of these is in steps the other in iterations?
+    last_checkpoint = 0
 
     for step in range(n_iterations+1):
 
@@ -1128,8 +1137,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         rollout_time = (time.time() - start_time) / batch_size
 
         start_train_time = time.time()
-
-        movie_every = 5*1000*1000 // batch_size # 1 movie every 5m environment steps
 
         # normalize batch advantages
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
@@ -1234,8 +1241,12 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                     with_default(training_log[-1][12], 0)
                 ))
 
+        if args.save_checkpoints and ((step*batch_size) - last_checkpoint > checkpoint_every or step == 0):
+            save_checkpoint(step, model, optimizer)
+            last_checkpoint = step*batch_size
+
         if args.export_video and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
-            export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number((step+1)*batch_size)))
+            export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number((step)*batch_size)))
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
