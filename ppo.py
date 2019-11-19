@@ -21,7 +21,7 @@ def build_parser():
 
     parser.add_argument("experiment")
     parser.add_argument("--agents", type=int, default=8)
-    parser.add_argument("--n_cpus", type=int, default=32)
+    parser.add_argument("--n_cpus", type=int, default=-1)
     parser.add_argument("--n_steps", type=int, default=128)
     parser.add_argument("--n_iterations", type=int)
     parser.add_argument("--mini_batch_size", type=int, default=1024)
@@ -65,6 +65,7 @@ import argparse
 import math
 import shutil
 from collections import deque, defaultdict
+import multiprocessing
 
 torch.set_num_threads(int(threads))
 
@@ -496,6 +497,98 @@ class MLPModel(PolicyModel):
         return policy, value
 
 
+def get_CNN_output_size(input_size, kernel_sizes, strides):
+    size = input_size
+    for kernel_size, stride in zip(kernel_sizes, strides):
+        size = (size - (kernel_size - 1) - 1) // stride + 1
+    return size
+
+
+def add_xy(x):
+
+    n, c, w, h = x.shape
+    # from https://gist.github.com/leVirve/0377a8fbac455bfd44e374e5cf8b1260
+    xx_channel = torch.arange(w).repeat(1, h, 1)
+    yy_channel = torch.arange(h).repeat(1, w, 1).transpose(1, 2)
+
+    xx_channel = xx_channel.float() / (w - 1)
+    yy_channel = yy_channel.float() / (h - 1)
+
+    xx_channel = xx_channel * 2 - 1
+    yy_channel = yy_channel * 2 - 1
+
+    xx_channel = xx_channel.repeat(n, 1, 1, 1).transpose(2, 3)
+    yy_channel = yy_channel.repeat(n, 1, 1, 1).transpose(2, 3)
+
+    return torch.cat([
+        x,
+        xx_channel.type_as(x),
+        yy_channel.type_as(x)], dim=1)
+
+
+class ImprovedCNNModel(PolicyModel):
+    """ An improved CNN model that uses 3x3 filters and smaller strides.
+    """
+
+    def __init__(self, input_dims, actions):
+        super(ImprovedCNNModel, self).__init__()
+        self.actions = actions
+        c, w, h = input_dims
+        self.conv1 = nn.Conv2d(c+2, 32, kernel_size=3, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
+        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        w = get_CNN_output_size(w, [3, 3, 3, 3], [2, 2, 2, 1])
+        h = get_CNN_output_size(h, [3, 3, 3, 3], [2, 2, 2, 1])
+
+        self.out_shape = (64, w, h)
+
+        self.d = prod(self.out_shape)
+        self.fc = nn.Linear(self.d, 512)
+        self.fc_policy = nn.Linear(512, actions)
+        self.fc_value = nn.Linear(512, 1)
+        self.to(DEVICE)
+
+        if DTYPE == torch.half:
+            self.half()
+        elif DTYPE == torch.float:
+            self.float()
+        elif DTYPE == torch.double:
+            self.double()
+        else:
+            raise Exception("Invalid dtype {} for model.".format(DTYPE))
+
+    def forward(self, x):
+        """ forwards input through model, returns policy and value estimate. """
+
+        if len(x.shape) == 3:
+            # make a batch of 1 for a single example.
+            x = x[np.newaxis, :, :, :]
+
+        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
+        assert len(x.shape) == 4, "input should be (N,C,W,H)"
+
+        n,c,w,h = x.shape
+
+        x = prep_for_model(x) * (1.0 / 255.0)
+
+        # give filters access to x,y
+        x = add_xy(x)
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+
+        x = F.relu(self.fc(x.view(n, self.d)))
+
+        policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
+
+        return policy, value
+
+
 class CNNModel(PolicyModel):
     """ Nature paper inspired CNN
     """
@@ -508,13 +601,8 @@ class CNNModel(PolicyModel):
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        w = (w - (8-1) - 1) // 4 + 1
-        w = (w - (4-1) - 1) // 2 + 1
-        w = (w - (3-1) - 1) // 1 + 1
-
-        h = (h - (8-1) - 1) // 4 + 1
-        h = (h - (4-1) - 1) // 2 + 1
-        h = (h - (3-1) - 1) // 1 + 1
+        w = get_CNN_output_size(w, [8, 4, 3], [4, 2, 1])
+        h = get_CNN_output_size(h, [8, 4, 3], [4, 2, 1])
 
         self.out_shape = (64, w, h)
 
@@ -1249,6 +1337,9 @@ if __name__ == "__main__":
     else:
         DEVICE = args.device
 
+    if args.n_cpus < 0:
+        args.n_cpus = multiprocessing.cpu_count()
+
     show_cuda_info()
 
     experiment = args.experiment.lower()
@@ -1306,6 +1397,10 @@ if __name__ == "__main__":
         set_num_frames(2e8)
         set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
         set_default(exp_args, "Model", CNNModel)
+    elif experiment == "alien_improved":
+        set_num_frames(2e8)
+        set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
+        set_default(exp_args, "Model", ImprovedCNNModel)
     elif experiment == "alien_50":
         set_num_frames(5e7)
         set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
