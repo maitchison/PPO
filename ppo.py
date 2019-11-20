@@ -1199,9 +1199,9 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         fps_history.append(fps)
 
-        history_string = "{}".format(
-            [round(float(x), 2) for x in score_history[-5:]]
-        )
+        history_string = "({:.1f} - {:.1f}) +- {:.2f}".format(
+            min(score_history), max(score_history), np.std(score_history)
+        ) if len(score_history) > 0 else ""
 
         training_log.append(
             (float(total_loss),
