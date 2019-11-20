@@ -70,6 +70,7 @@ import math
 import shutil
 from collections import deque, defaultdict
 import multiprocessing
+import pickle
 
 torch.set_num_threads(int(threads))
 
@@ -109,6 +110,39 @@ def get_auto_device():
 
 def show_cuda_info():
     print("Using Device:", DEVICE)
+
+def mse(a,b):
+    """ returns MSE of a and b. """
+    return (np.square(a - b, dtype=np.float32)).mean(dtype=np.float32)
+
+def dtw(obs1, obs2):
+    """ Calculates the distances between two observation sequences using dynamic time warping.
+        obs1, obs2
+            np array [N, C, W, H], where N is number of frames (they don't need to mathc), and C is channels which
+                                   should be 1.
+
+        ref: https://en.wikipedia.org/wiki/Dynamic_time_warping
+    """
+
+    n = obs1.shape[0]
+    m = obs2.shape[0]
+
+    DTW = np.zeros((n+1,m+1), dtype=np.float32) + float("inf")
+    DTW[0,0] = 0
+
+    obs1 = np.float32(obs1)
+    obs2 = np.float32(obs2)
+
+    for i in range(1,n+1):
+        for j in range(1,m+1):
+            cost = mse(obs1[i-1], obs2[j-1])
+            DTW[i,j] = cost + min(
+                DTW[i - 1, j],
+                DTW[i, j - 1],
+                DTW[i - 1, j - 1]
+            )
+
+    return DTW[n, m]
 
 """
 ------------------------------------------------------------------------------------------------------------------------
@@ -907,6 +941,77 @@ def compose_frame(state_frame, rendered_frame):
     return frame
 
 
+def generate_rollouts(num_rollouts, model, env_name, resolution=0.5):
+    """ Generates roll out with given model and environment name.
+        returns observations.
+            num_rollouts: Number of rollouts to generate
+            model: The model to use
+            env_name: Name of the environment
+            resolution: Resolution of returned frames
+        :returns
+            observations as a list np arrays of dims [c,w,h] in uint8 format.
+    """
+
+    env_fns = [lambda : make_environment(env_name) for _ in range(num_rollouts)]
+    env = gym.vector.SyncVectorEnv(env_fns)
+
+    _ = env.reset()
+    state, reward, done, info = env.step([0]*num_rollouts)
+    rendered_frame = info[0].get("raw_obs", state)
+    w,h,c = rendered_frame.shape
+    state = env.reset()
+
+    frames = [[] for _ in range(num_rollouts)]
+
+    is_running = [True] * num_rollouts
+
+    while any(is_running):
+
+        logprobs = model.policy(state).detach().cpu().numpy()
+        actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
+
+        state, reward, done, info = env.step(actions)
+
+        # append only frames for runs that are still running.
+        for i in range(num_rollouts):
+            if done[i]:
+                is_running[i] = False
+            if is_running[i]:
+                rendered_frame = info[i].get("raw_obs", state)
+                rendered_frame = rendered_frame.mean(axis=2, dtype=np.float32).astype(np.uint8)  # get a black and white frame.
+                if resolution != 1.0:
+                    rendered_frame = cv2.resize(rendered_frame, (int(h * resolution), int(w * resolution)),
+                                                interpolation=cv2.INTER_AREA)
+                frames[i].append(rendered_frame)
+
+    return [np.asarray(frame_sequence) for frame_sequence in frames]
+
+
+def evaluate_diversity(step, model, env_name):
+    """ Generates multiple rollouts of agent, and evaluates the diversity of the rollouts."""
+
+    results = []
+
+    num_rollouts = 4
+
+    rollouts = generate_rollouts(num_rollouts, model, env_name, resolution=0.5)
+
+    # get all distances between rollouts.
+    for i in range(num_rollouts):
+        for j in range(i+1, num_rollouts):
+            a = rollouts[i]
+            b = rollouts[j]
+            difference = dtw(a, b)
+            results.append(difference)
+
+    # save the rollouts for later.
+    with open(os.path.join(LOG_FOLDER, "rollouts-{}.dat".format(zero_format_number(step))), 'wb') as f:
+        package = {"step":step, "rollouts": rollouts, "distances": results}
+        pickle.dump(package, f)
+
+    print("Diversity of rollouts - mean:{:.1f}k {:.1f}k-{:.1f}k".format(np.mean(results)/1000, np.min(results)/1000, np.max(results)/1000))
+
+
 def export_movie(model, env_name, filename):
     """ Exports a movie of agent playing game.
         which_frames: model, real, or both
@@ -1071,7 +1176,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
-
     vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, copy=False) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
     #vec_env = gym.vector.AsyncVectorEnv(env_fns) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
@@ -1246,6 +1350,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         if args.export_video and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
             export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number((step)*batch_size)))
+            # stub: for the moment just do diversity calculations here...
+            evaluate_diversity(step * batch_size, model, env_name)
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
