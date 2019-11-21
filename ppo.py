@@ -113,7 +113,7 @@ def get_checkpoint_path(step, postfix):
     return os.path.join(LOG_FOLDER, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
 def show_cuda_info():
-    print("Using Device:", DEVICE)
+    print("Using device:", DEVICE)
 
 def mse(a,b):
     """ returns MSE of a and b. """
@@ -1207,6 +1207,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     print("Training for {:.1f}k iterations {:.2f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
 
+    print("-" * 120)
+
     # initialize agent
     states = vec_env.reset()
 
@@ -1378,6 +1380,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         if (iteration in checkpoints):
 
+            print()
             print("Checkpoint reached:")
 
             start_time = time.time()
@@ -1399,6 +1402,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                                                                                           np.max(diversity) / 1000))
 
             print("  -finished after {:.1f}s".format(time.time()-start_time))
+            print()
 
         if iteration in [10, 20, 30, 40] or iteration % 50 == 0:
 
@@ -1504,8 +1508,6 @@ if __name__ == "__main__":
     if args.workers < 0:
         args.workers = multiprocessing.cpu_count()
 
-    show_cuda_info()
-
     args.resolution = args.resolution.lower()
 
     if args.resolution == "full":
@@ -1548,6 +1550,8 @@ if __name__ == "__main__":
     USE_COLOR = args.color
 
     set_default(exp_args, "run_name", exp_args["env_name"])
+
+    show_cuda_info()
 
     run_experiment(**exp_args)
 
