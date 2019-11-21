@@ -25,6 +25,7 @@ def build_parser():
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
     parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
+    parser.add_argument("--evaluate_diversity", type=str2bool, default=True, help="Evalutes the diversity of rollouts during training.")
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
@@ -107,6 +108,9 @@ def get_auto_device():
         except:
             print("Warning: Failed to auto detect best GPU.")
             return "cuda"
+
+def get_checkpoint_path(step, postfix):
+    return os.path.join(LOG_FOLDER, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
 def show_cuda_info():
     print("Using Device:", DEVICE)
@@ -441,7 +445,7 @@ class DiscretizeActionWrapper(gym.Wrapper):
 """
 
 
-def make_environment(env_name):
+def make_environment(env_name, non_determinism="noop"):
     """ Construct environment of given name, including any required """
 
     env_type = None
@@ -453,8 +457,19 @@ def make_environment(env_name):
     env = gym.make(env_name)
     if env_type == "atari":
         assert "NoFrameskip" in env_name
-        env = NoopResetWrapper(env, noop_max=30)
-        env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+
+        non_determinism = non_determinism.lower()
+        if non_determinism == "noop":
+            env = NoopResetWrapper(env, noop_max=30)
+            env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+        elif non_determinism == "frame-skip":
+            env = NoopResetWrapper(env, noop_max=30)
+            env = FrameSkipWrapper(env, min_skip=2, max_skip=5, reduce_op=np.max)
+        elif non_determinism == "none":
+            env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+        else:
+            raise Exception("invalid non determinism type {}".format(non_determinism))
+
         env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
         env = NormalizeRewardWrapper(env)
     elif env_type == "classic_control":
@@ -764,7 +779,7 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
 class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
     """ Async vector env, that limits the number of worker threads spawned """
 
-    def __init__(self, env_fns, max_cpus=8, **kwargs):
+    def __init__(self, env_fns, max_cpus=8, verbose=False, **kwargs):
         if len(env_fns) <= max_cpus:
             # this is just a standard vec env
             super(HybridAsyncVectorEnv, self).__init__(env_fns, **kwargs)
@@ -778,7 +793,8 @@ class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
             for i in range(self.n_parallel):
                 vec_functions.append(lambda : gym.vector.SyncVectorEnv(env_fns[i*self.n_sequential:(i+1)*self.n_sequential], **kwargs))
 
-            print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
+            if verbose:
+                print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
             super(HybridAsyncVectorEnv, self).__init__(vec_functions, **kwargs)
 
             self.is_batched = True
@@ -941,19 +957,21 @@ def compose_frame(state_frame, rendered_frame):
     return frame
 
 
-def generate_rollouts(num_rollouts, model, env_name, resolution=0.5):
+def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=2000, deterministic=False):
     """ Generates roll out with given model and environment name.
         returns observations.
             num_rollouts: Number of rollouts to generate
             model: The model to use
             env_name: Name of the environment
             resolution: Resolution of returned frames
+            max_length: Maximum number of environment interactions before rollouts are automatically terminated.
+            deterministic: Force a deterministic environment (but not policy)
         :returns
             observations as a list np arrays of dims [c,w,h] in uint8 format.
     """
 
-    env_fns = [lambda : make_environment(env_name) for _ in range(num_rollouts)]
-    env = gym.vector.SyncVectorEnv(env_fns)
+    env_fns = [lambda : make_environment(env_name, non_determinism="none" if deterministic else "noop") for _ in range(num_rollouts)]
+    env = HybridAsyncVectorEnv(env_fns)
 
     _ = env.reset()
     state, reward, done, info = env.step([0]*num_rollouts)
@@ -965,7 +983,9 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5):
 
     is_running = [True] * num_rollouts
 
-    while any(is_running):
+    counter = 0
+
+    while any(is_running) and counter < max_length:
 
         logprobs = model.policy(state).detach().cpu().numpy()
         actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
@@ -984,40 +1004,48 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5):
                                                 interpolation=cv2.INTER_AREA)
                 frames[i].append(rendered_frame)
 
+        counter += 1
+
+    env.close()
+
     return [np.asarray(frame_sequence) for frame_sequence in frames]
 
 
-def evaluate_diversity(step, model, env_name):
-    """ Generates multiple rollouts of agent, and evaluates the diversity of the rollouts."""
+def evaluate_diversity(step, model, env_name, num_rollouts=8, save_rollouts=True, resolution=0.5):
+    """ Generates multiple rollouts of agent, and evaluates the diversity of the rollouts.
+
+    """
 
     results = []
 
-    num_rollouts = 4
-
-    rollouts = generate_rollouts(num_rollouts, model, env_name, resolution=0.5)
+    # we generate rollouts with the additional determanism turned on. This just removes the no-op starts
+    # and gives us a better idea of how similar the runs are.
+    rollouts = generate_rollouts(num_rollouts, model, env_name, resolution=resolution, deterministic=True)
 
     # get all distances between rollouts.
     for i in range(num_rollouts):
         for j in range(i+1, num_rollouts):
-            a = rollouts[i]
-            b = rollouts[j]
+            a = rollouts[i][::5] # do comparision at around 3 fps.
+            b = rollouts[j][::5]
             difference = dtw(a, b)
+
             results.append(difference)
 
     # save the rollouts for later.
-    with open(os.path.join(LOG_FOLDER, "rollouts-{}.dat".format(zero_format_number(step))), 'wb') as f:
-        package = {"step":step, "rollouts": rollouts, "distances": results}
-        pickle.dump(package, f)
+    if save_rollouts:
+        rollouts_name = get_checkpoint_path(step,"rollouts.dat")
+        with open(rollouts_name, 'wb') as f:
+            package = {"step":step, "rollouts": rollouts, "distances": results}
+            pickle.dump(package, f)
 
-    print("Diversity of rollouts - mean:{:.1f}k {:.1f}k-{:.1f}k".format(np.mean(results)/1000, np.min(results)/1000, np.max(results)/1000))
+    return results
 
 
-def export_movie(model, env_name, filename):
+def export_movie(filename, model, env_name):
     """ Exports a movie of agent playing game.
         which_frames: model, real, or both
     """
 
-    filename += ".mp4"
     scale = 2
 
     env = make_environment(env_name)
@@ -1089,15 +1117,12 @@ def print_profile_info(timing_log, title="Performance results:"):
 def zero_format_number(x):
     return "{:03.0f}M".format(round(x/1e6))
 
-def save_checkpoint(step, model, optimizer):
-
-    filename = "checkpoint-{}.pt".format(zero_format_number(step))
-
+def save_checkpoint(filename, step, model, optimizer,):
     torch.save({
         'step': step ,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-    }, os.path.join(LOG_FOLDER, filename))
+    }, filename)
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
@@ -1176,8 +1201,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
-    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, copy=False) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
-    #vec_env = gym.vector.AsyncVectorEnv(env_fns) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
+    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
     print("Generated {} agents ({}) using {} ({}) model.".format(agents, "async" if not sync_envs else "sync", model.name, model.dtype))
 
@@ -1199,9 +1223,11 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     fps_history = deque(maxlen=10 if not PROFILE_INFO else None)
 
-    movie_every = 5 * 1000 * 1000 // batch_size  # 1 movie every 5m environment steps
-    checkpoint_every = 5 * 1000 * 1000 # for some reason one of these is in steps the other in iterations?
+    checkpoint_every = 10e6 # for some reason one of these is in steps the other in iterations?
     last_checkpoint = 0
+
+    # add a few checkpoints early on
+    additional_checkpoints = [x // batch_size for x in [0, 1e6]] # note, this are in steps...
 
     for step in range(n_iterations+1):
 
@@ -1344,14 +1370,31 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                     with_default(training_log[-1][12], 0)
                 ))
 
-        if args.save_checkpoints and ((step*batch_size) - last_checkpoint > checkpoint_every or step == 0):
-            save_checkpoint(step, model, optimizer)
-            last_checkpoint = step*batch_size
+        if ((step*batch_size) - last_checkpoint > checkpoint_every or step in additional_checkpoints):
 
-        if args.export_video and (step in [math.ceil(x / batch_size) for x in [0, 100*1000, 1000*1000]] or step % movie_every == 0):
-            export_movie(model, env_name, "{}_{}".format(os.path.join(LOG_FOLDER, env_name), zero_format_number((step)*batch_size)))
-            # stub: for the moment just do diversity calculations here...
-            evaluate_diversity(step * batch_size, model, env_name)
+            print("Checkpoint reached:")
+
+            start_time = time.time()
+
+            if args.save_checkpoints:
+                checkpoint_name = get_checkpoint_path(step * batch_size, "params.pt")
+                save_checkpoint(checkpoint_name, step * batch_size, model, optimizer)
+                print("  -checkpoint saved")
+
+            if args.export_video:
+                video_name  = get_checkpoint_path(step * batch_size, env_name+".mp4")
+                export_movie(video_name, model, env_name)
+                print("  -video exported")
+
+            if args.evaluate_diversity:
+                diversity = evaluate_diversity(step * batch_size, model, env_name, save_rollouts=True)
+                print("  -diversity of rollouts - mean={:.1f}k ({:.1f}k-{:.1f}k)".format(np.mean(diversity) / 1000,
+                                                                                          np.min(diversity) / 1000,
+                                                                                          np.max(diversity) / 1000))
+
+            print("  -finished after {:.1f}s".format(time.time()-start_time))
+
+            last_checkpoint = step*batch_size
 
         if step in [10, 20, 30, 40] or step % 50 == 0:
 
