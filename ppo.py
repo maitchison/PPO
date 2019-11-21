@@ -72,6 +72,7 @@ import shutil
 from collections import deque, defaultdict
 import multiprocessing
 import pickle
+import socket
 
 torch.set_num_threads(int(threads))
 
@@ -542,10 +543,16 @@ class PolicyModel(nn.Module):
         self.device, self.dtype = device, dtype
 
 
-def get_CNN_output_size(input_size, kernel_sizes, strides):
+def get_CNN_output_size(input_size, kernel_sizes, strides, max_pool=False):
+    """ Calculates CNN output size, if max_pool is true uses max_pool instead of stride."""
     size = input_size
     for kernel_size, stride in zip(kernel_sizes, strides):
-        size = (size - (kernel_size - 1) - 1) // stride + 1
+
+        if max_pool:
+            size = (size - (kernel_size - 1) - 1) // 1 + 1
+            size = size // stride
+        else:
+            size = (size - (kernel_size - 1) - 1) // stride + 1
     return size
 
 
@@ -591,13 +598,13 @@ class ImprovedCNNModel(PolicyModel):
         if self.include_xy:
             c = c + 2
 
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=3, stride=2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=3, stride=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
         self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        w = get_CNN_output_size(w, [3, 3, 3, 3], [2, 2, 2, 1])
-        h = get_CNN_output_size(h, [3, 3, 3, 3], [2, 2, 2, 1])
+        w = get_CNN_output_size(w, [3, 3, 3, 3], [2, 2, 2, 1], max_pool=True)
+        h = get_CNN_output_size(h, [3, 3, 3, 3], [2, 2, 2, 1], max_pool=True)
 
         self.out_shape = (64, w, h)
 
@@ -627,9 +634,15 @@ class ImprovedCNNModel(PolicyModel):
             x = add_xy(x)
 
         x = F.relu(self.conv1(x))
+        x = F.max_pool2d(x, kernel_size=2)
         x = F.relu(self.conv2(x))
+        x = F.max_pool2d(x, kernel_size=2)
         x = F.relu(self.conv3(x))
+        x = F.max_pool2d(x, kernel_size=2)
         x = F.relu(self.conv4(x))
+
+        if x.shape[1:] != self.out_shape:
+            raise Exception("Invalid output dims. Expected {} found {}.".format(x.shape, self.out_shape))
 
         x = F.relu(self.fc(x.view(n, self.d)))
 
@@ -1177,10 +1190,12 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "agents": agents,
         "model": model.name,
         "batch_epochs": batch_epochs,
-        "ent_bouns": ent_bonus,
+        "ent_bonus": ent_bonus,
         "lr": alpha,
         "max_grad_norm": max_grad_norm,
-        "n_iterations": n_iterations
+        "n_iterations": n_iterations,
+        "guid": GUID[-8:],
+        "hostname": socket.gethostname()
     }
 
     params.update(kwargs)
