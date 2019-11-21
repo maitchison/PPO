@@ -1223,17 +1223,23 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     fps_history = deque(maxlen=10 if not PROFILE_INFO else None)
 
-    checkpoint_every = 10e6 # for some reason one of these is in steps the other in iterations?
+    checkpoint_every = int(10e6)
     last_checkpoint = 0
 
     # add a few checkpoints early on
-    additional_checkpoints = [x // batch_size for x in [0, 1e6]] # note, this are in steps...
 
-    for step in range(n_iterations+1):
+    checkpoints = [x // batch_size for x in range(0, n_iterations*batch_size+1, checkpoint_every)]
+    checkpoints += [x // batch_size for x in [1e6]] #add a checkpoint early on (1m steps)
+    checkpoints.append(n_iterations)
+    checkpoints = sorted(set(checkpoints))
+
+    for iteration in range(n_iterations+1):
+
+        env_step = iteration * batch_size
 
         # the idea here is that all our batch arrays are of dims
         # N, A, ...,
-        # Where n is the numer of steps, and A is the number of agents.
+        # Where n is the number of steps, and A is the number of agents.
         # this means we can process each step as a vector
 
         start_time = time.time()
@@ -1321,10 +1327,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             else:
                 cuda_memory = 0
 
-            timing_log.append((step, rollout_time * 1000, train_time * 1000, step_time * 1000, batch_size, fps, cuda_memory/1024/1024))
+            timing_log.append((iteration, rollout_time * 1000, train_time * 1000, step_time * 1000, batch_size, fps, cuda_memory/1024/1024))
 
             # print early timing information from second iteration.
-            if step == 1:
+            if iteration == 1:
                 print_profile_info(timing_log, "Early timing results")
 
         fps_history.append(fps)
@@ -1343,22 +1349,22 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              safe_round(safe_mean(score_history[-10:]), 2),
              safe_round(safe_mean(len_history[-10:]),2),
              time.time()-initial_start_time,
-             step,
-             step * batch_size,
+             iteration,
+             env_step,
              int(np.mean(fps_history)),
              history_string
              )
         )
 
         if PRINT_EVERY:
-            if step % (PRINT_EVERY * 10) == 0:
+            if iteration % (PRINT_EVERY * 10) == 0:
                 print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
                                                                       "l_ent", "ep_score", "ep_len", "elapsed", "fps"))
                 print("-"*120)
-            if step % PRINT_EVERY == 0 or step == n_iterations:
+            if iteration % PRINT_EVERY == 0 or iteration == n_iterations:
                 print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
-                    str(step),
-                    "{:.2f}M".format(step * n_steps * agents / 1000 / 1000),
+                    str(iteration),
+                    "{:.2f}M".format(iteration * n_steps * agents / 1000 / 1000),
                     training_log[-1][0],
                     training_log[-1][1],
                     training_log[-1][2],
@@ -1370,33 +1376,31 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                     with_default(training_log[-1][12], 0)
                 ))
 
-        if ((step*batch_size) - last_checkpoint > checkpoint_every or step in additional_checkpoints):
+        if (iteration in checkpoints):
 
             print("Checkpoint reached:")
 
             start_time = time.time()
 
             if args.save_checkpoints:
-                checkpoint_name = get_checkpoint_path(step * batch_size, "params.pt")
-                save_checkpoint(checkpoint_name, step * batch_size, model, optimizer)
+                checkpoint_name = get_checkpoint_path(env_step, "params.pt")
+                save_checkpoint(checkpoint_name, env_step, model, optimizer)
                 print("  -checkpoint saved")
 
             if args.export_video:
-                video_name  = get_checkpoint_path(step * batch_size, env_name+".mp4")
+                video_name  = get_checkpoint_path(env_step, env_name+".mp4")
                 export_movie(video_name, model, env_name)
                 print("  -video exported")
 
             if args.evaluate_diversity:
-                diversity = evaluate_diversity(step * batch_size, model, env_name, save_rollouts=True)
+                diversity = evaluate_diversity(env_step, model, env_name, save_rollouts=True)
                 print("  -diversity of rollouts - mean={:.1f}k ({:.1f}k-{:.1f}k)".format(np.mean(diversity) / 1000,
                                                                                           np.min(diversity) / 1000,
                                                                                           np.max(diversity) / 1000))
 
             print("  -finished after {:.1f}s".format(time.time()-start_time))
 
-            last_checkpoint = step*batch_size
-
-        if step in [10, 20, 30, 40] or step % 50 == 0:
+        if iteration in [10, 20, 30, 40] or iteration % 50 == 0:
 
             save_training_log(os.path.join(LOG_FOLDER, "training_log.csv"), training_log)
 
