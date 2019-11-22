@@ -4,23 +4,65 @@ import shutil
 
 experiment_name = sys.argv[1]
 
+def has_run(experiment_folder, run_name):
+    """
+    Returns if this experiment has been started or not.
+    :param output_folder:
+    :param experiment_name:
+    :param run_name:
+    :return:
+    """
+
+    if not os.path.exists(experiment_folder):
+        return False
+
+    for subdir, dirs, files in os.walk(experiment_folder):
+        for file in files:
+            name = os.path.split(subdir)[-1]
+            if file == "training_log.csv":
+                this_run_name = name[:-19] # crop off the id code.
+                if this_run_name == run_name:
+                    return True
+
+    return False
+
 def run_experiment(experiment_name, env_name, run_name, **kwargs):
 
     output_folder = "/home/matthew/Dropbox/Experiments/ppo"
     kwargs["output_folder"] = output_folder
 
+    experiment_folder = os.path.join(output_folder, experiment_name)
+
+    # make the destination folder...
+    if not os.path.exists(experiment_folder):
+        print("Making experiment folder " + experiment_folder)
+        os.makedirs(experiment_folder, exist_ok=True)
+
     # copy script across if needed.
-    ppo_path = os.path.join(output_folder, experiment_name)+ "/ppo.py"
+    ppo_path = experiment_folder+ "/ppo.py"
     if not os.path.exists(ppo_path):
+        print("Copying ppo.py")
         shutil.copy("ppo.py", ppo_path)
+
+    if has_run(experiment_folder, run_name):
+        return
 
     kwargs["experiment_name"] = experiment_name
     kwargs["run_name"] = run_name
 
     python_part = "python {} {}".format(ppo_path, env_name)
-    params_part = " ".join(["{}='{}'".format(k,v) for k,v in kwargs.items()])
+    params_part = " ".join(["--{}='{}'".format(k,v) for k,v in kwargs.items()])
+    params_part_lined = "\n".join(["{}:'{}'".format(k, v) for k, v in kwargs.items()])
 
-    os.system(python_part + " " + params_part)
+    print()
+    print("=" * 120)
+    print("Running " + python_part + "\n" + params_part_lined)
+    print("=" * 120)
+    print()
+    return_code = os.system(python_part + " " + params_part)
+    if return_code != 0:
+        raise Exception("Error {}.".format(return_code))
+
 
 if experiment_name == "GA_Pong":
     # game analysis: pong
