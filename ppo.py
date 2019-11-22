@@ -26,6 +26,7 @@ def build_parser():
     parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
     parser.add_argument("--evaluate_diversity", type=str2bool, default=True, help="Evalutes the diversity of rollouts during training.")
+    parser.add_argument("--reward_clip", type=float, default=5.0)
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
@@ -148,6 +149,7 @@ def dtw(obs1, obs2):
             )
 
     return DTW[n, m]
+
 
 """
 ------------------------------------------------------------------------------------------------------------------------
@@ -334,10 +336,14 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.std = math.sqrt(self.ret_rms.var)
 
         info["raw_reward"] = reward
-        scaled_reward = np.clip(reward / (self.std + self.epsilon), -self.clip, +self.clip)
+        scaled_reward = reward / (self.std + self.epsilon)
+        scaled_reward = np.clip(scaled_reward, -self.clip, +self.clip)
 
         #stub
         #print(scaled_reward, reward, self.mean, self.std, self.current_return)
+
+        info["returns_std"] = self.std
+        info["returns_mean"] = self.mean
 
         return obs, scaled_reward, done, info
 
@@ -472,7 +478,7 @@ def make_environment(env_name, non_determinism="noop"):
             raise Exception("invalid non determinism type {}".format(non_determinism))
 
         env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
-        env = NormalizeRewardWrapper(env)
+        env = NormalizeRewardWrapper(env, clip=args.reward_clip)
     elif env_type == "classic_control":
         env = NormalizeObservationWrapper(env)
     else:
@@ -783,11 +789,13 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
     loss.backward()
 
     if max_grad_norm is not None:
-        nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+    else:
+        grad_norm = None
 
     optimizer.step()
 
-    return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy])
+    return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy, grad_norm])
 
 class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
     """ Async vector env, that limits the number of worker threads spawned """
@@ -1101,7 +1109,7 @@ def save_training_log(filename, training_log):
         csv_writer.writerow(["Loss", "Loss_Clip", "Loss_Value", "Loss_Entropy",
                              "Ep_Score (100)", "Ep_Len (100)",
                              "Ep_Score (10)", "Ep_Len (10)",
-                             "Elapsed", "Iteration", "Step", "FPS", "History"])
+                             "Elapsed", "Iteration", "Step", "FPS", "Gradient_Norm", "History"])
 
         for row in training_log:
             csv_writer.writerow(row)
@@ -1191,6 +1199,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "model": model.name,
         "batch_epochs": batch_epochs,
         "ent_bonus": ent_bonus,
+        "reward_clip": args.reward_clip,
         "lr": alpha,
         "max_grad_norm": max_grad_norm,
         "n_iterations": n_iterations,
@@ -1297,6 +1306,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         total_loss_value = 0
         total_loss_entropy = 0
         total_loss = 0
+        total_grad_norm = 0
 
         batch_arrays = [
             np.asarray(batch_prev_state.reshape([batch_size, *state_shape])),
@@ -1323,13 +1333,14 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
                 slices = (x[sample] for x in batch_arrays)
 
-                loss, loss_clip, loss_value, loss_entropy = train_minibatch(
+                loss, loss_clip, loss_value, loss_entropy, grad_norm = train_minibatch(
                     model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
 
                 total_loss_clip += loss_clip / (batch_epochs*n_batches)
                 total_loss_value += loss_value / (batch_epochs*n_batches)
                 total_loss_entropy += loss_entropy / (batch_epochs*n_batches)
                 total_loss += loss / (batch_epochs*n_batches)
+                total_grad_norm += grad_norm / (batch_epochs * n_batches)
 
         train_time = (time.time() - start_train_time) / batch_size
 
@@ -1353,14 +1364,14 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         fps_history.append(fps)
 
         history_string = "({:.1f} - {:.1f}) +- {:.2f}".format(
-            min(score_history), max(score_history), np.std(score_history)
+            min(score_history[-100:]), max(score_history[-100:]), np.std(score_history[-100:])
         ) if len(score_history) > 0 else ""
 
         training_log.append(
-            (float(total_loss),
-             float(total_loss_clip),
-             float(total_loss_value),
-             float(total_loss_entropy),
+            (total_loss,
+             total_loss_clip,
+             total_loss_value,
+             total_loss_entropy,
              safe_round(safe_mean(score_history[-100:]), 2),
              safe_round(safe_mean(len_history[-100:]),2),
              safe_round(safe_mean(score_history[-10:]), 2),
@@ -1369,6 +1380,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              iteration,
              env_step,
              int(np.mean(fps_history)),
+             total_grad_norm,
              history_string
              )
         )
@@ -1390,13 +1402,13 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                     with_default(training_log[-1][5], 0),
                     "{:.0f} min".format(training_log[-1][8]/60),
                     training_log[-1][11],
-                    with_default(training_log[-1][12], 0)
+                    with_default(training_log[-1][13], 0)
                 ))
 
         if (iteration in checkpoints):
 
             print()
-            print("Checkpoint reached:")
+            print("Checkpoint for {}".format(LOG_FOLDER))
 
             start_time = time.time()
 
