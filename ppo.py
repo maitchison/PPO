@@ -20,6 +20,10 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
     parser.add_argument("environment")
+
+    parser.add_argument("--experiment_name", type=str, help="Name of the experiment.")
+    parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
+
     parser.add_argument("--agents", type=int, default=8)
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
@@ -34,10 +38,8 @@ def build_parser():
     parser.add_argument("--ent_bonus", type=float, default=0.01)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--export_video", type=str2bool, default=True)
-    parser.add_argument("--run_name", type=str, default="experiments")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)
-    parser.add_argument("--experiment_name", type=str)
     parser.add_argument("--output_folder", type=str)
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--model", type=str, default="cnn", help="['cnn', 'improved_cnn']")
@@ -1495,10 +1497,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     return training_log
 
 
-def run_experiment(run_name, experiment_name, env_name, model, n_iterations = 10000, **kwargs):
+def run_experiment(experiment_name, run_name, env_name, model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
-    LOG_FOLDER = "{}/{}/{} [{}]".format(OUTPUT_FOLDER, run_name, experiment_name, GUID[-16:])
+    LOG_FOLDER = "{}/{}/{} [{}]".format(OUTPUT_FOLDER, experiment_name, run_name, GUID[-16:])
 
     print("Logging to folder", LOG_FOLDER)
     os.makedirs(LOG_FOLDER, exist_ok=True)
@@ -1576,7 +1578,7 @@ if __name__ == "__main__":
 
     USE_COLOR = args.color
 
-    set_default(exp_args, "run_name", exp_args["env_name"])
+    set_default(exp_args, "experiment_name", exp_args["env_name"])
 
     show_cuda_info()
 

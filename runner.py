@@ -4,16 +4,17 @@ import shutil
 
 experiment_name = sys.argv[1]
 
-def run_experiment(env_name, run_name, **kwargs):
+def run_experiment(experiment_name, env_name, run_name, **kwargs):
 
     output_folder = "/home/matthew/Dropbox/Experiments/ppo"
     kwargs["output_folder"] = output_folder
 
-    # copy script accross if needed.
-    ppo_path = os.path.join(output_folder, run_name )+ "/ppo.py"
+    # copy script across if needed.
+    ppo_path = os.path.join(output_folder, experiment_name)+ "/ppo.py"
     if not os.path.exists(ppo_path):
         shutil.copy("ppo.py", ppo_path)
 
+    kwargs["experiment_name"] = experiment_name
     kwargs["run_name"] = run_name
 
     python_part = "python {} {}".format(ppo_path, env_name)
@@ -25,30 +26,27 @@ if experiment_name == "GA_Pong":
     # game analysis: pong
     for agents in reversed([8, 16, 32, 64, 128, 256, 512, 1024]):
         run_experiment(
-            "pong", "GA_Pong",
+            "GA_Pong", "pong", "agents="+str(agents),
             workers=32, epochs=20,
-            agents=agents,
-            experiment_name="agents="+str(agents)
+            agents=agents
         )
 
 if experiment_name == "GA_Pong_RewardClip":
     # game analysis: pong
     for reward_clip in [1, 3, 5]:
         run_experiment(
-            "pong", "GA_Pong",
+            "GA_Pong", "pong", "reward_clip="+str(reward_clip),
             workers=32, epochs=20, agents=256,
-            reward_clip=reward_clip,
-            experiment_name="reward_clip="+str(reward_clip)
+            reward_clip=reward_clip
         )
 
 if experiment_name == "GA_Pong_MiniBatchSize":
     # game analysis: pong
     for mini_batch_size in [512, 1024, 2048, 4096]:
         run_experiment(
-            "pong", "GA_Pong",
+            "GA_Pong", "pong", "mini_batch_size=" + str(mini_batch_size),
             workers=32, epochs=20, agents=256,
             mini_batch_size=mini_batch_size,
-            experiment_name="mini_batch_size=" + str(mini_batch_size)
         )
 
 elif experiment_name == "RA_Alien":
