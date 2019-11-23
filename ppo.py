@@ -25,6 +25,11 @@ def build_parser():
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
     parser.add_argument("--agents", type=int, default=8)
+
+    parser.add_argument("--filter", type=str, default="none", help="Add filter to agent observation ['none', 'hash']")
+    parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
+
+    parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="learning rate for adam optimizer")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
     parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
@@ -231,6 +236,60 @@ class NoopResetWrapper(gym.Wrapper):
         return self.env.step(ac)
 
 
+class HashWrapper(gym.Wrapper):
+    """
+    Maps observation onto a random sequence of pixels.
+    This is helpful for testing if the agent is simply memorizing the environment, as no generalization between
+    states is possiable under this observation.
+
+    Note: we assume channels is last, which means this really only works if applied after atari processing.
+    """
+
+    def __init__(self, env):
+        """
+        Map observation to a hash of observation.
+        """
+        super().__init__(env)
+        self.env = env
+
+    def step(self, action):
+
+        original_obs, reward, done, info = self.env.step(action)
+
+        obs_hash = hash(original_obs.data.tobytes())
+
+        w, h, c = original_obs.shape
+
+        rng = np.random.RandomState(obs_hash % (2**32)) # ok... this limits us to 32bits.. might be a better way to do this?
+
+        # seed the random generator and create an random 42x42 observation.
+        # note: I'm not sure how many bits the numpy random generate will use, it's posiable it's a lot less than
+        # 1024. One option is then to break up the observation into parts. Another would be to just assume that the
+        # number of reachable states is much much less than this, and that the chance of a collision (alaising) is
+        # very low.
+        new_obs = rng.randint(0, 1+1, (args.hash_size,args.hash_size), dtype=np.uint8) * 255
+        new_obs = cv2.resize(new_obs, (h, w), interpolation=cv2.INTER_NEAREST)
+        new_obs = new_obs[:, :, np.newaxis]
+
+        new_obs = np.concatenate([new_obs]*c, axis=2)
+
+        return new_obs, reward, done, info
+
+
+class BlindWrapper(gym.Wrapper):
+    """
+    Replaces observation with zeros. This tests if an agent can solve the task by memorizing a sequence of actions without
+    considering the observation at all.
+    """
+    pass
+
+class TickerWrapper(gym.Wrapper):
+    """
+    Replace observation with an indication of the current time. This tests how well an agent performs if it's only
+    strategy is to memorize a sequence of key-presses.
+    """
+    pass
+
 class FrameSkipWrapper(gym.Wrapper):
     """
     from
@@ -353,6 +412,16 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.current_return = 0
         return self.env.reset()
 
+class ObservationMonitor(gym.Wrapper):
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.env = env
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        info["monitor_obs"] = obs.copy()
+        return obs, reward, done, info
 
 class AtariWrapper(gym.Wrapper):
 
@@ -411,7 +480,6 @@ class AtariWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self._push_raw_obs(obs)
-        info["raw_obs"] = obs
         return self.stack, reward, done, info
 
     def reset(self):
@@ -477,9 +545,20 @@ def make_environment(env_name, non_determinism="noop"):
         elif non_determinism == "none":
             env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
         else:
-            raise Exception("invalid non determinism type {}".format(non_determinism))
+            raise Exception("Invalid non determinism type {}.".format(non_determinism))
+
+        env = ObservationMonitor(env)
+
+        # apply filter
+        if args.filter == "none":
+            pass
+        elif args.filter == "hash":
+            env = HashWrapper(env)
+        else:
+            raise Exception("Invalid observation filter {}.".format(args.filter))
 
         env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
+
         env = NormalizeRewardWrapper(env, clip=args.reward_clip)
     elif env_type == "classic_control":
         env = NormalizeObservationWrapper(env)
@@ -998,7 +1077,7 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
 
     _ = env.reset()
     state, reward, done, info = env.step([0]*num_rollouts)
-    rendered_frame = info[0].get("raw_obs", state)
+    rendered_frame = info[0].get("monitor_obs", state)
     w,h,c = rendered_frame.shape
     state = env.reset()
 
@@ -1020,7 +1099,7 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
             if done[i]:
                 is_running[i] = False
             if is_running[i]:
-                rendered_frame = info[i].get("raw_obs", state)
+                rendered_frame = info[i].get("monitor_obs", state)
                 rendered_frame = rendered_frame.mean(axis=2, dtype=np.float32).astype(np.uint8)  # get a black and white frame.
                 if resolution != 1.0:
                     rendered_frame = cv2.resize(rendered_frame, (int(h * resolution), int(w * resolution)),
@@ -1074,7 +1153,7 @@ def export_movie(filename, model, env_name):
     env = make_environment(env_name)
     _ = env.reset()
     state, reward, done, info = env.step(0)
-    rendered_frame = info.get("raw_obs", state)
+    rendered_frame = info.get("monitor_obs", state)
 
     # work out our height
     first_frame = compose_frame(state, rendered_frame)
@@ -1091,7 +1170,7 @@ def export_movie(filename, model, env_name):
     while not done:
         action = sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
         state, reward, done, info = env.step(action)
-        rendered_frame = info.get("raw_obs", state)
+        rendered_frame = info.get("monitor_obs", state)
 
         frame = compose_frame(state, rendered_frame)
         if frame.shape[0] != width or frame.shape[1] != height:
@@ -1185,7 +1264,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     agents = kwargs.get("agents", 16)    # (8)
     batch_epochs = kwargs.get("batch_epochs", 4)
     ent_bonus = kwargs.get("ent_bonus", 0.01)
-    alpha = kwargs.get("lr", 2.5e-4)
+    learning_rate = kwargs.get("learning_rate", 2.5e-4)
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
     sync_envs = kwargs.get("sync", False)
 
@@ -1202,7 +1281,9 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "batch_epochs": batch_epochs,
         "ent_bonus": ent_bonus,
         "reward_clip": args.reward_clip,
-        "lr": alpha,
+        "hash_size": args.hash_size,
+        "learning_rate": learning_rate,
+        "filter": args.filter,
         "max_grad_norm": max_grad_norm,
         "n_iterations": n_iterations,
         "guid": GUID[-8:],
@@ -1224,7 +1305,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     batch_size = (n_steps * agents)
 
     # epsilon = 1e-5 is required for stability.
-    optimizer = torch.optim.Adam(model.parameters(), lr=alpha, eps=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
     vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
@@ -1494,6 +1575,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         print_profile_info(timing_log, "Final timing results")
         save_profile_log(os.path.join(LOG_FOLDER, "timing_info.csv"), timing_log)
 
+    # save a final score.
+    with open(os.path.join(LOG_FOLDER, "final_score.txt"), "w") as f:
+        f.write(np.percentile(score_history,95))
+
     return training_log
 
 
@@ -1536,6 +1621,9 @@ if __name__ == "__main__":
 
     if args.workers < 0:
         args.workers = multiprocessing.cpu_count()
+        while args.agents % args.workers != 0:
+            # make sure workers divides number of jobs.
+            args.workers -= 1
 
     args.resolution = args.resolution.lower()
 
