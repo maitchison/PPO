@@ -90,7 +90,7 @@ def setup_jobs():
             agents=agents
         )
 
-    for reward_clip in [1, 3, 5]:
+    for reward_clip in [1, 3, 5, 10]:
         add_job(
             "GA_Pong",
             run_name="reward_clip=" + str(reward_clip),
@@ -100,7 +100,7 @@ def setup_jobs():
             reward_clip=reward_clip
         )
 
-    for mini_batch_size in [256, 512, 1024, 2048, 4096]:
+    for mini_batch_size in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
         add_job(
             "GA_Pong",
             run_name="mini_batch_size="+str(mini_batch_size),
@@ -110,7 +110,7 @@ def setup_jobs():
             mini_batch_size=mini_batch_size,
         )
 
-    for mini_batch_size in [256, 512, 1024, 2048, 4096]:
+    for mini_batch_size in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
         agents = 64
         add_job(
             "GA_Pong",
@@ -125,6 +125,7 @@ def setup_jobs():
     # Hash
     # -------------------------------------------------------------------------------------------
 
+    # get an idea of which hash size works...
     for hash_size in [1, 2, 4, 8, 16, 32]:
         add_job(
             "hash",
@@ -136,27 +137,31 @@ def setup_jobs():
             hash_size=hash_size
         )
 
-    # try the best one for longer...
-    add_job(
-        "hash",
-        run_name="hash_size=8 epochs=200",
-        env_name="pong",
-        epochs=200,
-        agents=64,
-        filter="hash",
-        hash_size=8,
-    )
+    for env_name in ["pong", "alien"]:
+        for filter in ["hash", "hash_time"]:
 
-    # try the best one for longer...
+            add_job(
+                "hash",
+                run_name="200 {} {}".format(env_name, filter),
+                env_name=env_name,
+                epochs=200,
+                agents=64,
+                learning_rate=1e-4,
+                filter=filter,
+                hash_size=6,
+                priority=5
+            )
+
     add_job(
         "hash",
-        run_name="hash_size=6 epochs=200 lr=1e-4",
+        run_name="200 pong hash cropped",
         env_name="pong",
         epochs=200,
         agents=64,
+        crop_input=True,
         learning_rate=1e-4,
         filter="hash",
-        hash_size=8,
+        hash_size=6,
         priority=5
     )
 

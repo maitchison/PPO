@@ -29,12 +29,13 @@ def build_parser():
     parser.add_argument("--filter", type=str, default="none", help="Add filter to agent observation ['none', 'hash']")
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
 
+    parser.add_argument("--crop_input", type=str2bool, default=False, help="enables atari input cropping.")
     parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="learning rate for adam optimizer")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
     parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
-    parser.add_argument("--evaluate_diversity", type=str2bool, default=True, help="Evalutes the diversity of rollouts during training.")
+    parser.add_argument("--evaluate_diversity", type=str2bool, default=False, help="Evalutes the diversity of rollouts during training.")
     parser.add_argument("--reward_clip", type=float, default=5.0)
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
@@ -245,22 +246,27 @@ class HashWrapper(gym.Wrapper):
     Note: we assume channels is last, which means this really only works if applied after atari processing.
     """
 
-    def __init__(self, env):
+    def __init__(self, env, use_time=False):
         """
         Map observation to a hash of observation.
         """
         super().__init__(env)
         self.env = env
+        self.use_time = use_time
+        self.counter = 0
 
     def step(self, action):
 
         original_obs, reward, done, info = self.env.step(action)
 
-        obs_hash = hash(original_obs.data.tobytes())
+        if self.use_time:
+            state_hash = self.counter
+        else:
+            state_hash = hash(original_obs.data.tobytes())
 
         w, h, c = original_obs.shape
 
-        rng = np.random.RandomState(obs_hash % (2**32)) # ok... this limits us to 32bits.. might be a better way to do this?
+        rng = np.random.RandomState(state_hash % (2**32)) # ok... this limits us to 32bits.. might be a better way to do this?
 
         # seed the random generator and create an random 42x42 observation.
         # note: I'm not sure how many bits the numpy random generate will use, it's posiable it's a lot less than
@@ -273,7 +279,13 @@ class HashWrapper(gym.Wrapper):
 
         new_obs = np.concatenate([new_obs]*c, axis=2)
 
+        self.counter += 1
+
         return new_obs, reward, done, info
+
+    def reset(self):
+        self.counter = 0
+        return self.env.reset()
 
 
 class BlindWrapper(gym.Wrapper):
@@ -425,7 +437,7 @@ class ObservationMonitor(gym.Wrapper):
 
 class AtariWrapper(gym.Wrapper):
 
-    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84):
+    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84, crop=False):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
@@ -444,6 +456,7 @@ class AtariWrapper(gym.Wrapper):
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
         self.grayscale = grayscale
+        self.crop = crop
         self.n_channels = self.n_stacks * (1 if self.grayscale else 3)
         self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
 
@@ -461,6 +474,10 @@ class AtariWrapper(gym.Wrapper):
             obs = obs[:, :, np.newaxis]
 
         width, height, channels = obs.shape
+
+        if self.crop:
+            obs = obs[34:-16, :, :]
+            print(obs.shape)
 
         if (width, height) != (self._width, self._height):
             obs = cv2.resize(obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
@@ -554,10 +571,12 @@ def make_environment(env_name, non_determinism="noop"):
             pass
         elif args.filter == "hash":
             env = HashWrapper(env)
+        elif args.filter == "hash_time":
+            env = HashWrapper(env, use_time=True)
         else:
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
-        env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR)
+        env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR, crop=args.crop_input)
 
         env = NormalizeRewardWrapper(env, clip=args.reward_clip)
     elif env_type == "classic_control":
@@ -1577,7 +1596,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     # save a final score.
     with open(os.path.join(LOG_FOLDER, "final_score.txt"), "w") as f:
-        f.write(np.percentile(score_history,95))
+        f.write(str(np.percentile(score_history,95)))
 
     return training_log
 
