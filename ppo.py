@@ -116,8 +116,9 @@ OUTPUT_FOLDER = "runs"
 DTYPE = torch.float
 PROFILE_INFO = False
 PRINT_EVERY = 10
-SAVE_LOG_EVERY = 20 # this is a bit fast? should be 50?
+SAVE_LOG_EVERY = 50
 VERBOSE = True
+HOSTNAME = socket.gethostname()
 
 def get_auto_device():
     """ Returns the best device, CPU if no CUDA, otherwise GPU with most free memory. """
@@ -1301,7 +1302,7 @@ def lock_job():
         raise Exception("Could not get lock for job, another worker has a lock open.")
 
     lock = {
-        'host': str(socket.gethostname()),
+        'host': str(HOSTNAME),
         'time': str(time.time()),
         'status': "started",
         'key': str(LOCK_KEY)
@@ -1398,7 +1399,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         "max_grad_norm": max_grad_norm,
         "n_iterations": n_iterations,
         "guid": GUID[-8:],
-        "hostname": socket.gethostname()
+        "hostname": HOSTNAME
     }
 
     params.update(kwargs)
@@ -1595,6 +1596,21 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              history_string
              )
         )
+
+        if True:
+            # save current step information.
+            details = {}
+            details["max_epochs"] = args.epochs
+            details["completed_epochs"] = env_step / 1e6
+            details["score"] = np.percentile(score_history, 95) if len(score_history) > 0 else None
+            details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
+            details["fps"] = int(np.mean(fps_history))
+            frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
+            details["eta"] = frames_remaining / details["fps"]
+            details["host"] = HOSTNAME
+            details["last_modified"] = time.time()
+            with open(os.path.join(LOG_FOLDER, "progress.txt"),"w") as f:
+                json.dump(details, f)
 
         if PRINT_EVERY:
             if iteration % (PRINT_EVERY * 10) == 0:

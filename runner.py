@@ -16,6 +16,7 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+CHUNK_SIZE = 10
 
 OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
 
@@ -56,7 +57,7 @@ class Job:
 
     @property
     def _sort_key(self):
-        return (-self.priority, self.experiment_name, self.id)
+        return (-self.priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
     def get_path(self):
         # returns path to this job.
@@ -107,35 +108,17 @@ class Job:
             return None
 
     def get_details(self):
-
-        data = self.get_data()
-        params = self.get_params()
-
-        if data is None or params is None:
+        try:
+            path = os.path.join(self.get_path(), "progress.txt")
+            return json.load(open(path, "r"))
+        except:
             return None
 
-        details = {}
-        details["max_epochs"] = params["epochs"]
-        details["completed_epochs"] = data["Step"].iloc[-1] / 1e6
-
-        scores = data["Ep_Score (100)"]
-        scores = scores[~np.isnan(scores)]  #remove the nans
-        if len(scores) > 10:
-            details["score"] = np.percentile(scores, 95)
-        else:
-            details["score"] = 0
-
-        details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
-        details["fps"] = np.mean(data["FPS"].iloc[-5:])
-        frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
-        details["eta"] = frames_remaining / details["fps"]
-        details["host"] = params.get("hostname","unknown")
-
-        return details
+    def get_completed_epochs(self):
+        details = self.get_details()
+        if details is not None: return details["completed_epochs"]
 
     def run(self, chunked=False):
-
-        chunk_size = 10
 
         self.params["output_folder"] = OUTPUT_FOLDER
 
@@ -168,9 +151,9 @@ class Job:
         if chunked:
             # work out the next block to do
             if details is None:
-                next_chunk = chunk_size
+                next_chunk = CHUNK_SIZE
             else:
-                next_chunk = (round(details["completed_epochs"] / chunk_size) * chunk_size) + chunk_size
+                next_chunk = (round(details["completed_epochs"] / CHUNK_SIZE) * CHUNK_SIZE) + CHUNK_SIZE
             self.params["limit_epochs"] = int(next_chunk)
 
 
@@ -286,7 +269,6 @@ def setup_jobs():
                 learning_rate=2e-4,
                 filter=filter,
                 hash_size=7,
-                priority=5
             )
 
     add_job(
@@ -299,7 +281,6 @@ def setup_jobs():
         learning_rate=2e-4,
         filter="hash",
         hash_size=7,
-        priority=5
     )
 
     # -------------------------------------------------------------------------------------------
