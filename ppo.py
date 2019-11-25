@@ -5,6 +5,16 @@ import argparse
 # using more than 2 threads locks up all the cpus and does not seem to improve performance.
 # the gain from 2 CPUs to 1 is very minor too. (~10%)
 
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 def str2bool(v):
     if isinstance(v, bool):
        return v
@@ -28,12 +38,14 @@ def build_parser():
 
     parser.add_argument("--filter", type=str, default="none", help="Add filter to agent observation ['none', 'hash']")
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
+    parser.add_argument("--restore", type=str2bool, default=False, help="Restores previous model if it exists. If set to false and new run will be started.")
 
     parser.add_argument("--crop_input", type=str2bool, default=False, help="enables atari input cropping.")
     parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="learning rate for adam optimizer")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
     parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
+    parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
     parser.add_argument("--evaluate_diversity", type=str2bool, default=False, help="Evalutes the diversity of rollouts during training.")
     parser.add_argument("--reward_clip", type=float, default=5.0)
@@ -123,7 +135,7 @@ def get_checkpoint_path(step, postfix):
     return os.path.join(LOG_FOLDER, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
 def show_cuda_info():
-    print("Using device:", DEVICE)
+    print("Using device: {}".format(bcolors.BOLD+DEVICE+bcolors.ENDC))
 
 def mse(a,b):
     """ returns MSE of a and b. """
@@ -477,7 +489,6 @@ class AtariWrapper(gym.Wrapper):
 
         if self.crop:
             obs = obs[34:-16, :, :]
-            print(obs.shape)
 
         if (width, height) != (self._width, self._height):
             obs = cv2.resize(obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
@@ -1238,12 +1249,35 @@ def print_profile_info(timing_log, title="Performance results:"):
 def zero_format_number(x):
     return "{:03.0f}M".format(round(x/1e6))
 
-def save_checkpoint(filename, step, model, optimizer,):
+def save_checkpoint(filename, step, model, optimizer, logs):
     torch.save({
         'step': step ,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'logs': logs,
     }, filename)
+
+def get_checkpoints():
+    """ Returns list of (epoch, filename) for each checkpoint in current LOG_FOLDER. """
+    results = []
+    if not os.path.exists(LOG_FOLDER):
+        return []
+    for f in os.listdir():
+        if f.startswith("checkpoint") and f.endswith(".pt"):
+            epoch = int(f[11:14])
+            results.append((epoch, f))
+    results.sort(reverse=True)
+    return results
+
+def load_checkpoint(model, optimizer, checkpoint_path):
+    """ Restores model from checkpoint. Returns current env_step"""
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    step = checkpoint['step']
+    logs = checkpoint['logs']
+    return step, logs
+
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     """
@@ -1287,6 +1321,9 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     max_grad_norm = kwargs.get("max_grad_norm", 0.5)
     sync_envs = kwargs.get("sync", False)
 
+    # epsilon = 1e-5 is required for stability.
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
+
     # save parameters
     params = {
         "n_steps": n_steps,
@@ -1311,6 +1348,28 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     params.update(kwargs)
 
+    batch_size = (n_steps * agents)
+
+    # detect a previous experiment
+    checkpoints = get_checkpoints()
+    if len(checkpoints) > 0:
+        print(bcolors.OKGREEN+"Previous checkpoint detected."+bcolors.ENDC)
+        checkpoint_path = os.path.join(LOG_FOLDER, checkpoints[0][1])
+        restored_step, logs = load_checkpoint(model, optimizer, checkpoint_path)
+        training_log, timing_log, score_history, len_history = logs
+        print(" -resumed from step {:.0f}M.".format(restored_step/1000/1000))
+        start_iteration = restored_step // batch_size
+        print(restored_step, start_iteration)
+        did_restore = True
+    else:
+        start_iteration = 0
+        did_restore = False
+
+        training_log = []
+        timing_log = []
+        score_history = []
+        len_history = []
+
     # make a copy of params
     with open(os.path.join(LOG_FOLDER, "params.txt"),"w") as f:
         f.write(json.dumps(params, indent=4))
@@ -1321,10 +1380,6 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     except Exception as e:
         print("Failed to copy training file to log folder.", e)
 
-    batch_size = (n_steps * agents)
-
-    # epsilon = 1e-5 is required for stability.
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
 
     env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
     vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
@@ -1341,18 +1396,11 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     episode_score = np.zeros([agents], dtype = np.float32)
     episode_len = np.zeros([agents], dtype = np.int32)
 
-    training_log = []
-    timing_log = []
-
-    score_history = []
-    len_history = []
-
     initial_start_time = time.time()
 
     fps_history = deque(maxlen=10 if not PROFILE_INFO else None)
 
     checkpoint_every = int(10e6)
-    last_checkpoint = 0
 
     # add a few checkpoints early on
 
@@ -1361,7 +1409,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))
 
-    for iteration in range(n_iterations+1):
+    for iteration in range(start_iteration, n_iterations+1):
 
         env_step = iteration * batch_size
 
@@ -1507,7 +1555,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                     with_default(training_log[-1][13], 0)
                 ))
 
-        if (iteration in checkpoints):
+        # make sure we don't save the checkpoint we just restored from.
+        if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
             print()
             print("Checkpoint for {}".format(LOG_FOLDER))
@@ -1516,7 +1565,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
             if args.save_checkpoints:
                 checkpoint_name = get_checkpoint_path(env_step, "params.pt")
-                save_checkpoint(checkpoint_name, env_step, model, optimizer)
+                logs = (training_log, timing_log, score_history, len_history)
+                save_checkpoint(checkpoint_name, env_step, model, optimizer, logs)
                 print("  -checkpoint saved")
 
             if args.export_video:
@@ -1601,9 +1651,30 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     return training_log
 
 
+def get_previous_experiment_guid(experiment_path, run_name):
+    """ Looks for previous experiment with same run_name. Returns the guid if found. """
+    if not os.path.exists(experiment_path):
+        return None
+    for f in os.listdir(experiment_path):
+        if f[:-19] == run_name:
+            guid = f[-17:-1]
+            return guid
+    return None
+
+
 def run_experiment(experiment_name, run_name, env_name, model, n_iterations = 10000, **kwargs):
 
     global LOG_FOLDER
+    global GUID
+
+    if args.restore:
+        # look for a previous experiment and use it if we find one...
+        guid = get_previous_experiment_guid(os.path.join(OUTPUT_FOLDER, experiment_name), run_name)
+        if guid is None:
+            print(bcolors.FAIL+"Could not restore experiment {}:{}. Previous run not found.".format(experiment_name, run_name)+bcolors.ENDC)
+        else:
+            GUID = guid
+
     LOG_FOLDER = "{}/{}/{} [{}]".format(OUTPUT_FOLDER, experiment_name, run_name, GUID[-16:])
 
     print("Logging to folder", LOG_FOLDER)
@@ -1676,7 +1747,10 @@ if __name__ == "__main__":
         PRINT_EVERY = 0
     else:
         args.env_name = get_environment_name(args.environment, args.sticky_actions)
-        set_num_frames(args.epochs * 1e6)
+        if args.limit_epochs is not None:
+            set_num_frames(args.limit_epochs * 1e6)
+        else:
+            set_num_frames(args.epochs * 1e6)
 
     if args.output_folder is not None:
         print("Outputting to folder", args.output_folder)
