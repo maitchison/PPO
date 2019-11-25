@@ -66,15 +66,18 @@ class Job:
 
         path = self.get_path()
         if path is None or not os.path.exists(path):
-            return "missing"
+            return "pending"
 
         status = "pending"
 
         last_modifed = None
 
         if os.path.exists(os.path.join(path, "params.txt")):
-            status = "started"
+            status = "waiting"
             last_modifed = os.path.getmtime(os.path.join(path, "params.txt"))
+
+        if os.path.exists(os.path.join(path, "lock.txt")):
+            status = "working"
 
         if os.path.exists(os.path.join(path, "final_score.txt")):
             status = "completed"
@@ -82,7 +85,7 @@ class Job:
         if os.path.exists(os.path.join(path, "training_log.csv")):
             last_modifed = os.path.getmtime(os.path.join(path, "training_log.csv"))
 
-        if status == "started" and last_modifed is not None:
+        if status in ["working"] and last_modifed is not None:
             hours_since_modified = (time.time()-last_modifed)/60/60
             if hours_since_modified > 1.0:
                 status = "stale"
@@ -114,38 +117,44 @@ class Job:
         details = {}
         details["max_epochs"] = params["epochs"]
         details["completed_epochs"] = data["Step"].iloc[-1] / 1e6
+
         scores = data["Ep_Score (100)"]
         scores = scores[~np.isnan(scores)]  #remove the nans
         if len(scores) > 10:
             details["score"] = np.percentile(scores, 95)
         else:
             details["score"] = 0
+
         details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
         details["fps"] = np.mean(data["FPS"].iloc[-5:])
         frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
         details["eta"] = frames_remaining / details["fps"]
-        details["host"] = params["hostname"]
+        details["host"] = params.get("hostname","unknown")
 
         return details
 
     def run(self, chunked=False):
 
-        chunk_size = 20
+        chunk_size = 10
 
         self.params["output_folder"] = OUTPUT_FOLDER
 
-        experiment_folder = os.path.join(OUTPUT_FOLDER, experiment_name)
+        experiment_folder = os.path.join(OUTPUT_FOLDER, self.experiment_name)
+        src_folder = os.path.join(experiment_folder, "src")
 
         # make the destination folder...
         if not os.path.exists(experiment_folder):
             print("Making experiment folder " + experiment_folder)
             os.makedirs(experiment_folder, exist_ok=True)
 
+        if not os.path.exists(src_folder):
+            os.makedirs(src_folder, exist_ok=True)
+
         # copy script across if needed.
-        ppo_path = experiment_folder + "/ppo.py"
+        ppo_path = os.path.join(src_folder, "ppo.py")
         if not os.path.exists(ppo_path):
             print("Copying ppo.py")
-            shutil.copy("ppo.py", ppo_path)
+            shutil.copy("ppo.py", src_folder)
 
         self.params["experiment_name"] = self.experiment_name
         self.params["run_name"] = self.run_name
@@ -161,8 +170,8 @@ class Job:
             if details is None:
                 next_chunk = chunk_size
             else:
-                next_chunk = round(details["completed_epochs"] / chunk_size) + chunk_size
-            self.params["limit_epochs"] = next_chunk
+                next_chunk = (round(details["completed_epochs"] / chunk_size) * chunk_size) + chunk_size
+            self.params["limit_epochs"] = int(next_chunk)
 
 
         python_part = "python {} {}".format(ppo_path, self.params["env_name"])
@@ -172,6 +181,7 @@ class Job:
 
         print()
         print("=" * 120)
+        print(bcolors.OKGREEN+self.experiment_name+" "+self.run_name+bcolors.ENDC)
         print("Running " + python_part + "\n" + params_part_lined)
         print("=" * 120)
         print()
@@ -254,9 +264,9 @@ def setup_jobs():
     # -------------------------------------------------------------------------------------------
 
     # get an idea of which hash size works...
-    for hash_size in [1, 2, 4, 8, 16, 32]:
+    for hash_size in [1, 2, 4, 6, 7, 8, 16]:
         add_job(
-            "hash",
+            "Hash",
             run_name="hash_size=" + str(hash_size),
             env_name="pong",
             epochs=20,
@@ -267,29 +277,28 @@ def setup_jobs():
 
     for env_name in ["pong", "alien"]:
         for filter in ["hash", "hash_time"]:
-
             add_job(
-                "hash",
-                run_name="200 {} {}".format(env_name, filter),
+                "Hash",
+                run_name="Full {} {}".format(env_name, filter),
                 env_name=env_name,
                 epochs=200,
                 agents=64,
-                learning_rate=1e-4,
+                learning_rate=2e-4,
                 filter=filter,
-                hash_size=6,
+                hash_size=7,
                 priority=5
             )
 
     add_job(
-        "hash",
-        run_name="200 pong hash cropped",
+        "Hash",
+        run_name="Full pong hash cropped",
         env_name="pong",
         epochs=200,
         agents=64,
         crop_input=True,
-        learning_rate=1e-4,
+        learning_rate=2e-4,
         filter="hash",
-        hash_size=6,
+        hash_size=7,
         priority=5
     )
 
@@ -320,7 +329,7 @@ def run_next_experiment(filter_jobs=None):
         if filter_jobs is not None and not filter_jobs(job):
             continue
         status = job.get_status()
-        if status in ["pending", "missing"]:
+        if status in ["pending", "waiting"]:
             job.run(chunked=True)
             return
 
@@ -355,11 +364,11 @@ def show_experiments(filter_jobs=None, all=False):
 
 
         status_transform = {
-            "missing": "",
             "pending": "",
             "stale": "stale",
             "completed": "done",
-            "started": "running"
+            "working": "working",
+            "waiting": "waiting"
         }
 
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}".format(

@@ -64,16 +64,17 @@ def build_parser():
 
     return parser
 
-parser = build_parser()
-args = parser.parse_args()
+if __name__ == "__main__":
+    parser = build_parser()
+    args = parser.parse_args()
 
-# must be done before import numpy...
-threads = str(args.threads)
-os.environ["OMP_NUM_THREADS"] = threads
-os.environ["OPENBLAS_NUM_THREADS"] = threads
-os.environ["MKL_NUM_THREADS"] = threads
-os.environ["VECLIB_MAXIMUM_THREADS"] = threads
-os.environ["NUMEXPR_NUM_THREADS"] = threads
+    # must be done before import numpy...
+    threads = str(args.threads)
+    os.environ["OMP_NUM_THREADS"] = threads
+    os.environ["OPENBLAS_NUM_THREADS"] = threads
+    os.environ["MKL_NUM_THREADS"] = threads
+    os.environ["VECLIB_MAXIMUM_THREADS"] = threads
+    os.environ["NUMEXPR_NUM_THREADS"] = threads
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -95,7 +96,9 @@ import multiprocessing
 import pickle
 import socket
 
-torch.set_num_threads(int(threads))
+
+if __name__ == "__main__":
+    torch.set_num_threads(int(threads))
 
 _game_envs = defaultdict(set)
 for env in gym.envs.registry.all():
@@ -103,6 +106,7 @@ for env in gym.envs.registry.all():
     _game_envs[env_type].add(env.id)
 
 GUID = uuid.uuid4().hex
+LOCK_KEY = uuid.uuid4().hex
 LOG_FOLDER = "/run/experiment [{}]".format(GUID[-8:])
 NATS_TO_BITS = 1.0/math.log(2)
 RES_X = 84
@@ -112,6 +116,7 @@ OUTPUT_FOLDER = "runs"
 DTYPE = torch.float
 PROFILE_INFO = False
 PRINT_EVERY = 10
+SAVE_LOG_EVERY = 20 # this is a bit fast? should be 50?
 VERBOSE = True
 
 def get_auto_device():
@@ -423,9 +428,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
         info["raw_reward"] = reward
         scaled_reward = reward / (self.std + self.epsilon)
         scaled_reward = np.clip(scaled_reward, -self.clip, +self.clip)
-
-        #stub
-        #print(scaled_reward, reward, self.mean, self.std, self.current_return)
 
         info["returns_std"] = self.std
         info["returns_mean"] = self.mean
@@ -1214,6 +1216,17 @@ def export_movie(filename, model, env_name):
     video_out.release()
 
 
+def sig_fig(x, sf=6):
+    """ returns x to 6 significant figures if x is a float and small, otherwise returns the input unchanged."""
+    if type(x) is float or type(x) is np.float:
+        digits = int(math.log10(abs(x)+0.00000000001))
+        rounding = sf - digits
+        if rounding < 0:
+            rounding = 0
+        return round(x, rounding)
+    else:
+        return x
+
 def save_training_log(filename, training_log):
     with open(filename, mode='w') as f:
         csv_writer = csv.writer(f, delimiter=',')
@@ -1223,6 +1236,8 @@ def save_training_log(filename, training_log):
                              "Elapsed", "Iteration", "Step", "FPS", "Gradient_Norm", "History"])
 
         for row in training_log:
+            # convert values lower precision
+            row = [sig_fig(x,sf=4) for x in row]
             csv_writer.writerow(row)
 
 def save_profile_log(filename, timing_log):
@@ -1257,12 +1272,12 @@ def save_checkpoint(filename, step, model, optimizer, logs):
         'logs': logs,
     }, filename)
 
-def get_checkpoints():
+def get_checkpoints(path):
     """ Returns list of (epoch, filename) for each checkpoint in current LOG_FOLDER. """
     results = []
-    if not os.path.exists(LOG_FOLDER):
+    if not os.path.exists(path):
         return []
-    for f in os.listdir():
+    for f in os.listdir(path):
         if f.startswith("checkpoint") and f.endswith(".pt"):
             epoch = int(f[11:14])
             results.append((epoch, f))
@@ -1277,6 +1292,44 @@ def load_checkpoint(model, optimizer, checkpoint_path):
     step = checkpoint['step']
     logs = checkpoint['logs']
     return step, logs
+
+def lock_job():
+
+    # make sure there isn't another lock
+    previous_lock = get_lock()
+    if previous_lock is not None and previous_lock["key"] != LOCK_KEY:
+        raise Exception("Could not get lock for job, another worker has a lock open.")
+
+    lock = {
+        'host': str(socket.gethostname()),
+        'time': str(time.time()),
+        'status': "started",
+        'key': str(LOCK_KEY)
+    }
+
+    lock_path = os.path.join(LOG_FOLDER, "lock.txt")
+    with open(lock_path,"w") as f:
+        json.dump(lock, f)
+
+def release_lock():
+
+    assert have_lock(), "Worker does not have lock."
+
+    lock_path = os.path.join(LOG_FOLDER, "lock.txt")
+    os.remove(lock_path)
+
+def get_lock():
+    """ Gets lock information for this job. """
+    lock_path = os.path.join(LOG_FOLDER, "lock.txt")
+    if os.path.exists(lock_path):
+        return json.load(open(lock_path, "r"))
+    else:
+        return None
+
+def have_lock():
+    """ Returns if we currently have the lock."""
+    lock = get_lock()
+    return lock is not None and lock["key"] == LOCK_KEY
 
 
 def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
@@ -1299,6 +1352,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     atari usually requires ~10M steps 
     
     """
+
+    lock_job()
 
     # get shapes and dtypes
     _env = make_environment(env_name)
@@ -1351,15 +1406,14 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     batch_size = (n_steps * agents)
 
     # detect a previous experiment
-    checkpoints = get_checkpoints()
+    checkpoints = get_checkpoints(LOG_FOLDER)
     if len(checkpoints) > 0:
         print(bcolors.OKGREEN+"Previous checkpoint detected."+bcolors.ENDC)
         checkpoint_path = os.path.join(LOG_FOLDER, checkpoints[0][1])
         restored_step, logs = load_checkpoint(model, optimizer, checkpoint_path)
         training_log, timing_log, score_history, len_history = logs
-        print(" -resumed from step {:.0f}M.".format(restored_step/1000/1000))
-        start_iteration = restored_step // batch_size
-        print(restored_step, start_iteration)
+        print("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
+        start_iteration = (restored_step // batch_size) + 1
         did_restore = True
     else:
         start_iteration = 0
@@ -1386,8 +1440,15 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     print("Generated {} agents ({}) using {} ({}) model.".format(agents, "async" if not sync_envs else "sync", model.name, model.dtype))
 
-    print("Training for {:.1f}k iterations {:.2f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
+    if start_iteration == 0 and (args.limit_epochs is None):
+        print("Training for {:.1f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
+    else:
+        print("Training block from "+
+              bcolors.WARNING+str(round(start_iteration * batch_size / 1000 / 1000))+"M"+bcolors.ENDC+" to ("+
+              bcolors.WARNING+str(round(n_iterations * batch_size / 1000 / 1000))+"M"+bcolors.ENDC+
+              " / "+str(round(args.epochs))+"M) steps")
 
+    print()
     print("-" * 120)
 
     # initialize agent
@@ -1400,7 +1461,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     fps_history = deque(maxlen=10 if not PROFILE_INFO else None)
 
-    checkpoint_every = int(10e6)
+    checkpoint_every = int(5e6)
 
     # add a few checkpoints early on
 
@@ -1559,9 +1620,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
             print()
-            print("Checkpoint for {}".format(LOG_FOLDER))
-
-            start_time = time.time()
+            print(bcolors.OKGREEN+"Checkpoint: {}".format(LOG_FOLDER)+bcolors.ENDC)
 
             if args.save_checkpoints:
                 checkpoint_name = get_checkpoint_path(env_step, "params.pt")
@@ -1580,10 +1639,9 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
                                                                                           np.min(diversity) / 1000,
                                                                                           np.max(diversity) / 1000))
 
-            print("  -finished after {:.1f}s".format(time.time()-start_time))
             print()
 
-        if iteration in [10, 20, 30, 40] or iteration % 50 == 0:
+        if iteration in [5, 10, 20, 30, 40] or iteration % SAVE_LOG_EVERY == 0 or iteration == n_iterations:
 
             save_training_log(os.path.join(LOG_FOLDER, "training_log.csv"), training_log)
 
@@ -1645,8 +1703,12 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         save_profile_log(os.path.join(LOG_FOLDER, "timing_info.csv"), timing_log)
 
     # save a final score.
-    with open(os.path.join(LOG_FOLDER, "final_score.txt"), "w") as f:
-        f.write(str(np.percentile(score_history,95)))
+    if args.limit_epochs is None:
+        # only write final score once we finish the last epoch.
+        with open(os.path.join(LOG_FOLDER, "final_score.txt"), "w") as f:
+            f.write(str(np.percentile(score_history,95)))
+
+    release_lock()
 
     return training_log
 
@@ -1748,7 +1810,11 @@ if __name__ == "__main__":
     else:
         args.env_name = get_environment_name(args.environment, args.sticky_actions)
         if args.limit_epochs is not None:
-            set_num_frames(min(args.limit_epochs, args.epochs) * 1e6)
+            if args.limit_epochs >= args.epochs:
+                # turn limit epochs if it is too high.
+                args.limit_epochs = None
+            else:
+                set_num_frames(args.limit_epochs * 1e6)
         else:
             set_num_frames(args.epochs * 1e6)
 
