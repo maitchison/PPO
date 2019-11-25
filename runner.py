@@ -57,7 +57,16 @@ class Job:
 
     @property
     def _sort_key(self):
-        return (-self.priority, self.get_completed_epochs(), self.experiment_name, self.id)
+
+        status = self.get_status()
+
+        priority = self.priority
+
+        # make running tasks appear at top...
+        if status == "working":
+            priority += 1000
+
+        return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
     def get_path(self):
         # returns path to this job.
@@ -116,7 +125,10 @@ class Job:
 
     def get_completed_epochs(self):
         details = self.get_details()
-        if details is not None: return details["completed_epochs"]
+        if details is not None:
+            return details["completed_epochs"]
+        else:
+            return 0
 
     def run(self, chunked=False):
 
@@ -335,7 +347,9 @@ def show_experiments(filter_jobs=None, all=False):
         if details is not None:
             percent_complete = "{:.1f}%".format(details["fraction_complete"]*100)
             eta_hours = "{:.1f}h".format(details["eta"] / 60 / 60)
-            score = "{:.1f}".format(details["score"])
+            score = details["score"]
+            if score is None: score = 0
+            score = "{:.1f}".format(score)
             host = details["host"][:8]
         else:
             percent_complete = ""

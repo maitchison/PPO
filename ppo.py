@@ -25,7 +25,6 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-
 def build_parser():
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
@@ -96,6 +95,7 @@ import multiprocessing
 import pickle
 import socket
 
+ENV_NORM_STATE = None
 
 if __name__ == "__main__":
     torch.set_num_threads(int(threads))
@@ -360,49 +360,9 @@ class FrameSkipWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
 
-class NormalizeObservationWrapper(gym.Wrapper):
-    def __init__(self, env, clip=5.0):
-        """
-        Normalize and clip observations.
-        """
-        super().__init__(env)
-        self.clip = clip
-        self._n = 1000
-        self._update_every = 100
-        self.epsilon = 0.00001
-        self.counter = 0
-
-        self.observation_space = gym.spaces.Box(
-            low = -clip,
-            high = clip,
-            shape = env.observation_space.shape,
-            dtype=np.float32
-        )
-
-        self.history = deque(maxlen=self._n)
-        self.env = env
-
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-
-        self.history.append(obs)
-
-        #note: this will be slow for large observation spaces, would be better to do a running average.
-        if (self.counter % self._update_every) == 0:
-            self.means = np.mean(np.asarray(self.history), axis=0)
-            self.stds = np.std(np.asarray(self.history), axis=0)
-
-        obs = np.asarray(obs, dtype=np.float32)
-        obs = np.clip((obs - self.means) / (self.stds + self.epsilon), -self.clip, +self.clip)
-
-        self.counter += 1
-
-        return obs, reward, done, info
-
-
 class NormalizeRewardWrapper(gym.Wrapper):
 
-    def __init__(self, env, clip=5.0):
+    def __init__(self, env, clip=5.0, initial_state=None):
         """
         Normalizes returns
 
@@ -414,6 +374,8 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.epsilon = 1e-4
         self.current_return = 0
         self.ret_rms = RunningMeanStd(shape=())
+        if initial_state is not None:
+            self.restore_state(initial_state)
 
     def step(self, action):
 
@@ -430,14 +392,26 @@ class NormalizeRewardWrapper(gym.Wrapper):
         scaled_reward = reward / (self.std + self.epsilon)
         scaled_reward = np.clip(scaled_reward, -self.clip, +self.clip)
 
-        info["returns_std"] = self.std
-        info["returns_mean"] = self.mean
+        info["returns_norm_state"] = self.save_state()
 
         return obs, scaled_reward, done, info
 
     def reset(self):
         self.current_return = 0
         return self.env.reset()
+
+    def save_state(self):
+        """ 
+        Saves running statistics.
+        """
+        return tuple(float(x) for x in [self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count])
+
+    def restore_state(self, state):
+        """
+        Restores running statistics.
+        """
+        self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count = state
+
 
 class ObservationMonitor(gym.Wrapper):
 
@@ -592,9 +566,12 @@ def make_environment(env_name, non_determinism="noop"):
 
         env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR, crop=args.crop_input)
 
-        env = NormalizeRewardWrapper(env, clip=args.reward_clip)
+        env = NormalizeRewardWrapper(env, clip=args.reward_clip, initial_state=ENV_NORM_STATE)
+
+
     elif env_type == "classic_control":
-        env = NormalizeObservationWrapper(env)
+        #env = NormalizeObservationWrapper(env)
+        pass
     else:
         raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))
 
@@ -997,6 +974,12 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
+        # save a copy of the normalization statistics.
+        norm_state = infos[0].get("returns_norm_state", None)
+        if norm_state is not None:
+            global ENV_NORM_STATE
+            ENV_NORM_STATE = norm_state
+
         episode_score += raw_rewards
         episode_len += 1
 
@@ -1265,12 +1248,13 @@ def print_profile_info(timing_log, title="Performance results:"):
 def zero_format_number(x):
     return "{:03.0f}M".format(round(x/1e6))
 
-def save_checkpoint(filename, step, model, optimizer, logs):
+def save_checkpoint(filename, step, model, optimizer, norm_state, logs):
     torch.save({
         'step': step ,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'logs': logs,
+        'norm_state': norm_state
     }, filename)
 
 def get_checkpoints(path):
@@ -1292,7 +1276,8 @@ def load_checkpoint(model, optimizer, checkpoint_path):
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     step = checkpoint['step']
     logs = checkpoint['logs']
-    return step, logs
+    norm_state = checkpoint['norm_state']
+    return step, logs, norm_state
 
 def lock_job():
 
@@ -1409,9 +1394,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     # detect a previous experiment
     checkpoints = get_checkpoints(LOG_FOLDER)
     if len(checkpoints) > 0:
+        global ENV_NORM_STATE
         print(bcolors.OKGREEN+"Previous checkpoint detected."+bcolors.ENDC)
         checkpoint_path = os.path.join(LOG_FOLDER, checkpoints[0][1])
-        restored_step, logs = load_checkpoint(model, optimizer, checkpoint_path)
+        restored_step, logs, ENV_NORM_STATE = load_checkpoint(model, optimizer, checkpoint_path)
         training_log, timing_log, score_history, len_history = logs
         print("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
@@ -1641,7 +1627,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             if args.save_checkpoints:
                 checkpoint_name = get_checkpoint_path(env_step, "params.pt")
                 logs = (training_log, timing_log, score_history, len_history)
-                save_checkpoint(checkpoint_name, env_step, model, optimizer, logs)
+                save_checkpoint(checkpoint_name, env_step, model, optimizer, ENV_NORM_STATE, logs)
                 print("  -checkpoint saved")
 
             if args.export_video:
