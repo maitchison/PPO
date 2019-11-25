@@ -1,79 +1,179 @@
 import os
 import sys
 import shutil
+import pandas as pd
+import numpy as np
+import json
+import time
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 
 OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
 
-def get_status(experiment_folder, run_name):
+def get_run_folder(experiment_name, run_name):
+    """ Returns the path for given experiment and run, or none if not found. """
+
+    path = os.path.join(OUTPUT_FOLDER, experiment_name)
+    if not os.path.exists(path):
+        return None
+
+    for file in os.listdir(path):
+        name = os.path.split(file)[-1]
+        this_run_name = name[:-19]  # crop off the id code.
+        if this_run_name == run_name:
+            return os.path.join(path, name)
+    return None
+
+class Job:
+
     """
-    Returns if this experiment has been started or not.
-    :param output_folder:
-    :param experiment_name:
-    :param run_name:
-    :return:
+    Note: we don't cache any of the properties here as other worker may modify the filesystem, so we need to always
+    use the up-to-date version.
     """
 
-    if not os.path.exists(experiment_folder):
-        return "pending"
+    # class variable to keep track of insertion order.
+    id = 0
 
-    status = "pending"
+    def __init__(self, experiment_name, run_name, priority, params):
+        self.experiment_name = experiment_name
+        self.run_name = run_name
+        self.priority = priority
+        self.params = params
+        self.id = Job.id
+        Job.id += 1
 
-    for subdir, dirs, files in os.walk(experiment_folder):
+    def __lt__(self, other):
+         return self._sort_key < other._sort_key
 
-        for file in files:
-            name = os.path.split(subdir)[-1]
-            this_run_name = name[:-19]  # crop off the id code.
-            if this_run_name != run_name:
-                continue
+    @property
+    def _sort_key(self):
+        return (-self.priority, self.experiment_name, self.id)
 
-            # look for the params file (indicates job has stared...
-            if file == "params.txt" and status == "pending":
-                status = "started"
+    def get_path(self):
+        # returns path to this job.
+        return get_run_folder(self.experiment_name, self.run_name)
 
-            # look for the completed file.
-            if file == "final_score.txt":
-                status = "completed"
+    def get_status(self):
 
-    return status
+        path = self.get_path()
+        if path is None or not os.path.exists(path):
+            return "missing"
+
+        status = "pending"
+
+        last_modifed = None
+
+        if os.path.exists(os.path.join(path, "params.txt")):
+            status = "started"
+            last_modifed = os.path.getmtime(os.path.join(path, "params.txt"))
+
+        if os.path.exists(os.path.join(path, "final_score.txt")):
+            status = "completed"
+
+        if os.path.exists(os.path.join(path, "training_log.csv")):
+            last_modifed = os.path.getmtime(os.path.join(path, "training_log.csv"))
+
+        if status == "started" and last_modifed is not None:
+            hours_since_modified = (time.time()-last_modifed)/60/60
+            if hours_since_modified > 12:
+                status = "stale"
+
+        return status
+
+    def get_data(self):
+        try:
+            path = os.path.join(self.get_path(), "training_log.csv")
+            return pd.read_csv(path)
+        except:
+            return None
+
+    def get_params(self):
+        try:
+            path = os.path.join(self.get_path(), "params.txt")
+            return json.load(open(path, "r"))
+        except:
+            return None
+
+    def get_details(self):
+
+        data = self.get_data()
+        params = self.get_params()
+
+        if data is None or params is None:
+            return None
+
+        details = {}
+        details["max_epochs"] = params["epochs"]
+        details["completed_epochs"] = data["Step"].iloc[-1] / 1e6
+        scores = data["Ep_Score (100)"]
+        scores = scores[~np.isnan(scores)]  #remove the nans
+        details["score"] = np.percentile(scores, 95)
+        details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
+        details["fps"] = np.mean(data["FPS"].iloc[-5:])
+        frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
+        details["eta"] = frames_remaining / details["fps"]
+        details["host"] = params["hostname"]
+
+        return details
+
+    def run(self, chunked=False):
+
+        self.params["output_folder"] = OUTPUT_FOLDER
+
+        experiment_folder = self.get_path()
+
+        # make the destination folder...
+        if not os.path.exists(experiment_folder):
+            print("Making experiment folder " + experiment_folder)
+            os.makedirs(experiment_folder, exist_ok=True)
+
+        # copy script across if needed.
+        ppo_path = experiment_folder + "/ppo.py"
+        if not os.path.exists(ppo_path):
+            print("Copying ppo.py")
+            shutil.copy("ppo.py", ppo_path)
+
+        self.params["experiment_name"] = self.experiment_name
+        self.params["run_name"] = self.run_name
+        self.params["restore"] = True
+
+        if chunked:
+            # work out the next block to do
+            details = self.get_details()
+            if details is None:
+                next_chunk = 20.0
+            else:
+                next_chunk = round(details["completed_epochs"] / 20) + 20
+            self.params["limit_epochs"] = next_chunk
+
+
+        python_part = "python {} {}".format(ppo_path, self.params["env_name"])
+
+        params_part = " ".join(["--{}='{}'".format(k, v) for k, v in self.params.items() if k not in ["env_name"]])
+        params_part_lined = "\n".join(["--{}='{}'".format(k, v) for k, v in self.params.items() if k not in ["env_name"]])
+
+        print()
+        print("=" * 120)
+        print("Running " + python_part + "\n" + params_part_lined)
+        print("=" * 120)
+        print()
+        return_code = os.system(python_part + " " + params_part)
+        if return_code != 0:
+            raise Exception("Error {}.".format(return_code))
+
 
 def add_job(experiment_name, run_name, priority=0, **kwargs):
-    global id
-    job_list.append((priority, id, experiment_name, run_name, kwargs))
-    id += 1
+    job_list.append(Job(experiment_name, run_name, priority, kwargs))
 
-def run_experiment(experiment_name, run_name, **kwargs):
-
-    kwargs["output_folder"] = OUTPUT_FOLDER
-
-    experiment_folder = os.path.join(OUTPUT_FOLDER, experiment_name)
-
-    # make the destination folder...
-    if not os.path.exists(experiment_folder):
-        print("Making experiment folder " + experiment_folder)
-        os.makedirs(experiment_folder, exist_ok=True)
-
-    # copy script across if needed.
-    ppo_path = experiment_folder+ "/ppo.py"
-    if not os.path.exists(ppo_path):
-        print("Copying ppo.py")
-        shutil.copy("ppo.py", ppo_path)
-
-    kwargs["experiment_name"] = experiment_name
-    kwargs["run_name"] = run_name
-
-    python_part = "python {} {}".format(ppo_path, kwargs["env_name"])
-
-    params_part = " ".join(["--{}='{}'".format(k,v) for k,v in kwargs.items() if k not in ["env_name"]])
-    params_part_lined = "\n".join(["{}:'{}'".format(k, v) for k, v in kwargs.items()])
-
-    print()
-    print("=" * 120)
-    print("Running " + python_part + "\n" + params_part_lined)
-    print("=" * 120)
-    print()
-    return_code = os.system(python_part + " " + params_part)
-    if return_code != 0:
-        raise Exception("Error {}.".format(return_code))
 
 def setup_jobs():
 
@@ -184,46 +284,69 @@ def setup_jobs():
                 color=color
             )
 
-def run_next_experiment(filter_experiments = None):
-    job_list.sort(key=lambda x: (-x[0], x[1])) # just sort by priority and insertion order.
-    for priority, id, experiment_name, run_name, params in job_list:
-        if filter_experiments is not None:
-            if filter_experiments.lower() != experiment_name.lower():
-                continue
-        status = get_status(os.path.join(OUTPUT_FOLDER, experiment_name), run_name)
+def run_next_experiment(filter_jobs=None):
+
+    job_list.sort()
+
+    for job in job_list:
+        if filter_jobs is not None and not filter_jobs(job):
+            continue
+        status = job.get_status()
         if status == "pending":
-            run_experiment(experiment_name, run_name, **params)
+            job.run()
             return
 
 
-def show_experiments(filter_experiments=None, all=False):
-    job_list.sort(key=lambda x: (-x[0], x[1])) # just sort by priority and insertion order.
-    print("-" * 100)
-    print("{:<10}{:<20}{:60}{:10}".format("priority", "experiment_name", "run_name", "status"))
-    print("-" * 100)
-    for priority, id, experiment_name, run_name, params in job_list:
-        if filter_experiments is not None:
-            if filter_experiments.lower() != experiment_name.lower():
+def show_experiments(filter_jobs=None, all=False):
+    job_list.sort()
+    print("-" * 141)
+    print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "score", "host"))
+    print("-" * 141)
+    for job in job_list:
+
+        if filter_jobs is not None and not filter_jobs(job):
                 continue
-        status = get_status(os.path.join(OUTPUT_FOLDER, experiment_name), run_name)
+
+        status = job.get_status()
 
         if status == "completed" and not all:
             continue
 
+        details = job.get_details()
+
+        if details is not None:
+            percent_complete = "{:.1f}%".format(details["fraction_complete"]*100)
+            eta_hours = "{:.1f}h".format(details["eta"] / 60 / 60)
+            score = "{:.1f}".format(details["score"])
+            host = details["host"][:8]
+        else:
+            percent_complete = ""
+            eta_hours = ""
+            score = ""
+            host = ""
+
+
         status_transform = {
             "missing": "",
             "pending": "",
-            "completed": "[done]",
-            "started": "..."
+            "stale": "stale",
+            "completed": "done",
+            "started": "running"
         }
 
-        print("{:<10}{:<20}{:<60}{:^10}".format(priority, experiment_name, run_name, status_transform[status]))
+        print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
+            job.priority, job.experiment_name, job.run_name, percent_complete, status_transform[status], eta_hours, score, host))
 
 if __name__ == "__main__":
     id = 0
     job_list = []
     setup_jobs()
-    experiment_name = sys.argv[1]
+
+    if len(sys.argv) == 1:
+        experiment_name = "show"
+    else:
+        experiment_name = sys.argv[1]
+
     if experiment_name == "show_all":
         show_experiments(all=True)
     elif experiment_name == "show":
@@ -231,4 +354,4 @@ if __name__ == "__main__":
     elif experiment_name == "auto":
         run_next_experiment()
     else:
-        run_next_experiment(filter_experiments = experiment_name)
+        run_next_experiment(filter_jobs=lambda x: x.experiment_name == experiment_name)

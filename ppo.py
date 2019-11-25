@@ -1748,7 +1748,7 @@ if __name__ == "__main__":
     else:
         args.env_name = get_environment_name(args.environment, args.sticky_actions)
         if args.limit_epochs is not None:
-            set_num_frames(args.limit_epochs * 1e6)
+            set_num_frames(min(args.limit_epochs, args.epochs) * 1e6)
         else:
             set_num_frames(args.epochs * 1e6)
 
