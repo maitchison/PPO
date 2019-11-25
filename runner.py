@@ -84,7 +84,7 @@ class Job:
 
         if status == "started" and last_modifed is not None:
             hours_since_modified = (time.time()-last_modifed)/60/60
-            if hours_since_modified > 12:
+            if hours_since_modified > 1.0:
                 status = "stale"
 
         return status
@@ -116,7 +116,10 @@ class Job:
         details["completed_epochs"] = data["Step"].iloc[-1] / 1e6
         scores = data["Ep_Score (100)"]
         scores = scores[~np.isnan(scores)]  #remove the nans
-        details["score"] = np.percentile(scores, 95)
+        if len(scores) > 10:
+            details["score"] = np.percentile(scores, 95)
+        else:
+            details["score"] = 0
         details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
         details["fps"] = np.mean(data["FPS"].iloc[-5:])
         frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
@@ -127,9 +130,11 @@ class Job:
 
     def run(self, chunked=False):
 
+        chunk_size = 20
+
         self.params["output_folder"] = OUTPUT_FOLDER
 
-        experiment_folder = self.get_path()
+        experiment_folder = os.path.join(OUTPUT_FOLDER, experiment_name)
 
         # make the destination folder...
         if not os.path.exists(experiment_folder):
@@ -144,15 +149,19 @@ class Job:
 
         self.params["experiment_name"] = self.experiment_name
         self.params["run_name"] = self.run_name
-        self.params["restore"] = True
+
+        details = self.get_details()
+
+        if details is not None and details["completed_epochs"] > 0:
+            # restore if some work has already been done.
+            self.params["restore"] = True
 
         if chunked:
             # work out the next block to do
-            details = self.get_details()
             if details is None:
-                next_chunk = 20.0
+                next_chunk = chunk_size
             else:
-                next_chunk = round(details["completed_epochs"] / 20) + 20
+                next_chunk = round(details["completed_epochs"] / chunk_size) + chunk_size
             self.params["limit_epochs"] = next_chunk
 
 
@@ -220,6 +229,25 @@ def setup_jobs():
             agents=64,
             mini_batch_size=mini_batch_size,
         )
+
+
+    # -------------------------------------------------------------------------------------------
+    # Test
+    # -------------------------------------------------------------------------------------------
+
+    add_job(
+        "Test",
+        run_name="test",
+        env_name="pong",
+        workers=32,
+        epochs=200,
+        agents=256,
+        filter="hash",
+        crop_input=True,
+        learning_rate=1e-4,
+        hash_size=7,
+        priority=10
+    )
 
     # -------------------------------------------------------------------------------------------
     # Hash
@@ -292,8 +320,8 @@ def run_next_experiment(filter_jobs=None):
         if filter_jobs is not None and not filter_jobs(job):
             continue
         status = job.get_status()
-        if status == "pending":
-            job.run()
+        if status in ["pending", "missing"]:
+            job.run(chunked=True)
             return
 
 
