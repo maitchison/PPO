@@ -66,6 +66,8 @@ class Job:
         if status == "working":
             priority += 1000
 
+        priority = priority - (self.get_completed_epochs() / 20)
+
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
     def get_path(self):
@@ -191,32 +193,38 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs():
 
+    # todo: move this into a seperate (python) file...
+
     # -------------------------------------------------------------------------------------------
     # GA_Pong
     # -------------------------------------------------------------------------------------------
 
-    for agents in reversed([8, 16, 32, 64, 128, 256, 512, 1024]):
+    for agents in [8, 16, 32, 64, 128, 256, 512, 1024]:
         add_job(
-            "GA_Pong",
+            "GA_Pong_Agents",
             run_name="agents=" + str(agents),
             env_name="pong",
             epochs=20,
-            agents=agents
+            agents=agents,
+            priority=10,
         )
 
+    """
     for reward_clip in [1, 3, 5, 10]:
         add_job(
-            "GA_Pong",
+            "GA_Pong_Reward_Clip",
             run_name="reward_clip=" + str(reward_clip),
             env_name="pong",
             epochs=20,
             agents=256,
             reward_clip=reward_clip
         )
+    """
 
+    """
     for mini_batch_size in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
         add_job(
-            "GA_Pong",
+            "GA_Pong_Mini_Batch",
             run_name="mini_batch_size="+str(mini_batch_size),
             env_name="pong",
             epochs=20,
@@ -234,30 +242,13 @@ def setup_jobs():
             agents=64,
             mini_batch_size=mini_batch_size,
         )
-
-
-    # -------------------------------------------------------------------------------------------
-    # Test
-    # -------------------------------------------------------------------------------------------
-
-    add_job(
-        "Test",
-        run_name="test",
-        env_name="pong",
-        workers=32,
-        epochs=200,
-        agents=256,
-        filter="hash",
-        crop_input=True,
-        learning_rate=1e-4,
-        hash_size=7,
-        priority=10
-    )
+    """
 
     # -------------------------------------------------------------------------------------------
     # Hash
     # -------------------------------------------------------------------------------------------
 
+    """
     # get an idea of which hash size works...
     for hash_size in [1, 2, 4, 6, 7, 8, 16]:
         add_job(
@@ -274,7 +265,7 @@ def setup_jobs():
         for filter in ["hash", "hash_time"]:
             add_job(
                 "Hash",
-                run_name="Full {} {}".format(env_name, filter),
+                run_name="full {} {}".format(env_name, filter),
                 env_name=env_name,
                 epochs=200,
                 agents=64,
@@ -285,7 +276,7 @@ def setup_jobs():
 
     add_job(
         "Hash",
-        run_name="Full pong hash cropped",
+        run_name="full pong hash cropped",
         env_name="pong",
         epochs=200,
         agents=64,
@@ -294,11 +285,13 @@ def setup_jobs():
         filter="hash",
         hash_size=7,
     )
+    """
 
     # -------------------------------------------------------------------------------------------
     # RA_Alien
     # -------------------------------------------------------------------------------------------
 
+    """
     for resolution in ["half", "standard", "full"]:
         for model in ["cnn", "cnn_improved"]:
             color = True if model == "improved_cnn" else False
@@ -313,6 +306,7 @@ def setup_jobs():
                 model=model,
                 color=color
             )
+    """
 
 def run_next_experiment(filter_jobs=None):
 
@@ -326,12 +320,17 @@ def run_next_experiment(filter_jobs=None):
             job.run(chunked=True)
             return
 
+def comma(x):
+    if type(x) is int or (type(x) is float and int(x) == x):
+        return "{:,}".format(x)
+    else:
+        return x
 
 def show_experiments(filter_jobs=None, all=False):
     job_list.sort()
-    print("-" * 141)
-    print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "score", "host"))
-    print("-" * 141)
+    print("-" * 151)
+    print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "fps", "score", "host"))
+    print("-" * 151)
     for job in job_list:
 
         if filter_jobs is not None and not filter_jobs(job):
@@ -351,12 +350,13 @@ def show_experiments(filter_jobs=None, all=False):
             if score is None: score = 0
             score = "{:.1f}".format(score)
             host = details["host"][:8]
+            fps = details["fps"]
         else:
             percent_complete = ""
             eta_hours = ""
             score = ""
             host = ""
-
+            fps = ""
 
         status_transform = {
             "pending": "",
@@ -366,8 +366,8 @@ def show_experiments(filter_jobs=None, all=False):
             "waiting": "waiting"
         }
 
-        print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
-            job.priority, job.experiment_name, job.run_name, percent_complete, status_transform[status], eta_hours, score, host))
+        print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
+            job.priority, job.experiment_name, job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
 
 if __name__ == "__main__":
     id = 0

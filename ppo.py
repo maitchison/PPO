@@ -493,33 +493,6 @@ class AtariWrapper(gym.Wrapper):
             self._push_raw_obs(obs)
         return self.stack
 
-
-class DiscretizeActionWrapper(gym.Wrapper):
-
-    def __init__(self, env, bins=10):
-        """
-        Convert continuous action space into discrete.
-        """
-        super().__init__(env)
-        self.env = env
-
-        assert isinstance(env.action_space, gym.spaces.Box)
-        assert len(env.action_space.shape) == 1
-
-        dims = env.action_space[0]
-
-        self.action_map = []
-
-        spans = [np.linspace(env.action_space.low[d], env.action_space.high[d], bins) for d in range(dims)]
-
-        self.action_map = list(itertools.product(*spans))
-
-        self.action_space = gym.spaces.Discrete(len(self.action_map))
-
-    def step(self, action):
-        return self.env.step(self.action_map[action])
-
-
 """
 ------------------------------------------------------------------------------------------------------------------------
     Utilities
@@ -568,15 +541,9 @@ def make_environment(env_name, non_determinism="noop"):
 
         env = NormalizeRewardWrapper(env, clip=args.reward_clip, initial_state=ENV_NORM_STATE)
 
-
-    elif env_type == "classic_control":
-        #env = NormalizeObservationWrapper(env)
-        pass
     else:
         raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))
 
-    if isinstance(env.action_space, gym.spaces.Box):
-        env = DiscretizeActionWrapper(env)
 
     return env
 
@@ -1588,7 +1555,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             details = {}
             details["max_epochs"] = args.epochs
             details["completed_epochs"] = env_step / 1e6
-            details["score"] = np.percentile(score_history, 95) if len(score_history) > 0 else None
+            details["score"] = np.percentile(smooth(score_history, 0.9), 95) if len(score_history) > 0 else None
             details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
             details["fps"] = int(np.mean(fps_history))
             frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
