@@ -6,8 +6,10 @@ import math
 
 NATS_TO_BITS = 1.0/math.log(2)
 
-
 class Color:
+    """
+        Colors class for use with terminal.
+    """
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
     OKGREEN = '\033[92m'
@@ -23,7 +25,8 @@ class Color:
 
 
 def str2bool(v):
-    """ Convert from string to boolean.
+    """
+        Convert from string in various formats to boolean.
     """
     if isinstance(v, bool):
        return v
@@ -36,11 +39,12 @@ def str2bool(v):
 
 
 def mse(a,b):
-    """ returns MSE of a and b. """
+    """ returns the mean square error between a and b. """
     return (np.square(a - b, dtype=np.float32)).mean(dtype=np.float32)
 
 
 def prod(X):
+    """ Returns the product of X, where X is a vector."""
     y = 1
     for x in X:
         y *= x
@@ -48,20 +52,25 @@ def prod(X):
 
 
 def trace(s):
+    """ Prints output. """
     print(s)
 
 
 def entropy(p):
+    """ Returns the entropy of a distribution. """
     return -torch.sum(p * p.log2())
 
 
 def log_entropy(logp):
-    """entropy of logits, where logits are in nats."""
+    """ Returns the entropy of a distribution where input are log probabilties."""
     return -(logp.exp() * logp).sum() * (NATS_TO_BITS)
 
 
 def sample_action_from_logp(logp):
-    """ Returns integer [0..len(probs)-1] based on log probabilities. """
+    """
+        Returns integer [0..len(probs)-1] based on log probabilities.
+        Log probabilities will be normalized.
+    """
 
     # todo: switch to direct sample from logps
     # this would probably work...
@@ -79,6 +88,9 @@ def sample_action_from_logp(logp):
 
 
 def smooth(X, alpha=0.98):
+    """
+    Smooths input using a Exponential Moving Average.
+    """
     y = X[0]
     results = []
     for x in X:
@@ -88,18 +100,31 @@ def smooth(X, alpha=0.98):
 
 
 def safe_mean(X, rounding=None):
+    """
+    Returns the mean of X, or 0 if X has no elements.
+    :param X: input
+    :param rounding: if given round to this many decimal places.
+    """
     result = float(np.mean(X)) if len(X) > 0 else None
-    if rounding is not None and result is not None:
-        return round(result, rounding)
+    if rounding is not None:
+        return safe_round(result, rounding)
     else:
         return result
 
 
 def safe_round(x, digits):
+    """
+    Rounds x to given number of decimal places.
+    If input is none will return none.
+    """
     return round(x, digits) if x is not None else x
 
 
 def inspect(x):
+    """
+    Prints the type and shape of x.
+    :param x: input, an integer, float, ndarray etc.
+    """
     if isinstance(x, int):
         print("Python interger")
     elif isinstance(x, float):
@@ -113,6 +138,9 @@ def inspect(x):
 
 
 def nice_display(X, title):
+    """
+    Prints first 5 elements of array with values rounded to 2dp.
+    """
     print("{:<20}{}".format(title, [round(float(x),2) for x in X[:5]]))
 
 
@@ -123,11 +151,11 @@ def nice_display(X, title):
 
 def dtw(obs1, obs2):
     """
-        Calculates the distances between two observation sequences using dynamic time warping.
-        obs1, obs2
-            np array [N, C, W, H], where N is number of frames (they don't need to mathc), and C is channels which
-                                   should be 1.
-        ref: https://en.wikipedia.org/wiki/Dynamic_time_warping
+    Returns the distances between two observation sequences using dynamic time warping.
+    obs1, obs2
+        np array [N, C, W, H], where N is number of frames (they don't need to mathc), and C is channels which
+                               should be 1.
+    ref: https://en.wikipedia.org/wiki/Dynamic_time_warping
     """
 
     n = obs1.shape[0]
@@ -155,7 +183,10 @@ def dtw(obs1, obs2):
 # -------------------------------------------------------------
 
 def get_auto_device():
-    """ Returns the best device, CPU if no CUDA, otherwise GPU with most free memory. """
+    """
+    Returns the best device to use for training,
+    Will be the GPU with most free memory if CUDA is available, otherwise CPU.
+    """
     if not torch.cuda.is_available():
         return "cpu"
 

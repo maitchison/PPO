@@ -20,6 +20,7 @@ CHUNK_SIZE = 10
 
 OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
 
+
 def get_run_folder(experiment_name, run_name):
     """ Returns the path for given experiment and run, or none if not found. """
 
@@ -33,6 +34,7 @@ def get_run_folder(experiment_name, run_name):
         if this_run_name == run_name:
             return os.path.join(path, name)
     return None
+
 
 class Job:
 
@@ -273,6 +275,8 @@ def setup_jobs():
                 filter=filter,
                 hash_size=7,
             )
+            
+    """
 
     add_job(
         "Hash",
@@ -281,11 +285,12 @@ def setup_jobs():
         epochs=200,
         agents=64,
         crop_input=True,
-        learning_rate=2e-4,
+        learning_rate=1e-4,
         filter="hash",
         hash_size=7,
+        priority=12,
     )
-    """
+
 
     # -------------------------------------------------------------------------------------------
     # RA_Alien

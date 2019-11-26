@@ -4,6 +4,10 @@ import numpy as np
 import cv2
 
 def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
+    """
+    Calculate and return running mean and variance.
+    """
+
     delta = batch_mean - mean
     tot_count = count + batch_count
 
@@ -17,8 +21,12 @@ def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, 
     return new_mean, new_var, new_count
 
 class RunningMeanStd(object):
-    # from https://github.com/openai/baselines/blob/1b092434fc51efcb25d6650e287f07634ada1e08/baselines/common/running_mean_std.py
-    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    """
+    Class to handle running mean and standard deviation book-keeping.
+    From https://github.com/openai/baselines/blob/1b092434fc51efcb25d6650e287f07634ada1e08/baselines/common/running_mean_std.py
+    See https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    """
+
     def __init__(self, epsilon=1e-4, shape=()):
         self.mean = np.zeros(shape, 'float64')
         self.var = np.ones(shape, 'float64')
@@ -42,8 +50,8 @@ class RunningMeanStd(object):
 
 class NoopResetWrapper(gym.Wrapper):
     """
-    from
-    https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
+    Applies a random number of no-op actions before agent can start playing.
+    From https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
     """
     def __init__(self, env, noop_max=30):
         """Sample initial states by taking random number of no-ops on reset.
@@ -78,9 +86,7 @@ class HashWrapper(gym.Wrapper):
     """
     Maps observation onto a random sequence of pixels.
     This is helpful for testing if the agent is simply memorizing the environment, as no generalization between
-    states is possiable under this observation.
-
-    Note: we assume channels is last, which means this really only works if applied after atari processing.
+    states is possible under this observation.
     """
 
     def __init__(self, env, hash_size, use_time=False):
@@ -102,6 +108,7 @@ class HashWrapper(gym.Wrapper):
         else:
             state_hash = hash(original_obs.data.tobytes())
 
+        # note: named tensor would help get this shape right...
         w, h, c = original_obs.shape
 
         rng = np.random.RandomState(state_hash % (2**32)) # ok... this limits us to 32bits.. might be a better way to do this?
@@ -125,10 +132,11 @@ class HashWrapper(gym.Wrapper):
         self.counter = 0
         return self.env.reset()
 
+
 class FrameSkipWrapper(gym.Wrapper):
     """
-    from
-    https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
+    Performs frame skipping with max over last two frames.
+    From https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
     """
     def __init__(self, env, min_skip=4, max_skip=None, reduce_op=np.max):
         """Return only every `skip`-th frame"""
@@ -167,6 +175,9 @@ class FrameSkipWrapper(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 class NormalizeRewardWrapper(gym.Wrapper):
+    """
+    Normalizes rewards such that returns are unit normal.
+    """
 
     def __init__(self, env, clip=5.0, initial_state=None):
         """
@@ -220,6 +231,10 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
 
 class ObservationMonitor(gym.Wrapper):
+    """
+    Records a copy of the current observation into info. This can be helpful to retain an unmodified copy of the
+    input.
+    """
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
@@ -230,9 +245,28 @@ class ObservationMonitor(gym.Wrapper):
         info["monitor_obs"] = obs.copy()
         return obs, reward, done, info
 
-class AtariWrapper(gym.Wrapper):
+class FrameCropWrapper(gym.Wrapper):
+    """
+    Crops input frame.
+    """
 
-    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84, crop=False):
+    def __init__(self, env: gym.Env, x1, x2, y1, y2):
+        super().__init__(env)
+        self.env = env
+        self.cropping = (slice(y1, y2, 1), slice(x1, x2, 1))
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        obs = obs[self.cropping]
+        return obs, reward, done, info
+
+class AtariWrapper(gym.Wrapper):
+    """
+    Applies Atari frame warping, optional gray-scaling, and frame stacking as per nature paper.
+    Note: unlike Nature the initial frame cropping is disabled by default.
+    """
+
+    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
@@ -251,7 +285,6 @@ class AtariWrapper(gym.Wrapper):
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
         self.grayscale = grayscale
-        self.crop = crop
         self.n_channels = self.n_stacks * (1 if self.grayscale else 3)
         self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
 
@@ -269,9 +302,6 @@ class AtariWrapper(gym.Wrapper):
             obs = obs[:, :, np.newaxis]
 
         width, height, channels = obs.shape
-
-        if self.crop:
-            obs = obs[34:-16, :, :]
 
         if (width, height) != (self._width, self._height):
             obs = cv2.resize(obs, (self._height, self._width), interpolation=cv2.INTER_AREA)

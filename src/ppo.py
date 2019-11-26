@@ -55,6 +55,7 @@ def make_environment(env_name, non_determinism="noop"):
 
     env = gym.make(env_name)
     if env_type == "atari":
+
         assert "NoFrameskip" in env_name
 
         non_determinism = non_determinism.lower()
@@ -71,6 +72,9 @@ def make_environment(env_name, non_determinism="noop"):
 
         env = wrappers.ObservationMonitor(env)
 
+        if args.crop_input:
+            env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
+
         # apply filter
         if args.filter == "none":
             pass
@@ -81,7 +85,7 @@ def make_environment(env_name, non_determinism="noop"):
         else:
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
-        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color, crop=args.crop_input)
+        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
         env = wrappers.NormalizeRewardWrapper(env, clip=args.reward_clip, initial_state=ENV_NORM_STATE)
 
