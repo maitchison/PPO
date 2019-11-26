@@ -94,8 +94,8 @@ class Job:
         if os.path.exists(os.path.join(path, "final_score.txt")):
             status = "completed"
 
-        if os.path.exists(os.path.join(path, "training_log.csv")):
-            last_modifed = os.path.getmtime(os.path.join(path, "training_log.csv"))
+        if os.path.exists(os.path.join(path, "progress.txt")):
+            last_modifed = os.path.getmtime(os.path.join(path, "progress.txt"))
 
         if status in ["working"] and last_modifed is not None:
             hours_since_modified = (time.time()-last_modifed)/60/60
@@ -151,7 +151,7 @@ class Job:
         ppo_path = os.path.join(src_folder, "ppo.py")
         if not os.path.exists(ppo_path):
             print("Copying ppo.py")
-            shutil.copy("ppo.py", src_folder)
+            os.system("cp ./src/*.py "+src_folder)
 
         self.params["experiment_name"] = self.experiment_name
         self.params["run_name"] = self.run_name
@@ -362,8 +362,8 @@ def show_experiments(filter_jobs=None, all=False):
             "pending": "",
             "stale": "stale",
             "completed": "done",
-            "working": "working",
-            "waiting": "waiting"
+            "working": "running",
+            "waiting": "pending"
         }
 
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(

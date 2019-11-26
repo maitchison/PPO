@@ -1,89 +1,11 @@
 import os
-import sys
-import argparse
-
-# using more than 2 threads locks up all the cpus and does not seem to improve performance.
-# the gain from 2 CPUs to 1 is very minor too. (~10%)
-
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
-def str2bool(v):
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-def build_parser():
-    parser = argparse.ArgumentParser(description="Trainer for PPO2")
-
-    parser.add_argument("environment")
-
-    parser.add_argument("--experiment_name", type=str, help="Name of the experiment.")
-    parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
-
-    parser.add_argument("--agents", type=int, default=8)
-
-    parser.add_argument("--filter", type=str, default="none", help="Add filter to agent observation ['none', 'hash']")
-    parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
-    parser.add_argument("--restore", type=str2bool, default=False, help="Restores previous model if it exists. If set to false and new run will be started.")
-
-    parser.add_argument("--crop_input", type=str2bool, default=False, help="enables atari input cropping.")
-    parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="learning rate for adam optimizer")
-    parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
-    parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
-    parser.add_argument("--epochs", type=int, default=200, help="Each epoch represents 1 million environment interactions.")
-    parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
-    parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
-    parser.add_argument("--evaluate_diversity", type=str2bool, default=False, help="Evalutes the diversity of rollouts during training.")
-    parser.add_argument("--reward_clip", type=float, default=5.0)
-    parser.add_argument("--mini_batch_size", type=int, default=1024)
-    parser.add_argument("--sync", type=str2bool, nargs='?', const=True, default=False)
-    parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
-    parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
-    parser.add_argument("--ent_bonus", type=float, default=0.01)
-    parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--export_video", type=str2bool, default=True)
-    parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--save_checkpoints", type=str2bool, default=True)
-    parser.add_argument("--output_folder", type=str)
-    parser.add_argument("--sticky_actions", type=str2bool, default=False)
-    parser.add_argument("--model", type=str, default="cnn", help="['cnn', 'improved_cnn']")
-
-    return parser
-
-if __name__ == "__main__":
-    parser = build_parser()
-    args = parser.parse_args()
-
-    # must be done before import numpy...
-    threads = str(args.threads)
-    os.environ["OMP_NUM_THREADS"] = threads
-    os.environ["OPENBLAS_NUM_THREADS"] = threads
-    os.environ["MKL_NUM_THREADS"] = threads
-    os.environ["VECLIB_MAXIMUM_THREADS"] = threads
-    os.environ["NUMEXPR_NUM_THREADS"] = threads
-
 import numpy as np
 import matplotlib.pyplot as plt
 import gym
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import cv2
 import time
-import itertools
 import csv
 import json
 import uuid
@@ -95,11 +17,9 @@ import multiprocessing
 import pickle
 import socket
 
-ENV_NORM_STATE = None
+import utils, wrappers, models
 
-if __name__ == "__main__":
-    torch.set_num_threads(int(threads))
-
+# get list of game environments...
 _game_envs = defaultdict(set)
 for env in gym.envs.registry.all():
     env_type = env.entry_point.split(':')[0].split('.')[-1]
@@ -107,402 +27,26 @@ for env in gym.envs.registry.all():
 
 GUID = uuid.uuid4().hex
 LOCK_KEY = uuid.uuid4().hex
+
+# output folders... move to args...
 LOG_FOLDER = "/run/experiment [{}]".format(GUID[-8:])
-NATS_TO_BITS = 1.0/math.log(2)
-RES_X = 84
-RES_Y = 84
-USE_COLOR = False
 OUTPUT_FOLDER = "runs"
-DTYPE = torch.float
+
+# debugging variables.
 PROFILE_INFO = False
+VERBOSE = True
 PRINT_EVERY = 10
 SAVE_LOG_EVERY = 50
-VERBOSE = True
-HOSTNAME = socket.gethostname()
 
-def get_auto_device():
-    """ Returns the best device, CPU if no CUDA, otherwise GPU with most free memory. """
-    if not torch.cuda.is_available():
-        return "cpu"
-
-    if torch.cuda.device_count() == 1:
-        return "cuda"
-    else:
-        # use the device with the most free memory.
-        try:
-            os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
-            memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
-            return "cuda:"+str(np.argmax(memory_available))
-        except:
-            print("Warning: Failed to auto detect best GPU.")
-            return "cuda"
+# global norm state... hmmm not good.
+ENV_NORM_STATE = None
 
 def get_checkpoint_path(step, postfix):
+    """ Returns the full path to a checkpoint file with given step count and postfix. """
     return os.path.join(LOG_FOLDER, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
-def show_cuda_info():
-    print("Using device: {}".format(bcolors.BOLD+DEVICE+bcolors.ENDC))
-
-def mse(a,b):
-    """ returns MSE of a and b. """
-    return (np.square(a - b, dtype=np.float32)).mean(dtype=np.float32)
-
-def dtw(obs1, obs2):
-    """ Calculates the distances between two observation sequences using dynamic time warping.
-        obs1, obs2
-            np array [N, C, W, H], where N is number of frames (they don't need to mathc), and C is channels which
-                                   should be 1.
-
-        ref: https://en.wikipedia.org/wiki/Dynamic_time_warping
-    """
-
-    n = obs1.shape[0]
-    m = obs2.shape[0]
-
-    DTW = np.zeros((n+1,m+1), dtype=np.float32) + float("inf")
-    DTW[0,0] = 0
-
-    obs1 = np.float32(obs1)
-    obs2 = np.float32(obs2)
-
-    for i in range(1,n+1):
-        for j in range(1,m+1):
-            cost = mse(obs1[i-1], obs2[j-1])
-            DTW[i,j] = cost + min(
-                DTW[i - 1, j],
-                DTW[i, j - 1],
-                DTW[i - 1, j - 1]
-            )
-
-    return DTW[n, m]
-
-
-"""
-------------------------------------------------------------------------------------------------------------------------
-    Wrappers
-------------------------------------------------------------------------------------------------------------------------
-"""
-
-
-class RunningMeanStd(object):
-    # from https://github.com/openai/baselines/blob/1b092434fc51efcb25d6650e287f07634ada1e08/baselines/common/running_mean_std.py
-    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
-    def __init__(self, epsilon=1e-4, shape=()):
-        self.mean = np.zeros(shape, 'float64')
-        self.var = np.ones(shape, 'float64')
-        self.count = epsilon
-
-    def update(self, x):
-
-        if type(x) in [float, int]:
-            batch_mean = x
-            batch_var = 0
-            batch_count = 1
-        else:
-            batch_mean = np.mean(x, axis=0)
-            batch_var = np.var(x, axis=0)
-            batch_count = x.shape[0]
-        self.update_from_moments(batch_mean, batch_var, batch_count)
-
-    def update_from_moments(self, batch_mean, batch_var, batch_count):
-        self.mean, self.var, self.count = update_mean_var_count_from_moments(
-            self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
-
-def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
-    delta = batch_mean - mean
-    tot_count = count + batch_count
-
-    new_mean = mean + delta * batch_count / tot_count
-    m_a = var * count
-    m_b = batch_var * batch_count
-    M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
-    new_var = M2 / tot_count
-    new_count = tot_count
-
-    return new_mean, new_var, new_count
-
-class NoopResetWrapper(gym.Wrapper):
-    """
-    from
-    https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
-    """
-    def __init__(self, env, noop_max=30):
-        """Sample initial states by taking random number of no-ops on reset.
-        No-op is assumed to be action 0.
-        """
-        gym.Wrapper.__init__(self, env)
-        self.noop_max = noop_max
-        self.override_num_noops = None
-        self.noop_action = 0
-        assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
-
-    def reset(self, **kwargs):
-        """ Do no-op action for a number of steps in [1, noop_max]."""
-        self.env.reset(**kwargs)
-        if self.override_num_noops is not None:
-            noops = self.override_num_noops
-        else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
-        assert noops > 0
-        obs = None
-        for _ in range(noops):
-            obs, _, done, _ = self.env.step(self.noop_action)
-            if done:
-                obs = self.env.reset(**kwargs)
-        return obs
-
-    def step(self, ac):
-        return self.env.step(ac)
-
-
-class HashWrapper(gym.Wrapper):
-    """
-    Maps observation onto a random sequence of pixels.
-    This is helpful for testing if the agent is simply memorizing the environment, as no generalization between
-    states is possiable under this observation.
-
-    Note: we assume channels is last, which means this really only works if applied after atari processing.
-    """
-
-    def __init__(self, env, use_time=False):
-        """
-        Map observation to a hash of observation.
-        """
-        super().__init__(env)
-        self.env = env
-        self.use_time = use_time
-        self.counter = 0
-
-    def step(self, action):
-
-        original_obs, reward, done, info = self.env.step(action)
-
-        if self.use_time:
-            state_hash = self.counter
-        else:
-            state_hash = hash(original_obs.data.tobytes())
-
-        w, h, c = original_obs.shape
-
-        rng = np.random.RandomState(state_hash % (2**32)) # ok... this limits us to 32bits.. might be a better way to do this?
-
-        # seed the random generator and create an random 42x42 observation.
-        # note: I'm not sure how many bits the numpy random generate will use, it's posiable it's a lot less than
-        # 1024. One option is then to break up the observation into parts. Another would be to just assume that the
-        # number of reachable states is much much less than this, and that the chance of a collision (alaising) is
-        # very low.
-        new_obs = rng.randint(0, 1+1, (args.hash_size,args.hash_size), dtype=np.uint8) * 255
-        new_obs = cv2.resize(new_obs, (h, w), interpolation=cv2.INTER_NEAREST)
-        new_obs = new_obs[:, :, np.newaxis]
-
-        new_obs = np.concatenate([new_obs]*c, axis=2)
-
-        self.counter += 1
-
-        return new_obs, reward, done, info
-
-    def reset(self):
-        self.counter = 0
-        return self.env.reset()
-
-
-class BlindWrapper(gym.Wrapper):
-    """
-    Replaces observation with zeros. This tests if an agent can solve the task by memorizing a sequence of actions without
-    considering the observation at all.
-    """
-    pass
-
-class TickerWrapper(gym.Wrapper):
-    """
-    Replace observation with an indication of the current time. This tests how well an agent performs if it's only
-    strategy is to memorize a sequence of key-presses.
-    """
-    pass
-
-class FrameSkipWrapper(gym.Wrapper):
-    """
-    from
-    https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
-    """
-    def __init__(self, env, min_skip=4, max_skip=None, reduce_op=np.max):
-        """Return only every `skip`-th frame"""
-        gym.Wrapper.__init__(self, env)
-        if max_skip is None:
-            max_skip = min_skip
-        assert env.observation_space.dtype == "uint8"
-        assert min_skip >= 1
-        assert max_skip >= min_skip
-        # most recent raw observations
-        self._obs_buffer = np.zeros((2,)+env.observation_space.shape, dtype=np.uint8)
-        self._min_skip = min_skip
-        self._max_skip = max_skip
-        self._reduce_op = reduce_op
-
-    def step(self, action):
-        """Repeat action, sum reward, and mean over last observations."""
-        total_reward = 0.0
-        done = None
-        skip = np.random.randint(self._min_skip, self._max_skip+1)
-        for i in range(skip):
-            obs, reward, done, info = self.env.step(action)
-            if i == skip - 2: self._obs_buffer[0] = obs
-            if i == skip - 1: self._obs_buffer[1] = obs
-            total_reward += reward
-            if done:
-                break
-        # Note that the observation on the done=True frame
-        # doesn't matter
-        reduce_frame = self._reduce_op(self._obs_buffer, axis=0)
-
-        return reduce_frame, total_reward, done, info
-
-    def reset(self, **kwargs):
-        return self.env.reset(**kwargs)
-
-class NormalizeRewardWrapper(gym.Wrapper):
-
-    def __init__(self, env, clip=5.0, initial_state=None):
-        """
-        Normalizes returns
-
-        """
-        super().__init__(env)
-
-        self.env = env
-        self.clip = clip
-        self.epsilon = 1e-4
-        self.current_return = 0
-        self.ret_rms = RunningMeanStd(shape=())
-        if initial_state is not None:
-            self.restore_state(initial_state)
-
-    def step(self, action):
-
-        obs, reward, done, info = self.env.step(action)
-
-        self.current_return = self.current_return * 0.99 + reward
-
-        self.ret_rms.update(self.current_return)
-
-        self.mean = self.ret_rms.mean
-        self.std = math.sqrt(self.ret_rms.var)
-
-        info["raw_reward"] = reward
-        scaled_reward = reward / (self.std + self.epsilon)
-        scaled_reward = np.clip(scaled_reward, -self.clip, +self.clip)
-
-        info["returns_norm_state"] = self.save_state()
-
-        return obs, scaled_reward, done, info
-
-    def reset(self):
-        self.current_return = 0
-        return self.env.reset()
-
-    def save_state(self):
-        """ 
-        Saves running statistics.
-        """
-        return tuple(float(x) for x in [self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count])
-
-    def restore_state(self, state):
-        """
-        Restores running statistics.
-        """
-        self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count = state
-
-
-class ObservationMonitor(gym.Wrapper):
-
-    def __init__(self, env: gym.Env):
-        super().__init__(env)
-        self.env = env
-
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-        info["monitor_obs"] = obs.copy()
-        return obs, reward, done, info
-
-class AtariWrapper(gym.Wrapper):
-
-    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84, crop=False):
-        """
-        Stack and do other stuff...
-        Input should be (210, 160, 3)
-        Output is a stack of shape (nstacks, width, height)
-        """
-
-        super().__init__(env)
-
-        self.env = env
-
-        self.n_stacks = n_stacks
-        self._width, self._height = width, height
-
-        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
-        assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
-        assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
-
-        self.grayscale = grayscale
-        self.crop = crop
-        self.n_channels = self.n_stacks * (1 if self.grayscale else 3)
-        self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
-
-        self.observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(self.n_channels, self._width, self._height),
-            dtype=np.uint8,
-        )
-
-    def _push_raw_obs(self, obs):
-
-        if self.grayscale:
-            obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-            obs = obs[:, :, np.newaxis]
-
-        width, height, channels = obs.shape
-
-        if self.crop:
-            obs = obs[34:-16, :, :]
-
-        if (width, height) != (self._width, self._height):
-            obs = cv2.resize(obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
-
-        if len(obs.shape) == 2:
-            obs = obs[:, :, np.newaxis]
-
-        self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
-
-        if self.grayscale:
-            self.stack[0:1, :, :] = obs[:, :, 0]
-        else:
-            obs = np.swapaxes(obs, 0, 2)
-            obs = np.swapaxes(obs, 1, 2)
-            self.stack[0:3, :, :] = obs
-
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-        self._push_raw_obs(obs)
-        return self.stack, reward, done, info
-
-    def reset(self):
-        obs = self.env.reset()
-        for _ in range(self.n_stacks):
-            self._push_raw_obs(obs)
-        return self.stack
-
-"""
-------------------------------------------------------------------------------------------------------------------------
-    Utilities
-------------------------------------------------------------------------------------------------------------------------
-"""
-
-
 def make_environment(env_name, non_determinism="noop"):
-    """ Construct environment of given name, including any required """
-
+    """ Construct environment of given name, including any required wrappers."""
     env_type = None
 
     for k,v in _game_envs.items():
@@ -515,313 +59,45 @@ def make_environment(env_name, non_determinism="noop"):
 
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":
-            env = NoopResetWrapper(env, noop_max=30)
-            env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+            env = wrappers.NoopResetWrapper(env, noop_max=30)
+            env = wrappers.FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
         elif non_determinism == "frame-skip":
-            env = NoopResetWrapper(env, noop_max=30)
-            env = FrameSkipWrapper(env, min_skip=2, max_skip=5, reduce_op=np.max)
+            env = wrappers.NoopResetWrapper(env, noop_max=30)
+            env = wrappers.FrameSkipWrapper(env, min_skip=2, max_skip=5, reduce_op=np.max)
         elif non_determinism == "none":
-            env = FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+            env = wrappers.FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
         else:
             raise Exception("Invalid non determinism type {}.".format(non_determinism))
 
-        env = ObservationMonitor(env)
+        env = wrappers.ObservationMonitor(env)
 
         # apply filter
         if args.filter == "none":
             pass
         elif args.filter == "hash":
-            env = HashWrapper(env)
+            env = wrappers.HashWrapper(env, args.hash_size)
         elif args.filter == "hash_time":
-            env = HashWrapper(env, use_time=True)
+            env = wrappers.HashWrapper(env, args.hash_size, use_time=True)
         else:
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
-        env = AtariWrapper(env, width=RES_X, height=RES_Y, grayscale=not USE_COLOR, crop=args.crop_input)
+        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color, crop=args.crop_input)
 
-        env = NormalizeRewardWrapper(env, clip=args.reward_clip, initial_state=ENV_NORM_STATE)
+        env = wrappers.NormalizeRewardWrapper(env, clip=args.reward_clip, initial_state=ENV_NORM_STATE)
 
     else:
         raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))
 
-
     return env
 
 
-def prod(X):
-    y = 1
-    for x in X:
-        y *= x
-    return y
-
-
-def trace(s):
-    print(s)
-
-
-def sample_action_from_logp(logp):
-    """ Returns integer [0..len(probs)-1] based on log probabilities. """
-
-    # this would probably work
-    # u = tf.random_uniform(tf.shape(self.logits), dtype=self.logits.dtype)
-    # return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
-
-    # todo make this sample directly without exponentiation
-
-    p = np.asarray(np.exp(logp), dtype=np.float64)
-
-    # this shouldn't happen, but sometimes does
-    if any(np.isnan(p)):
-        raise Exception("Found nans in probabilities", p)
-
-    p /= p.sum()  # probs are sometimes off by a little due to precision error
-    return np.random.choice(range(len(p)), p=p)
-
-
-class PolicyModel(nn.Module):
-
-    def forward(self, x):
-        raise NotImplemented()
-
-    def policy(self, x):
-        policy, value = self.forward(x)
-        return policy
-
-    def value(self, x):
-        policy, value = self.forward(x)
-        return value
-
-    def set_device_and_dtype(self, device, dtype):
-
-        self.to(device)
-
-        if dtype == torch.half:
-            self.half()
-        elif dtype == torch.float:
-            self.float()
-        elif dtype == torch.double:
-            self.double()
-        else:
-            raise Exception("Invalid dtype {} for model.".format(dtype))
-
-        self.device, self.dtype = device, dtype
-
-
-def get_CNN_output_size(input_size, kernel_sizes, strides, max_pool=False):
-    """ Calculates CNN output size, if max_pool is true uses max_pool instead of stride."""
-    size = input_size
-    for kernel_size, stride in zip(kernel_sizes, strides):
-
-        if max_pool:
-            size = (size - (kernel_size - 1) - 1) // 1 + 1
-            size = size // stride
-        else:
-            size = (size - (kernel_size - 1) - 1) // stride + 1
-    return size
-
-
-def add_xy(x):
-
-    n, c, w, h = x.shape
-    # from https://gist.github.com/leVirve/0377a8fbac455bfd44e374e5cf8b1260
-    xx_channel = torch.arange(w).repeat(1, h, 1)
-    yy_channel = torch.arange(h).repeat(1, w, 1).transpose(1, 2)
-
-    xx_channel = xx_channel.float() / (w - 1)
-    yy_channel = yy_channel.float() / (h - 1)
-
-    xx_channel = xx_channel * 2 - 1
-    yy_channel = yy_channel * 2 - 1
-
-    xx_channel = xx_channel.repeat(n, 1, 1, 1).transpose(2, 3)
-    yy_channel = yy_channel.repeat(n, 1, 1, 1).transpose(2, 3)
-
-    return torch.cat([
-        x,
-        xx_channel.type_as(x),
-        yy_channel.type_as(x)], dim=1)
-
-
-class ImprovedCNNModel(PolicyModel):
-    """ An improved CNN model that uses 3x3 filters and smaller strides.
-    """
-
-    name = "Improved_CNN"
-
-    def __init__(self, input_dims, actions, include_xy=True):
-
-        super(ImprovedCNNModel, self).__init__()
-
-
-
-        self.actions = actions
-        c, w, h = input_dims
-
-        self.include_xy = include_xy
-
-        if self.include_xy:
-            c = c + 2
-
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=3, stride=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-
-        w = get_CNN_output_size(w, [3, 3, 3, 3], [2, 2, 2, 1], max_pool=True)
-        h = get_CNN_output_size(h, [3, 3, 3, 3], [2, 2, 2, 1], max_pool=True)
-
-        self.out_shape = (64, w, h)
-
-        self.d = prod(self.out_shape)
-        self.fc = nn.Linear(self.d, 512)
-        self.fc_policy = nn.Linear(512, actions)
-        self.fc_value = nn.Linear(512, 1)
-
-        self.set_device_and_dtype(DEVICE, DTYPE)
-
-    def forward(self, x):
-        """ forwards input through model, returns policy and value estimate. """
-
-        if len(x.shape) == 3:
-            # make a batch of 1 for a single example.
-            x = x[np.newaxis, :, :, :]
-
-        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
-        assert len(x.shape) == 4, "input should be (N,C,W,H)"
-
-        n,c,w,h = x.shape
-
-        x = prep_for_model(x) * (1.0 / 255.0)
-
-        # give filters access to x,y location
-        if self.include_xy:
-            x = add_xy(x)
-
-        x = F.relu(self.conv1(x))
-        x = F.max_pool2d(x, kernel_size=2)
-        x = F.relu(self.conv2(x))
-        x = F.max_pool2d(x, kernel_size=2)
-        x = F.relu(self.conv3(x))
-        x = F.max_pool2d(x, kernel_size=2)
-        x = F.relu(self.conv4(x))
-
-        if x.shape[1:] != self.out_shape:
-            raise Exception("Invalid output dims. Expected {} found {}.".format(x.shape, self.out_shape))
-
-        x = F.relu(self.fc(x.view(n, self.d)))
-
-        policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=1)
-
-        return policy, value
-
-
-class CNNModel(PolicyModel):
-    """ Nature paper inspired CNN
-    """
-
-    name = "CNN"
-
-    def __init__(self, input_dims, actions):
-
-        super(CNNModel, self).__init__()
-
-        self.actions = actions
-        c, w, h = input_dims
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-
-        w = get_CNN_output_size(w, [8, 4, 3], [4, 2, 1])
-        h = get_CNN_output_size(h, [8, 4, 3], [4, 2, 1])
-
-        self.out_shape = (64, w, h)
-
-        self.d = prod(self.out_shape)
-        self.fc = nn.Linear(self.d, 512)
-        self.fc_policy = nn.Linear(512, actions)
-        self.fc_value = nn.Linear(512, 1)
-
-        self.set_device_and_dtype(DEVICE, DTYPE)
-
-    def forward(self, x):
-        """ forwards input through model, returns policy and value estimate. """
-
-        if len(x.shape) == 3:
-            # make a batch of 1 for a single example.
-            x = x[np.newaxis, :, :, :]
-
-        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
-        assert len(x.shape) == 4, "input should be (N,C,W,H)"
-
-        n,c,w,h = x.shape
-
-        x = prep_for_model(x) * (1.0/255.0)
-
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-
-        assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
-
-        x = F.relu(self.fc(x.view(n, self.d)))
-
-        policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=1)
-
-        return policy, value
-
-def entropy(p):
-    return -torch.sum(p * p.log2())
-
-def log_entropy(logp):
-    """entropy of logits, where logits are in nats."""
-    return -(logp.exp() * logp).sum() * (NATS_TO_BITS)
-
-
-def smooth(X, alpha=0.98):
-    y = X[0]
-    results = []
-    for x in X:
-        y = (1 - alpha) * x + (alpha) * y
-        results.append(y)
-    return results
-
-
-def safe_mean(X):
-    return np.mean(X) if len(X) > 0 else None
-
-def safe_round(x, digits):
-    return round(x, digits) if x is not None else x
-
-def inspect(x):
-    if isinstance(x, int):
-        print("Python interger")
-    elif isinstance(x, float):
-        print("Python float")
-    elif isinstance(x, np.ndarray):
-        print("Numpy", x.shape, x.dtype)
-    elif isinstance(x, torch.Tensor):
-        print("{:<10}{:<25}{:<18}{:<14}".format("torch", str(x.shape), str(x.dtype), str(x.device)))
-    else:
-        print(type(x))
-
-def nice_display(X, title):
-    print("{:<20}{}".format(title, [round(float(x),2) for x in X[:5]]))
-
-def prep_for_model(x):
-    return torch.from_numpy(x).to(DEVICE, non_blocking=True).to(dtype=DTYPE)
-
-def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm,
+def train_minibatch(model: models.PolicyModel, optimizer, ppo_epsilon, vf_coef, entropy_bonus, max_grad_norm,
                     prev_states, actions, returns, policy_logprobs, advantages, values):
 
-    # todo:
-    # sample from logps
-
-    policy_logprobs = prep_for_model(policy_logprobs)
-    advantages = prep_for_model(advantages)
-    returns = prep_for_model(returns)
-    old_pred_values = prep_for_model(values)
+    policy_logprobs = model.prep_for_model(policy_logprobs)
+    advantages = model.prep_for_model(advantages)
+    returns = model.prep_for_model(returns)
+    old_pred_values = model.prep_for_model(values)
 
     mini_batch_size = len(prev_states)
 
@@ -829,24 +105,24 @@ def train_minibatch(model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm
 
     ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
 
-    loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * advantages))
+    loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - ppo_epsilon, 1 + ppo_epsilon) * advantages))
 
     # this one is taken from PPO2 baseline, reduces variance but not sure why? does it stop the values from moving
     # too much?
-    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -epsilon, +epsilon)
+    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -ppo_epsilon, +ppo_epsilon)
 
     vf_losses1 = (value_prediction - returns).pow(2)
     vf_losses2 = (value_prediction_clipped - returns).pow(2)
     loss_value = - vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
 
-    loss_entropy = ent_bonus * log_entropy(logps) / mini_batch_size
+    loss_entropy = entropy_bonus * utils.log_entropy(logps) / mini_batch_size
 
     loss = -(loss_clip + loss_value + loss_entropy)  # gradient ascent.
 
     optimizer.zero_grad()
     loss.backward()
 
-    if max_grad_norm is not None:
+    if max_grad_norm is not None and max_grad_norm != 0:
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
     else:
         grad_norm = None
@@ -907,7 +183,6 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
                state_shape, state_dtype, policy_shape):
     """
     Runs agents given number of steps, using a single thread, but batching the updates
-    :param envs:
     :return:
         N is number of steps per run
         A is number of agents
@@ -934,7 +209,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         logprobs = logprobs.detach().cpu().numpy()
         value = value.detach().cpu().numpy()
 
-        actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
+        actions = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
         prev_states = states.copy()
 
         states, rewards, dones, infos = vec_envs.step(actions)
@@ -1073,7 +348,7 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
     while any(is_running) and counter < max_length:
 
         logprobs = model.policy(state).detach().cpu().numpy()
-        actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
+        actions = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
 
         state, reward, done, info = env.step(actions)
 
@@ -1112,7 +387,7 @@ def evaluate_diversity(step, model, env_name, num_rollouts=8, save_rollouts=True
         for j in range(i+1, num_rollouts):
             a = rollouts[i][::5] # do comparision at around 3 fps.
             b = rollouts[j][::5]
-            difference = dtw(a, b)
+            difference = utils.dtw(a, b)
 
             results.append(difference)
 
@@ -1151,7 +426,7 @@ def export_movie(filename, model, env_name):
 
     # play the game...
     while not done:
-        action = sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
+        action = utils.sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
         state, reward, done, info = env.step(action)
         rendered_frame = info.get("monitor_obs", state)
 
@@ -1254,7 +529,7 @@ def lock_job():
         raise Exception("Could not get lock for job, another worker has a lock open.")
 
     lock = {
-        'host': str(HOSTNAME),
+        'host': str(args.hostname),
         'time': str(time.time()),
         'status': "started",
         'key': str(LOCK_KEY)
@@ -1285,7 +560,7 @@ def have_lock():
     return lock is not None and lock["key"] == LOCK_KEY
 
 
-def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
+def train(env_name, model: models.PolicyModel, n_iterations=10*1000, **kwargs):
     """
     Default parameters from stable baselines
     
@@ -1316,53 +591,16 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     policy_shape = model.policy(obs[np.newaxis])[0].shape
     _env.close()
 
-    n_steps = kwargs.get("n_steps",128)  # steps per update (128)
-    gamma = kwargs.get("gamma", 0.99)   # discount (0.99)
-    lam = kwargs.get("lambda", 0.95)     # GAE parameter (0.95)
-    mini_batch_size = kwargs.get("mini_batch_size", 256)
-    epsilon = kwargs.get("epsilon", 0.1)
-    vf_coef = kwargs.get("vf_coef", 0.5)  # how much loss to take from value function
-    agents = kwargs.get("agents", 16)    # (8)
-    batch_epochs = kwargs.get("batch_epochs", 4)
-    ent_bonus = kwargs.get("ent_bonus", 0.01)
-    learning_rate = kwargs.get("learning_rate", 2.5e-4)
-    max_grad_norm = kwargs.get("max_grad_norm", 0.5)
-    sync_envs = kwargs.get("sync", False)
-
     # epsilon = 1e-5 is required for stability.
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-5)
 
-    # save parameters
-    params = {
-        "n_steps": n_steps,
-        "gamma": gamma,
-        "lambda": lam,
-        "mini_batch_size": mini_batch_size,
-        "epsilon": epsilon,
-        "vf_coef": vf_coef,
-        "agents": agents,
-        "model": model.name,
-        "batch_epochs": batch_epochs,
-        "ent_bonus": ent_bonus,
-        "reward_clip": args.reward_clip,
-        "hash_size": args.hash_size,
-        "learning_rate": learning_rate,
-        "filter": args.filter,
-        "max_grad_norm": max_grad_norm,
-        "n_iterations": n_iterations,
-        "guid": GUID[-8:],
-        "hostname": HOSTNAME
-    }
-
-    params.update(kwargs)
-
-    batch_size = (n_steps * agents)
+    batch_size = (args.n_steps * args.agents)
 
     # detect a previous experiment
     checkpoints = get_checkpoints(LOG_FOLDER)
     if len(checkpoints) > 0:
         global ENV_NORM_STATE
-        print(bcolors.OKGREEN+"Previous checkpoint detected."+bcolors.ENDC)
+        print(utils.Color.OKGREEN + "Previous checkpoint detected." + utils.Color.ENDC)
         checkpoint_path = os.path.join(LOG_FOLDER, checkpoints[0][1])
         restored_step, logs, ENV_NORM_STATE = load_checkpoint(model, optimizer, checkpoint_path)
         training_log, timing_log, score_history, len_history = logs
@@ -1380,27 +618,33 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
     # make a copy of params
     with open(os.path.join(LOG_FOLDER, "params.txt"),"w") as f:
+        params = {k:v for k,v in args.__dict__.items()}
+        # fix up some of the types...
+        params["dtype"] = str(params["dtype"])
+        params["model"] = params["model"].name
         f.write(json.dumps(params, indent=4))
 
-    # make a copy of training script for reference
+    # make a copy of training files for reference
     try:
-        shutil.copyfile("./ppo.py", os.path.join(LOG_FOLDER, "ppo.py"))
+        shutil.copyfile("./src/ppo.py", os.path.join(LOG_FOLDER, "ppo.py"))
+        shutil.copyfile("./src/models.py", os.path.join(LOG_FOLDER, "models.py"))
+        shutil.copyfile("./src/wrappers.py", os.path.join(LOG_FOLDER, "wrappers.py"))
+        shutil.copyfile("./src/utils.py", os.path.join(LOG_FOLDER, "utils.py"))
     except Exception as e:
         print("Failed to copy training file to log folder.", e)
 
+    env_fns = [lambda : make_environment(env_name) for _ in range(args.agents)]
+    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
-    env_fns = [lambda : make_environment(env_name) for _ in range(agents)]
-    vec_env = HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not sync_envs else gym.vector.SyncVectorEnv(env_fns)
-
-    print("Generated {} agents ({}) using {} ({}) model.".format(agents, "async" if not sync_envs else "sync", model.name, model.dtype))
+    print("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
 
     if start_iteration == 0 and (args.limit_epochs is None):
         print("Training for {:.1f}M steps".format(n_iterations/1000, n_iterations*batch_size/1000/1000))
     else:
-        print("Training block from "+
-              bcolors.WARNING+str(round(start_iteration * batch_size / 1000 / 1000))+"M"+bcolors.ENDC+" to ("+
-              bcolors.WARNING+str(round(n_iterations * batch_size / 1000 / 1000))+"M"+bcolors.ENDC+
-              " / "+str(round(args.epochs))+"M) steps")
+        print("Training block from " +
+              utils.Color.WARNING + str(round(start_iteration * batch_size / 1000 / 1000)) + "M" + utils.Color.ENDC + " to (" +
+              utils.Color.WARNING + str(round(n_iterations * batch_size / 1000 / 1000)) + "M" + utils.Color.ENDC +
+              " / " + str(round(args.epochs)) +"M) steps")
 
     print()
     print("-" * 120)
@@ -1408,8 +652,8 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
     # initialize agent
     states = vec_env.reset()
 
-    episode_score = np.zeros([agents], dtype = np.float32)
-    episode_len = np.zeros([agents], dtype = np.int32)
+    episode_score = np.zeros([args.agents], dtype = np.float32)
+    episode_len = np.zeros([args.agents], dtype = np.int32)
 
     initial_start_time = time.time()
 
@@ -1437,7 +681,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         # collect experience
         batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value = run_agents_vec(
-            n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
+            args.n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
             state_shape, state_dtype, policy_shape)
 
         # estimate advantages
@@ -1445,15 +689,15 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         # we calculate the advantages by going backwards..
         # estimated return is the estimated return being in state i
         # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
-        batch_advantage = np.zeros([n_steps, agents], dtype=np.float32)
+        batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
         value_next_i = model.value(states).detach().cpu().numpy()
-        terminal_next_i = np.asarray([False] * agents)
-        prev_adv = np.zeros([agents], dtype=np.float32)
+        terminal_next_i = np.asarray([False] * args.agents)
+        prev_adv = np.zeros([args.agents], dtype=np.float32)
 
-        for i in reversed(range(n_steps)):
-            delta = batch_reward[i] + gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
+        for i in reversed(range(args.n_steps)):
+            delta = batch_reward[i] + args.gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
 
-            batch_advantage[i] = prev_adv = delta + gamma * lam * (1.0-terminal_next_i) * prev_adv
+            batch_advantage[i] = prev_adv = delta + args.gamma * args.gae_lambda * (1.0-terminal_next_i) * prev_adv
 
             value_next_i = batch_value[i]
             terminal_next_i = batch_terminal[i]
@@ -1482,30 +726,30 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             np.asarray(batch_value.reshape(batch_size))
         ]
 
-        for i in range(batch_epochs):
+        for i in range(args.batch_epochs):
 
             ordering = list(range(batch_size))
             np.random.shuffle(ordering)
 
-            n_batches = math.ceil(batch_size / mini_batch_size)
+            n_batches = math.ceil(batch_size / args.mini_batch_size)
 
             for j in range(n_batches):
 
                 # put together a minibatch.
-                batch_start = j * mini_batch_size
-                batch_end = (j + 1) * mini_batch_size
+                batch_start = j * args.mini_batch_size
+                batch_end = (j + 1) * args.mini_batch_size
                 sample = ordering[batch_start:batch_end]
 
                 slices = (x[sample] for x in batch_arrays)
 
                 loss, loss_clip, loss_value, loss_entropy, grad_norm = train_minibatch(
-                    model, optimizer, epsilon, vf_coef, ent_bonus, max_grad_norm, *slices)
+                    model, optimizer, args.ppo_epsilon, args.vf_coef, args.entropy_bonus, args.max_grad_norm, *slices)
 
-                total_loss_clip += loss_clip / (batch_epochs*n_batches)
-                total_loss_value += loss_value / (batch_epochs*n_batches)
-                total_loss_entropy += loss_entropy / (batch_epochs*n_batches)
-                total_loss += loss / (batch_epochs*n_batches)
-                total_grad_norm += grad_norm / (batch_epochs * n_batches)
+                total_loss_clip += loss_clip / (args.batch_epochs*n_batches)
+                total_loss_value += loss_value / (args.batch_epochs*n_batches)
+                total_loss_entropy += loss_entropy / (args.batch_epochs*n_batches)
+                total_loss += loss / (args.batch_epochs*n_batches)
+                total_grad_norm += grad_norm / (args.batch_epochs * n_batches)
 
         train_time = (time.time() - start_train_time) / batch_size
 
@@ -1515,7 +759,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
         if PROFILE_INFO:
 
-            if "cuda" in DEVICE:
+            if "cuda" in args.device:
                 cuda_memory = torch.cuda.max_memory_allocated()
             else:
                 cuda_memory = 0
@@ -1537,10 +781,10 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
              total_loss_clip,
              total_loss_value,
              total_loss_entropy,
-             safe_round(safe_mean(score_history[-100:]), 2),
-             safe_round(safe_mean(len_history[-100:]),2),
-             safe_round(safe_mean(score_history[-10:]), 2),
-             safe_round(safe_mean(len_history[-10:]),2),
+             utils.safe_mean(score_history[-100:], 2),
+             utils.safe_mean(len_history[-100:], 2),
+             utils.safe_mean(score_history[-10:], 2),
+             utils.safe_mean(len_history[-10:], 2),
              time.time()-initial_start_time,
              iteration,
              env_step,
@@ -1555,12 +799,12 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             details = {}
             details["max_epochs"] = args.epochs
             details["completed_epochs"] = env_step / 1e6
-            details["score"] = np.percentile(smooth(score_history, 0.9), 95) if len(score_history) > 0 else None
+            details["score"] = np.percentile(utils.smooth(score_history, 0.9), 95) if len(score_history) > 0 else None
             details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
             details["fps"] = int(np.mean(fps_history))
             frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
             details["eta"] = frames_remaining / details["fps"]
-            details["host"] = HOSTNAME
+            details["host"] = args.hostname
             details["last_modified"] = time.time()
             with open(os.path.join(LOG_FOLDER, "progress.txt"),"w") as f:
                 json.dump(details, f)
@@ -1573,7 +817,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
             if iteration % PRINT_EVERY == 0 or iteration == n_iterations:
                 print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
                     str(iteration),
-                    "{:.2f}M".format(iteration * n_steps * agents / 1000 / 1000),
+                    "{:.2f}M".format(env_step / 1000 / 1000),
                     training_log[-1][0],
                     training_log[-1][1],
                     training_log[-1][2],
@@ -1589,7 +833,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
             print()
-            print(bcolors.OKGREEN+"Checkpoint: {}".format(LOG_FOLDER)+bcolors.ENDC)
+            print(utils.Color.OKGREEN + "Checkpoint: {}".format(LOG_FOLDER) + utils.Color.ENDC)
 
             if args.save_checkpoints:
                 checkpoint_name = get_checkpoint_path(env_step, "params.pt")
@@ -1626,7 +870,7 @@ def train(env_name, model: nn.Module, n_iterations=10*1000, **kwargs):
 
             for label, y, c in zip(labels, ys, colors):
                 plt.plot(xs, y, alpha=0.2, c=c)
-                plt.plot(xs, smooth(y), label=label, c=c)
+                plt.plot(xs, utils.smooth(y), label=label, c=c)
 
             plt.legend()
             plt.ylabel("Loss")
@@ -1702,7 +946,7 @@ def run_experiment(experiment_name, run_name, env_name, model, n_iterations = 10
         # look for a previous experiment and use it if we find one...
         guid = get_previous_experiment_guid(os.path.join(OUTPUT_FOLDER, experiment_name), run_name)
         if guid is None:
-            print(bcolors.FAIL+"Could not restore experiment {}:{}. Previous run not found.".format(experiment_name, run_name)+bcolors.ENDC)
+            print(utils.Color.FAIL + "Could not restore experiment {}:{}. Previous run not found.".format(experiment_name, run_name) + utils.Color.ENDC)
         else:
             GUID = guid
 
@@ -1717,7 +961,9 @@ def run_experiment(experiment_name, run_name, env_name, model, n_iterations = 10
 
     print("Playing {} with {} obs_space and {} actions.".format(env_name, obs_space, n_actions))
 
-    train(env_name, model(obs_space, n_actions), n_iterations, **kwargs)
+    actor_critic_model = model(obs_space, n_actions, args.device, args.dtype)
+
+    train(env_name, actor_critic_model, n_iterations)
 
 
 def set_default(dict, key, value):
@@ -1731,14 +977,67 @@ def get_environment_name(environment, sticky_actions=False):
 def set_num_frames(frames):
     set_default(exp_args, "n_iterations", round(int(frames) / (args.agents * args.n_steps)))
 
+def build_parser():
+    parser = argparse.ArgumentParser(description="Trainer for PPO2")
+
+    parser.add_argument("environment")
+
+    parser.add_argument("--experiment_name", type=str, help="Name of the experiment.")
+    parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
+
+    parser.add_argument("--agents", type=int, default=8)
+
+    parser.add_argument("--filter", type=str, default="none",
+                        help="Add filter to agent observation ['none', 'hash']")
+    parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
+    parser.add_argument("--restore", type=utils.str2bool, default=False,
+                        help="Restores previous model if it exists. If set to false and new run will be started.")
+
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount rate.")
+    parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
+    parser.add_argument("--ppo_epsilon", type=float, default=0.1, help="PPO epsilon parameter.")
+    parser.add_argument("--vf_coef", type=float, default=0.5, help="Value function coefficient.")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Clip gradients during training to this.")
+
+    parser.add_argument("--crop_input", type=utils.str2bool, default=False, help="enables atari input cropping.")
+    parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="learning rate for adam optimizer")
+    parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
+    parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
+    parser.add_argument("--epochs", type=int, default=200,
+                        help="Each epoch represents 1 million environment interactions.")
+    parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
+    parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
+    parser.add_argument("--evaluate_diversity", type=utils.str2bool, default=False,
+                        help="Evalutes the diversity of rollouts during training.")
+    parser.add_argument("--reward_clip", type=float, default=5.0)
+    parser.add_argument("--mini_batch_size", type=int, default=1024)
+    parser.add_argument("--sync_envs", type=utils.str2bool, nargs='?', const=True, default=False, help="Enables synchronous environments (slower).")
+    parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
+    parser.add_argument("--color", type=utils.str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--entropy_bonus", type=float, default=0.01)
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--dtype", type=str, default=torch.float)
+    parser.add_argument("--export_video", type=utils.str2bool, default=True)
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--save_checkpoints", type=utils.str2bool, default=True)
+    parser.add_argument("--output_folder", type=str)
+    parser.add_argument("--hostname", type=str, default = socket.gethostname())
+    parser.add_argument("--sticky_actions", type=utils.str2bool, default=False)
+    parser.add_argument("--model", type=str, default="cnn", help="['cnn', 'improved_cnn']")
+
+    return parser
+
+
 if __name__ == "__main__":
 
+    parser = build_parser()
+    args = parser.parse_args()
     exp_args = vars(args)
 
+    torch.set_num_threads(int(args.threads))
+
     if args.device.lower() == "auto":
-        DEVICE = get_auto_device()
-    else:
-        DEVICE = args.device
+        args.device = utils.get_auto_device()
 
     if args.workers < 0:
         args.workers = multiprocessing.cpu_count()
@@ -1748,24 +1047,22 @@ if __name__ == "__main__":
 
     args.resolution = args.resolution.lower()
 
-    if args.resolution == "full":
-        RES_X, RES_Y = 210, 160
-    elif args.resolution == "high":
-        RES_X, RES_Y = 128, 128
-    elif args.resolution == "half-full":
-        RES_X, RES_Y = 105, 80
-    elif args.resolution == "standard":
-        RES_X, RES_Y = 84, 84
-    elif args.resolution == "half":
-        RES_X, RES_Y = 42, 42
+    resolution_map = {
+        "full": (210,160),
+        "standard": (84, 84),
+        "half": (42, 42)
+    }
+
+    if args.resolution.lower() in resolution_map:
+        args.res_x, args.res_y = resolution_map[args.resolution.lower()]
     else:
         raise Exception("Invalid resolution "+args.resolution)
 
     # get model
     if args.model.lower() == "cnn":
-        args.model = CNNModel
+        args.model = models.CNNModel
     elif args.model.lower() == "improved_cnn":
-        args.model = ImprovedCNNModel
+        args.model = models.ImprovedCNNModel
     else:
         raise Exception("Invalid model name '{}', please use [cnn, improved_cnn]".format(args.model))
 
@@ -1773,7 +1070,7 @@ if __name__ == "__main__":
     if args.environment == "benchmark":
         set_default(exp_args, "n_iterations", 10)
         set_default(exp_args, "env_name", "AlienNoFrameskip-v4")
-        set_default(exp_args, "model", CNNModel)
+        set_default(exp_args, "model", models.CNNModel)
         PROFILE_INFO = True
         PRINT_EVERY = 0
     else:
@@ -1782,6 +1079,7 @@ if __name__ == "__main__":
             if args.limit_epochs >= args.epochs:
                 # turn limit epochs if it is too high.
                 args.limit_epochs = None
+                set_num_frames(args.epochs * 1e6)
             else:
                 set_num_frames(args.limit_epochs * 1e6)
         else:
@@ -1792,11 +1090,9 @@ if __name__ == "__main__":
         assert os.path.isdir(args.output_folder), "Can not find path "+args.output_folder
         OUTPUT_FOLDER = args.output_folder
 
-    USE_COLOR = args.color
-
     set_default(exp_args, "experiment_name", exp_args["env_name"])
 
-    show_cuda_info()
+    print("Using device: {}".format(utils.Color.BOLD + args.device + utils.Color.ENDC))
 
     run_experiment(**exp_args)
 
