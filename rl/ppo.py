@@ -47,7 +47,7 @@ def train_minibatch(model: models.PolicyModel, optimizer, ppo_epsilon, vf_coef, 
     if max_grad_norm is not None and max_grad_norm != 0:
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
     else:
-        grad_norm = None
+        grad_norm = 0
 
     optimizer.step()
 
@@ -163,7 +163,7 @@ def train(env_name, model: models.PolicyModel):
     ent_coef          0.01
     learning_rate   2.5e-4
     vf_coef            0.5
-    max_grad_norm      0.5 (not used...)
+    max_grad_norm      0.5
     lam               0.95
     nminibatches         4
     noptepoch            4

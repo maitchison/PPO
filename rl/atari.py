@@ -67,9 +67,13 @@ class MemorizeGame(gym.Env):
         self.seed()
         self.reset()
 
+    def _key_to_action(self, key):
+        """ Returns the action that goes with a specific key. """
+        return key % self.action_count
+
     def set_number_of_cards(self, card_count):
         self.card_count = card_count
-        self.solutions = [(i, np.random.randint(0, self.action_count),) for i in range(self.card_count)]
+        self.solutions = [(key, self._key_to_action(key),) for key in range(self.card_count)]
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -83,7 +87,7 @@ class MemorizeGame(gym.Env):
 
         episode_over = self.counter > 3600 # games last for 30 seconds
         self.counter += 1
-        if self.counter % 120 == 0: # change every 2 seconds.
+        if self.counter % 60 == 0: # change every 1 second.
             self._randomize_state()
 
         obs = utils.generate_hash_image(self.key, (7, 7), (self._width, self._height, 3))

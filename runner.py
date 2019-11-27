@@ -245,13 +245,13 @@ def setup_jobs():
     # Memorization
     # -------------------------------------------------------------------------------------------
 
-    for memorize_cards in [1, 10, 100, 1000, 10000]:
+    for memorize_cards in [1, 10, 100, 300, 1000, 3000, 10000]:
         add_job(
             "Memorize",
             run_name="cards={}".format(memorize_cards),
             env_name="Memorize",
             agents=16,
-            epochs=2,
+            epochs=10,
             n_steps=64,
             memorize_cards=memorize_cards,
             priority=2
