@@ -1,10 +1,10 @@
 import os
 import sys
-import shutil
 import pandas as pd
-import numpy as np
 import json
 import time
+
+from rl import utils
 
 class bcolors:
     HEADER = '\033[95m'
@@ -91,9 +91,11 @@ class Job:
             last_modifed = os.path.getmtime(os.path.join(path, "params.txt"))
 
         if os.path.exists(os.path.join(path, "lock.txt")):
+            last_modifed = os.path.getmtime(os.path.join(path, "lock.txt"))
             status = "working"
 
-        if os.path.exists(os.path.join(path, "final_score.txt")):
+        details = self.get_details()
+        if details is not None and details["fraction_complete"] >= 1.0:
             status = "completed"
 
         if os.path.exists(os.path.join(path, "progress.txt")):
@@ -139,21 +141,14 @@ class Job:
         self.params["output_folder"] = OUTPUT_FOLDER
 
         experiment_folder = os.path.join(OUTPUT_FOLDER, self.experiment_name)
-        src_folder = os.path.join(experiment_folder, "src")
 
         # make the destination folder...
         if not os.path.exists(experiment_folder):
             print("Making experiment folder " + experiment_folder)
             os.makedirs(experiment_folder, exist_ok=True)
 
-        if not os.path.exists(src_folder):
-            os.makedirs(src_folder, exist_ok=True)
-
         # copy script across if needed.
-        ppo_path = os.path.join(src_folder, "ppo.py")
-        if not os.path.exists(ppo_path):
-            print("Copying ppo.py")
-            os.system("cp ./src/*.py "+src_folder)
+        train_script_path = utils.copy_source_files("./", experiment_folder)
 
         self.params["experiment_name"] = self.experiment_name
         self.params["run_name"] = self.run_name
@@ -173,7 +168,7 @@ class Job:
             self.params["limit_epochs"] = int(next_chunk)
 
 
-        python_part = "python {} {}".format(ppo_path, self.params["env_name"])
+        python_part = "python {} {}".format(train_script_path, self.params["env_name"])
 
         params_part = " ".join(["--{}='{}'".format(k, v) for k, v in self.params.items() if k not in ["env_name"]])
         params_part_lined = "\n".join(["--{}='{}'".format(k, v) for k, v in self.params.items() if k not in ["env_name"]])
@@ -201,7 +196,7 @@ def setup_jobs():
     # GA_Pong
     # -------------------------------------------------------------------------------------------
 
-    for agents in [8, 16, 32, 64, 128, 256, 512, 1024]:
+    for agents in [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
         add_job(
             "GA_Pong_Agents",
             run_name="agents=" + str(agents),
@@ -211,7 +206,6 @@ def setup_jobs():
             priority=10,
         )
 
-    """
     for reward_clip in [1, 3, 5, 10]:
         add_job(
             "GA_Pong_Reward_Clip",
@@ -221,30 +215,47 @@ def setup_jobs():
             agents=256,
             reward_clip=reward_clip
         )
-    """
 
-    """
-    for mini_batch_size in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
-        add_job(
-            "GA_Pong_Mini_Batch",
-            run_name="mini_batch_size="+str(mini_batch_size),
-            env_name="pong",
-            epochs=20,
-            agents=256,
-            mini_batch_size=mini_batch_size,
-        )
+    for max_grad_norm in [0.05, 0.5, 5, 50, 0]:
+        for agents in [64, 256]:
+            add_job(
+                "GA_Pong_Max_Grad_Norm",
+                run_name="max_grad_norm={} agents={}".format(max_grad_norm, agents),
+                env_name="pong",
+                epochs=20,
+                agents=agents,
+                max_grad_norm=max_grad_norm,
+                priority=1
+            )
+
 
     for mini_batch_size in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
-        agents = 64
+        for agents in [64, 256]:
+            add_job(
+                "GA_Pong_Mini_Batch",
+                run_name="mini_batch_size={} agents={}".format(mini_batch_size, agents),
+                env_name="pong",
+                epochs=20,
+                agents=agents,
+                mini_batch_size=mini_batch_size,
+            )
+
+
+    # -------------------------------------------------------------------------------------------
+    # Memorization
+    # -------------------------------------------------------------------------------------------
+
+    for memorize_cards in [1, 10, 100, 1000, 10000]:
         add_job(
-            "GA_Pong",
-            run_name="mini_batch_size={} agents={}".format(mini_batch_size, agents),
-            env_name="pong",
-            epochs=20,
-            agents=64,
-            mini_batch_size=mini_batch_size,
+            "Memorize",
+            run_name="cards={}".format(memorize_cards),
+            env_name="Memorize",
+            agents=16,
+            epochs=2,
+            n_steps=64,
+            memorize_cards=memorize_cards,
+            priority=2
         )
-    """
 
     # -------------------------------------------------------------------------------------------
     # Hash
@@ -284,13 +295,12 @@ def setup_jobs():
         env_name="pong",
         epochs=200,
         agents=64,
-        crop_input=True,
+        input_crop=True,
         learning_rate=1e-4,
         filter="hash",
         hash_size=7,
         priority=12,
     )
-
 
     # -------------------------------------------------------------------------------------------
     # RA_Alien
@@ -372,7 +382,7 @@ def show_experiments(filter_jobs=None, all=False):
         }
 
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
-            job.priority, job.experiment_name, job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
+            job.priority, job.experiment_name[:19], job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
 
 if __name__ == "__main__":
     id = 0

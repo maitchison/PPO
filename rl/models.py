@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import utils
+from . import utils
 
 class PolicyModel(nn.Module):
 
@@ -141,7 +141,7 @@ class ImprovedCNNModel(PolicyModel):
 
         n,c,w,h = x.shape
 
-        x = utils.prep_for_model(x) / 255.0
+        x = self.prep_for_model(x) / 255.0
 
         # give filters access to x,y location
         if self.include_xy:

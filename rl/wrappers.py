@@ -2,6 +2,7 @@ import gym
 import math
 import numpy as np
 import cv2
+import hashlib
 
 def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
     """
@@ -106,7 +107,7 @@ class HashWrapper(gym.Wrapper):
         if self.use_time:
             state_hash = self.counter
         else:
-            state_hash = hash(original_obs.data.tobytes())
+            state_hash = int(hashlib.sha256(original_obs.data.tobytes()).hexdigest(), 16)
 
         # note: named tensor would help get this shape right...
         w, h, c = original_obs.shape
