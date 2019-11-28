@@ -90,13 +90,13 @@ class Job:
             status = "waiting"
             last_modifed = os.path.getmtime(os.path.join(path, "params.txt"))
 
-        if os.path.exists(os.path.join(path, "lock.txt")):
-            last_modifed = os.path.getmtime(os.path.join(path, "lock.txt"))
-            status = "working"
-
         details = self.get_details()
         if details is not None and details["fraction_complete"] >= 1.0:
             status = "completed"
+
+        if os.path.exists(os.path.join(path, "lock.txt")):
+            last_modifed = os.path.getmtime(os.path.join(path, "lock.txt"))
+            status = "working"
 
         if os.path.exists(os.path.join(path, "progress.txt")):
             last_modifed = os.path.getmtime(os.path.join(path, "progress.txt"))
@@ -125,7 +125,14 @@ class Job:
     def get_details(self):
         try:
             path = os.path.join(self.get_path(), "progress.txt")
-            return json.load(open(path, "r"))
+
+            details = json.load(open(path, "r"))
+
+            # if max_epochs has changed fix up the fraction_complete.
+            if details["max_epochs"] != self.params["epochs"]:
+                details["fraction_complete"] = details["completed_epochs"] / self.params["epochs"]
+
+            return details
         except:
             return None
 
@@ -190,8 +197,6 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs():
 
-    # todo: move this into a seperate (python) file...
-
     # -------------------------------------------------------------------------------------------
     # GA_Pong
     # -------------------------------------------------------------------------------------------
@@ -228,7 +233,6 @@ def setup_jobs():
                 priority=1
             )
 
-
     for mini_batch_size in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
         for agents in [64, 256]:
             add_job(
@@ -240,6 +244,64 @@ def setup_jobs():
                 mini_batch_size=mini_batch_size,
             )
 
+
+    # -------------------------------------------------------------------------------------------
+    # GA_Alien
+    # -------------------------------------------------------------------------------------------
+
+    # just get a quick performance check on alien.
+    for agents in [64, 256, 1024]:
+        for n_steps in [32, 64, 128]:
+            mini_batch_size = 1024
+            add_job(
+                "GA_Alien",
+                run_name="agents={} n_steps={} mini_batch_size={}".format(agents, n_steps, mini_batch_size),
+                env_name="Alien",
+                epochs=200,
+                mini_batch_size=mini_batch_size,
+                agents=agents,
+                n_steps=n_steps
+            )
+
+    # -------------------------------------------------------------------------------------------
+    # GA_Seaquest
+    # -------------------------------------------------------------------------------------------
+
+    # just get a quick performance check on breakout.
+    add_job(
+        "GA_Seaquest",
+        run_name="baseline",
+        env_name="Seaquest",
+        epochs=200,
+        agents=64,
+    )
+
+
+    # -------------------------------------------------------------------------------------------
+    # GA_Breakout
+    # -------------------------------------------------------------------------------------------
+
+    # just get a quick performance check on breakout.
+    add_job(
+        "GA_Breakout",
+        run_name="baseline",
+        env_name="Breakout",
+        epochs=200,
+        agents=64,
+    )
+
+    # -------------------------------------------------------------------------------------------
+    # GA_MontezumaRevenge
+    # -------------------------------------------------------------------------------------------
+
+    # just get a quick performance check on montezuma's revenge.
+    add_job(
+        "GA_MontezumaRevenge",
+        run_name="baseline",
+        env_name="MontezumaRevenge",
+        epochs=200,
+        agents=64,
+    )
 
     # -------------------------------------------------------------------------------------------
     # Memorization
@@ -261,7 +323,6 @@ def setup_jobs():
     # Hash
     # -------------------------------------------------------------------------------------------
 
-    """
     # get an idea of which hash size works...
     for hash_size in [1, 2, 4, 6, 7, 8, 16]:
         add_job(
@@ -280,20 +341,18 @@ def setup_jobs():
                 "Hash",
                 run_name="full {} {}".format(env_name, filter),
                 env_name=env_name,
-                epochs=200,
+                epochs=100,
                 agents=64,
                 learning_rate=2e-4,
                 filter=filter,
                 hash_size=7,
             )
-            
-    """
 
     add_job(
         "Hash",
         run_name="full pong hash cropped",
         env_name="pong",
-        epochs=200,
+        epochs=100,
         agents=64,
         input_crop=True,
         learning_rate=1e-4,
