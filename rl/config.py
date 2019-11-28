@@ -25,6 +25,7 @@ class Config:
 
         self.input_crop = False
         self.learning_rate = 0.0
+        self.learning_rate_decay = 0.0
         self.workers = 0
         self.n_steps = 0
         self.epochs = 0
@@ -89,6 +90,7 @@ def parse_args():
 
     parser.add_argument("--input_crop", type=utils.str2bool, default=False, help="Enables atari input cropping.")
     parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="Learning rate for adam optimizer")
+    parser.add_argument("--learning_rate_decay", type=float, default=1.0, help="Learning rate is decayed exponentially by this amount per epoch.")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
     parser.add_argument("--epochs", type=int, default=200,

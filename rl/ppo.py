@@ -152,6 +152,14 @@ def print_profile_info(timing_log, title="Performance results:"):
     print(title+": {:.2f}ms / {:.2f}ms / {:.2f}ms  [{:.0f} FPS +- {:.1f}]".format(
         step_time, rollout_time, train_time, fps, fps_std_error))
 
+
+def adjust_learning_rate(optimizer, epoch):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr = args.learning_rate * (args.learning_rate_decay ** epoch)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    return lr
+
 def train(env_name, model: models.PolicyModel):
     """
     Default parameters from stable baselines
@@ -260,6 +268,8 @@ def train(env_name, model: models.PolicyModel):
     for iteration in range(start_iteration, n_iterations+1):
 
         env_step = iteration * batch_size
+
+        adjust_learning_rate(optimizer, env_step / 1e6)
 
         # the idea here is that all our batch arrays are of dims
         # N, A, ...,

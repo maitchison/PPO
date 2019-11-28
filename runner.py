@@ -251,7 +251,7 @@ def setup_jobs():
 
     # just get a quick performance check on alien.
     for agents in [64, 256, 1024]:
-        for n_steps in [32, 64, 128]:
+        for n_steps in [8, 32, 64, 128]:
             mini_batch_size = 1024
             add_job(
                 "GA_Alien",
