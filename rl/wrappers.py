@@ -310,7 +310,7 @@ class AtariWrapper(gym.Wrapper):
         if len(obs.shape) == 2:
             obs = obs[:, :, np.newaxis]
 
-        self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
+        self.stack = np.roll(self.stack, shift=(1 if self.grayscale else 3), axis=0)
 
         if self.grayscale:
             self.stack[0:1, :, :] = obs[:, :, 0]
