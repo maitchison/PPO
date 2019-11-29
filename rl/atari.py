@@ -40,6 +40,18 @@ def make(env_name, non_determinism="noop"):
     )
 
 class MemorizeGame(gym.Env):
+    """
+    Note: some modification to the game.
+    The number of classes matters, make this a no-op and 4 directions, as would be 2 bits per example.
+    Make the game human playable
+    Have the game work that when player presses a button it checks if it' correct then moves onto the new card
+    With a 10 second time-out. Also make it that after 10 cards the episode ends.
+    I'd need a 12 frame delay too (1/5th of a second), otherwise repeat action will trigger the next card.
+    This means a fast agent would be able to get though around 1 card every 16 frames, which is super fast.
+    Maybe add a very small penality while card is up to give faster players a higher score (but only slightly)
+    This is mostly so the agent doesn't learn to delay punishment for incorrect cards. (or just don't have punishment?)
+    """
+
     metadata = {'render.modes': ['human']}
 
     def __init__(self):

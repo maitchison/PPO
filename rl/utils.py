@@ -30,21 +30,6 @@ class Color:
 # Utils
 # -------------------------------------------------------------
 
-
-def str2bool(v):
-    """
-        Convert from string in various formats to boolean.
-    """
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-
 def mse(a,b):
     """ returns the mean square error between a and b. """
     return (np.square(a - b, dtype=np.float32)).mean(dtype=np.float32)
@@ -331,7 +316,7 @@ def compose_frame(state_frame, rendered_frame):
             for y in range(2):
                 dx = x * s_w + r_w
                 dy = y * s_h + y_pad
-                factor = 1 if x==0 and y==0 else 2 # darken all but first state for clarity
+                factor = 1 if x ==0  and y == 0 else 2 # darken all but first state for clarity
                 if is_color:
                     frame[dy:dy+s_h, dx:dx+s_w, :] = state_frame[:, :, i*3:(i+1)*3] // factor
                 else:
@@ -384,7 +369,6 @@ def export_movie(filename, model, env_name):
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
         assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
-
 
         video_out.write(frame)
 

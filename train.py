@@ -33,7 +33,6 @@ def run_experiment():
     ppo.train(args.env_name, actor_critic_model)
 
 def get_environment_name(environment, sticky_actions=False):
-    environment = environment.capitalize()
     return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
 
 
@@ -68,8 +67,10 @@ if __name__ == "__main__":
         args.model = models.CNNModel
     elif args.model.lower() == "improved_cnn":
         args.model = models.ImprovedCNNModel
+    elif args.model.lower() == "icmmodel":
+        args.model = models.ICMModel
     else:
-        raise Exception("Invalid model name '{}', please use [cnn, improved_cnn]".format(args.model))
+        raise Exception("Invalid model name '{}', please use [cnn, improved_cnn, ICMModel]".format(args.model))
     args.env_name = get_environment_name(args.environment, args.sticky_actions)
 
     # check the output folder is valid...

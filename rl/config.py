@@ -47,6 +47,9 @@ class Config:
         self.sticky_actions = False
         self.model = None
         self.guid = ""
+
+        self.use_icm = False
+
         self.memorize_cards = 0
 
         self.log_folder = ""
@@ -65,6 +68,20 @@ PRINT_EVERY = 10
 SAVE_LOG_EVERY = 50
 args = Config()
 
+def str2bool(v):
+    """
+        Convert from string in various formats to boolean.
+    """
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
 def parse_args():
 
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
@@ -79,7 +96,7 @@ def parse_args():
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
-    parser.add_argument("--restore", type=utils.str2bool, default=False,
+    parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model if it exists. If set to false and new run will be started.")
 
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount rate.")
@@ -88,7 +105,7 @@ def parse_args():
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Value function coefficient.")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Clip gradients during training to this.")
 
-    parser.add_argument("--input_crop", type=utils.str2bool, default=False, help="Enables atari input cropping.")
+    parser.add_argument("--input_crop", type=str2bool, default=False, help="Enables atari input cropping.")
     parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="Learning rate for adam optimizer")
     parser.add_argument("--learning_rate_decay", type=float, default=1.0, help="Learning rate is decayed exponentially by this amount per epoch.")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
@@ -99,21 +116,24 @@ def parse_args():
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
     parser.add_argument("--reward_clip", type=float, default=5.0)
     parser.add_argument("--mini_batch_size", type=int, default=1024)
-    parser.add_argument("--sync_envs", type=utils.str2bool, nargs='?', const=True, default=False,
+    parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
-    parser.add_argument("--color", type=utils.str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--dtype", type=str, default=torch.float)
-    parser.add_argument("--export_video", type=utils.str2bool, default=True)
+    parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--save_checkpoints", type=utils.str2bool, default=True)
+    parser.add_argument("--save_checkpoints", type=str2bool, default=True)
     parser.add_argument("--output_folder", type=str, default="./")
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
-    parser.add_argument("--sticky_actions", type=utils.str2bool, default=False)
+    parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--model", type=str, default="cnn", help="['cnn', 'improved_cnn']")
     parser.add_argument("--guid", type=str, default=None)
+
+    # icm stuff
+    parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")
 
     parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
 

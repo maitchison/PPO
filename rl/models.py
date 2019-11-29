@@ -34,8 +34,21 @@ class PolicyModel(nn.Module):
         self.device, self.dtype = device, dtype
 
     def prep_for_model(self, x):
-        """ Converts data to format for model (i.e. uploads to GPU, converts type). """
-        return torch.from_numpy(x).to(self.device, non_blocking=True).to(dtype=self.dtype)
+        """ Converts data to format for model (i.e. uploads to GPU, converts type).
+            Can accept tensor or ndarray.
+         """
+
+        # if this is numpy convert it over
+        if type(x) is np.ndarray:
+            x = torch.from_numpy(x)
+
+        # move it to the correct device
+        x = x.to(self.device, non_blocking=True)
+
+        # then covert the type (faster to upload uint8 then convert on GPU)
+        x = x.to(dtype=self.dtype, non_blocking=True)
+
+        return x
 
 
 class CNNModel(PolicyModel):
@@ -73,8 +86,7 @@ class CNNModel(PolicyModel):
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
-        assert len(x.shape) == 4, "input should be (N,C,W,H)"
+        validate_dims(x, (-1, 4, -1, -1), np.uint8)
 
         n,c,w,h = x.shape
 
@@ -165,6 +177,153 @@ class ImprovedCNNModel(PolicyModel):
 
         return policy, value
 
+class ICMModel(PolicyModel):
+    """ Intrinsic curiosity model
+
+    Uses forward prediction error on inverse dynamics features as an axualiary task.
+
+    See https://github.com/pathak22/noreward-rl/blob/master/src/model.py
+    """
+
+    name = "ICM"
+
+    def __init__(self, input_dims, actions, device, dtype):
+
+        super(ICMModel, self).__init__()
+
+        self.actions = actions
+        c, w, h = input_dims
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        w = get_CNN_output_size(w, [8, 4, 3], [4, 2, 1])
+        h = get_CNN_output_size(h, [8, 4, 3], [4, 2, 1])
+
+        self.out_shape = (64, w, h)
+
+        self.d = utils.prod(self.out_shape)
+        self.fc = nn.Linear(self.d, 512)
+        self.fc_policy = nn.Linear(512, actions)
+        self.fc_value = nn.Linear(512, 1)
+
+        # ICM part
+
+        self.encode1 = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1)
+        self.encode2 = nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1)
+        self.encode3 = nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1)
+        self.encode4 = nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1)
+
+        # output padding is needed to make sure the convolutions match dims.
+        self.decode1 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.decode2 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0)
+        self.decode3 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0)
+        self.decode4 = nn.ConvTranspose2d(32, 1, kernel_size=3, stride=2, padding=1, output_padding=1)
+
+        self.idm_fc = nn.Linear(288 * 2, 256)
+        self.idm_out = nn.Linear(256, self.actions)
+
+        self.fdm_fc = nn.Linear(288 + self.actions, 256)
+        self.fdm_out = nn.Linear(256, 288)
+
+        self.set_device_and_dtype(device, dtype)
+
+    def extract_down_sampled_frame(self, x):
+        """ Converts 4x84x84 (uint8) state to a 1x42x42 (float) frame. """
+
+        if type(x) == np.ndarray:
+            # upload to gpu if needed.
+            x = torch.from_numpy(x).to(self.device, non_blocking=True)
+
+        validate_dims(x, (None, 4, 84, 84), torch.uint8)
+        x = self.prep_for_model(x[:, 0:1]) / 255.0 # take last frame in stack only... (won't work with color...)
+        x = F.max_pool2d(x, 2)
+        return x
+
+    def encode(self, x):
+        """ runs a single 1x42x42 (float) frame through the encoder part of the IDM, returns the embedded (288) features """
+
+        validate_dims(x, (None, 1, 42, 42), torch.float)
+
+        n,c,h,w = x.shape
+
+        x = F.relu(self.encode1(x))
+        x = F.relu(self.encode2(x))
+        x = F.relu(self.encode3(x))
+        x = F.relu(self.encode4(x))
+        x = x.view(n, 288)
+        return x
+
+    def decode(self, x):
+        """ runs an embedding through decoder returning [n, 1,42 ,42] (float32) images."""
+
+        validate_dims(x, (None, 288), torch.float)
+
+        n,d = x.shape
+
+        x = x.reshape((n, 32, 3, 3))
+        x = F.relu(self.decode1(x))
+        x = F.relu(self.decode2(x))
+        x = F.relu(self.decode3(x))
+        x = torch.sigmoid(self.decode4(x))
+
+        return x
+
+    def idm(self, state_1, state_2):
+        """ Predicts the action that occurred between state_1 and state_2"""
+
+        v1 = self.encode(self.extract_down_sampled_frame(state_1))
+        v2 = self.encode(self.extract_down_sampled_frame(state_2))
+
+        # concat the embeddings together, then feed into a linear layer and finally make a prediction about the input.
+
+        x = torch.cat((v1, v2), dim=1)
+
+        x = F.relu(self.idm_fc(x))
+        log_probs = self.idm_out(x)
+
+        return F.log_softmax(log_probs, dim=1)
+
+    def fdm(self, states, actions):
+        """ Predict next embedding given a state and following action. """
+        state_embeddings = self.encode(self.extract_down_sampled_frame(states))
+        action_embeddings = F.one_hot(actions, self.actions).float()
+
+        x = torch.cat((state_embeddings, action_embeddings), dim=1)
+
+        x = F.relu(self.fdm_fc(x))
+        x = self.fdm_out(x)
+
+        return x
+
+    def forward(self, x):
+        """ forwards input through model, returns policy and value estimate. """
+
+        if len(x.shape) == 3:
+            # make a batch of 1 for a single example.
+            x = x[np.newaxis, :, :, :]
+
+        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
+        assert len(x.shape) == 4, "input should be (N,C,W,H)"
+
+        n,c,w,h = x.shape
+
+        x = self.prep_for_model(x) / 255.0
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+
+        assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
+
+        x = F.relu(self.fc(x.view(n, self.d)))
+
+        policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
+
+        return policy, value
+
+
 def get_CNN_output_size(input_size, kernel_sizes, strides, max_pool=False):
     """ Calculates CNN output size, if max_pool is true uses max_pool instead of stride."""
     size = input_size
@@ -200,3 +359,13 @@ def add_xy(x):
         xx_channel.type_as(x),
         yy_channel.type_as(x)], dim=1)
 
+def validate_dims(x, dims, dtype=None):
+    """ Makes sure x has the correct dims and dtype.
+        None will ignore that dim.
+    """
+
+    if dtype is not None:
+        assert x.dtype == dtype, "Invalid dtype, expected {} but found {}".format(str(dtype), str(x.dtype))
+
+    assert len(x.shape) == len(dims), "Invalid dims, expected {} but found {}".format(dims, x.shape)
+    assert all(a == b or (a is None) for a,b in zip(dims, x.shape)), "Invalid dims, expected {} but found {}".format(dims, x.shape)

@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import gym
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import time
 import csv
 import json
@@ -13,9 +14,24 @@ from collections import deque
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-def train_minibatch(model: models.PolicyModel, optimizer, ppo_epsilon, vf_coef, entropy_bonus, max_grad_norm,
-                    prev_states, actions, returns, policy_logprobs, advantages, values):
+#stub
+my_counter = 0
 
+def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_states, actions, returns, policy_logprobs, advantages, values):
+    """
+    :param model:           The model for this agent.
+    :param optimizer:       The optimizer to use.
+    :param prev_states:     tensor of dims [N, C, H, W]
+    :param actions:         tensor of dims [N]
+    :param returns:         tensor of dims [N]
+    :param policy_logprobs: tensor of dims [N, Actions]
+    :param advantages:      tensor of dims [N]
+    :param values:          tensor of dims [N]
+    :return:
+    """
+
+    # prepare the tensors for the model (moves to GPU and converts to float.
+    # note, we don't do this with the states as these are expected to be in uint8 format.
     policy_logprobs = model.prep_for_model(policy_logprobs)
     advantages = model.prep_for_model(advantages)
     returns = model.prep_for_model(returns)
@@ -27,25 +43,76 @@ def train_minibatch(model: models.PolicyModel, optimizer, ppo_epsilon, vf_coef, 
 
     ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
 
-    loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - ppo_epsilon, 1 + ppo_epsilon) * advantages))
+    loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages))
 
     # this one is taken from PPO2 baseline, reduces variance but not sure why? does it stop the values from moving
     # too much?
-    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -ppo_epsilon, +ppo_epsilon)
+    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
 
     vf_losses1 = (value_prediction - returns).pow(2)
     vf_losses2 = (value_prediction_clipped - returns).pow(2)
-    loss_value = - vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+    loss_value = - args.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
 
-    loss_entropy = entropy_bonus * utils.log_entropy(logps) / mini_batch_size
+    loss_entropy = args.entropy_bonus * utils.log_entropy(logps) / mini_batch_size
 
     loss = -(loss_clip + loss_value + loss_entropy)  # gradient ascent.
+
+    # calculate ICM gradient
+    # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
+    # be interesting to compare and see which one is better?
+    if args.use_icm:
+
+        assert type(model) == models.ICMModel, "ICM requires using the ICMModel Network."
+
+        # todo: track how well IDM and FDM is working..
+        # note: the ICM should be a totally seperate module... no reason to build it into the model
+        # this allows other models to be used which is nice.
+
+        # step 1, try to learn IDM model
+
+        diff = np.zeros((4,4))
+        for i in range(4):
+            for j in range(4):
+                diff[i,j] = ((prev_states[:,i] - next_states[:,j])**2).mean()
+        print(diff)
+
+        log_probs = model.idm(prev_states, next_states)
+        targets = torch.tensor(actions).to(model.device).long()
+        loss_idm = -F.nll_loss(-log_probs, targets) * 0.1 # this constant is a real guess.
+
+        # step 2 learn the FDM
+
+        #pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
+        next_frames = model.extract_down_sampled_frame(next_states)
+        next_embedding = model.encode(next_frames)
+        #loss_fdm = F.mse_loss(pred_embedding, next_embedding, reduction="none").sum(dim=1).mean()
+
+        # stub:
+        loss_fdm = 0
+
+        # step 2.5 learn a little of of a reconstruction loss (to stop collapse)
+        loss_ae = 0.0
+        # next_decoding = model.decode(next_embedding)
+        # loss_ae = F.mse_loss(next_decoding, next_frames)
+
+
+        accuracy = (torch.argmax(log_probs, dim=1) == targets).float().mean()
+
+        global my_counter
+        if my_counter % 100 == 0:
+            print("loss_idm {:.3f} accuracy {:.3f} loss_fdm {:.3f} loss_ae {:.3f} embd_std {:.3f}".format(
+                float(loss_idm), float(accuracy), float(loss_fdm), float(loss_ae),
+                float(torch.std(next_embedding[0]))))
+        my_counter += 1
+
+        loss += (loss_idm + loss_fdm + loss_ae)
+
 
     optimizer.zero_grad()
     loss.backward()
 
-    if max_grad_norm is not None and max_grad_norm != 0:
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+    if args.max_grad_norm is not None and args.max_grad_norm != 0:
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
     else:
         grad_norm = 0
 
@@ -64,13 +131,13 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         batch_prev_state [N, A, (obs dims)]
         ...
-
     """
 
     N = n_steps
     A = args.agents
 
     batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
+    batch_next_state = np.zeros([N, A, *state_shape], dtype=state_dtype) # this doubles memory, but makes life easier.
     batch_action = np.zeros([N, A], dtype=np.int32)
     batch_reward = np.zeros([N, A], dtype=np.float32)
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
@@ -88,6 +155,15 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         prev_states = states.copy()
 
         states, rewards, dones, infos = vec_envs.step(actions)
+
+        # generate prediction error bonus
+        if args.use_icm:
+            # stub: disable
+            # pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
+            # next_embedding = model.encode(model.extract_down_sampled_frame(states))
+            # loss_fdm = F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).cpu().detach().numpy()
+            # rewards += loss_fdm
+            pass
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
@@ -109,13 +185,15 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
                 episode_len[i] = 0
 
         batch_prev_state[t] = prev_states
+        batch_next_state[t] = states
         batch_action[t] = actions
         batch_reward[t] = rewards
         batch_logpolicy[t] = logprobs
         batch_terminal[t] = dones
         batch_value[t] = value
 
-    return (batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value)
+    return (batch_prev_state, batch_next_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value,
+            states)
 
 
 def save_training_log(training_log):
@@ -279,9 +357,9 @@ def train(env_name, model: models.PolicyModel):
         start_time = time.time()
 
         # collect experience
-        batch_prev_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value = run_agents_vec(
-            args.n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
-            state_shape, state_dtype, policy_shape)
+        batch_prev_state, batch_next_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value, states = \
+            run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
+                state_shape, state_dtype, policy_shape)
 
         # estimate advantages
 
@@ -317,12 +395,13 @@ def train(env_name, model: models.PolicyModel):
         total_grad_norm = 0
 
         batch_arrays = [
-            np.asarray(batch_prev_state.reshape([batch_size, *state_shape])),
-            np.asarray(batch_action.reshape(batch_size)),
-            np.asarray(batch_returns.reshape(batch_size)),
-            np.asarray(batch_logpolicy.reshape([batch_size, *policy_shape])),
-            np.asarray(batch_advantage.reshape(batch_size)),
-            np.asarray(batch_value.reshape(batch_size))
+            batch_prev_state.reshape([batch_size, *state_shape]),
+            batch_next_state.reshape([batch_size, *state_shape]),
+            batch_action.reshape(batch_size),
+            batch_returns.reshape(batch_size),
+            batch_logpolicy.reshape([batch_size, *policy_shape]),
+            batch_advantage.reshape(batch_size),
+            batch_value.reshape(batch_size)
         ]
 
         for i in range(args.batch_epochs):
@@ -341,8 +420,7 @@ def train(env_name, model: models.PolicyModel):
 
                 slices = (x[sample] for x in batch_arrays)
 
-                loss, loss_clip, loss_value, loss_entropy, grad_norm = train_minibatch(
-                    model, optimizer, args.ppo_epsilon, args.vf_coef, args.entropy_bonus, args.max_grad_norm, *slices)
+                loss, loss_clip, loss_value, loss_entropy, grad_norm = train_minibatch(model, optimizer, *slices)
 
                 total_loss_clip += loss_clip / (args.batch_epochs*n_batches)
                 total_loss_value += loss_value / (args.batch_epochs*n_batches)
@@ -443,7 +521,6 @@ def train(env_name, model: models.PolicyModel):
                 video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
                 utils.export_movie(video_name, model, env_name)
                 print("  -video exported")
-
 
             print()
 
