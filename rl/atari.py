@@ -154,6 +154,8 @@ def make_environment(env_name, non_determinism="noop", crop_input=False, filter=
 
         assert "NoFrameskip" in env_name
 
+        env = gym.Wrapper.TimeLimit(env, 60*60*30)
+
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":
             env = wrappers.NoopResetWrapper(env, noop_max=30)
