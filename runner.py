@@ -88,7 +88,6 @@ class Job:
 
         if os.path.exists(os.path.join(path, "params.txt")):
             status = "waiting"
-            last_modifed = os.path.getmtime(os.path.join(path, "params.txt"))
 
         details = self.get_details()
         if details is not None and details["fraction_complete"] >= 1.0:
@@ -97,9 +96,6 @@ class Job:
         if os.path.exists(os.path.join(path, "lock.txt")):
             last_modifed = os.path.getmtime(os.path.join(path, "lock.txt"))
             status = "working"
-
-        if os.path.exists(os.path.join(path, "progress.txt")):
-            last_modifed = os.path.getmtime(os.path.join(path, "progress.txt"))
 
         if status in ["working"] and last_modifed is not None:
             hours_since_modified = (time.time()-last_modifed)/60/60

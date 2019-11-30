@@ -209,7 +209,8 @@ class ICMModel(PolicyModel):
 
         # ICM part
 
-        self.encode1 = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1)
+        # note we should take the last frame only, not the entire stack... but alas, this is how it is in ICM.
+        self.encode1 = nn.Conv2d(4, 32, kernel_size=3, stride=2, padding=1)
         self.encode2 = nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1)
         self.encode3 = nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1)
         self.encode4 = nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1)
@@ -218,7 +219,7 @@ class ICMModel(PolicyModel):
         self.decode1 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.decode2 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0)
         self.decode3 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0)
-        self.decode4 = nn.ConvTranspose2d(32, 1, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.decode4 = nn.ConvTranspose2d(32, 4, kernel_size=3, stride=2, padding=1, output_padding=1)
 
         self.idm_fc = nn.Linear(288 * 2, 256)
         self.idm_out = nn.Linear(256, self.actions)
@@ -229,21 +230,22 @@ class ICMModel(PolicyModel):
         self.set_device_and_dtype(device, dtype)
 
     def extract_down_sampled_frame(self, x):
-        """ Converts 4x84x84 (uint8) state to a 1x42x42 (float) frame. """
+        """ Converts 4x84x84 (uint8) state to a 4x42x42 (float) frame. """
 
         if type(x) == np.ndarray:
             # upload to gpu if needed.
             x = torch.from_numpy(x).to(self.device, non_blocking=True)
 
         validate_dims(x, (None, 4, 84, 84), torch.uint8)
-        x = self.prep_for_model(x[:, 0:1]) / 255.0 # take last frame in stack only... (won't work with color...)
+
+        x = self.prep_for_model(x) / 255.0
         x = F.max_pool2d(x, 2)
         return x
 
     def encode(self, x):
-        """ runs a single 1x42x42 (float) frame through the encoder part of the IDM, returns the embedded (288) features """
+        """ runs a single 4x42x42 (float) frame through the encoder part of the IDM, returns the embedded (288) features """
 
-        validate_dims(x, (None, 1, 42, 42), torch.float)
+        validate_dims(x, (None, 4, 42, 42), torch.float)
 
         n,c,h,w = x.shape
 
@@ -255,7 +257,7 @@ class ICMModel(PolicyModel):
         return x
 
     def decode(self, x):
-        """ runs an embedding through decoder returning [n, 1,42 ,42] (float32) images."""
+        """ runs an embedding through decoder returning [n, 4, 42 ,42] (float32) images."""
 
         validate_dims(x, (None, 288), torch.float)
 

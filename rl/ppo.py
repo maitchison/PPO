@@ -572,7 +572,6 @@ def train(env_name, model: models.PolicyModel):
         if time.time() - last_log_time >= config.LOG_EVERY_SEC:
             utils.lock_job()
             save_training_log(training_log)
-            print("<logs saved>")
             last_log_time = time.time()
 
         # periodically save checkpoints
