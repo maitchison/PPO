@@ -446,7 +446,7 @@ def generate_hash_image(key, hash_size, obs_size):
 def lock_job():
 
     # make sure there isn't another lock
-    previous_lock = get_lock()
+    previous_lock = get_lock_info()
     if previous_lock is not None and previous_lock["key"] != config.LOCK_KEY:
         raise Exception("Could not get lock for job, another worker has a lock open.")
 
@@ -470,7 +470,7 @@ def release_lock():
     os.remove(lock_path)
 
 
-def get_lock():
+def get_lock_info():
     """ Gets lock information for this job. """
     lock_path = os.path.join(args.log_folder, "lock.txt")
     if os.path.exists(lock_path):
@@ -480,7 +480,7 @@ def get_lock():
 
 def have_lock():
     """ Returns if we currently have the lock."""
-    lock = get_lock()
+    lock = get_lock_info()
     return lock is not None and lock["key"] == config.LOCK_KEY
 
 

@@ -14,7 +14,7 @@ from collections import deque
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-#stub
+print_counter = 0
 my_counter = 0
 
 def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_states, actions, returns, policy_logprobs, advantages, values):
@@ -302,6 +302,30 @@ def save_training_graphs(training_log):
         plt.close()
 
 
+def print_progress(iteration, env_step, training_log):
+    global print_counter
+    if print_counter % 10 == 0:
+        print(
+            "{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
+                                                                               "l_ent", "ep_score", "ep_len", "elapsed",
+                                                                               "fps"))
+        print("-" * 120)
+
+    print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
+        str(iteration),
+        "{:.2f}M".format(env_step / 1000 / 1000),
+        training_log[-1][0],
+        training_log[-1][1],
+        training_log[-1][2],
+        training_log[-1][3],
+        utils.with_default(training_log[-1][4], 0),
+        utils.with_default(training_log[-1][5], 0),
+        "{:.0f} min".format(training_log[-1][8] / 60),
+        training_log[-1][11],
+        utils.with_default(training_log[-1][13], 0)
+    ))
+    print_counter += 1
+
 def train(env_name, model: models.PolicyModel):
     """
     Default parameters from stable baselines
@@ -395,16 +419,18 @@ def train(env_name, model: models.PolicyModel):
     episode_len = np.zeros([args.agents], dtype = np.int32)
 
     initial_start_time = time.time()
-    last_progress_save = -1
+
+    last_print_time = -1
+    last_log_time = -1
 
     fps_history = deque(maxlen=10 if not config.PROFILE_INFO else None)
 
-    checkpoint_every = int(5e6)
+
     env_step = 0
 
     # add a few checkpoints early on
 
-    checkpoints = [x // batch_size for x in range(0, n_iterations*batch_size+1, checkpoint_every)]
+    checkpoints = [x // batch_size for x in range(0, n_iterations*batch_size+1, config.CHECKPOINT_EVERY_STEPS)]
     checkpoints += [x // batch_size for x in [1e6]] #add a checkpoint early on (1m steps)
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))
@@ -536,33 +562,20 @@ def train(env_name, model: models.PolicyModel):
              )
         )
 
-        # periodically save progress
-        if time.time() - last_progress_save >= 60:
+        # periodically print and save progress
+        if time.time() - last_print_time >= config.PRINT_EVERY_SEC:
             save_progress(env_step + batch_size, score_history, fps_history)
-            last_progress_save = time.time()
+            print_progress(iteration, env_step, training_log)
+            last_print_time = time.time()
 
-        # periodically print update
-        if config.PRINT_EVERY:
-            if iteration % (config.PRINT_EVERY * 10) == 0:
-                print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
-                                                                      "l_ent", "ep_score", "ep_len", "elapsed", "fps"))
-                print("-"*120)
-            if iteration % config.PRINT_EVERY == 0 or iteration == n_iterations:
-                print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
-                    str(iteration),
-                    "{:.2f}M".format(env_step / 1000 / 1000),
-                    training_log[-1][0],
-                    training_log[-1][1],
-                    training_log[-1][2],
-                    training_log[-1][3],
-                    utils.with_default(training_log[-1][4], 0),
-                    utils.with_default(training_log[-1][5], 0),
-                    "{:.0f} min".format(training_log[-1][8]/60),
-                    training_log[-1][11],
-                    utils.with_default(training_log[-1][13], 0)
-                ))
+        # save log and refresh lock
+        if time.time() - last_log_time >= config.LOG_EVERY_SEC:
+            utils.lock_job()
+            save_training_log(training_log)
+            print("<logs saved>")
+            last_log_time = time.time()
 
-        # make sure we don't save the checkpoint we just restored from.
+        # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
             print()
@@ -578,9 +591,6 @@ def train(env_name, model: models.PolicyModel):
                 video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
                 utils.export_movie(video_name, model, env_name)
                 print("  -video exported")
-
-            save_training_log(training_log)
-            print("  -logs saved")
 
             print()
 
