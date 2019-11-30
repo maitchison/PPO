@@ -62,14 +62,21 @@ if __name__ == "__main__":
     else:
         raise Exception("Invalid resolution " + args.resolution)
 
+    if args.use_icm and args.use_rnd:
+        raise Exception("Can only use either ICM or RND, not both.")
+
     # get model
     if args.model.lower() == "cnn":
-        args.model = models.CNNModel
+        if args.use_icm:
+            args.model = models.ICMModel
+        elif args.use_rnd:
+            args.model = models.RNDModel
+        else:
+            args.model = models.CNNModel
     elif args.model.lower() == "improved_cnn":
         args.model = models.ImprovedCNNModel
-    elif args.model.lower() == "icmmodel":
-        args.model = models.ICMModel
-    else:
+        if args.use_icm or args.use_rnd:
+            raise Exception("Improved mode not compatiable with ICM or RND")
         raise Exception("Invalid model name '{}', please use [cnn, improved_cnn, ICMModel]".format(args.model))
     args.env_name = get_environment_name(args.environment, args.sticky_actions)
 

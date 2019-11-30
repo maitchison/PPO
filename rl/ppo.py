@@ -30,6 +30,9 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
     :return:
     """
 
+    global my_counter
+    my_counter += 1
+
     # prepare the tensors for the model (moves to GPU and converts to float.
     # note, we don't do this with the states as these are expected to be in uint8 format.
     policy_logprobs = model.prep_for_model(policy_logprobs)
@@ -57,6 +60,13 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
     loss = -(loss_clip + loss_value + loss_entropy)  # gradient ascent.
 
+    # calculate RND gradient
+    if args.use_rnd:
+        loss_rnd = model.prediction_error(prev_states).mean()
+        loss += loss_rnd
+        if my_counter % 100 == 0:
+            print("loss_rnd {:.3f}".format(float(loss_rnd)))
+
     # calculate ICM gradient
     # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
     # be interesting to compare and see which one is better?
@@ -74,10 +84,6 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
         beta = 0.2
 
-        # stub
-        # cheat by giving prev states the answer.
-        #prev_states = np.asarray(prev_states * 0 + actions[:, None, None, None], dtype=np.uint8)
-
         nlog_probs = model.idm(prev_states, next_states)
         targets = torch.tensor(actions).to(model.device).long()
         loss_idm = F.nll_loss(nlog_probs, targets) * (1-beta) * 0.1 # loss_idm end up being way to big, so we reduce it here.
@@ -88,9 +94,8 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
         pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
         next_frames = model.extract_down_sampled_frame(next_states)
         next_embedding = model.encode(next_frames)
-        # normalize these two so scale doesn't mater... (do this later...)
-        # stub disable fdm
-        #loss_fdm = F.mse_loss(pred_embedding, next_embedding) * 288 * beta
+
+        loss_fdm = F.mse_loss(pred_embedding, next_embedding) * 288 * beta
         loss_fdm = 0
 
         # step 2.5 learn a little of of a reconstruction loss (to stop collapse)
@@ -98,7 +103,6 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
         # next_decoding = model.decode(next_embedding)
         # loss_ae = F.mse_loss(next_decoding, next_frames)
         loss_ae = 0
-
 
         # addition: encourage the representation to be unit norm (this is sometimes done with batch-norm, but this
         # seems easyer.
@@ -108,12 +112,10 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
         accuracy = (torch.argmax(nlog_probs, dim=1) == targets).float().mean()
 
-        global my_counter
         if my_counter % 100 == 0:
             print("loss_idm {:.3f} accuracy {:.3f} loss_fdm {:.3f} loss_ae {:.3f} loss_norm {:.3f} embd_std {:.3f}".format(
                 float(loss_idm), float(accuracy), float(loss_fdm), float(loss_ae), float(loss_norm),
                 float(torch.std(next_embedding[0]))))
-        my_counter += 1
 
         loss += (loss_idm + loss_fdm + loss_ae + loss_norm)
 
@@ -170,8 +172,13 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         if args.use_icm and args.icm_eta != 0:
             pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
             next_embedding = model.encode(model.extract_down_sampled_frame(states))
-            loss_fdm = 0.5 * F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).cpu().detach().numpy() * config.args.icm_eta
+            loss_fdm = 0.5 * F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).detach().cpu().numpy() * config.args.icm_eta
             rewards += loss_fdm
+
+        # generate rnd bonus
+        if args.use_rnd:
+            loss_rnd = model.prediction_error(prev_states).detach().cpu().numpy()
+            rewards += loss_rnd
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 

@@ -10,6 +10,9 @@ class PolicyModel(nn.Module):
     def forward(self, x):
         raise NotImplemented()
 
+    def features(self, x):
+        raise NotImplemented()
+
     def policy(self, x):
         policy, value = self.forward(x)
         return policy
@@ -61,6 +64,7 @@ class CNNModel(PolicyModel):
 
         super(CNNModel, self).__init__()
 
+        self.input_dims = input_dims
         self.actions = actions
         c, w, h = input_dims
         self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
@@ -80,13 +84,18 @@ class CNNModel(PolicyModel):
         self.set_device_and_dtype(device, dtype)
 
     def forward(self, x):
-        """ forwards input through model, returns policy and value estimate. """
+        """ forwards input through model, returns features. """
+        x = F.relu(self.features(x))
+        policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
+        return policy, value
 
+    def features(self, x):
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        validate_dims(x, (None, 4, None, None), np.uint8)
+        validate_dims(x, (None, *self.input_dims), np.uint8)
 
         n,c,w,h = x.shape
 
@@ -98,12 +107,37 @@ class CNNModel(PolicyModel):
 
         assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
 
-        x = F.relu(self.fc(x.view(n, self.d)))
+        return self.fc(x.view(n, self.d))
 
-        policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=1)
 
-        return policy, value
+class RNDModel(PolicyModel):
+    """
+    Random network distilation model
+    """
+
+    name = "RND"
+
+    def __init__(self, input_dims, actions, device, dtype):
+        super().__init__()
+
+        single_channel_input_dims = (1, *input_dims[1:])
+
+        self.policy_model = CNNModel(input_dims, actions, device, dtype)
+        self.prediction_model = CNNModel(single_channel_input_dims, actions, device, dtype)
+        self.random_model = CNNModel(single_channel_input_dims, actions, device, dtype)
+        self.actions = actions
+        self.set_device_and_dtype(device, dtype)
+
+    def prediction_error(self, x):
+        """ Returns prediction error for given state. """
+        # note we only do prediction error on the most recent frame.
+        random_features = self.random_model.features(x[:,0:1]).detach()
+        predicted_features = self.prediction_model.features(x[:,0:1])
+        errors = 0.5 * F.mse_loss(random_features, predicted_features, reduction="none").sum(dim=1)
+        return errors
+
+    def forward(self, x):
+        return self.policy_model.forward(x)
 
 
 class ImprovedCNNModel(PolicyModel):

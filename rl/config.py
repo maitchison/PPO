@@ -51,6 +51,8 @@ class Config:
         self.use_icm = False
         self.icm_eta = 0.0
 
+        self.use_rnd = False
+
         self.memorize_cards = 0
 
         self.log_folder = ""
@@ -140,6 +142,9 @@ def parse_args():
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")
     parser.add_argument("--icm_eta", type=float, default=0.01,
                         help="How much to weight intrinsic rewards in ICM.")
+
+    parser.add_argument("--use_rnd", type=str2bool, default=False,
+                        help="Enables the Random Network Distilation (RND) module.")
 
     parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
 
