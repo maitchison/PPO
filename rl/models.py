@@ -288,13 +288,10 @@ class ICMModel(PolicyModel):
         """ Predict next embedding given a state and following action. """
         state_embeddings = self.encode(self.extract_down_sampled_frame(states))
         action_embeddings = F.one_hot(actions, self.actions).float()
-
         x = torch.cat((state_embeddings, action_embeddings), dim=1)
 
         x = F.relu(self.fdm_fc(x))
-        x = self.fdm_out(x)
-
-        return x
+        return self.fdm_out(x)
 
     def forward(self, x):
         """ forwards input through model, returns policy and value estimate. """

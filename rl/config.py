@@ -49,6 +49,7 @@ class Config:
         self.guid = ""
 
         self.use_icm = False
+        self.icm_eta = 0.0
 
         self.memorize_cards = 0
 
@@ -137,6 +138,8 @@ def parse_args():
 
     # icm stuff
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")
+    parser.add_argument("--icm_eta", type=float, default=0.01,
+                        help="How much to weight intrinsic rewards in ICM.")
 
     parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
 
