@@ -184,7 +184,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
             states)
 
 
-def save_training_log(training_log):
+def save_training_log(training_log, include_graphs=True):
     filename = os.path.join(args.log_folder, "training_log.csv")
     with open(filename, mode='w') as f:
         csv_writer = csv.writer(f, delimiter=',')
@@ -197,6 +197,9 @@ def save_training_log(training_log):
             # convert values lower precision
             row = [utils.sig_fig(x,sf=4) for x in row]
             csv_writer.writerow(row)
+
+    if include_graphs:
+        save_training_graphs(training_log)
 
 def save_profile_log(filename, timing_log):
     with open(filename, "w") as f:
@@ -225,6 +228,79 @@ def adjust_learning_rate(optimizer, epoch):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     return lr
+
+def save_progress(env_step, score_history, fps_history):
+    if True:
+        # save current step information.
+        details = {}
+        details["max_epochs"] = args.epochs
+        details["completed_epochs"] = env_step / 1e6  # include the current completed step.
+        details["score"] = np.percentile(utils.smooth(score_history, 0.9), 95) if len(score_history) > 0 else None
+        details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
+        details["fps"] = int(np.mean(fps_history))
+        frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
+        details["eta"] = frames_remaining / details["fps"]
+        details["host"] = args.hostname
+        details["last_modified"] = time.time()
+        with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
+            json.dump(details, f)
+
+
+def save_training_graphs(training_log):
+    clean_training_log = training_log[10:] if len(
+        training_log) >= 10 else training_log  # first sample is usually extreme.
+
+    xs = [x[10] for x in clean_training_log]
+    plt.figure(figsize=(8, 8))
+    plt.grid()
+
+    labels = ["loss", "loss_clip", "loss_value", "loss_entropy"]
+    ys = [[x[i] for x in clean_training_log] for i in range(4)]
+    colors = ["red", "green", "blue", "black"]
+
+    for label, y, c in zip(labels, ys, colors):
+        plt.plot(xs, y, alpha=0.2, c=c)
+        plt.plot(xs, utils.smooth(y), label=label, c=c)
+
+    plt.legend()
+    plt.ylabel("Loss")
+    plt.xlabel("Env Step")
+    plt.savefig(os.path.join(args.log_folder, "losses.png"))
+    plt.close()
+
+    xs = []
+    rewards = []
+    lengths = []
+    rewards10 = []
+    lengths10 = []
+    for i, x in enumerate(clean_training_log):
+        if x[4] is None:
+            continue
+        xs.append(x[10])
+        rewards.append(x[4])
+        lengths.append(x[5])
+        rewards10.append(x[6])
+        lengths10.append(x[7])
+
+    if len(rewards) > 10:
+        plt.figure(figsize=(8, 8))
+        plt.grid()
+        plt.plot(xs, rewards10, alpha=0.2)
+        plt.plot(xs, rewards)
+        plt.ylabel("Reward")
+        plt.xlabel("Env Step")
+        plt.savefig(os.path.join(args.log_folder, "ep_reward.png"))
+        plt.close()
+
+        plt.figure(figsize=(8, 8))
+        plt.grid()
+        plt.plot(xs, lengths10, alpha=0.2)
+        plt.plot(xs, lengths)
+        plt.ylabel("Episode Length")
+        plt.xlabel("Env Step")
+        plt.savefig(os.path.join(args.log_folder, "ep_length.png"))
+        plt.close()
+
 
 def train(env_name, model: models.PolicyModel):
     """
@@ -319,10 +395,12 @@ def train(env_name, model: models.PolicyModel):
     episode_len = np.zeros([args.agents], dtype = np.int32)
 
     initial_start_time = time.time()
+    last_progress_save = -1
 
     fps_history = deque(maxlen=10 if not config.PROFILE_INFO else None)
 
     checkpoint_every = int(5e6)
+    env_step = 0
 
     # add a few checkpoints early on
 
@@ -458,21 +536,12 @@ def train(env_name, model: models.PolicyModel):
              )
         )
 
-        if True:
-            # save current step information.
-            details = {}
-            details["max_epochs"] = args.epochs
-            details["completed_epochs"] = (env_step + batch_size) / 1e6 # include the current completed step.
-            details["score"] = np.percentile(utils.smooth(score_history, 0.9), 95) if len(score_history) > 0 else None
-            details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
-            details["fps"] = int(np.mean(fps_history))
-            frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
-            details["eta"] = frames_remaining / details["fps"]
-            details["host"] = args.hostname
-            details["last_modified"] = time.time()
-            with open(os.path.join(args.log_folder, "progress.txt"),"w") as f:
-                json.dump(details, f)
+        # periodically save progress
+        if time.time() - last_progress_save >= 60:
+            save_progress(env_step + batch_size, score_history, fps_history)
+            last_progress_save = time.time()
 
+        # periodically print update
         if config.PRINT_EVERY:
             if iteration % (config.PRINT_EVERY * 10) == 0:
                 print("{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
@@ -510,74 +579,23 @@ def train(env_name, model: models.PolicyModel):
                 utils.export_movie(video_name, model, env_name)
                 print("  -video exported")
 
+            save_training_log(training_log)
+            print("  -logs saved")
+
             print()
 
-        if iteration in [5, 10, 20, 30, 40] or iteration % config.SAVE_LOG_EVERY == 0 or iteration == n_iterations:
-
-            save_training_log(training_log)
-
-            clean_training_log = training_log[10:] if len(training_log) >= 10 else training_log  # first sample is usually extreme.
-
-            xs = [x[10] for x in clean_training_log]
-            plt.figure(figsize=(8, 8))
-            plt.grid()
-
-            labels = ["loss", "loss_clip", "loss_value", "loss_entropy"]
-            ys = [[x[i] for x in clean_training_log] for i in range(4)]
-            colors = ["red", "green", "blue", "black"]
-
-            for label, y, c in zip(labels, ys, colors):
-                plt.plot(xs, y, alpha=0.2, c=c)
-                plt.plot(xs, utils.smooth(y), label=label, c=c)
-
-            plt.legend()
-            plt.ylabel("Loss")
-            plt.xlabel("Env Step")
-            plt.savefig(os.path.join(args.log_folder, "losses.png"))
-            plt.close()
-
-            xs = []
-            rewards = []
-            lengths = []
-            rewards10 = []
-            lengths10 = []
-            for i, x in enumerate(clean_training_log):
-                if x[4] is None:
-                    continue
-                xs.append(x[10])
-                rewards.append(x[4])
-                lengths.append(x[5])
-                rewards10.append(x[6])
-                lengths10.append(x[7])
-
-            if len(rewards) > 10:
-                plt.figure(figsize=(8, 8))
-                plt.grid()
-                plt.plot(xs, rewards10, alpha=0.2)
-                plt.plot(xs, rewards)
-                plt.ylabel("Reward")
-                plt.xlabel("Env Step")
-                plt.savefig(os.path.join(args.log_folder, "ep_reward.png"))
-                plt.close()
-
-                plt.figure(figsize=(8, 8))
-                plt.grid()
-                plt.plot(xs, lengths10, alpha=0.2)
-                plt.plot(xs, lengths)
-                plt.ylabel("Episode Length")
-                plt.xlabel("Env Step")
-                plt.savefig(os.path.join(args.log_folder, "ep_length.png"))
-                plt.close()
+    # -------------------------------------
+    # save final information
 
     if config.PROFILE_INFO:
         print_profile_info(timing_log, "Final timing results")
         save_profile_log(os.path.join(args.log_folder, "timing_info.csv"), timing_log)
 
-    # save a final score.
-    if args.limit_epochs is None:
-        # only write final score once we finish the last epoch.
-        with open(os.path.join(args.log_folder, "final_score.txt"), "w") as f:
-            f.write(str(np.percentile(score_history,95)))
+    save_progress(env_step + batch_size, score_history, fps_history)
+    save_training_log(training_log)
+
+    # ------------------------------------
+    # release the lock
 
     utils.release_lock()
 

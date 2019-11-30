@@ -353,7 +353,7 @@ def export_movie(filename, model, env_name):
     width = (width * scale) // 4 * 4 # make sure these are multiples of 4
     height = (height * scale) // 4 * 4
 
-    # create video recorder
+    # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
     video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
 
     state = env.reset()

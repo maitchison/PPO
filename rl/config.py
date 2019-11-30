@@ -65,7 +65,6 @@ LOCK_KEY = str(uuid.uuid4().hex)
 PROFILE_INFO = False
 VERBOSE = True
 PRINT_EVERY = 10
-SAVE_LOG_EVERY = 50
 args = Config()
 
 def str2bool(v):
