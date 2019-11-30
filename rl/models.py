@@ -86,7 +86,7 @@ class CNNModel(PolicyModel):
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        validate_dims(x, (-1, 4, -1, -1), np.uint8)
+        validate_dims(x, (None, 4, None, None), np.uint8)
 
         n,c,w,h = x.shape
 
