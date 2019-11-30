@@ -70,31 +70,19 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
         # step 1, try to learn IDM model
 
-        diff = np.zeros((4,4))
-        for i in range(4):
-            for j in range(4):
-                diff[i,j] = ((prev_states[:,i] - next_states[:,j])**2).mean()
-        print(diff)
-
         log_probs = model.idm(prev_states, next_states)
         targets = torch.tensor(actions).to(model.device).long()
         loss_idm = -F.nll_loss(-log_probs, targets) * 0.1 # this constant is a real guess.
 
         # step 2 learn the FDM
-
-        #pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
+        pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
         next_frames = model.extract_down_sampled_frame(next_states)
         next_embedding = model.encode(next_frames)
-        #loss_fdm = F.mse_loss(pred_embedding, next_embedding, reduction="none").sum(dim=1).mean()
-
-        # stub:
-        loss_fdm = 0
+        loss_fdm = F.mse_loss(pred_embedding, next_embedding, reduction="none").sum(dim=1).mean() * 0.1
 
         # step 2.5 learn a little of of a reconstruction loss (to stop collapse)
-        loss_ae = 0.0
-        # next_decoding = model.decode(next_embedding)
-        # loss_ae = F.mse_loss(next_decoding, next_frames)
-
+        next_decoding = model.decode(next_embedding)
+        loss_ae = F.mse_loss(next_decoding, next_frames)
 
         accuracy = (torch.argmax(log_probs, dim=1) == targets).float().mean()
 
@@ -158,12 +146,12 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         # generate prediction error bonus
         if args.use_icm:
-            # stub: disable
-            # pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
-            # next_embedding = model.encode(model.extract_down_sampled_frame(states))
-            # loss_fdm = F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).cpu().detach().numpy()
-            # rewards += loss_fdm
-            pass
+            pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
+            next_embedding = model.encode(model.extract_down_sampled_frame(states))
+            loss_fdm = F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).cpu().detach().numpy() * 10
+            if t == 0:
+                print(float(rewards.mean()), float(loss_fdm.mean()))
+            rewards += loss_fdm
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 

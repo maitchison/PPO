@@ -276,9 +276,7 @@ class ICMModel(PolicyModel):
         v2 = self.encode(self.extract_down_sampled_frame(state_2))
 
         # concat the embeddings together, then feed into a linear layer and finally make a prediction about the input.
-
         x = torch.cat((v1, v2), dim=1)
-
         x = F.relu(self.idm_fc(x))
         log_probs = self.idm_out(x)
 
