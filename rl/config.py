@@ -32,6 +32,7 @@ class Config:
         self.limit_epochs = 0
         self.batch_epochs = 0
         self.reward_clip = 0.0
+        self.reward_normalize = True
         self.mini_batch_size = 0
         self.sync_envs = False
         self.resolution = ""
@@ -120,7 +121,10 @@ def parse_args():
                         help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
+
+    parser.add_argument("--reward_normalize", type=float, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
+
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")

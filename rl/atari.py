@@ -27,18 +27,6 @@ def set_env_norm_state(norm_state):
     global ENV_NORM_STATE
     ENV_NORM_STATE = tuple(norm_state)
 
-
-def make(env_name, non_determinism="noop"):
-    return make_environment(env_name, non_determinism=non_determinism,
-        crop_input=args.input_crop,
-        filter=args.filter,
-        hash_size=args.hash_size,
-        res_x=args.res_x, res_y=args.res_y,
-        grayscale=not args.color,
-        reward_clip=args.reward_clip,
-        env_norm_state=ENV_NORM_STATE,
-    )
-
 class MemorizeGame(gym.Env):
     """
     Note: some modification to the game.
@@ -136,9 +124,9 @@ class MemorizeGame(gym.Env):
         return reward / (3600-50) * 10
 
 
-def make_environment(env_name, non_determinism="noop", crop_input=False, filter="none", hash_size=7,
-                     res_x=84, res_y=84, grayscale=True, reward_clip=5.0, env_norm_state=None):
+def make(env_name, non_determinism="noop", env_norm_state=ENV_NORM_STATE):
     """ Construct environment of given name, including any required wrappers."""
+
     env_type = None
 
     for k,v in _game_envs.items():
@@ -170,22 +158,25 @@ def make_environment(env_name, non_determinism="noop", crop_input=False, filter=
 
         env = wrappers.ObservationMonitor(env)
 
-        if crop_input:
+        if args.crop_input:
             env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
 
         # apply filter
         if filter == "none":
             pass
         elif filter == "hash":
-            env = wrappers.HashWrapper(env, hash_size)
+            env = wrappers.HashWrapper(env, args.hash_size)
         elif filter == "hash_time":
-            env = wrappers.HashWrapper(env, hash_size, use_time=True)
+            env = wrappers.HashWrapper(env, args.hash_size, use_time=True)
         else:
             raise Exception("Invalid observation filter {}.".format(filter))
 
-        env = wrappers.AtariWrapper(env, width=res_x, height=res_y, grayscale=grayscale)
+        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
-        env = wrappers.NormalizeRewardWrapper(env, clip=reward_clip, initial_state=env_norm_state)
+        if args.reward_normalize:
+            env = wrappers.NormalizeRewardWrapper(env, initial_state=env_norm_state)
+        if args.reward_clip:
+            env= wrappers.ClipRewardWrapper(env, args.reward_clip)
 
     else:
         raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))

@@ -175,12 +175,25 @@ class FrameSkipWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
 
+class ClipRewardWrapper(gym.Wrapper):
+
+    def __init__(self, env, clip=5.0):
+        super().__init__(env)
+        self.env = env
+        self.clip = clip
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        info["raw_reward"] = info.get("raw_reward", reward)
+        reward = np.clip(reward, -self.clip, +self.clip)
+        return obs, reward, done, info
+
 class NormalizeRewardWrapper(gym.Wrapper):
     """
     Normalizes rewards such that returns are unit normal.
     """
 
-    def __init__(self, env, clip=5.0, initial_state=None):
+    def __init__(self, env, initial_state=None):
         """
         Normalizes returns
 
@@ -188,7 +201,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
         super().__init__(env)
 
         self.env = env
-        self.clip = clip
         self.epsilon = 1e-4
         self.current_return = 0
         self.ret_rms = RunningMeanStd(shape=())
@@ -208,7 +220,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
         info["raw_reward"] = reward
         scaled_reward = reward / (self.std + self.epsilon)
-        scaled_reward = np.clip(scaled_reward, -self.clip, +self.clip)
 
         info["returns_norm_state"] = self.save_state()
 

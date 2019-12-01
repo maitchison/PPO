@@ -62,10 +62,13 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
     # calculate RND gradient
     if args.use_rnd:
-        loss_rnd = model.prediction_error(prev_states).mean()
+        # train on only 25% of minibatch to slow down the predictor network when used with large number of agents.
+        predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
+        n = int(len(prev_states) * predictor_proportion)
+        loss_rnd = model.prediction_error(prev_states[:n]).mean()
         loss += loss_rnd
         if my_counter % 100 == 0:
-            print("loss_rnd {:.3f}".format(float(loss_rnd)))
+            print("loss_rnd {:.4f}".format(float(loss_rnd)))
 
     # calculate ICM gradient
     # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
@@ -152,6 +155,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     batch_next_state = np.zeros([N, A, *state_shape], dtype=state_dtype) # this doubles memory, but makes life easier.
     batch_action = np.zeros([N, A], dtype=np.int32)
     batch_reward = np.zeros([N, A], dtype=np.float32)
+    batch_intrinsic_reward = np.zeros([N, A], dtype=np.float32)
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
     batch_value = np.zeros([N, A], dtype=np.float32)
@@ -168,17 +172,19 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         states, rewards, dones, infos = vec_envs.step(actions)
 
+        intrinsic_rewards = np.zeros_like(rewards)
+
         # generate prediction error bonus
         if args.use_icm and args.icm_eta != 0:
             pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
             next_embedding = model.encode(model.extract_down_sampled_frame(states))
             loss_fdm = 0.5 * F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).detach().cpu().numpy() * config.args.icm_eta
-            rewards += loss_fdm
+            intrinsic_rewards += loss_fdm
 
         # generate rnd bonus
         if args.use_rnd:
             loss_rnd = model.prediction_error(prev_states).detach().cpu().numpy()
-            rewards += loss_rnd
+            intrinsic_rewards += loss_rnd
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
@@ -203,11 +209,12 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         batch_next_state[t] = states
         batch_action[t] = actions
         batch_reward[t] = rewards
+        batch_intrinsic_reward[t] = intrinsic_rewards
         batch_logpolicy[t] = logprobs
         batch_terminal[t] = dones
         batch_value[t] = value
 
-    return (batch_prev_state, batch_next_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value,
+    return (batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, batch_logpolicy, batch_terminal, batch_value,
             states)
 
 
@@ -476,9 +483,21 @@ def train(env_name, model: models.PolicyModel):
         start_time = time.time()
 
         # collect experience
-        batch_prev_state, batch_next_state, batch_action, batch_reward, batch_logpolicy, batch_terminal, batch_value, states = \
+        batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, \
+        batch_logpolicy, batch_terminal, batch_value, states = \
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
                 state_shape, state_dtype, policy_shape)
+
+        # normalize intrinsic reward across rollout.
+        batch_intrinsic_reward = (batch_intrinsic_reward - np.mean(batch_intrinsic_reward)) / (np.std(batch_intrinsic_reward) + 1e-5)
+
+        # stub:
+        # display some info on rewards when a true reward is found.
+        if args.use_rnd and np.sum(batch_reward) != 0:
+            print((utils.Color.HEADER+"Rollout rewards: Scaled: {:.2f}/{:.2f} Intrinsic {:.2f}/{:.2f}"+utils.Color.ENDC).format(
+                np.mean(batch_reward), np.std(batch_reward),
+                np.mean(batch_intrinsic_reward), np.std(batch_intrinsic_reward),
+            ))
 
         # estimate advantages
 

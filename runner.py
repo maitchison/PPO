@@ -191,7 +191,59 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
     job_list.append(Job(experiment_name, run_name, priority, kwargs))
 
 
-def setup_jobs():
+def setup_jobs_V4():
+
+    # -------------------------------------------------------------------------------------------
+    # EXP_RND
+    # -------------------------------------------------------------------------------------------
+
+    # Reproduction study on RND paper.
+
+    # an initial test, more work needs to be done on this one before it's ready for real testing, but it'll
+    # be interesting to see if any progress can be made as is.
+    add_job(
+        "EXP_RND",
+        run_name="RND Initial Test",
+        env_name="MontezumaRevenge",
+        epochs=50,
+        agents=128,
+        n_steps=128,
+        entropy_bonus=0.001,
+        learning_rate=1e-4,
+        mini_batch_size=4096,  # seems very high!
+        gae_lambda=0.95,
+        ppo_epsilon=0.1,
+        gamma=0.99,            # this should be 0.999 for r_e and 0.99 for r_i
+        sticky_actions=True,
+        max_grad_norm=0,       # taken from source code.
+
+        use_rnd=True,
+        priority=10
+    )
+
+    # this one should get close to 2,500 after 50M steps.
+    add_job(
+        "EXP_RND",
+        run_name="PPO Baseline",
+        env_name="MontezumaRevenge",
+        epochs=50,
+        agents=128,
+        n_steps=128,
+        entropy_bonus=0.001,
+        learning_rate=1e-4,
+        mini_batch_size=4096,  # seems very high!
+        gae_lambda=0.95,
+        ppo_epsilon=0.1,
+        gamma=0.99,  # this should be 0.999 for r_e and 0.99 for r_i
+        sticky_actions=True,
+        max_grad_norm=0,  # taken from source code.
+
+        use_rnd=False,
+        priority=10
+    )
+
+
+def setup_jobs_V3():
 
     # -------------------------------------------------------------------------------------------
     # GA_Pong
@@ -442,7 +494,7 @@ def show_experiments(filter_jobs=None, all=False):
 if __name__ == "__main__":
     id = 0
     job_list = []
-    setup_jobs()
+    setup_jobs_V4()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
