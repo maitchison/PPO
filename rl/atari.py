@@ -14,7 +14,7 @@ register(
     entry_point='rl.atari:MemorizeGame',
 )
 
-ENV_NORM_STATE = None
+ENV_STATE = {}
 
 # get list of game environments...
 _game_envs = defaultdict(set)
@@ -22,10 +22,8 @@ for env in gym.envs.registry.all():
     env_type = env.entry_point.split(':')[0].split('.')[-1]
     _game_envs[env_type].add(env.id)
 
-
-def set_env_norm_state(norm_state):
-    global ENV_NORM_STATE
-    ENV_NORM_STATE = tuple(norm_state)
+def get_env_state(key):
+    return ENV_STATE.get(key, None)
 
 class MemorizeGame(gym.Env):
     """
@@ -124,7 +122,7 @@ class MemorizeGame(gym.Env):
         return reward / (3600-50) * 10
 
 
-def make(env_name, non_determinism="noop", env_norm_state=ENV_NORM_STATE):
+def make(env_name, non_determinism="noop"):
     """ Construct environment of given name, including any required wrappers."""
 
     env_type = None
@@ -142,7 +140,7 @@ def make(env_name, non_determinism="noop", env_norm_state=ENV_NORM_STATE):
 
         assert "NoFrameskip" in env_name
 
-        env = wrappers.TimeLimit(env, 60*60*30)
+        env = wrappers.TimeLimitWrapper(env, 60 * 60 * 30)
 
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":
@@ -158,23 +156,30 @@ def make(env_name, non_determinism="noop", env_norm_state=ENV_NORM_STATE):
 
         env = wrappers.MonitorWrapper(env)
 
-        if args.crop_input:
+        if args.input_crop:
             env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
 
         # apply filter
-        if filter == "none":
+        if args.filter == "none":
             pass
-        elif filter == "hash":
+        elif args.filter == "hash":
             env = wrappers.HashWrapper(env, args.hash_size)
-        elif filter == "hash_time":
+        elif args.filter == "hash_time":
             env = wrappers.HashWrapper(env, args.hash_size, use_time=True)
         else:
-            raise Exception("Invalid observation filter {}.".format(filter))
+            raise Exception("Invalid observation filter {}.".format(args.filter))
 
         env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
+        if args.observation_normalization:
+            env = wrappers.NormalizeObservationsWrapper(env, clip=args.observation_normalization,
+                                                        initial_state=get_env_state("observation_norm_state")
+                                                        )
+
         if args.reward_normalize:
-            env = wrappers.NormalizeRewardWrapper(env, initial_state=env_norm_state)
+            env = wrappers.NormalizeRewardWrapper(env,
+                                                  initial_state=get_env_state("returns_norm_state")
+                                                  )
 
         if args.reward_clip:
             env= wrappers.ClipRewardWrapper(env, args.reward_clip)

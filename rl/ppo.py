@@ -189,9 +189,9 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
         # save a copy of the normalization statistics.
-        norm_state = infos[0].get("returns_norm_state", None)
-        if norm_state is not None:
-            atari.set_env_norm_state(norm_state)
+        for key in ["returns_norm_state", "observation_norm_state"]:
+            if key in infos[0]:
+                atari.ENV_STATE[key] = infos[0][key]
 
         episode_score += raw_rewards
         episode_len += 1
@@ -392,7 +392,7 @@ def train(env_name, model: models.PolicyModel):
     _env.close()
 
     # epsilon = 1e-5 is required for stability.
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
 
     batch_size = (args.n_steps * args.agents)
 
@@ -405,7 +405,10 @@ def train(env_name, model: models.PolicyModel):
         print("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step, logs, norm_state = utils.load_checkpoint(checkpoint_path, model, optimizer)
-        atari.set_env_norm_state(norm_state)
+
+        for k, v in norm_state:
+            atari.ENV_STATE[k] = v
+
         training_log, timing_log, score_history, len_history = logs
         print("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
@@ -629,7 +632,7 @@ def train(env_name, model: models.PolicyModel):
             if args.save_checkpoints:
                 checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
                 logs = (training_log, timing_log, score_history, len_history)
-                utils.save_checkpoint(checkpoint_name, env_step, model, optimizer, atari.ENV_NORM_STATE, logs)
+                utils.save_checkpoint(checkpoint_name, env_step, model, optimizer, atari.ENV_STATE, logs)
                 print("  -checkpoint saved")
 
             if args.export_video:

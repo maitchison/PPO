@@ -193,6 +193,18 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs_V4():
 
+    # simple regression test, make sure agent can learn the problem and that normalization constants get saved
+    # and restored properly.
+    add_job(
+        "Test",
+        run_name="Pong",
+        epochs=50,
+        agents=128,
+        reward_normalization=True,
+        observation_normalization=True,
+        priority=20
+    )
+
     # -------------------------------------------------------------------------------------------
     # EXP_RND
     # -------------------------------------------------------------------------------------------
@@ -218,6 +230,7 @@ def setup_jobs_V4():
         max_grad_norm=0,       # taken from source code.
         reward_normalize=False,
         reward_clip=1,
+        adam_epsilon=1e-8,     # so bad!
 
         use_rnd=True,
         priority=10
@@ -241,6 +254,7 @@ def setup_jobs_V4():
         max_grad_norm=0,  # taken from source code.
         reward_normalize=False,
         reward_clip=1,
+        adam_epsilon=1e-8,  # so bad!
 
         use_rnd=False,
         priority=10

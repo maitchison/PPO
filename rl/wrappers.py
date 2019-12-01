@@ -188,8 +188,48 @@ class ClipRewardWrapper(gym.Wrapper):
         reward = np.clip(reward, -self.clip, +self.clip)
         return obs, reward, done, info
 
+
 class NormalizeObservationsWrapper(gym.Wrapper):
-    pass
+    """
+    Normalizes observations.
+    """
+    def __init__(self, env, clip, initial_state=None):
+        super().__init__(env)
+
+        self.env = env
+        self.epsilon = 1e-4
+        self.clip = clip
+        self.obs_rms = RunningMeanStd(shape=())
+        if initial_state is not None:
+            self.restore_state(initial_state)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.obs_rms.update(obs)
+        self.mean = self.obs_rms.mean
+        self.std = np.sqrt(self.obs_rms.var)
+
+        scaled_obs = (obs - self.mean) / (self.std + self.epsilon)
+        scaled_obs = np.clip(scaled_obs, -self.clip, +self.clip)
+        # stub: scale normalizaton to reasonable level
+        scaled_obs = (scaled_obs + 5) * 20
+        scaled_obs = np.asarray(scaled_obs, np.uint8)
+
+        info["observation_norm_state"] = self.save_state()
+        return scaled_obs, reward, done, info
+
+    def save_state(self):
+        """
+        Saves running statistics.
+        """
+        return tuple([self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count])
+
+    def restore_state(self, state):
+        """
+        Restores running statistics.
+        """
+        self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count = state
+
 
 class NormalizeRewardWrapper(gym.Wrapper):
     """
@@ -199,7 +239,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
     def __init__(self, env, initial_state=None):
         """
         Normalizes returns
-
         """
         super().__init__(env)
 
@@ -207,24 +246,19 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.epsilon = 1e-4
         self.current_return = 0
         self.ret_rms = RunningMeanStd(shape=())
+        self.mean = 0.0
+        self.std = 0.0
         if initial_state is not None:
             self.restore_state(initial_state)
 
     def step(self, action):
-
         obs, reward, done, info = self.env.step(action)
-
         self.current_return = self.current_return * 0.99 + reward
-
         self.ret_rms.update(self.current_return)
-
         self.mean = self.ret_rms.mean
         self.std = math.sqrt(self.ret_rms.var)
-
         scaled_reward = reward / (self.std + self.epsilon)
-
         info["returns_norm_state"] = self.save_state()
-
         return obs, scaled_reward, done, info
 
     def reset(self):
@@ -257,7 +291,7 @@ class MonitorWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         info["monitor_obs"] = obs.copy()
-        info["raw_rewards"] = reward.copy()
+        info["raw_rewards"] = reward
         return obs, reward, done, info
 
 class FrameCropWrapper(gym.Wrapper):
@@ -275,12 +309,12 @@ class FrameCropWrapper(gym.Wrapper):
         obs = obs[self.cropping]
         return obs, reward, done, info
 
-class TimeLimit(gym.Wrapper):
+class TimeLimitWrapper(gym.Wrapper):
     """
     From https://github.com/openai/baselines/blob/master/baselines/common/wrappers.py
     """
     def __init__(self, env, max_episode_steps=None):
-        super(TimeLimit, self).__init__(env)
+        super().__init__(env)
         self._max_episode_steps = max_episode_steps
         self._elapsed_steps = 0
 
