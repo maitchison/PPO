@@ -156,7 +156,7 @@ def make(env_name, non_determinism="noop", env_norm_state=ENV_NORM_STATE):
         else:
             raise Exception("Invalid non determinism type {}.".format(non_determinism))
 
-        env = wrappers.ObservationMonitor(env)
+        env = wrappers.MonitorWrapper(env)
 
         if args.crop_input:
             env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
@@ -175,6 +175,7 @@ def make(env_name, non_determinism="noop", env_norm_state=ENV_NORM_STATE):
 
         if args.reward_normalize:
             env = wrappers.NormalizeRewardWrapper(env, initial_state=env_norm_state)
+
         if args.reward_clip:
             env= wrappers.ClipRewardWrapper(env, args.reward_clip)
 

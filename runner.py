@@ -216,6 +216,8 @@ def setup_jobs_V4():
         gamma=0.99,            # this should be 0.999 for r_e and 0.99 for r_i
         sticky_actions=True,
         max_grad_norm=0,       # taken from source code.
+        reward_normalize=False,
+        reward_clip=1,
 
         use_rnd=True,
         priority=10
@@ -237,6 +239,8 @@ def setup_jobs_V4():
         gamma=0.99,  # this should be 0.999 for r_e and 0.99 for r_i
         sticky_actions=True,
         max_grad_norm=0,  # taken from source code.
+        reward_normalize=False,
+        reward_clip=1,
 
         use_rnd=False,
         priority=10

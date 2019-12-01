@@ -175,18 +175,21 @@ class FrameSkipWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
 
+
 class ClipRewardWrapper(gym.Wrapper):
 
-    def __init__(self, env, clip=5.0):
+    def __init__(self, env, clip):
         super().__init__(env)
         self.env = env
         self.clip = clip
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        info["raw_reward"] = info.get("raw_reward", reward)
         reward = np.clip(reward, -self.clip, +self.clip)
         return obs, reward, done, info
+
+class NormalizeObservationsWrapper(gym.Wrapper):
+    pass
 
 class NormalizeRewardWrapper(gym.Wrapper):
     """
@@ -218,7 +221,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.mean = self.ret_rms.mean
         self.std = math.sqrt(self.ret_rms.var)
 
-        info["raw_reward"] = reward
         scaled_reward = reward / (self.std + self.epsilon)
 
         info["returns_norm_state"] = self.save_state()
@@ -242,10 +244,10 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count = state
 
 
-class ObservationMonitor(gym.Wrapper):
+class MonitorWrapper(gym.Wrapper):
     """
-    Records a copy of the current observation into info. This can be helpful to retain an unmodified copy of the
-    input.
+    Records a copy of the current observation and reward into info.
+    This can be helpful to retain an unmodified copy of the input.
     """
 
     def __init__(self, env: gym.Env):
@@ -255,6 +257,7 @@ class ObservationMonitor(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         info["monitor_obs"] = obs.copy()
+        info["raw_rewards"] = reward.copy()
         return obs, reward, done, info
 
 class FrameCropWrapper(gym.Wrapper):
