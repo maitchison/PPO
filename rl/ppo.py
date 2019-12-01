@@ -62,10 +62,21 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
     # calculate RND gradient
     if args.use_rnd:
+
+        # note: this could be much much more efficent, I really should just be passing in mu and sigma, and then
+        # letting the model do the transformation... (i.e. keep everything as uint8)
+
         # train on only 25% of minibatch to slow down the predictor network when used with large number of agents.
+
         predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
+
+        mu = atari.ENV_STATE["observation_norm_state"][0]
+        sigma = np.sqrt(atari.ENV_STATE["observation_norm_state"][1])
+
+        normed_states = np.asarray(np.clip((prev_states - mu) / (sigma + 0.0001), -5, 5), dtype=np.float32)
+
         n = int(len(prev_states) * predictor_proportion)
-        loss_rnd = model.prediction_error(prev_states[:n]).mean()
+        loss_rnd = model.prediction_error(normed_states[:n]).mean()
         loss += loss_rnd
         if my_counter % 100 == 0:
             print("loss_rnd {:.4f}".format(float(loss_rnd)))
@@ -183,8 +194,16 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         # generate rnd bonus
         if args.use_rnd:
-            loss_rnd = model.prediction_error(prev_states).detach().cpu().numpy()
-            intrinsic_rewards += loss_rnd
+
+            # todo: norming should be handled by model... and I should update the model's constants..
+            if "observation_norm_state" in atari.ENV_STATE:
+                mu = atari.ENV_STATE["observation_norm_state"][0]
+                sigma = np.sqrt(atari.ENV_STATE["observation_norm_state"][1])
+
+                normed_states = np.asarray(np.clip((states - mu) / (sigma + 0.0001), -5, 5), dtype=np.float32)
+
+                loss_rnd = model.prediction_error(normed_states).detach().cpu().numpy()
+                intrinsic_rewards += loss_rnd
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
@@ -406,7 +425,7 @@ def train(env_name, model: models.PolicyModel):
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step, logs, norm_state = utils.load_checkpoint(checkpoint_path, model, optimizer)
 
-        for k, v in norm_state:
+        for k, v in norm_state.items():
             atari.ENV_STATE[k] = v
 
         training_log, timing_log, score_history, len_history = logs
@@ -502,6 +521,11 @@ def train(env_name, model: models.PolicyModel):
                 np.mean(batch_intrinsic_reward), np.std(batch_intrinsic_reward),
             ))
 
+        # stub:
+        # just add rewards together, should be processed separately with different gamma
+        batch_reward += batch_intrinsic_reward * 0.05
+
+        # ----------------------------------------------------
         # estimate advantages
 
         # we calculate the advantages by going backwards..

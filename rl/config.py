@@ -36,7 +36,7 @@ class Config:
         self.observation_normalization = False
 
         self.reward_clip = 0.0
-        self.reward_normalize = True
+        self.reward_normalization = True
 
         self.mini_batch_size = 0
         self.sync_envs = False
@@ -130,7 +130,7 @@ def parse_args():
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
 
-    parser.add_argument("--reward_normalize", type=float, default=True)
+    parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
 
     parser.add_argument("--mini_batch_size", type=int, default=1024)

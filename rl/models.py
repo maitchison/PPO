@@ -49,7 +49,12 @@ class PolicyModel(nn.Module):
         x = x.to(self.device, non_blocking=True)
 
         # then covert the type (faster to upload uint8 then convert on GPU)
-        x = x.to(dtype=self.dtype, non_blocking=True)
+        if x.dtype == torch.uint8:
+            x = x.to(dtype=self.dtype, non_blocking=True) / 255
+        elif x.dtype == self.dtype:
+            x = x.to(dtype=self.dtype, non_blocking=True)
+        else:
+            raise Exception("Invalid dtype {}".format(x.dtype))
 
         return x
 
@@ -95,11 +100,11 @@ class CNNModel(PolicyModel):
             # make a batch of 1 for a single example.
             x = x[np.newaxis, :, :, :]
 
-        validate_dims(x, (None, *self.input_dims), np.uint8)
+        validate_dims(x, (None, *self.input_dims))
 
         n,c,w,h = x.shape
 
-        x = self.prep_for_model(x) / 255.0
+        x = self.prep_for_model(x)
 
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
@@ -139,77 +144,6 @@ class RNDModel(PolicyModel):
     def forward(self, x):
         return self.policy_model.forward(x)
 
-
-class ImprovedCNNModel(PolicyModel):
-    """ An improved CNN model that uses 3x3 filters and maxpool instead of strides.
-    """
-
-    name = "Improved_CNN"
-
-    def __init__(self, input_dims, actions, device, dtype, include_xy=True):
-
-        super(ImprovedCNNModel, self).__init__()
-
-        self.actions = actions
-        c, w, h = input_dims
-
-        self.include_xy = include_xy
-
-        if self.include_xy:
-            c = c + 2
-
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=3, stride=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-
-        w = get_CNN_output_size(w, [3, 3, 3, 3], [2, 2, 2, 1], max_pool=True)
-        h = get_CNN_output_size(h, [3, 3, 3, 3], [2, 2, 2, 1], max_pool=True)
-
-        self.out_shape = (64, w, h)
-
-        self.d = utils.prod(self.out_shape)
-        self.fc = nn.Linear(self.d, 512)
-        self.fc_policy = nn.Linear(512, actions)
-        self.fc_value = nn.Linear(512, 1)
-
-        self.set_device_and_dtype(device, dtype)
-
-    def forward(self, x):
-        """ forwards input through model, returns policy and value estimate. """
-
-        if len(x.shape) == 3:
-            # make a batch of 1 for a single example.
-            x = x[np.newaxis, :, :, :]
-
-        assert x.dtype == np.uint8, "invalid dtype for input, found {} expected {}.".format(x.dtype, "uint8")
-        assert len(x.shape) == 4, "input should be (N,C,W,H)"
-
-        n,c,w,h = x.shape
-
-        x = self.prep_for_model(x) / 255.0
-
-        # give filters access to x,y location
-        if self.include_xy:
-            x = add_xy(x)
-
-        x = F.relu(self.conv1(x))
-        x = F.max_pool2d(x, kernel_size=2)
-        x = F.relu(self.conv2(x))
-        x = F.max_pool2d(x, kernel_size=2)
-        x = F.relu(self.conv3(x))
-        x = F.max_pool2d(x, kernel_size=2)
-        x = F.relu(self.conv4(x))
-
-        if x.shape[1:] != self.out_shape:
-            raise Exception("Invalid output dims. Expected {} found {}.".format(x.shape, self.out_shape))
-
-        x = F.relu(self.fc(x.view(n, self.d)))
-
-        policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=1)
-
-        return policy, value
 
 class ICMModel(PolicyModel):
     """ Intrinsic curiosity model

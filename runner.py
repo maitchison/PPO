@@ -198,10 +198,9 @@ def setup_jobs_V4():
     add_job(
         "Test",
         run_name="Pong",
+        env_name="Pong",
         epochs=50,
         agents=128,
-        reward_normalization=True,
-        observation_normalization=True,
         priority=20
     )
 
@@ -228,7 +227,7 @@ def setup_jobs_V4():
         gamma=0.99,            # this should be 0.999 for r_e and 0.99 for r_i
         sticky_actions=True,
         max_grad_norm=0,       # taken from source code.
-        reward_normalize=False,
+        reward_normalization=False,
         reward_clip=1,
         adam_epsilon=1e-8,     # so bad!
 
@@ -252,7 +251,7 @@ def setup_jobs_V4():
         gamma=0.99,  # this should be 0.999 for r_e and 0.99 for r_i
         sticky_actions=True,
         max_grad_norm=0,  # taken from source code.
-        reward_normalize=False,
+        reward_normalization=False,
         reward_clip=1,
         adam_epsilon=1e-8,  # so bad!
 

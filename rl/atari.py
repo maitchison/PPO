@@ -171,12 +171,13 @@ def make(env_name, non_determinism="noop"):
 
         env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
-        if args.observation_normalization:
-            env = wrappers.NormalizeObservationsWrapper(env, clip=args.observation_normalization,
+        if args.use_rnd:
+            # rnd requires a normalize copy of the state...
+            env = wrappers.NormalizeObservationsWrapper(env, clip=5.0, save_to_info=True,
                                                         initial_state=get_env_state("observation_norm_state")
                                                         )
 
-        if args.reward_normalize:
+        if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,
                                                   initial_state=get_env_state("returns_norm_state")
                                                   )

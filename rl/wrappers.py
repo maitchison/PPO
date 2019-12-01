@@ -193,13 +193,14 @@ class NormalizeObservationsWrapper(gym.Wrapper):
     """
     Normalizes observations.
     """
-    def __init__(self, env, clip, initial_state=None):
+    def __init__(self, env, clip, save_to_info=False, initial_state=None):
         super().__init__(env)
 
         self.env = env
         self.epsilon = 1e-4
         self.clip = clip
         self.obs_rms = RunningMeanStd(shape=())
+        self.save_to_info=save_to_info
         if initial_state is not None:
             self.restore_state(initial_state)
 
@@ -211,12 +212,15 @@ class NormalizeObservationsWrapper(gym.Wrapper):
 
         scaled_obs = (obs - self.mean) / (self.std + self.epsilon)
         scaled_obs = np.clip(scaled_obs, -self.clip, +self.clip)
-        # stub: scale normalizaton to reasonable level
-        scaled_obs = (scaled_obs + 5) * 20
-        scaled_obs = np.asarray(scaled_obs, np.uint8)
+        scaled_obs = np.asarray(scaled_obs, dtype=np.float32)
 
         info["observation_norm_state"] = self.save_state()
-        return scaled_obs, reward, done, info
+
+        if self.save_to_info:
+            info["normalized_observation"] = scaled_obs
+            return obs, reward, done, info
+        else:
+            return scaled_obs, reward, done, info
 
     def save_state(self):
         """
@@ -291,7 +295,7 @@ class MonitorWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         info["monitor_obs"] = obs.copy()
-        info["raw_rewards"] = reward
+        info["raw_reward"] = reward
         return obs, reward, done, info
 
 class FrameCropWrapper(gym.Wrapper):
