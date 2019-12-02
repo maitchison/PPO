@@ -10,6 +10,7 @@ import csv
 import json
 import math
 from collections import deque
+from torch.utils.tensorboard import SummaryWriter
 
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
@@ -400,6 +401,7 @@ def train(env_name, model: models.PolicyModel):
     
     """
 
+
     utils.lock_job()
 
     # get shapes and dtypes
@@ -408,6 +410,13 @@ def train(env_name, model: models.PolicyModel):
     state_shape = obs.shape
     state_dtype = obs.dtype
     policy_shape = model.policy(obs[np.newaxis])[0].shape
+
+    # Just export the model for the moment.
+    if args.tensorboard_logging:
+        writer = SummaryWriter()
+        writer.add_graph(model, torch.tensor(obs))
+        writer.close()
+
     _env.close()
 
     # epsilon = 1e-5 is required for stability.

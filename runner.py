@@ -199,7 +199,7 @@ def setup_jobs_V4():
         "Test",
         run_name="Pong",
         env_name="Pong",
-        epochs=50,
+        epochs=20,
         agents=128,
         priority=20
     )

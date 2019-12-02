@@ -35,6 +35,8 @@ class Config:
 
         self.observation_normalization = False
 
+        self.tensorboard_logging = False
+
         self.reward_clip = 0.0
         self.reward_normalization = True
 
@@ -129,6 +131,8 @@ def parse_args():
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
+
+    parser.add_argument("--tensorboard_logging", type=str2bool, default=False)
 
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
