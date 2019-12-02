@@ -322,9 +322,11 @@ def train(env_name, model: models.PolicyModel):
 
         print("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
+        walltime = log["walltime"]
         did_restore = True
     else:
         start_iteration = 0
+        walltime = 0
         did_restore = False
 
     # make a copy of params
@@ -361,8 +363,6 @@ def train(env_name, model: models.PolicyModel):
     episode_score = np.zeros([args.agents], dtype = np.float32)
     episode_len = np.zeros([args.agents], dtype = np.int32)
 
-    initial_start_time = time.time()
-
     last_print_time = -1
     last_log_time = -1
 
@@ -373,7 +373,11 @@ def train(env_name, model: models.PolicyModel):
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))
 
+    log_time = 0
+
     for iteration in range(start_iteration, n_iterations+1):
+
+        step_start_time = time.time()
 
         env_step = iteration * batch_size
 
@@ -383,8 +387,6 @@ def train(env_name, model: models.PolicyModel):
         # N, A, ...,
         # Where n is the number of steps, and A is the number of agents.
         # this means we can process each step as a vector
-
-        start_time = time.time()
 
         # collect experience
         batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, \
@@ -420,9 +422,9 @@ def train(env_name, model: models.PolicyModel):
 
         batch_returns = batch_advantage + batch_value
 
-        rollout_time = (time.time() - start_time) / batch_size
+        rollout_time = (time.time() - step_start_time) / batch_size
 
-        start_train_time = time.time()
+        train_start_time = time.time()
 
         # normalize batch advantages
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
@@ -461,22 +463,25 @@ def train(env_name, model: models.PolicyModel):
                 log.watch_mean("loss_entropy", loss_entropy)
                 log.watch_mean("opt_grad_norm", grad_norm)
 
-        train_time = (time.time() - start_train_time) / batch_size
+        train_time = (time.time() - train_start_time) / batch_size
 
-        step_time = (time.time() - start_time) / batch_size
+        step_time = (time.time() - step_start_time) / batch_size
+
+        log_start_time = time.time()
 
         fps = 1.0 / (step_time)
 
         # record some training stats
         log.watch("iteration", iteration, display_priority=5)
         log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
-                  display_precison=2)
-        log.watch("walltime", time.time()-initial_start_time,
+                  display_precision=2)
+        log.watch("walltime", walltime,
                   display_priority=3, display_scale=1/(60*60), display_postfix="h", display_precision = 1)
         log.watch_mean("fps", int(fps))
         log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=1)
         log.watch_mean("time_step", step_time*1000, display_width=0)
         log.watch_mean("time_rollout", rollout_time*1000, display_postfix="ms", display_precision=1)
+        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=1, type="float")
 
         log.record_step()
 
@@ -487,12 +492,15 @@ def train(env_name, model: models.PolicyModel):
             last_print_time = time.time()
             print_counter += 1
 
+        # stub:
+        start_export_time = time.time()
+        log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
+
         # save log and refresh lock
         if time.time() - last_log_time >= config.LOG_EVERY_SEC:
             utils.lock_job()
-            start_time = time.time()
+            start_export_time = time.time()
             log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
-            log.watch("_export_log_time", time.time()-start_time * 1000, display_width=0)
             last_log_time = time.time()
 
         # periodically save checkpoints
@@ -512,6 +520,13 @@ def train(env_name, model: models.PolicyModel):
                 print("  -video exported")
 
             print()
+
+        log_time = (time.time() - log_start_time) / batch_size
+
+        # update walltime
+        # this is not technically wall time, as I pause time when the job is not processing, and do not include
+        # any of the logging time.
+        walltime += step_time
 
     # -------------------------------------
     # save final information

@@ -18,7 +18,7 @@ class LogVariable():
         default_display_width = {
             "int": 10,
             "float": 10,
-            "stats": 25,
+            "stats": 26,
             "str": 20
         }[type]
 
@@ -74,6 +74,13 @@ class LogVariable():
         return self._name
 
     @property
+    def _sort_key(self):
+        return (-self.display_priority, self.name)
+
+    def __lt__(self, other):
+        return self._sort_key < other._sort_key
+
+    @property
     def display(self):
         """ Returns formatted value. """
         value = self.value
@@ -82,12 +89,7 @@ class LogVariable():
         elif self._type == "float":
             result = str(nice_round(value*self.display_scale, self.display_precision))
         elif self._type == "stats":
-            result = "{} ± {} ({}/{})".format(
-                nice_round(value[0], self.display_precision),
-                nice_round(value[1], self.display_precision),
-                nice_round(value[2], self.display_precision),
-                nice_round(value[3], self.display_precision)
-            )
+            result = "{} ±{} ({}/{})".format(*(nice_round(x, self.display_precision) for x in value))
         elif self._type == "str":
             result = str(value)
         else:
@@ -148,7 +150,7 @@ class Logger():
     def print(self, include_header=False):
         """ Prints current value of all logged variables."""
 
-        sorted_vars = sorted(self._vars.values(), key=lambda x: (-x.display_priority, x.name))
+        sorted_vars = sorted(self._vars.values())
 
         if include_header:
             output_string = ""
@@ -170,8 +172,14 @@ class Logger():
     def record_step(self):
         """ Records state of all watched variables for this given step. """
         row = {}
-        for k, v in self._vars.items():
-            row[k] = v.value
+        for var in sorted(self._vars.values()):
+            if var._type == "stats":
+                row[var.name + "_mean"] = var.value[0]
+                row[var.name + "_std"] = var.value[1]
+                row[var.name + "_min"] = var.value[2]
+                row[var.name + "_max"] = var.value[3]
+            else:
+                row[var.name] = var.value
         self._history.append(row)
 
     def log(self, s, level=INFO):
@@ -197,7 +205,7 @@ class Logger():
             return
 
         with open(file_name, "w") as f:
-            field_names = list(self._history[-1].keys())
+            field_names = self._history[-1].keys()
             writer = csv.DictWriter(f, fieldnames=field_names)
             writer.writeheader()
             for row in self._history:
@@ -213,30 +221,30 @@ class Logger():
         return self._vars[key].value
 
 def assume_type(value):
-    """ Returns the type, int, float or str of variable. Should work fine with np and pytorch variables. """
+    """ Returns the type, int, float or str of variable. Should work fine with np variables. """
 
     if type(value) == str:
         return "str"
 
-    try:
-        if int(value) == value:
-            return "int"
-    except:
-        pass
+    if type(value) == int:
+        return "int"
 
-    try:
-        if abs(float(value) - value) < 1e-6:
-            return "float"
-    except:
-        pass
+    if type(value) == float:
+        return "float"
+
+    if np.issubdtype(int, np.integer):
+        return "int"
+
+    if np.issubdtype(int, np.floating):
+        return "float"
 
     return "str"
 
+
 def nice_round(x, rounding):
+
     if rounding == 0:
-        if int(x) == x:
-            return str(x)
-        else:
-            return round(x, 1) if x < 100 else "{:,}".format(int(x))
+        return round(x, 1) if abs(x) < 100 else "{:,}".format(int(x))
+
     if rounding > 0:
         return round(x, rounding)
