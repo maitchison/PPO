@@ -389,17 +389,23 @@ def train(env_name, model: models.PolicyModel):
         # this means we can process each step as a vector
 
         # collect experience
-        batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, \
+        batch_prev_state, batch_next_state, batch_action, batch_extrensic_reward, batch_intrinsic_reward, \
         batch_logpolicy, batch_terminal, batch_value, states = \
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
 
         # normalize intrinsic reward across rollout.
+        log.watch_mean("batch_reward_int", np.mean(batch_intrinsic_reward), display_name="br_int")
+        log.watch_mean("batch_reward_ext", np.mean(batch_extrensic_reward), display_name="br_ext")
         batch_intrinsic_reward = (batch_intrinsic_reward - np.mean(batch_intrinsic_reward)) / (np.std(batch_intrinsic_reward) + 1e-5)
+
 
         # stub:
         # just add rewards together, should be processed separately with different gamma
-        batch_reward += batch_intrinsic_reward * 0.05
+        if args.use_rnd:
+            batch_reward = batch_extrensic_reward * 2 + batch_intrinsic_reward
+        else:
+            batch_reward = batch_extrensic_reward
 
         # ----------------------------------------------------
         # estimate advantages
@@ -491,10 +497,6 @@ def train(env_name, model: models.PolicyModel):
             log.print(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
             print_counter += 1
-
-        # stub:
-        start_export_time = time.time()
-        log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
 
         # save log and refresh lock
         if time.time() - last_log_time >= config.LOG_EVERY_SEC:

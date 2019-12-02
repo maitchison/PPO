@@ -11,7 +11,7 @@ class LogVariable():
     """
 
     def __init__(self, name, history_length=1, type="float", display_width=None, display_precision=None,
-                 display_priority=0, export_precision=None, display_postfix="", display_scale=1):
+                 display_priority=0, export_precision=None, display_postfix="", display_scale=1, display_name=None):
 
         assert type in ["int", "float", "stats", "str"]
 
@@ -42,6 +42,7 @@ class LogVariable():
         self.display_priority = display_priority
         self.display_postfix = display_postfix
         self.display_scale = display_scale
+        self._display_name = display_name
 
         self._name = name
         self._history = deque(maxlen=history_length)
@@ -79,6 +80,10 @@ class LogVariable():
 
     def __lt__(self, other):
         return self._sort_key < other._sort_key
+
+    @property
+    def display_name(self):
+        return self.name if self._display_name is None else self._display_name
 
     @property
     def display(self):
@@ -157,7 +162,7 @@ class Logger():
             for var in sorted_vars:
                 if var.display_width == 0:
                     continue
-                output_string = output_string + (var.name.rjust(var.display_width-1, " ")+" ")[:var.display_width]
+                output_string = output_string + (var.display_name.rjust(var.display_width-1, " ")+" ")[:var.display_width]
             print("-" * len(output_string))
             print(output_string)
             print("-"*len(output_string))
