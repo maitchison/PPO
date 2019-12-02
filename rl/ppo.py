@@ -1,21 +1,19 @@
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 import gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
-import csv
 import json
 import math
 from collections import deque
 from torch.utils.tensorboard import SummaryWriter
+from .logger import Logger, LogVariable
 
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-print_counter = 0
 my_counter = 0
 
 def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_states, actions, returns, policy_logprobs, advantages, values):
@@ -148,7 +146,7 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
     return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy, grad_norm])
 
 
-def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, score_history, len_history,
+def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, log,
                state_shape, state_dtype, policy_shape):
     """
     Runs agents given number of steps, using a single thread, but batching the updates
@@ -220,8 +218,8 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
             if done:
                 # reset is handled automatically by vectorized environments
                 # so just need to keep track of book-keeping
-                score_history.append(episode_score[i])
-                len_history.append(episode_len[i])
+                log.watch_full("ep_score", episode_score[i])
+                log.watch_full("ep_length", episode_len[i])
                 episode_score[i] = 0
                 episode_len[i] = 0
 
@@ -237,45 +235,6 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     return (batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, batch_logpolicy, batch_terminal, batch_value,
             states)
 
-
-def save_training_log(training_log, include_graphs=True):
-    filename = os.path.join(args.log_folder, "training_log.csv")
-    with open(filename, mode='w') as f:
-        csv_writer = csv.writer(f, delimiter=',')
-        csv_writer.writerow(["Loss", "Loss_Clip", "Loss_Value", "Loss_Entropy",
-                             "Ep_Score (100)", "Ep_Len (100)",
-                             "Ep_Score (10)", "Ep_Len (10)",
-                             "Elapsed", "Iteration", "Step", "FPS", "Gradient_Norm", "History"])
-
-        for row in training_log:
-            # convert values lower precision
-            row = [utils.sig_fig(x,sf=4) for x in row]
-            csv_writer.writerow(row)
-
-    if include_graphs:
-        save_training_graphs(training_log)
-
-def save_profile_log(filename, timing_log):
-    with open(filename, "w") as f:
-        csv_writer = csv.writer(f, delimiter=',')
-        csv_writer.writerow(["Step", "Rollout_Time", "Train_Time", "Step_Time", "Batch_Size", "FPS", "CUDA_Memory"])
-        for row in timing_log:
-            csv_writer.writerow(row)
-
-def print_profile_info(timing_log, title="Performance results:"):
-
-    timing_log = np.asarray(timing_log)
-
-    rollout_time = timing_log[:, 1].mean()
-    train_time = timing_log[:, 2].mean()
-    step_time = timing_log[:, 3].mean()
-    fps = timing_log[:, 5].mean()
-    fps_std_error = timing_log[:, 5].std(ddof=1) / math.sqrt(len(timing_log))
-
-    print(title+": {:.2f}ms / {:.2f}ms / {:.2f}ms  [{:.0f} FPS +- {:.1f}]".format(
-        step_time, rollout_time, train_time, fps, fps_std_error))
-
-
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     lr = args.learning_rate * (args.learning_rate_decay ** epoch)
@@ -283,102 +242,22 @@ def adjust_learning_rate(optimizer, epoch):
         param_group['lr'] = lr
     return lr
 
-def save_progress(env_step, score_history, fps_history):
-    if True:
-        # save current step information.
-        details = {}
-        details["max_epochs"] = args.epochs
-        details["completed_epochs"] = env_step / 1e6  # include the current completed step.
-        details["score"] = np.percentile(utils.smooth(score_history, 0.9), 95) if len(score_history) > 0 else None
-        details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
-        details["fps"] = int(np.mean(fps_history))
-        frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
-        details["eta"] = frames_remaining / details["fps"]
-        details["host"] = args.hostname
-        details["last_modified"] = time.time()
-        with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
-            json.dump(details, f)
+def save_progress(log: Logger):
+    """ Saves some useful information to progress.txt. """
 
+    details = {}
+    details["max_epochs"] = args.epochs
+    details["completed_epochs"] = log["env_step"] / 1e6  # include the current completed step.
+    details["score"] = log["ep_score"][0]
+    details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
+    details["fps"] = log["fps"]
+    frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
+    details["eta"] = frames_remaining / details["fps"]
+    details["host"] = args.hostname
+    details["last_modified"] = time.time()
+    with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
+        json.dump(details, f, indent=4)
 
-def save_training_graphs(training_log):
-    clean_training_log = training_log[10:] if len(
-        training_log) >= 10 else training_log  # first sample is usually extreme.
-
-    xs = [x[10] for x in clean_training_log]
-    plt.figure(figsize=(8, 8))
-    plt.grid()
-
-    labels = ["loss", "loss_clip", "loss_value", "loss_entropy"]
-    ys = [[x[i] for x in clean_training_log] for i in range(4)]
-    colors = ["red", "green", "blue", "black"]
-
-    for label, y, c in zip(labels, ys, colors):
-        plt.plot(xs, y, alpha=0.2, c=c)
-        plt.plot(xs, utils.smooth(y), label=label, c=c)
-
-    plt.legend()
-    plt.ylabel("Loss")
-    plt.xlabel("Env Step")
-    plt.savefig(os.path.join(args.log_folder, "losses.png"))
-    plt.close()
-
-    xs = []
-    rewards = []
-    lengths = []
-    rewards10 = []
-    lengths10 = []
-    for i, x in enumerate(clean_training_log):
-        if x[4] is None:
-            continue
-        xs.append(x[10])
-        rewards.append(x[4])
-        lengths.append(x[5])
-        rewards10.append(x[6])
-        lengths10.append(x[7])
-
-    if len(rewards) > 10:
-        plt.figure(figsize=(8, 8))
-        plt.grid()
-        plt.plot(xs, rewards10, alpha=0.2)
-        plt.plot(xs, rewards)
-        plt.ylabel("Reward")
-        plt.xlabel("Env Step")
-        plt.savefig(os.path.join(args.log_folder, "ep_reward.png"))
-        plt.close()
-
-        plt.figure(figsize=(8, 8))
-        plt.grid()
-        plt.plot(xs, lengths10, alpha=0.2)
-        plt.plot(xs, lengths)
-        plt.ylabel("Episode Length")
-        plt.xlabel("Env Step")
-        plt.savefig(os.path.join(args.log_folder, "ep_length.png"))
-        plt.close()
-
-
-def print_progress(iteration, env_step, training_log):
-    global print_counter
-    if print_counter % 10 == 0:
-        print(
-            "{:>8}{:>8}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>8}".format("iter", "step", "loss", "l_clip", "l_value",
-                                                                               "l_ent", "ep_score", "ep_len", "elapsed",
-                                                                               "fps"))
-        print("-" * 120)
-
-    print("{:>8}{:>8}{:>10.3f}{:>10.4f}{:>10.4f}{:>10.4f}{:>10.2f}{:>10.0f}{:>10}{:>8.0f} {:<10}".format(
-        str(iteration),
-        "{:.2f}M".format(env_step / 1000 / 1000),
-        training_log[-1][0],
-        training_log[-1][1],
-        training_log[-1][2],
-        training_log[-1][3],
-        utils.with_default(training_log[-1][4], 0),
-        utils.with_default(training_log[-1][5], 0),
-        "{:.0f} min".format(training_log[-1][8] / 60),
-        training_log[-1][11],
-        utils.with_default(training_log[-1][13], 0)
-    ))
-    print_counter += 1
 
 def train(env_name, model: models.PolicyModel):
     """
@@ -401,6 +280,10 @@ def train(env_name, model: models.PolicyModel):
     
     """
 
+    # setup logging
+    log = Logger()
+    log.add_variable(LogVariable("ep_score", 100, "stats"))   # these need to be added up-front as it might take some
+    log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
 
     utils.lock_job()
 
@@ -432,12 +315,11 @@ def train(env_name, model: models.PolicyModel):
     if len(checkpoints) > 0:
         print("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
-        restored_step, logs, norm_state = utils.load_checkpoint(checkpoint_path, model, optimizer)
+        restored_step, log, norm_state = utils.load_checkpoint(checkpoint_path, model, optimizer)
 
         for k, v in norm_state.items():
             atari.ENV_STATE[k] = v
 
-        training_log, timing_log, score_history, len_history = logs
         print("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
         did_restore = True
@@ -445,15 +327,10 @@ def train(env_name, model: models.PolicyModel):
         start_iteration = 0
         did_restore = False
 
-        training_log = []
-        timing_log = []
-        score_history = []
-        len_history = []
-
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"),"w") as f:
         params = {k:v for k,v in args.__dict__.items()}
-        # fix up some of the types...
+        # fixup some of the non-serializable types.
         params["dtype"] = str(params["dtype"])
         params["model"] = params["model"].name
         f.write(json.dumps(params, indent=4))
@@ -466,6 +343,8 @@ def train(env_name, model: models.PolicyModel):
 
     print("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
 
+    print_counter = 0
+
     if start_iteration == 0 and (args.limit_epochs is None):
         print("Training for {:.1f}M steps".format(n_iterations*batch_size/1000/1000))
     else:
@@ -475,7 +354,6 @@ def train(env_name, model: models.PolicyModel):
               " / " + str(round(args.epochs)) +"M) steps")
 
     print()
-    print("-" * 120)
 
     # initialize agent
     states = vec_env.reset()
@@ -487,11 +365,6 @@ def train(env_name, model: models.PolicyModel):
 
     last_print_time = -1
     last_log_time = -1
-
-    fps_history = deque(maxlen=10 if not config.PROFILE_INFO else None)
-
-
-    env_step = 0
 
     # add a few checkpoints early on
 
@@ -516,19 +389,11 @@ def train(env_name, model: models.PolicyModel):
         # collect experience
         batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, \
         batch_logpolicy, batch_terminal, batch_value, states = \
-            run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, score_history, len_history,
+            run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
 
         # normalize intrinsic reward across rollout.
         batch_intrinsic_reward = (batch_intrinsic_reward - np.mean(batch_intrinsic_reward)) / (np.std(batch_intrinsic_reward) + 1e-5)
-
-        # stub:
-        # display some info on rewards when a true reward is found.
-        if args.use_rnd and np.sum(batch_reward) != 0:
-            print((utils.Color.HEADER+"Rollout rewards: Scaled: {:.2f}/{:.2f} Intrinsic {:.2f}/{:.2f}"+utils.Color.ENDC).format(
-                np.mean(batch_reward), np.std(batch_reward),
-                np.mean(batch_intrinsic_reward), np.std(batch_intrinsic_reward),
-            ))
 
         # stub:
         # just add rewards together, should be processed separately with different gamma
@@ -562,12 +427,6 @@ def train(env_name, model: models.PolicyModel):
         # normalize batch advantages
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
 
-        total_loss_clip = 0
-        total_loss_value = 0
-        total_loss_entropy = 0
-        total_loss = 0
-        total_grad_norm = 0
-
         batch_arrays = [
             batch_prev_state.reshape([batch_size, *state_shape]),
             batch_next_state.reshape([batch_size, *state_shape]),
@@ -596,11 +455,11 @@ def train(env_name, model: models.PolicyModel):
 
                 loss, loss_clip, loss_value, loss_entropy, grad_norm = train_minibatch(model, optimizer, *slices)
 
-                total_loss_clip += loss_clip / (args.batch_epochs*n_batches)
-                total_loss_value += loss_value / (args.batch_epochs*n_batches)
-                total_loss_entropy += loss_entropy / (args.batch_epochs*n_batches)
-                total_loss += loss / (args.batch_epochs*n_batches)
-                total_grad_norm += grad_norm / (args.batch_epochs * n_batches)
+                log.watch_mean("loss", loss)
+                log.watch_mean("loss_clip", loss_clip)
+                log.watch_mean("loss_value", loss_value)
+                log.watch_mean("loss_entropy", loss_entropy)
+                log.watch_mean("opt_grad_norm", grad_norm)
 
         train_time = (time.time() - start_train_time) / batch_size
 
@@ -608,52 +467,32 @@ def train(env_name, model: models.PolicyModel):
 
         fps = 1.0 / (step_time)
 
-        if config.PROFILE_INFO:
-            if "cuda" in args.device:
-                cuda_memory = torch.cuda.max_memory_allocated()
-            else:
-                cuda_memory = 0
+        # record some training stats
+        log.watch("iteration", iteration, display_priority=5)
+        log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
+                  display_precison=2)
+        log.watch("walltime", time.time()-initial_start_time,
+                  display_priority=3, display_scale=1/(60*60), display_postfix="h", display_precision = 1)
+        log.watch_mean("fps", int(fps))
+        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=1)
+        log.watch_mean("time_step", step_time*1000, display_width=0)
+        log.watch_mean("time_rollout", rollout_time*1000, display_postfix="ms", display_precision=1)
 
-            timing_log.append((iteration, rollout_time * 1000, train_time * 1000, step_time * 1000, batch_size, fps, cuda_memory/1024/1024))
-
-            # print early timing information from second iteration.
-            if iteration == 1:
-                print_profile_info(timing_log, "Early timing results")
-
-        fps_history.append(fps)
-
-        history_string = "({:.1f} - {:.1f}) +- {:.2f}".format(
-            min(score_history[-100:]), max(score_history[-100:]), np.std(score_history[-100:])
-        ) if len(score_history) > 0 else ""
-
-        training_log.append(
-            (total_loss,
-             total_loss_clip,
-             total_loss_value,
-             total_loss_entropy,
-             utils.safe_mean(score_history[-100:], 2),
-             utils.safe_mean(len_history[-100:], 2),
-             utils.safe_mean(score_history[-10:], 2),
-             utils.safe_mean(len_history[-10:], 2),
-             time.time()-initial_start_time,
-             iteration,
-             env_step,
-             int(np.mean(fps_history)),
-             total_grad_norm,
-             history_string
-             )
-        )
+        log.record_step()
 
         # periodically print and save progress
         if time.time() - last_print_time >= config.PRINT_EVERY_SEC:
-            save_progress(env_step + batch_size, score_history, fps_history)
-            print_progress(iteration, env_step, training_log)
+            save_progress(log)
+            log.print(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
+            print_counter += 1
 
         # save log and refresh lock
         if time.time() - last_log_time >= config.LOG_EVERY_SEC:
             utils.lock_job()
-            save_training_log(training_log)
+            start_time = time.time()
+            log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
+            log.watch("_export_log_time", time.time()-start_time * 1000, display_width=0)
             last_log_time = time.time()
 
         # periodically save checkpoints
@@ -664,8 +503,7 @@ def train(env_name, model: models.PolicyModel):
 
             if args.save_checkpoints:
                 checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
-                logs = (training_log, timing_log, score_history, len_history)
-                utils.save_checkpoint(checkpoint_name, env_step, model, optimizer, atari.ENV_STATE, logs)
+                utils.save_checkpoint(checkpoint_name, env_step, model, log, optimizer, atari.ENV_STATE)
                 print("  -checkpoint saved")
 
             if args.export_video:
@@ -678,12 +516,8 @@ def train(env_name, model: models.PolicyModel):
     # -------------------------------------
     # save final information
 
-    if config.PROFILE_INFO:
-        print_profile_info(timing_log, "Final timing results")
-        save_profile_log(os.path.join(args.log_folder, "timing_info.csv"), timing_log)
-
-    save_progress(env_step + batch_size, score_history, fps_history)
-    save_training_log(training_log)
+    save_progress(log)
+    log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
 
     # ------------------------------------
     # release the lock
@@ -693,8 +527,6 @@ def train(env_name, model: models.PolicyModel):
     print()
     print(utils.Color.OKGREEN+"Training Complete."+utils.Color.ENDC)
     print()
-
-    return training_log
 
 
 

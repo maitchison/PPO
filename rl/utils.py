@@ -8,6 +8,8 @@ import pickle
 import json
 import time
 
+from .logger import Logger
+
 from . import hybridVecEnv, atari, config
 from .config import args
 
@@ -153,7 +155,7 @@ def sig_fig(x, sf=6):
         return x
 
 
-def with_default(x, default):
+def default(x, default):
     """ Returns x if x is not none, otherwise default. """
     return x if x is not None else default
 
@@ -175,7 +177,10 @@ def copy_source_files(source, destination, force=False):
         print("Failed to copy training file to log folder.", e)
         return None
 
-# -------------------------------------------------------------
+def comma(x):
+    return "{:,.1f}".format(x) if x < 100 else "{:,.0f}".format(x)
+
+    # -------------------------------------------------------------
 # Rollouts
 # -------------------------------------------------------------
 
@@ -386,12 +391,12 @@ def get_checkpoint_path(step, postfix):
     return os.path.join(args.log_folder, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
 
-def save_checkpoint(filename, step, model, optimizer, norm_state, logs):
+def save_checkpoint(filename, step, model, log, optimizer, norm_state):
     torch.save({
         'step': step ,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'logs': logs,
+        'logs': log,
         'norm_state': norm_state
     }, filename)
 
@@ -416,9 +421,9 @@ def load_checkpoint(checkpoint_path, model, optimizer=None):
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     step = checkpoint['step']
-    logs = checkpoint['logs']
+    log = checkpoint['logs']
     norm_state = checkpoint['norm_state']
-    return step, logs, norm_state
+    return step, log, norm_state
 
 
 def generate_hash_image(key, hash_size, obs_size):
