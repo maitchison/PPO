@@ -54,8 +54,10 @@ def entropy(p):
 
 
 def log_entropy(logp):
-    """ Returns the entropy of a distribution where input are log probabilties."""
-    return -(logp.exp() * logp).sum() * (NATS_TO_BITS)
+    """ Returns the entropy of a distribution where input are log probabilties and output is in NATS
+        Note: this used to be in bits, but to standardize with openAI baselines we have switched to NATS.
+    """
+    return -(logp.exp() * logp).sum()
 
 
 def sample_action_from_logp(logp):
