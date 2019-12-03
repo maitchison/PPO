@@ -200,7 +200,7 @@ class NormalizeObservationsWrapper(gym.Wrapper):
         self.epsilon = 1e-4
         self.clip = clip
         self.obs_rms = RunningMeanStd(shape=())
-        self.save_to_info=save_to_info
+        self.save_to_info = save_to_info
         if initial_state is not None:
             self.restore_state(initial_state)
 

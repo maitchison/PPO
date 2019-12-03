@@ -224,50 +224,45 @@ def setup_jobs_V4():
 
     # Reproduction study on RND paper.
 
-    """
     add_job(
         "EXP_RND",
         run_name="RND Third Test",
         env_name="MontezumaRevenge",
         epochs=100,
-        agents=128,
+        agents=32,
         n_steps=128,
-        entropy_bonus=0.001,
+        entropy_bonus=0.001,            # why slow low?
         learning_rate=1e-4,
-        mini_batch_size=4096,  # seems very high!
+        mini_batch_size=1024,           # seems very high!
         gae_lambda=0.95,
         ppo_epsilon=0.1,
-        gamma=0.99,  # this should be 0.999 for r_e and 0.99 for r_i
+        gamma=0.999, 
+        gamma_int=0.99,
         sticky_actions=True,
-        max_grad_norm=0,  # taken from source code.
-        reward_normalization=False,
-        reward_clip=1,
-        adam_epsilon=1e-8,  # so bad!
-
+        max_grad_norm=5,                # they use 0... but... nope...
+        reward_normalization=True,      # this just make a lot more sense to me
+        adam_epsilon=1e-5,              # they used 1e-8.. but nope...
         use_rnd=True,
         priority=10
     )
-    """
 
     # this one should get close to 2,500 after 50M steps.
     add_job(
         "EXP_RND",
-        run_name="PPO Baseline",
+        run_name="PPO Baseline (2)",
         env_name="MontezumaRevenge",
-        epochs=50,
-        agents=128,
+        epochs=1000,
+        agents=32,
         n_steps=128,
         entropy_bonus=0.001,
         learning_rate=1e-4,
-        mini_batch_size=4096,  # seems very high!
+        mini_batch_size=1024,
         gae_lambda=0.95,
         ppo_epsilon=0.1,
-        gamma=0.99,  # this should be 0.999 for r_e and 0.99 for r_i
+        gamma=0.99,
         sticky_actions=True,
-        max_grad_norm=0,  # taken from source code.
-        reward_normalization=False,
-        reward_clip=1,
-        adam_epsilon=1e-8,  # so bad!
+        max_grad_norm=5,  # taken from source code.
+        adam_epsilon=1e-5,
 
         use_rnd=False,
         priority=10

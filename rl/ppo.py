@@ -191,7 +191,6 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
             next_embedding = model.encode(model.extract_down_sampled_frame(states))
             loss_fdm = 0.5 * F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).detach().cpu().numpy() * config.args.icm_eta
             intrinsic_rewards += loss_fdm
-
         # generate rnd bonus
         if args.use_rnd:
             loss_rnd = model.prediction_error(states).detach().cpu().numpy()
@@ -413,7 +412,7 @@ def train(env_name, model: models.PolicyModel):
         # this means we can process each step as a vector
 
         # collect experience
-        batch_prev_state, batch_next_state, batch_action, batch_reward_ext, batch_reward_int, \
+        batch_prev_state, batch_next_state, batch_action, batch_rewards_ext, batch_rewards_int, \
         batch_logpolicy, batch_terminal, batch_value_ext, batch_value_int, states = \
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
@@ -424,23 +423,31 @@ def train(env_name, model: models.PolicyModel):
 
         _, final_value_estimate_ext, final_value_estimate_int = (x.detach().cpu().numpy() for x in model.forward(states))
 
-        batch_returns_ext = calculate_returns(batch_reward_ext, batch_terminal, final_value_estimate_ext, args.gamma)
-        batch_returns_int = calculate_returns(batch_reward_int, batch_terminal, final_value_estimate_int, args.gamma_int)
+        batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
+        # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
+        # the RND paper.
+        batch_returns_int = calculate_returns(batch_rewards_int, 0*batch_terminal, final_value_estimate_int, args.gamma_int)
+
+        log.watch_mean("batch_reward_int", np.mean(batch_rewards_int), display_name="rew_int")
+        log.watch_mean("batch_reward_ext", np.mean(batch_rewards_ext), display_name="rew_ext")
+        log.watch_mean("batch_return_int", np.mean(batch_returns_int), display_name="ret_int")
+        log.watch_mean("batch_return_ext", np.mean(batch_returns_ext), display_name="ret_ext")
 
         # normalize intrinsic reward across rollout such that batch returns have 1 std.
-        batch_intrinsic_reward_normed = batch_reward_int / (np.std(batch_returns_int) + 1e-5)
+        norm_scale = (np.std(batch_returns_int) + 1e-5)
+        batch_rewards_int = batch_rewards_int / norm_scale
+        batch_returns_int = batch_returns_int / norm_scale
 
-        log.watch_mean("value_est_ext", np.mean(batch_value_int), display_name="v_est_ext")
-        log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="v_est_int")
+        log.watch_mean("batch_reward_int_norm", np.mean(batch_rewards_int), display_name="rew_int_n")
+        log.watch_mean("batch_return_int_norm", np.mean(batch_returns_int), display_name="ret_int_n")
 
-        log.watch_mean("batch_reward_int", np.mean(batch_reward_int), display_name="b_rew_int")
-        log.watch_mean("batch_reward_ext", np.mean(batch_reward_ext), display_name="b_rew_ext")
-        log.watch_mean("batch_reward_ext_norm", np.mean(batch_intrinsic_reward_normed), display_name="b_rew_int_nrm")
+        log.watch_mean("value_est_ext", np.mean(batch_value_ext), display_name="ve_ext")
+        log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="ve_int")
 
         # calculate summaries
         batch_value = batch_value_ext + batch_value_int * 0.5           # scale down the intrinsic returns.
         value_next_i = final_value_estimate_ext + final_value_estimate_int * 0.5
-        batch_reward = batch_reward_ext + batch_reward_int * 0.5
+        batch_reward = batch_rewards_ext + batch_rewards_int * 0.5
 
         # ----------------------------------------------------
         # estimate advantages
@@ -503,7 +510,6 @@ def train(env_name, model: models.PolicyModel):
         # update normalization constants for rnd
         if args.use_rnd:
             model.update_normalization_constants(*atari.ENV_STATE["observation_norm_state"][:2])
-
 
         train_time = (time.time() - train_start_time) / batch_size
 

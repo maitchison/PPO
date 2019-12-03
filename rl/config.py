@@ -116,7 +116,7 @@ def parse_args():
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model if it exists. If set to false and new run will be started.")
 
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount rate for extrensic rewards")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount rate for extrinsic rewards")
     parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--ppo_epsilon", type=float, default=0.1, help="PPO epsilon parameter.")

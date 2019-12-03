@@ -87,6 +87,7 @@ class CNNModel(PolicyModel):
         self.fc_value_int = nn.Linear(512, 1)
         self.fc_value_ext = nn.Linear(512, 1)
         self.freeze_layers = 0
+        self.int_value_head = False
 
         self.set_device_and_dtype(device, dtype)
 
@@ -95,7 +96,10 @@ class CNNModel(PolicyModel):
         x = F.relu(self.features(x))
         policy = F.log_softmax(self.fc_policy(x), dim=1)
         value_ext = self.fc_value_ext(x).squeeze(dim=1)
-        value_int = self.fc_value_int(x).squeeze(dim=1)
+        if self.int_value_head:
+            value_int = self.fc_value_int(x).squeeze(dim=1)
+        else:
+            value_int = torch.zeros_like(value_ext)
         return policy, value_ext, value_int
 
     def features(self, x):
@@ -144,6 +148,7 @@ class RNDModel(PolicyModel):
         self.policy_model = CNNModel(input_dims, actions, device, dtype)
         self.prediction_model = CNNModel(single_channel_input_dims, actions, device, dtype)
         self.random_model = CNNModel(single_channel_input_dims, actions, device, dtype)
+        self.policy_model.int_value_head = True
         self.actions = actions
         self.set_device_and_dtype(device, dtype)
 
