@@ -255,7 +255,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        self.current_return = self.current_return * 0.99 + reward
+        self.current_return = reward + self.current_return * 0.99 * (1-done)
         self.ret_rms.update(self.current_return)
         self.mean = self.ret_rms.mean
         self.std = math.sqrt(self.ret_rms.var)
