@@ -205,18 +205,31 @@ def setup_jobs_V4():
     )
 
     # -------------------------------------------------------------------------------------------
+    # Freeze Layers
+    # -------------------------------------------------------------------------------------------
+
+    for freeze_layers in [0,1,2,3,4]:
+        add_job(
+            "Freeze_Layers",
+            run_name="freeze_layers={}".format(freeze_layers),
+            env_name="Pong",
+            epochs=50,
+            agents=32,
+            freeze_layers=freeze_layers,
+            priority=5
+        )
+    # -------------------------------------------------------------------------------------------
     # EXP_RND
     # -------------------------------------------------------------------------------------------
 
     # Reproduction study on RND paper.
 
-    # an initial test, more work needs to be done on this one before it's ready for real testing, but it'll
-    # be interesting to see if any progress can be made as is.
+    """
     add_job(
         "EXP_RND",
-        run_name="RND Initial Test",
+        run_name="RND Third Test",
         env_name="MontezumaRevenge",
-        epochs=50,
+        epochs=100,
         agents=128,
         n_steps=128,
         entropy_bonus=0.001,
@@ -224,16 +237,17 @@ def setup_jobs_V4():
         mini_batch_size=4096,  # seems very high!
         gae_lambda=0.95,
         ppo_epsilon=0.1,
-        gamma=0.99,            # this should be 0.999 for r_e and 0.99 for r_i
+        gamma=0.99,  # this should be 0.999 for r_e and 0.99 for r_i
         sticky_actions=True,
-        max_grad_norm=0,       # taken from source code.
+        max_grad_norm=0,  # taken from source code.
         reward_normalization=False,
         reward_clip=1,
-        adam_epsilon=1e-8,     # so bad!
+        adam_epsilon=1e-8,  # so bad!
 
         use_rnd=True,
         priority=10
     )
+    """
 
     # this one should get close to 2,500 after 50M steps.
     add_job(

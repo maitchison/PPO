@@ -23,6 +23,8 @@ class Config:
         self.vf_coef = 0.0
         self.max_grad_norm = 0.0
 
+        self.freeze_layers = 0
+
         self.input_crop = False
         self.learning_rate = 0.0
         self.learning_rate_decay = 0.0
@@ -133,6 +135,7 @@ def parse_args():
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
 
     parser.add_argument("--tensorboard_logging", type=str2bool, default=False)
+    parser.add_argument("--freeze_layers", type=int, default=0, help="Freeze the nth first layers in model.")
 
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
@@ -151,7 +154,7 @@ def parse_args():
     parser.add_argument("--output_folder", type=str, default="./")
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
-    parser.add_argument("--model", type=str, default="cnn", help="['cnn', 'improved_cnn']")
+    parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
     parser.add_argument("--guid", type=str, default=None)
 
     # icm stuff

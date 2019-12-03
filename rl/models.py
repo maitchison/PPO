@@ -85,6 +85,7 @@ class CNNModel(PolicyModel):
         self.fc = nn.Linear(self.d, 512)
         self.fc_policy = nn.Linear(512, actions)
         self.fc_value = nn.Linear(512, 1)
+        self.freeze_layers = 0
 
         self.set_device_and_dtype(device, dtype)
 
@@ -107,12 +108,23 @@ class CNNModel(PolicyModel):
         x = self.prep_for_model(x)
 
         x = F.relu(self.conv1(x))
+        if self.freeze_layers >= 1:
+            x = x.detach()
         x = F.relu(self.conv2(x))
+        if self.freeze_layers >= 2:
+            x = x.detach()
         x = F.relu(self.conv3(x))
+        if self.freeze_layers >= 3:
+            x = x.detach()
 
         assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
 
-        return self.fc(x.view(n, self.d))
+        features = self.fc(x.view(n, self.d))
+
+        if self.freeze_layers >= 4:
+            x = x.detach()
+
+        return features
 
 
 class RNDModel(PolicyModel):
@@ -133,12 +145,27 @@ class RNDModel(PolicyModel):
         self.actions = actions
         self.set_device_and_dtype(device, dtype)
 
+        # normalization constants
+        self.mu = 27 # just guess some constants for the first batch, after that these should be updated...
+        self.sigma = 100
+
+    def update_normalization_constants(self, mu, sigma):
+        self.mu = self.prep_for_model(mu.astype(np.float32))
+        self.sigma = self.prep_for_model(sigma.astype(np.float32))
+
     def prediction_error(self, x):
         """ Returns prediction error for given state. """
-        # note we only do prediction error on the most recent frame.
-        random_features = self.random_model.features(x[:,0:1]).detach()
-        predicted_features = self.prediction_model.features(x[:,0:1])
+
+        # normalize x
+        x = self.prep_for_model(x[:,0:1]) # only need first channel for this.
+        x = torch.clamp((x-self.mu) / (self.sigma + 1e-5), -5, 5)
+
+        random_features = self.random_model.features(x).detach()
+        predicted_features = self.prediction_model.features(x)
+
+
         errors = 0.5 * F.mse_loss(random_features, predicted_features, reduction="none").sum(dim=1)
+
         return errors
 
     def forward(self, x):

@@ -14,9 +14,8 @@ from .logger import Logger, LogVariable
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-my_counter = 0
-
-def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_states, actions, returns, policy_logprobs, advantages, values):
+def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next_states, actions, returns, policy_logprobs,
+                    advantages, values):
     """
     :param model:           The model for this agent.
     :param optimizer:       The optimizer to use.
@@ -28,9 +27,6 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
     :param values:          tensor of dims [N]
     :return:
     """
-
-    global my_counter
-    my_counter += 1
 
     # prepare the tensors for the model (moves to GPU and converts to float.
     # note, we don't do this with the states as these are expected to be in uint8 format.
@@ -69,16 +65,10 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
         predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
 
-        mu = atari.ENV_STATE["observation_norm_state"][0]
-        sigma = np.sqrt(atari.ENV_STATE["observation_norm_state"][1])
-
-        normed_states = np.asarray(np.clip((prev_states - mu) / (sigma + 0.0001), -5, 5), dtype=np.float32)
-
         n = int(len(prev_states) * predictor_proportion)
-        loss_rnd = model.prediction_error(normed_states[:n]).mean()
+        loss_rnd = model.prediction_error(prev_states[:n]).mean()
         loss += loss_rnd
-        if my_counter % 100 == 0:
-            print("loss_rnd {:.4f}".format(float(loss_rnd)))
+        log.watch_mean("loss_rnd", loss_rnd)
 
     # calculate ICM gradient
     # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
@@ -125,13 +115,13 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
 
         accuracy = (torch.argmax(nlog_probs, dim=1) == targets).float().mean()
 
-        if my_counter % 100 == 0:
-            print("loss_idm {:.3f} accuracy {:.3f} loss_fdm {:.3f} loss_ae {:.3f} loss_norm {:.3f} embd_std {:.3f}".format(
-                float(loss_idm), float(accuracy), float(loss_fdm), float(loss_ae), float(loss_norm),
-                float(torch.std(next_embedding[0]))))
+        # todo, get ICM working again...
+        # if my_counter % 100 == 0:
+        #     print("loss_idm {:.3f} accuracy {:.3f} loss_fdm {:.3f} loss_ae {:.3f} loss_norm {:.3f} embd_std {:.3f}".format(
+        #         float(loss_idm), float(accuracy), float(loss_fdm), float(loss_ae), float(loss_norm),
+        #         float(torch.std(next_embedding[0]))))
 
         loss += (loss_idm + loss_fdm + loss_ae + loss_norm)
-
 
     optimizer.zero_grad()
     loss.backward()
@@ -139,12 +129,22 @@ def train_minibatch(model: models.PolicyModel, optimizer, prev_states, next_stat
     if args.max_grad_norm is not None and args.max_grad_norm != 0:
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
     else:
+        # even if we don't clip the gradient we should atleast log the norm. This is probably a bit slow though.
+        # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
         grad_norm = 0
+        parameters = list(filter(lambda p: p.grad is not None, model.parameters()))
+        for p in parameters:
+            param_norm = p.grad.data.norm(2)
+            grad_norm += param_norm.item() ** 2
+        grad_norm = grad_norm ** (0.5)
+
+    log.watch_mean("loss", loss)
+    log.watch_mean("loss_clip", loss_clip)
+    log.watch_mean("loss_value", loss_value)
+    log.watch_mean("loss_entropy", loss_entropy)
+    log.watch_mean("opt_grad_norm", grad_norm)
 
     optimizer.step()
-
-    return (float(x) for x in [-loss, loss_clip, loss_value, loss_entropy, grad_norm])
-
 
 def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, log,
                state_shape, state_dtype, policy_shape):
@@ -193,16 +193,8 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         # generate rnd bonus
         if args.use_rnd:
-
-            # todo: norming should be handled by model... and I should update the model's constants..
-            if "observation_norm_state" in atari.ENV_STATE:
-                mu = atari.ENV_STATE["observation_norm_state"][0]
-                sigma = np.sqrt(atari.ENV_STATE["observation_norm_state"][1])
-
-                normed_states = np.asarray(np.clip((states - mu) / (sigma + 0.0001), -5, 5), dtype=np.float32)
-
-                loss_rnd = model.prediction_error(normed_states).detach().cpu().numpy()
-                intrinsic_rewards += loss_rnd
+            loss_rnd = model.prediction_error(states).detach().cpu().numpy()
+            intrinsic_rewards += loss_rnd
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
@@ -237,10 +229,13 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.learning_rate * (args.learning_rate_decay ** epoch)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-    return lr
+    if args.learning_rate_decay == 1.0:
+        return args.learning_rate
+    else:
+        lr = args.learning_rate * (args.learning_rate_decay ** epoch)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+        return lr
 
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
@@ -381,6 +376,12 @@ def train(env_name, model: models.PolicyModel):
 
         env_step = iteration * batch_size
 
+        log.watch("iteration", iteration, display_priority=5)
+        log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
+                  display_precision=2)
+        log.watch("walltime", walltime,
+                  display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
+
         adjust_learning_rate(optimizer, env_step / 1e6)
 
         # the idea here is that all our batch arrays are of dims
@@ -389,23 +390,32 @@ def train(env_name, model: models.PolicyModel):
         # this means we can process each step as a vector
 
         # collect experience
-        batch_prev_state, batch_next_state, batch_action, batch_extrensic_reward, batch_intrinsic_reward, \
+        batch_prev_state, batch_next_state, batch_action, batch_extrinsic_reward, batch_intrinsic_reward, \
         batch_logpolicy, batch_terminal, batch_value, states = \
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
 
         # normalize intrinsic reward across rollout.
-        log.watch_mean("batch_reward_int", np.mean(batch_intrinsic_reward), display_name="br_int")
-        log.watch_mean("batch_reward_ext", np.mean(batch_extrensic_reward), display_name="br_ext")
-        batch_intrinsic_reward = (batch_intrinsic_reward - np.mean(batch_intrinsic_reward)) / (np.std(batch_intrinsic_reward) + 1e-5)
+        # according to the RND source code this should be normalizing by std of returns.
+        # I'm going to just set a fixed scaling which should be similar for episodes of ~1,000 length.
+        # also they don't center, they just scale.
+        log.watch_mean("batch_reward_ext", np.mean(batch_extrinsic_reward), display_name="br_ext")
 
+        # this really could be better... I should be normalizing returns... which I have a function for...
+        # but it's attached to an atari wrapper
+        batch_intrinsic_reward_normed = batch_intrinsic_reward / (np.std(batch_intrinsic_reward) + abs(np.mean(batch_intrinsic_reward)) + 1e-5) / 100
+
+        log.watch_mean("batch_reward_ext_norm", np.mean(batch_intrinsic_reward_normed), display_name="br_int_n")
+        log.watch_mean("batch_reward_int", np.mean(batch_intrinsic_reward), display_name="br_int")
 
         # stub:
         # just add rewards together, should be processed separately with different gamma
         if args.use_rnd:
-            batch_reward = batch_extrensic_reward * 2 + batch_intrinsic_reward
+            batch_reward = batch_extrinsic_reward * 2 + batch_intrinsic_reward_normed
         else:
-            batch_reward = batch_extrensic_reward
+            batch_reward = batch_extrinsic_reward
+
+        log.watch_mean("batch_reward", np.mean(batch_reward), display_name="br")
 
         # ----------------------------------------------------
         # estimate advantages
@@ -461,13 +471,12 @@ def train(env_name, model: models.PolicyModel):
 
                 slices = (x[sample] for x in batch_arrays)
 
-                loss, loss_clip, loss_value, loss_entropy, grad_norm = train_minibatch(model, optimizer, *slices)
+                train_minibatch(model, optimizer, log, *slices)
 
-                log.watch_mean("loss", loss)
-                log.watch_mean("loss_clip", loss_clip)
-                log.watch_mean("loss_value", loss_value)
-                log.watch_mean("loss_entropy", loss_entropy)
-                log.watch_mean("opt_grad_norm", grad_norm)
+        # update normalization constants for rnd
+        if args.use_rnd:
+            model.update_normalization_constants(*atari.ENV_STATE["observation_norm_state"][:2])
+
 
         train_time = (time.time() - train_start_time) / batch_size
 
@@ -478,11 +487,6 @@ def train(env_name, model: models.PolicyModel):
         fps = 1.0 / (step_time)
 
         # record some training stats
-        log.watch("iteration", iteration, display_priority=5)
-        log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
-                  display_precision=2)
-        log.watch("walltime", walltime,
-                  display_priority=3, display_scale=1/(60*60), display_postfix="h", display_precision = 1)
         log.watch_mean("fps", int(fps))
         log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=1)
         log.watch_mean("time_step", step_time*1000, display_width=0)
@@ -501,7 +505,6 @@ def train(env_name, model: models.PolicyModel):
         # save log and refresh lock
         if time.time() - last_log_time >= config.LOG_EVERY_SEC:
             utils.lock_job()
-            start_export_time = time.time()
             log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
             last_log_time = time.time()
 

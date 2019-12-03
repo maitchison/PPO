@@ -4,6 +4,7 @@ from . import utils
 
 import numpy as np
 import csv
+import torch
 
 class LogVariable():
     """
@@ -36,15 +37,15 @@ class LogVariable():
             "str": None
         }[type]
 
-        self.display_width = utils.default(display_width, max(default_display_width, len(name) + 2))
+        self._name = name
+        self._display_name = display_name
+        self.display_width = utils.default(display_width, max(default_display_width, len(self.display_name) + 1))
         self.display_precision = utils.default(display_precision, default_display_precision)
         self.export_precision = utils.default(export_precision, default_export_precision)
         self.display_priority = display_priority
         self.display_postfix = display_postfix
         self.display_scale = display_scale
-        self._display_name = display_name
 
-        self._name = name
         self._history = deque(maxlen=history_length)
         self._history_length = history_length
         self._type = type
@@ -88,6 +89,7 @@ class LogVariable():
     @property
     def display(self):
         """ Returns formatted value. """
+
         value = self.value
         if self._type == "int":
             result = ("{:,."+str(self.display_precision)+"f}").format(value*self.display_scale)
@@ -228,6 +230,14 @@ class Logger():
 def assume_type(value):
     """ Returns the type, int, float or str of variable. Should work fine with np variables. """
 
+    if type(value) == torch.Tensor:
+        assert len(value.shape) == 0, "Torch tensor must be scalar, but found shape {}".format(value.shape)
+        if value.dtype == torch.float:
+            return "float"
+        if value.dtype == torch.int:
+            return "int"
+        raise Exception("Can not infer type {} with dtype {}.".format(type(value), value.dtype))
+
     if type(value) == str:
         return "str"
 
@@ -237,13 +247,13 @@ def assume_type(value):
     if type(value) == float:
         return "float"
 
-    if np.issubdtype(int, np.integer):
+    if np.issubdtype(type(value), np.integer):
         return "int"
 
-    if np.issubdtype(int, np.floating):
+    if np.issubdtype(type(value), np.floating):
         return "float"
 
-    return "str"
+    raise Exception("Can not infer type {}.".format(type(value)))
 
 
 def nice_round(x, rounding):

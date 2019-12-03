@@ -30,6 +30,12 @@ def run_experiment():
     obs_space = env.observation_space.shape
     print("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
     actor_critic_model = args.model(obs_space, n_actions, args.device, args.dtype)
+
+    if args.freeze_layers != 0:
+        assert actor_critic_model.name == "CNN", "freeze layers only works with default CNN model, RND and ICM not supported."
+        actor_critic_model.freeze_layers = args.freeze_layers
+        print("Freezing layer {} layers.".format(args.freeze_layers))
+
     ppo.train(args.env_name, actor_critic_model)
 
 def get_environment_name(environment, sticky_actions=False):
@@ -73,11 +79,8 @@ if __name__ == "__main__":
             args.model = models.RNDModel
         else:
             args.model = models.CNNModel
-    elif args.model.lower() == "improved_cnn":
-        args.model = models.ImprovedCNNModel
-        if args.use_icm or args.use_rnd:
-            raise Exception("Improved mode not compatiable with ICM or RND")
-        raise Exception("Invalid model name '{}', please use [cnn, improved_cnn, ICMModel]".format(args.model))
+    else:
+        raise Exception("Only the cnn model is implemented at the moment.")
     args.env_name = get_environment_name(args.environment, args.sticky_actions)
 
     # check the output folder is valid...
