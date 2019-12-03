@@ -173,7 +173,7 @@ def make(env_name, non_determinism="noop"):
 
         if args.use_rnd:
             # rnd requires a normalized copy of the state...
-            env = wrappers.NormalizeObservationsWrapper(env, clip=5.0, save_to_info=True,
+            env = wrappers.NormalizeObservationsWrapper(env, clip=5.0, shadow_mode=True,
                                                         initial_state=get_env_state("observation_norm_state")
                                                         )
 

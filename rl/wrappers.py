@@ -193,14 +193,14 @@ class NormalizeObservationsWrapper(gym.Wrapper):
     """
     Normalizes observations.
     """
-    def __init__(self, env, clip, save_to_info=False, initial_state=None):
+    def __init__(self, env, clip, shadow_mode=False, initial_state=None):
         super().__init__(env)
 
         self.env = env
         self.epsilon = 1e-4
         self.clip = clip
         self.obs_rms = RunningMeanStd(shape=())
-        self.save_to_info = save_to_info
+        self.shadow_mode = shadow_mode
         if initial_state is not None:
             self.restore_state(initial_state)
 
@@ -210,16 +210,14 @@ class NormalizeObservationsWrapper(gym.Wrapper):
         self.mean = self.obs_rms.mean
         self.std = np.sqrt(self.obs_rms.var)
 
-        scaled_obs = (obs - self.mean) / (self.std + self.epsilon)
-        scaled_obs = np.clip(scaled_obs, -self.clip, +self.clip)
-        scaled_obs = np.asarray(scaled_obs, dtype=np.float32)
-
         info["observation_norm_state"] = self.save_state()
 
-        if self.save_to_info:
-            info["normalized_observation"] = scaled_obs
+        if self.shadow_mode:
             return obs, reward, done, info
         else:
+            scaled_obs = (obs - self.mean) / (self.std + self.epsilon)
+            scaled_obs = np.clip(scaled_obs, -self.clip, +self.clip)
+            scaled_obs = np.asarray(scaled_obs, dtype=np.float32)
             return scaled_obs, reward, done, info
 
     def save_state(self):

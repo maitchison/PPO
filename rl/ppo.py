@@ -564,7 +564,7 @@ def train(env_name, model: models.PolicyModel):
         # update walltime
         # this is not technically wall time, as I pause time when the job is not processing, and do not include
         # any of the logging time.
-        walltime += step_time
+        walltime += (step_time * batch_size)
 
     # -------------------------------------
     # save final information
