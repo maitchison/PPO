@@ -14,11 +14,11 @@ class PolicyModel(nn.Module):
         raise NotImplemented()
 
     def policy(self, x):
-        policy, value = self.forward(x)
+        policy, value, _ = self.forward(x)
         return policy
 
     def value(self, x):
-        policy, value = self.forward(x)
+        policy, value, _ = self.forward(x)
         return value
 
     def set_device_and_dtype(self, device, dtype):
@@ -84,17 +84,19 @@ class CNNModel(PolicyModel):
         self.d = utils.prod(self.out_shape)
         self.fc = nn.Linear(self.d, 512)
         self.fc_policy = nn.Linear(512, actions)
-        self.fc_value = nn.Linear(512, 1)
+        self.fc_value_int = nn.Linear(512, 1)
+        self.fc_value_ext = nn.Linear(512, 1)
         self.freeze_layers = 0
 
         self.set_device_and_dtype(device, dtype)
 
     def forward(self, x):
-        """ forwards input through model, returns features. """
+        """ forwards input through model, returns policy, and value estimates. """
         x = F.relu(self.features(x))
         policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=1)
-        return policy, value
+        value_ext = self.fc_value_ext(x).squeeze(dim=1)
+        value_int = self.fc_value_int(x).squeeze(dim=1)
+        return policy, value_ext, value_int
 
     def features(self, x):
         if len(x.shape) == 3:
@@ -162,7 +164,6 @@ class RNDModel(PolicyModel):
 
         random_features = self.random_model.features(x).detach()
         predicted_features = self.prediction_model.features(x)
-
 
         errors = 0.5 * F.mse_loss(random_features, predicted_features, reduction="none").sum(dim=1)
 

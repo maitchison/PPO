@@ -14,8 +14,8 @@ from .logger import Logger, LogVariable
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next_states, actions, returns, policy_logprobs,
-                    advantages, values):
+def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next_states, actions,
+                    returns_ext, returns_int, policy_logprobs, advantages, values_ext, values_int):
     """
     :param model:           The model for this agent.
     :param optimizer:       The optimizer to use.
@@ -24,7 +24,8 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
     :param returns:         tensor of dims [N]
     :param policy_logprobs: tensor of dims [N, Actions]
     :param advantages:      tensor of dims [N]
-    :param values:          tensor of dims [N]
+    :param values_ext:      tensor of dims [N]
+    :param values_int:      tensor of dims [N]
     :return:
     """
 
@@ -32,24 +33,26 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
     # note, we don't do this with the states as these are expected to be in uint8 format.
     policy_logprobs = model.prep_for_model(policy_logprobs)
     advantages = model.prep_for_model(advantages)
-    returns = model.prep_for_model(returns)
-    old_pred_values = model.prep_for_model(values)
+    returns_ext = model.prep_for_model(returns_ext)
+    returns_int = model.prep_for_model(returns_int)
+    pred_values_ext = model.prep_for_model(values_ext)
+    pred_values_int = model.prep_for_model(values_int)
 
     mini_batch_size = len(prev_states)
 
-    logps, value_prediction = model.forward(prev_states)
+    logps, value_ext_prediction, value_int_prediction = model.forward(prev_states)
 
     ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
 
     loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages))
 
-    # this one is taken from PPO2 baseline, reduces variance but not sure why? does it stop the values from moving
-    # too much?
-    value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
-
-    vf_losses1 = (value_prediction - returns).pow(2)
-    vf_losses2 = (value_prediction_clipped - returns).pow(2)
-    loss_value = - args.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+    # this is the trust region clipped value estimator, which reduces variance. taken from the PPO2 OpenAi baseline.
+    loss_value = 0
+    for value_prediction, returns, pred_values in [(value_ext_prediction, returns_ext, pred_values_ext), (value_int_prediction, returns_int, pred_values_int)]:
+        value_prediction_clipped = pred_values + torch.clamp(value_prediction - pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
+        vf_losses1 = (value_prediction - returns).pow(2)
+        vf_losses2 = (value_prediction_clipped - returns).pow(2)
+        loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
 
     loss_entropy = args.entropy_bonus * utils.log_entropy(logps) / mini_batch_size
 
@@ -164,18 +167,16 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
     batch_next_state = np.zeros([N, A, *state_shape], dtype=state_dtype) # this doubles memory, but makes life easier.
     batch_action = np.zeros([N, A], dtype=np.int32)
-    batch_reward = np.zeros([N, A], dtype=np.float32)
-    batch_intrinsic_reward = np.zeros([N, A], dtype=np.float32)
+    batch_reward_ext = np.zeros([N, A], dtype=np.float32)
+    batch_reward_int = np.zeros([N, A], dtype=np.float32)
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
-    batch_value = np.zeros([N, A], dtype=np.float32)
+    batch_value_ext = np.zeros([N, A], dtype=np.float32)
+    batch_value_int = np.zeros([N, A], dtype=np.float32)
 
     for t in range(N):
 
-        logprobs, value = model.forward(states)
-
-        logprobs = logprobs.detach().cpu().numpy()
-        value = value.detach().cpu().numpy()
+        logprobs, value_ext, value_int = (x.detach().cpu().numpy() for x in model.forward(states))
 
         actions = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
         prev_states = states.copy()
@@ -218,14 +219,15 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         batch_prev_state[t] = prev_states
         batch_next_state[t] = states
         batch_action[t] = actions
-        batch_reward[t] = rewards
-        batch_intrinsic_reward[t] = intrinsic_rewards
+        batch_reward_ext[t] = rewards
+        batch_reward_int[t] = intrinsic_rewards
         batch_logpolicy[t] = logprobs
         batch_terminal[t] = dones
-        batch_value[t] = value
+        batch_value_ext[t] = value_ext
+        batch_value_int[t] = value_int
 
-    return (batch_prev_state, batch_next_state, batch_action, batch_reward, batch_intrinsic_reward, batch_logpolicy, batch_terminal, batch_value,
-            states)
+    return (batch_prev_state, batch_next_state, batch_action, batch_reward_ext, batch_reward_int, batch_logpolicy,
+            batch_terminal, batch_value_ext, batch_value_int, states)
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -253,6 +255,27 @@ def save_progress(log: Logger):
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
 
+
+def calculate_returns(rewards, dones, final_value_estimate, gamma):
+    """
+    Calculates returns given a batch of rewards, dones, and a final value estimate.
+    Input is vectorized so it can calculate returns for multiple agents at once.
+    :param rewards: nd array of dims [N,A]
+    :param dones:   nd array of dims [N,A] where 1 = done and 0 = not done.
+    :param final_value_estimate: nd array [A] containing value estimate of final state after last action.
+    :param gamma:   discount rate.
+    :return:
+    """
+
+    N,A = rewards.shape
+
+    returns = np.zeros([N, A], dtype=np.float32)
+    current_return = final_value_estimate
+
+    for i in reversed(range(N)):
+        returns[i] = current_return = rewards[i] + current_return * gamma * (1 - dones[i])
+
+    return returns
 
 def train(env_name, model: models.PolicyModel):
     """
@@ -390,44 +413,48 @@ def train(env_name, model: models.PolicyModel):
         # this means we can process each step as a vector
 
         # collect experience
-        batch_prev_state, batch_next_state, batch_action, batch_extrinsic_reward, batch_intrinsic_reward, \
-        batch_logpolicy, batch_terminal, batch_value, states = \
+        batch_prev_state, batch_next_state, batch_action, batch_reward_ext, batch_reward_int, \
+        batch_logpolicy, batch_terminal, batch_value_ext, batch_value_int, states = \
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
 
-        # normalize intrinsic reward across rollout.
-        # according to the RND source code this should be normalizing by std of returns.
-        # I'm going to just set a fixed scaling which should be similar for episodes of ~1,000 length.
-        # also they don't center, they just scale.
-        log.watch_mean("batch_reward_ext", np.mean(batch_extrinsic_reward), display_name="br_ext")
+        # ----------------------------------------------------
+        # calculate returns for intrinsic and extrinsic rewards
+        # ----------------------------------------------------
 
-        # this really could be better... I should be normalizing returns... which I have a function for...
-        # but it's attached to an atari wrapper
-        batch_intrinsic_reward_normed = batch_intrinsic_reward / (np.std(batch_intrinsic_reward) + abs(np.mean(batch_intrinsic_reward)) + 1e-5) / 100
+        _, final_value_estimate_ext, final_value_estimate_int = (x.detach().cpu().numpy() for x in model.forward(states))
 
-        log.watch_mean("batch_reward_ext_norm", np.mean(batch_intrinsic_reward_normed), display_name="br_int_n")
-        log.watch_mean("batch_reward_int", np.mean(batch_intrinsic_reward), display_name="br_int")
+        batch_returns_ext = calculate_returns(batch_reward_ext, batch_terminal, final_value_estimate_ext, args.gamma)
+        batch_returns_int = calculate_returns(batch_reward_int, batch_terminal, final_value_estimate_int, args.gamma_int)
 
-        # stub:
-        # just add rewards together, should be processed separately with different gamma
-        if args.use_rnd:
-            batch_reward = batch_extrinsic_reward * 2 + batch_intrinsic_reward_normed
-        else:
-            batch_reward = batch_extrinsic_reward
+        # normalize intrinsic reward across rollout such that batch returns have 1 std.
+        batch_intrinsic_reward_normed = batch_reward_int / (np.std(batch_returns_int) + 1e-5)
 
-        log.watch_mean("batch_reward", np.mean(batch_reward), display_name="br")
+        log.watch_mean("value_est_ext", np.mean(batch_value_int), display_name="v_est_ext")
+        log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="v_est_int")
+
+        log.watch_mean("batch_reward_int", np.mean(batch_reward_int), display_name="b_rew_int")
+        log.watch_mean("batch_reward_ext", np.mean(batch_reward_ext), display_name="b_rew_ext")
+        log.watch_mean("batch_reward_ext_norm", np.mean(batch_intrinsic_reward_normed), display_name="b_rew_int_nrm")
+
+        # calculate summaries
+        batch_value = batch_value_ext + batch_value_int * 0.5           # scale down the intrinsic returns.
+        value_next_i = final_value_estimate_ext + final_value_estimate_int * 0.5
+        batch_reward = batch_reward_ext + batch_reward_int * 0.5
 
         # ----------------------------------------------------
         # estimate advantages
+        # ----------------------------------------------------
 
         # we calculate the advantages by going backwards..
         # estimated return is the estimated return being in state i
         # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
+
         batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
-        value_next_i = model.value(states).detach().cpu().numpy()
-        terminal_next_i = np.asarray([False] * args.agents)
+        terminal_next_i = np.asarray([False] * args.agents) # this should be final dones...
         prev_adv = np.zeros([args.agents], dtype=np.float32)
 
+        # note: I think the terminal next_i is off here, need to look into this
         for i in reversed(range(args.n_steps)):
             delta = batch_reward[i] + args.gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
 
@@ -435,8 +462,6 @@ def train(env_name, model: models.PolicyModel):
 
             value_next_i = batch_value[i]
             terminal_next_i = batch_terminal[i]
-
-        batch_returns = batch_advantage + batch_value
 
         rollout_time = (time.time() - step_start_time) / batch_size
 
@@ -449,10 +474,12 @@ def train(env_name, model: models.PolicyModel):
             batch_prev_state.reshape([batch_size, *state_shape]),
             batch_next_state.reshape([batch_size, *state_shape]),
             batch_action.reshape(batch_size),
-            batch_returns.reshape(batch_size),
+            batch_returns_ext.reshape(batch_size),
+            batch_returns_int.reshape(batch_size),
             batch_logpolicy.reshape([batch_size, *policy_shape]),
             batch_advantage.reshape(batch_size),
-            batch_value.reshape(batch_size)
+            batch_value_ext.reshape(batch_size),
+            batch_value_int.reshape(batch_size)
         ]
 
         for i in range(args.batch_epochs):

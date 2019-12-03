@@ -18,6 +18,7 @@ class Config:
         self.restore = False
 
         self.gamma = 0.0
+        self.gamma_int = 0.0
         self.gae_lambda = 0.0
         self.ppo_epsilon = 0.0
         self.vf_coef = 0.0
@@ -115,7 +116,8 @@ def parse_args():
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model if it exists. If set to false and new run will be started.")
 
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount rate.")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount rate for extrensic rewards")
+    parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--ppo_epsilon", type=float, default=0.1, help="PPO epsilon parameter.")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Value function coefficient.")
