@@ -1,6 +1,7 @@
 from collections import defaultdict
 from collections import deque
 import time
+import datetime
 from . import utils
 
 import numpy as np
@@ -139,6 +140,20 @@ class Logger():
         self._vars = {}
         self._history = []
 
+    def get_level(self, level):
+        if level == self.DEBUG:
+            return "DEBUG"
+        elif level == self.INFO:
+            return "INFO"
+        elif level == self.IMPORTANT:
+            return "IMPT"
+        elif level == self.WARN:
+            return "WARN"
+        elif level == self.ERROR:
+            return "ERROR"
+        else:
+            return str("LEVEL-"+str(level))
+
     def add_variable(self, variable: LogVariable):
         self._vars[variable.name] = variable
 
@@ -198,7 +213,7 @@ class Logger():
         s =  str(s)
         if level >= self.print_level:
             if level == self.IMPORTANT:
-                s = "<green>{}<end>".format(s)
+                s = "<white>{}<end>".format(s)
             elif level == self.WARN:
                 s = "<yellow>{}<end>".format(s)
             elif level == self.ERROR:
@@ -239,8 +254,10 @@ class Logger():
         file_name = file_name or self.txt_path
         # note it would be better to simply append the new lines?
         with open(file_name, "w") as f:
-            lines = ["[{:<10}] {:<20} {}".format(level, str(time), line) for level, time, line in self.output_log]
-            f.writelines(lines)
+            for level, time_code, line in self.output_log:
+                level_code = "["+self.get_level(level)+"]"
+                time_str = datetime.datetime.fromtimestamp(time_code)
+                f.write("{:<10} {} {}\n".format(level_code, time_str, line))
 
     def export_to_tensor_board(self):
         raise NotImplemented()
@@ -292,7 +309,7 @@ def color_format_string(s, strip_colors=False):
         "<end>": utils.Color.ENDC
     }
 
-    for k,v in color_table:
+    for k,v in color_table.items():
         if strip_colors:
             v = ""
         s = s.replace(k, v)

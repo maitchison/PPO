@@ -359,12 +359,12 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     env_fns = [lambda : atari.make(env_name) for _ in range(args.agents)]
     vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
-    log.v("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
+    log.important("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
 
     print_counter = 0
 
     if start_iteration == 0 and (args.limit_epochs is None):
-        log.info("Training for {:.1f}M steps".format(n_iterations*batch_size/1000/1000))
+        log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations*batch_size/1000/1000))
     else:
         log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
             str(round(start_iteration * batch_size / 1000 / 1000)),

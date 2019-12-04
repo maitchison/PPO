@@ -38,7 +38,7 @@ if __name__ == "__main__":
     # work out device to use
     if args.device.lower() == "auto":
         args.device = utils.get_auto_device()
-    log.important("Using device: {}".format(args.device))
+    log.info("Using device: <white>{}<end>".format(args.device))
 
     # calculate number of workers to use.
     if args.workers < 0:
