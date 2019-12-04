@@ -223,27 +223,56 @@ def setup_jobs_V4():
     # -------------------------------------------------------------------------------------------
 
     # Reproduction study on RND paper.
+    for int_rew_scale in [0.25, 0.5, 1.0]:
+        add_job(
+            "EXP_RND",
+            run_name="RND Third Test int_rew_scale={}".format(int_rew_scale),
+            env_name="MontezumaRevenge",
+            epochs=50,
+            agents=32,
+            n_steps=128,
+            entropy_bonus=0.001,            # why slow low?
+            learning_rate=1e-4,
+            mini_batch_size=1024,           # seems very high!
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.99,     # separate gamma not working yet..
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=5,                # they use 0... but... nope...
+            reward_normalization=True,      # this just make a lot more sense to me
+            adam_epsilon=1e-5,              # they used 1e-8.. but nope...
+            intrinsic_reward_scale = int_rew_scale,
 
+            use_rnd=True,
+            priority=1
+
+        )
+
+    # Just make sure pong actually works using these settings
     add_job(
         "EXP_RND",
-        run_name="RND Third Test",
-        env_name="MontezumaRevenge",
-        epochs=100,
+        run_name="RND Third Test (pong)",
+        env_name="Pong",
+        epochs=50,
         agents=32,
         n_steps=128,
-        entropy_bonus=0.001,            # why slow low?
+        entropy_bonus=0.001,  # why slow low?
         learning_rate=1e-4,
-        mini_batch_size=1024,           # seems very high!
+        mini_batch_size=1024,  # seems very high!
         gae_lambda=0.95,
         ppo_epsilon=0.1,
-        gamma=0.999, 
+        gamma=0.99,     # separate gamma not working yet..
         gamma_int=0.99,
         sticky_actions=True,
-        max_grad_norm=5,                # they use 0... but... nope...
-        reward_normalization=True,      # this just make a lot more sense to me
-        adam_epsilon=1e-5,              # they used 1e-8.. but nope...
+        max_grad_norm=5,  # they use 0... but... nope...
+        reward_normalization=True,  # this just make a lot more sense to me
+        adam_epsilon=1e-5,  # they used 1e-8.. but nope...
+        intrinsic_reward_scale=1.0,
+
         use_rnd=True,
-        priority=10
+        priority=1
+
     )
 
     # this one should get close to 2,500 after 50M steps.
@@ -251,7 +280,7 @@ def setup_jobs_V4():
         "EXP_RND",
         run_name="PPO Baseline (2)",
         env_name="MontezumaRevenge",
-        epochs=1000,
+        epochs=100,
         agents=32,
         n_steps=128,
         entropy_bonus=0.001,
@@ -265,7 +294,7 @@ def setup_jobs_V4():
         adam_epsilon=1e-5,
 
         use_rnd=False,
-        priority=10
+        priority=1
     )
 
 

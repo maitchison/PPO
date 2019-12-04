@@ -37,6 +37,7 @@ class Config:
         self.batch_epochs = 0
 
         self.observation_normalization = False
+        self.intrinsic_reward_scale = 0.0
 
         self.tensorboard_logging = False
 
@@ -135,6 +136,7 @@ def parse_args():
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
+    parser.add_argument("--intrinsic_reward_scale", type=float, default=0.5)
 
     parser.add_argument("--tensorboard_logging", type=str2bool, default=False)
     parser.add_argument("--freeze_layers", type=int, default=0, help="Freeze the nth first layers in model.")

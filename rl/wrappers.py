@@ -263,10 +263,6 @@ class NormalizeRewardWrapper(gym.Wrapper):
         info["returns_norm_state"] = self.save_state()
         return obs, scaled_reward, done, info
 
-    def reset(self):
-        self.current_return = 0
-        return self.env.reset()
-
     def save_state(self):
         """
         Saves running statistics.

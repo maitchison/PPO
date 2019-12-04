@@ -422,6 +422,7 @@ def train(env_name, model: models.PolicyModel):
         # ----------------------------------------------------
 
         _, final_value_estimate_ext, final_value_estimate_int = (x.detach().cpu().numpy() for x in model.forward(states))
+        final_value_estimate_int *= args.intrinsic_reward_scale
 
         batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
         # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
@@ -434,9 +435,12 @@ def train(env_name, model: models.PolicyModel):
         log.watch_mean("batch_return_ext", np.mean(batch_returns_ext), display_name="ret_ext")
 
         # normalize intrinsic reward across rollout such that batch returns have 1 std.
-        norm_scale = (np.std(batch_returns_int) + 1e-5)
-        batch_rewards_int = batch_rewards_int / norm_scale
-        batch_returns_int = batch_returns_int / norm_scale
+        # seems like this makes training less stable...
+        # norm_scale = (np.std(batch_returns_int) + 1e-5)
+        norm_scale = 1.0
+
+        batch_rewards_int = batch_rewards_int / norm_scale * args.intrinsic_reward_scale
+        batch_returns_int = batch_returns_int / norm_scale * args.intrinsic_reward_scale
 
         log.watch_mean("batch_reward_int_norm", np.mean(batch_rewards_int), display_name="rew_int_n")
         log.watch_mean("batch_return_int_norm", np.mean(batch_returns_int), display_name="ret_int_n")
@@ -445,9 +449,8 @@ def train(env_name, model: models.PolicyModel):
         log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="ve_int")
 
         # calculate summaries
-        batch_value = batch_value_ext + batch_value_int * 0.5           # scale down the intrinsic returns.
-        value_next_i = final_value_estimate_ext + final_value_estimate_int * 0.5
-        batch_reward = batch_rewards_ext + batch_rewards_int * 0.5
+        batch_value = batch_value_ext + batch_value_int
+        batch_reward = batch_rewards_ext + batch_rewards_int
 
         # ----------------------------------------------------
         # estimate advantages
@@ -459,7 +462,10 @@ def train(env_name, model: models.PolicyModel):
 
         batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
         terminal_next_i = np.asarray([False] * args.agents) # this should be final dones...
+        value_next_i = final_value_estimate_ext + final_value_estimate_int
         prev_adv = np.zeros([args.agents], dtype=np.float32)
+
+        # second note... this is not correct as we do not seperate out the int and ext gammas
 
         # note: I think the terminal next_i is off here, need to look into this
         for i in reversed(range(args.n_steps)):
