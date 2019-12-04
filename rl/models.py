@@ -7,6 +7,8 @@ from . import utils
 
 class PolicyModel(nn.Module):
 
+    name = ""
+
     def forward(self, x):
         raise NotImplemented()
 

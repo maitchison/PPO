@@ -276,7 +276,7 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
-def train(env_name, model: models.PolicyModel):
+def train(env_name, model: models.PolicyModel, log:Logger):
     """
     Default parameters from stable baselines
     
@@ -298,7 +298,6 @@ def train(env_name, model: models.PolicyModel):
     """
 
     # setup logging
-    log = Logger()
     log.add_variable(LogVariable("ep_score", 100, "stats"))   # these need to be added up-front as it might take some
     log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
 
@@ -330,14 +329,14 @@ def train(env_name, model: models.PolicyModel):
     # detect a previous experiment
     checkpoints = utils.get_checkpoints(args.log_folder)
     if len(checkpoints) > 0:
-        print("Previous checkpoint detected.")
+        log.info("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step, log, norm_state = utils.load_checkpoint(checkpoint_path, model, optimizer)
 
         for k, v in norm_state.items():
             atari.ENV_STATE[k] = v
 
-        print("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
+        log.info("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
         walltime = log["walltime"]
         did_restore = True
@@ -360,19 +359,20 @@ def train(env_name, model: models.PolicyModel):
     env_fns = [lambda : atari.make(env_name) for _ in range(args.agents)]
     vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
 
-    print("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
+    log.v("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
 
     print_counter = 0
 
     if start_iteration == 0 and (args.limit_epochs is None):
-        print("Training for {:.1f}M steps".format(n_iterations*batch_size/1000/1000))
+        log.info("Training for {:.1f}M steps".format(n_iterations*batch_size/1000/1000))
     else:
-        print("Training block from " +
-              utils.Color.WARNING + str(round(start_iteration * batch_size / 1000 / 1000)) + "M" + utils.Color.ENDC + " to (" +
-              utils.Color.WARNING + str(round(n_iterations * batch_size / 1000 / 1000)) + "M" + utils.Color.ENDC +
-              " / " + str(round(args.epochs)) +"M) steps")
+        log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
+            str(round(start_iteration * batch_size / 1000 / 1000)),
+            str(round(n_iterations * batch_size / 1000 / 1000)),
+            str(round(args.epochs))
+        ))
 
-    print()
+    log.info()
 
     # initialize agent
     states = vec_env.reset()
@@ -465,7 +465,7 @@ def train(env_name, model: models.PolicyModel):
         value_next_i = final_value_estimate_ext + final_value_estimate_int
         prev_adv = np.zeros([args.agents], dtype=np.float32)
 
-        # second note... this is not correct as we do not seperate out the int and ext gammas
+        # second note... this is not correct as we do not separate out the int and ext gammas
 
         # note: I think the terminal next_i is off here, need to look into this
         for i in reversed(range(args.n_steps)):
@@ -537,33 +537,34 @@ def train(env_name, model: models.PolicyModel):
         # periodically print and save progress
         if time.time() - last_print_time >= config.PRINT_EVERY_SEC:
             save_progress(log)
-            log.print(include_header=print_counter % 10 == 0)
+            log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
             print_counter += 1
 
         # save log and refresh lock
         if time.time() - last_log_time >= config.LOG_EVERY_SEC:
             utils.lock_job()
-            log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
+            log.export_to_csv()
+            log.save_log()
             last_log_time = time.time()
 
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
-            print()
-            print(utils.Color.OKGREEN + "Checkpoint: {}".format(args.log_folder) + utils.Color.ENDC)
+            log.info()
+            log.important("Checkpoint: {}".format(args.log_folder))
 
             if args.save_checkpoints:
                 checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
                 utils.save_checkpoint(checkpoint_name, env_step, model, log, optimizer, atari.ENV_STATE)
-                print("  -checkpoint saved")
+                log.log("  -checkpoint saved")
 
             if args.export_video:
                 video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
                 utils.export_movie(video_name, model, env_name)
-                print("  -video exported")
+                log.info("  -video exported")
 
-            print()
+            log.info()
 
         log_time = (time.time() - log_start_time) / batch_size
 
@@ -576,16 +577,17 @@ def train(env_name, model: models.PolicyModel):
     # save final information
 
     save_progress(log)
-    log.export_to_csv(os.path.join(args.log_folder, "training_log.csv"))
+    log.export_to_csv()
+    log.save_log()
 
     # ------------------------------------
     # release the lock
 
     utils.release_lock()
 
-    print()
-    print(utils.Color.OKGREEN+"Training Complete."+utils.Color.ENDC)
-    print()
+    log.info()
+    log.important("Training Complete.")
+    log.info()
 
 
 

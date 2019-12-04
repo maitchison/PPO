@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections import deque
+import time
 from . import utils
 
 import numpy as np
@@ -122,6 +123,7 @@ class Logger():
 
     DEBUG = 10
     INFO = 20
+    IMPORTANT = 25
     WARN = 30
     ERROR = 40
     DISABLED = 50
@@ -130,6 +132,9 @@ class Logger():
 
         self.output_log = []
         self.print_level = self.INFO
+
+        self.csv_path = None
+        self.txt_path = None
 
         self._vars = {}
         self._history = []
@@ -154,7 +159,7 @@ class Logger():
         """ Logs a value, creates full variable if needed. """
         self.watch(key, value, history_length=history_length, type="stats", **kwargs)
 
-    def print(self, include_header=False):
+    def print_variables(self, include_header=False):
         """ Prints current value of all logged variables."""
 
         sorted_vars = sorted(self._vars.values())
@@ -165,16 +170,16 @@ class Logger():
                 if var.display_width == 0:
                     continue
                 output_string = output_string + (var.display_name.rjust(var.display_width-1, " ")+" ")[:var.display_width]
-            print("-" * len(output_string))
-            print(output_string)
-            print("-"*len(output_string))
+            self.log("-" * len(output_string))
+            self.log(output_string)
+            self.log("-"*len(output_string))
 
         output_string = ""
         for var in sorted_vars:
             if var.display_width == 0:
                 continue
             output_string = output_string + (var.display.rjust(var.display_width - 1, " ") + " ")
-        print(output_string)
+        self.log(output_string)
 
     def record_step(self):
         """ Records state of all watched variables for this given step. """
@@ -189,27 +194,39 @@ class Logger():
                 row[var.name] = var.value
         self._history.append(row)
 
-    def log(self, s, level=INFO):
+    def log(self, s="", level=INFO):
+        s =  str(s)
         if level >= self.print_level:
-            print(s)
-        self.output_log.append((level, s))
+            if level == self.IMPORTANT:
+                s = "<green>{}<end>".format(s)
+            elif level == self.WARN:
+                s = "<yellow>{}<end>".format(s)
+            elif level == self.ERROR:
+                s = "<red>{}<end>".format(s)
+        print(color_format_string(s))
+        self.output_log.append((level, time.time(), color_format_string(s, strip_colors=True)))
 
-    def debug(self, s):
+    def debug(self, s=""):
         self.log(s, level=self.DEBUG)
 
-    def info(self, s):
+    def info(self, s=""):
         self.log(s, level=self.INFO)
 
-    def warn(self, s):
+    def important(self, s=""):
+        self.log(s, level=self.IMPORTANT)
+
+    def warn(self, s=""):
         self.log(s, level=self.WARN)
 
-    def error(self, s):
+    def error(self, s=""):
         self.log(s, level=self.ERROR)
 
-    def export_to_csv(self, file_name):
+    def export_to_csv(self, file_name=None):
 
         if len(self._history) == 0:
             return
+
+        file_name = file_name or self.csv_path
 
         with open(file_name, "w") as f:
             field_names = self._history[-1].keys()
@@ -217,6 +234,13 @@ class Logger():
             writer.writeheader()
             for row in self._history:
                 writer.writerow(row)
+
+    def save_log(self, file_name=None):
+        file_name = file_name or self.txt_path
+        # note it would be better to simply append the new lines?
+        with open(file_name, "w") as f:
+            lines = ["[{:<10}] {:<20} {}".format(level, str(time), line) for level, time, line in self.output_log]
+            f.writelines(lines)
 
     def export_to_tensor_board(self):
         raise NotImplemented()
@@ -255,6 +279,24 @@ def assume_type(value):
 
     raise Exception("Can not infer type {}.".format(type(value)))
 
+
+def color_format_string(s, strip_colors=False):
+    """ Converts color tags into color strings, or removes them."""
+    color_table = {
+        "<red>": utils.Color.FAIL,
+        "<green>": utils.Color.OKGREEN,
+        "<white>": utils.Color.BOLD,
+        "<blue>": utils.Color.OKBLUE,
+        "<purple>": utils.Color.HEADER,
+        "<yellow>": utils.Color.WARNING,
+        "<end>": utils.Color.ENDC
+    }
+
+    for k,v in color_table:
+        if strip_colors:
+            v = ""
+        s = s.replace(k, v)
+    return s
 
 def nice_round(x, rounding):
 
