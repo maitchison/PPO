@@ -67,7 +67,6 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
         # train on only 25% of minibatch to slow down the predictor network when used with large number of agents.
 
         predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
-
         n = int(len(prev_states) * predictor_proportion)
         loss_rnd = model.prediction_error(prev_states[:n]).mean()
         loss += loss_rnd
@@ -272,7 +271,7 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
     current_return = final_value_estimate
 
     for i in reversed(range(N)):
-        returns[i] = current_return = rewards[i] + current_return * gamma * (1 - dones[i])
+        returns[i] = current_return = rewards[i] + current_return * gamma * (1.0 - dones[i])
 
     return returns
 
@@ -417,12 +416,14 @@ def train(env_name, model: models.PolicyModel, log:Logger):
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
 
+        # scale internal rewards...
+        batch_rewards_int *= args.intrinsic_reward_scale
+
         # ----------------------------------------------------
         # calculate returns for intrinsic and extrinsic rewards
         # ----------------------------------------------------
 
         _, final_value_estimate_ext, final_value_estimate_int = (x.detach().cpu().numpy() for x in model.forward(states))
-        final_value_estimate_int *= args.intrinsic_reward_scale
 
         batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
         # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
@@ -436,14 +437,13 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
         # normalize intrinsic reward across rollout such that batch returns have 1 std.
         # seems like this makes training less stable...
+        # just disable this for the moment..
         # norm_scale = (np.std(batch_returns_int) + 1e-5)
-        norm_scale = 1.0
-
-        batch_rewards_int = batch_rewards_int / norm_scale * args.intrinsic_reward_scale
-        batch_returns_int = batch_returns_int / norm_scale * args.intrinsic_reward_scale
-
-        log.watch_mean("batch_reward_int_norm", np.mean(batch_rewards_int), display_name="rew_int_n")
-        log.watch_mean("batch_return_int_norm", np.mean(batch_returns_int), display_name="ret_int_n")
+        # norm_scale = 1.0
+        #batch_rewards_int = batch_rewards_int / norm_scale * args.intrinsic_reward_scale
+        #batch_returns_int = batch_returns_int / norm_scale * args.intrinsic_reward_scale
+        #log.watch_mean("batch_reward_int_norm", np.mean(batch_rewards_int), display_name="rew_int_n")
+        #log.watch_mean("batch_return_int_norm", np.mean(batch_returns_int), display_name="ret_int_n")
 
         log.watch_mean("value_est_ext", np.mean(batch_value_ext), display_name="ve_ext")
         log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="ve_int")
