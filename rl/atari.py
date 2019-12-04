@@ -42,8 +42,12 @@ class MemorizeGame(gym.Env):
 
     def __init__(self):
 
-        self.action_count = 6
-        self.set_number_of_cards(100)
+        super().__init__()
+
+        self._card_count = None
+        self._action_count = None
+
+        self.set_number_of_actions_and_cards(2, 100)
 
         self._height = 210
         self._width = 160
@@ -52,8 +56,6 @@ class MemorizeGame(gym.Env):
         self.current_action = 0
         self.key = 0
         self.answer = 0
-
-        self.action_space = gym.spaces.Discrete(self.action_count)
 
         self.observation_space = self.observation_space = gym.spaces.Box(
             low=0,
@@ -67,11 +69,13 @@ class MemorizeGame(gym.Env):
 
     def _key_to_action(self, key):
         """ Returns the action that goes with a specific key. """
-        return key % self.action_count
+        return key % self._action_count
 
-    def set_number_of_cards(self, card_count):
-        self.card_count = card_count
-        self.solutions = [(key, self._key_to_action(key),) for key in range(self.card_count)]
+    def set_number_of_actions_and_cards(self, action_count, card_count):
+        self._action_count = action_count
+        self._card_count = card_count
+        self.solutions = [(key, self._key_to_action(key),) for key in range(self._card_count)]
+        self.action_space = gym.spaces.Discrete(self._action_count)
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -94,7 +98,7 @@ class MemorizeGame(gym.Env):
 
     @property
     def _n_actions(self):
-        return self.action_count
+        return self._action_count
 
     def get_action_meanings(self):
         return ["NOOP" for _ in range(self._n_actions)]
@@ -118,7 +122,9 @@ class MemorizeGame(gym.Env):
         if self.counter < 50: # don't give out reward during first 50 moves (i.e. before game starts).
             return 0
         # these rewards are roughly balanced so perfect place is close to 10, and random play is close to 0.
-        reward = 1 if self.current_action == self.answer else (-1/5)
+
+        reward = 1 if self.current_action == self.answer else (-1 / (self._action_count - 1))
+
         return reward / (3600-50) * 10
 
 
@@ -134,7 +140,7 @@ def make(env_name, non_determinism="noop"):
     env = gym.make(env_name)
 
     if env_name == "MemorizeNoFrameskip-v4":
-        env.set_number_of_cards(args.memorize_cards)
+        env.set_number_of_actions_and_cards(args.memorize_actions, args.memorize_cards)
 
     if env_type == "atari":
 

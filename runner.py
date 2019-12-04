@@ -205,6 +205,26 @@ def setup_jobs_V4():
     )
 
     # -------------------------------------------------------------------------------------------
+    # Memorization 2
+    # -------------------------------------------------------------------------------------------
+
+    for memorize_cards in [1, 10, 100]:
+        for memorize_actions in [2, 4, 8]:
+            for model_hidden_units in [1, 2, 4, 8, 16]:
+                add_job(
+                    "Memorize_Units",
+                    run_name="cards={} actions={} hidden_units={}".format(memorize_cards, memorize_actions, model_hidden_units),
+                    env_name="Memorize",
+                    model_hidden_units=model_hidden_units,
+                    agents=16,
+                    epochs=1,
+                    n_steps=64,
+                    memorize_cards=memorize_cards,
+                    memorize_actions=memorize_actions,
+                    priority=7
+                )
+
+    # -------------------------------------------------------------------------------------------
     # Freeze Layers
     # -------------------------------------------------------------------------------------------
 

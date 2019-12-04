@@ -57,7 +57,6 @@ class Config:
         self.output_folder = ""
         self.hostname = ""
         self.sticky_actions = False
-        self.model = None
         self.guid = ""
 
         self.use_icm = False
@@ -65,7 +64,13 @@ class Config:
 
         self.use_rnd = False
 
+        self.model = None
+        self.model_hidden_units = 0
+
         self.memorize_cards = 0
+        self.memorize_actions = 0
+
+        self.debug_print_frequency = 0
 
         self.log_folder = ""
 
@@ -80,7 +85,6 @@ LOCK_KEY = str(uuid.uuid4().hex)
 PROFILE_INFO = False
 VERBOSE = True
 
-PRINT_EVERY_SEC = 60
 LOG_EVERY_SEC = 300
 CHECKPOINT_EVERY_STEPS = int(5e6)
 
@@ -158,7 +162,6 @@ def parse_args():
     parser.add_argument("--output_folder", type=str, default="./")
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
-    parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
     parser.add_argument("--guid", type=str, default=None)
 
     # icm stuff
@@ -169,7 +172,17 @@ def parse_args():
     parser.add_argument("--use_rnd", type=str2bool, default=False,
                         help="Enables the Random Network Distilation (RND) module.")
 
+    # debuging
+    parser.add_argument("--debug_print_frequency", type=int, default=60, help="Number of seconds between debug prints.")
+
+    # model
+    parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
+    parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
+
+    # memorize game
     parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
+    parser.add_argument("--memorize_actions", type=int, default=2,
+                        help="Memorize environment: Number of actions to pick from.")
 
     args.update(**parser.parse_args().__dict__)
 

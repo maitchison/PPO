@@ -67,9 +67,9 @@ class CNNModel(PolicyModel):
 
     name = "CNN"
 
-    def __init__(self, input_dims, actions, device, dtype):
+    def __init__(self, input_dims, actions, device, dtype, hidden_units=512, **kwargs):
 
-        super(CNNModel, self).__init__()
+        super().__init__()
 
         self.input_dims = input_dims
         self.actions = actions
@@ -84,10 +84,10 @@ class CNNModel(PolicyModel):
         self.out_shape = (64, w, h)
 
         self.d = utils.prod(self.out_shape)
-        self.fc = nn.Linear(self.d, 512)
-        self.fc_policy = nn.Linear(512, actions)
-        self.fc_value_int = nn.Linear(512, 1)
-        self.fc_value_ext = nn.Linear(512, 1)
+        self.fc = nn.Linear(self.d, hidden_units)
+        self.fc_policy = nn.Linear(hidden_units, actions)
+        self.fc_value_int = nn.Linear(hidden_units, 1)
+        self.fc_value_ext = nn.Linear(hidden_units, 1)
         self.freeze_layers = 0
         self.int_value_head = False
 
@@ -142,7 +142,7 @@ class RNDModel(PolicyModel):
 
     name = "RND"
 
-    def __init__(self, input_dims, actions, device, dtype):
+    def __init__(self, input_dims, actions, device, dtype, **kwargs):
         super().__init__()
 
         single_channel_input_dims = (1, *input_dims[1:])
@@ -190,7 +190,7 @@ class ICMModel(PolicyModel):
 
     name = "ICM"
 
-    def __init__(self, input_dims, actions, device, dtype):
+    def __init__(self, input_dims, actions, device, dtype, **kwargs):
 
         super(ICMModel, self).__init__()
 

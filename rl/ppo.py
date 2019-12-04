@@ -535,7 +535,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         log.record_step()
 
         # periodically print and save progress
-        if time.time() - last_print_time >= config.PRINT_EVERY_SEC:
+        if time.time() - last_print_time >= args.debug_print_frequency:
             save_progress(log)
             log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
