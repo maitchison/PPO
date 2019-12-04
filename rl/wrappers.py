@@ -3,85 +3,7 @@ import math
 import numpy as np
 import cv2
 import hashlib
-
-def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
-    """
-    Calculate and return running mean and variance.
-    """
-
-    delta = batch_mean - mean
-    tot_count = count + batch_count
-
-    new_mean = mean + delta * batch_count / tot_count
-    m_a = var * count
-    m_b = batch_var * batch_count
-    M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
-    new_var = M2 / tot_count
-    new_count = tot_count
-
-    return new_mean, new_var, new_count
-
-class RunningMeanStd(object):
-    """
-    Class to handle running mean and standard deviation book-keeping.
-    From https://github.com/openai/baselines/blob/1b092434fc51efcb25d6650e287f07634ada1e08/baselines/common/running_mean_std.py
-    See https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
-    """
-
-    def __init__(self, epsilon=1e-4, shape=()):
-        self.mean = np.zeros(shape, 'float64')
-        self.var = np.ones(shape, 'float64')
-        self.count = epsilon
-
-    def update(self, x):
-
-        if type(x) in [float, int]:
-            batch_mean = x
-            batch_var = 0
-            batch_count = 1
-        else:
-            batch_mean = np.mean(x, axis=0)
-            batch_var = np.var(x, axis=0)
-            batch_count = x.shape[0]
-        self.update_from_moments(batch_mean, batch_var, batch_count)
-
-    def update_from_moments(self, batch_mean, batch_var, batch_count):
-        self.mean, self.var, self.count = update_mean_var_count_from_moments(
-            self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
-
-class NoopResetWrapper(gym.Wrapper):
-    """
-    Applies a random number of no-op actions before agent can start playing.
-    From https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
-    """
-    def __init__(self, env, noop_max=30):
-        """Sample initial states by taking random number of no-ops on reset.
-        No-op is assumed to be action 0.
-        """
-        gym.Wrapper.__init__(self, env)
-        self.noop_max = noop_max
-        self.override_num_noops = None
-        self.noop_action = 0
-        assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
-
-    def reset(self, **kwargs):
-        """ Do no-op action for a number of steps in [1, noop_max]."""
-        self.env.reset(**kwargs)
-        if self.override_num_noops is not None:
-            noops = self.override_num_noops
-        else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
-        assert noops > 0
-        obs = None
-        for _ in range(noops):
-            obs, _, done, _ = self.env.step(self.noop_action)
-            if done:
-                obs = self.env.reset(**kwargs)
-        return obs
-
-    def step(self, ac):
-        return self.env.step(ac)
-
+from . import utils
 
 class HashWrapper(gym.Wrapper):
     """
@@ -199,10 +121,10 @@ class NormalizeObservationsWrapper(gym.Wrapper):
         self.env = env
         self.epsilon = 1e-4
         self.clip = clip
-        self.obs_rms = RunningMeanStd(shape=())
+        self.obs_rms = utils.RunningMeanStd(shape=())
         self.shadow_mode = shadow_mode
         if initial_state is not None:
-            self.restore_state(initial_state)
+            self.obs_rms.restore_state(initial_state)
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -210,7 +132,7 @@ class NormalizeObservationsWrapper(gym.Wrapper):
         self.mean = self.obs_rms.mean
         self.std = np.sqrt(self.obs_rms.var)
 
-        info["observation_norm_state"] = self.save_state()
+        info["observation_norm_state"] = self.obs_rms.save_state()
 
         if self.shadow_mode:
             return obs, reward, done, info
@@ -219,18 +141,6 @@ class NormalizeObservationsWrapper(gym.Wrapper):
             scaled_obs = np.clip(scaled_obs, -self.clip, +self.clip)
             scaled_obs = np.asarray(scaled_obs, dtype=np.float32)
             return scaled_obs, reward, done, info
-
-    def save_state(self):
-        """
-        Saves running statistics.
-        """
-        return tuple([self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count])
-
-    def restore_state(self, state):
-        """
-        Restores running statistics.
-        """
-        self.obs_rms.mean, self.obs_rms.var, self.obs_rms.count = state
 
 
 class NormalizeRewardWrapper(gym.Wrapper):
@@ -247,11 +157,11 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.env = env
         self.epsilon = 1e-4
         self.current_return = 0
-        self.ret_rms = RunningMeanStd(shape=())
+        self.ret_rms = utils.RunningMeanStd(shape=())
         self.mean = 0.0
         self.std = 0.0
         if initial_state is not None:
-            self.restore_state(initial_state)
+            self.ret_rms.restore_state(initial_state)
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -260,20 +170,8 @@ class NormalizeRewardWrapper(gym.Wrapper):
         self.mean = self.ret_rms.mean
         self.std = math.sqrt(self.ret_rms.var)
         scaled_reward = reward / (self.std + self.epsilon)
-        info["returns_norm_state"] = self.save_state()
+        info["returns_norm_state"] = self.ret_rms.save_state()
         return obs, scaled_reward, done, info
-
-    def save_state(self):
-        """
-        Saves running statistics.
-        """
-        return tuple(float(x) for x in [self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count])
-
-    def restore_state(self, state):
-        """
-        Restores running statistics.
-        """
-        self.ret_rms.mean, self.ret_rms.var, self.ret_rms.count = state
 
 
 class MonitorWrapper(gym.Wrapper):
@@ -396,3 +294,36 @@ class AtariWrapper(gym.Wrapper):
         for _ in range(self.n_stacks):
             self._push_raw_obs(obs)
         return self.stack
+
+class NoopResetWrapper(gym.Wrapper):
+    """
+    Applies a random number of no-op actions before agent can start playing.
+    From https://github.com/openai/baselines/blob/7c520852d9cf4eaaad326a3d548efc915dc60c10/baselines/common/atari_wrappers.py
+    """
+    def __init__(self, env, noop_max=30):
+        """Sample initial states by taking random number of no-ops on reset.
+        No-op is assumed to be action 0.
+        """
+        gym.Wrapper.__init__(self, env)
+        self.noop_max = noop_max
+        self.override_num_noops = None
+        self.noop_action = 0
+        assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
+
+    def reset(self, **kwargs):
+        """ Do no-op action for a number of steps in [1, noop_max]."""
+        self.env.reset(**kwargs)
+        if self.override_num_noops is not None:
+            noops = self.override_num_noops
+        else:
+            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
+        assert noops > 0
+        obs = None
+        for _ in range(noops):
+            obs, _, done, _ = self.env.step(self.noop_action)
+            if done:
+                obs = self.env.reset(**kwargs)
+        return obs
+
+    def step(self, ac):
+        return self.env.step(ac)

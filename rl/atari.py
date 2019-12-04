@@ -128,7 +128,7 @@ class MemorizeGame(gym.Env):
         return reward / (3600-50) * 10
 
 
-def make(env_name, non_determinism="noop"):
+def make(env_name, non_determinism=None):
     """ Construct environment of given name, including any required wrappers."""
 
     env_type = None
@@ -141,6 +141,9 @@ def make(env_name, non_determinism="noop"):
 
     if env_name == "MemorizeNoFrameskip-v4":
         env.set_number_of_actions_and_cards(args.memorize_actions, args.memorize_cards)
+
+    # default non-determinism
+    non_determinism = non_determinism or ("noop" if args.noop_start else "none")
 
     if env_type == "atari":
 
@@ -177,19 +180,13 @@ def make(env_name, non_determinism="noop"):
 
         env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
-        if args.use_rnd:
-            # rnd requires a normalized copy of the state...
-            env = wrappers.NormalizeObservationsWrapper(env, clip=5.0, shadow_mode=True,
-                                                        initial_state=get_env_state("observation_norm_state")
-                                                        )
-
         if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,
                                                   initial_state=get_env_state("returns_norm_state")
                                                   )
 
         if args.reward_clip:
-            env= wrappers.ClipRewardWrapper(env, args.reward_clip)
+            env = wrappers.ClipRewardWrapper(env, args.reward_clip)
 
     else:
         raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))

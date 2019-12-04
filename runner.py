@@ -272,8 +272,8 @@ def setup_jobs_V4():
     # Reproduction study on RND paper.
     for int_rew_scale in [1.0]:
         add_job(
-            "EXP_RND",
-            run_name="RND Fourth Test int_rew_scale={}".format(int_rew_scale),
+            "EXP_RND_v4",
+            run_name="RND int_rew_scale={}".format(int_rew_scale),
             env_name="MontezumaRevenge",
             epochs=50,
             agents=32,
@@ -288,6 +288,7 @@ def setup_jobs_V4():
             sticky_actions=True,
             max_grad_norm=1,
             reward_normalization=False,
+            noop_start=False,
             reward_clip=1,
             adam_epsilon=1e-5,                      # they used 1e-8.. but nope...
             intrinsic_reward_scale=int_rew_scale,

@@ -71,6 +71,8 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
         loss_rnd = model.prediction_error(prev_states[:n]).mean()
         loss += loss_rnd
         log.watch_mean("loss_rnd", loss_rnd)
+        log.watch_mean("rnd_feat_mean", model.features_mean)
+        log.watch_mean("rnd_feat_std", model.features_std)
 
     # calculate ICM gradient
     # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
@@ -198,9 +200,11 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
         # save a copy of the normalization statistics.
-        for key in ["returns_norm_state", "observation_norm_state"]:
+        for key in ["returns_norm_state"]:
             if key in infos[0]:
                 atari.ENV_STATE[key] = infos[0][key]
+        if args.use_rnd:
+            atari.ENV_STATE["observation_norm_state"] = model.obs_rms.save_state()
 
         episode_score += raw_rewards
         episode_len += 1
@@ -512,10 +516,6 @@ def train(env_name, model: models.PolicyModel, log:Logger):
                 slices = (x[sample] for x in batch_arrays)
 
                 train_minibatch(model, optimizer, log, *slices)
-
-        # update normalization constants for rnd
-        if args.use_rnd:
-            model.update_normalization_constants(*atari.ENV_STATE["observation_norm_state"][:2])
 
         train_time = (time.time() - train_start_time) / batch_size
 

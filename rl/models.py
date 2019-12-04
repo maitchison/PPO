@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import utils
+from .utils import RunningMeanStd
 
 class PolicyModel(nn.Module):
 
@@ -130,9 +131,63 @@ class CNNModel(PolicyModel):
         features = self.fc(x.view(n, self.d))
 
         if self.freeze_layers >= 4:
-            x = x.detach()
+            features = features.detach()
 
         return features
+
+class CNNPredictionModel(PolicyModel):
+    """ Nature paper inspired CNN
+    """
+
+    name = "CNN_Prediction"
+
+    def __init__(self, input_dims, actions, device, dtype):
+
+        super().__init__()
+
+        self.input_dims = input_dims
+        self.actions = actions
+        c, w, h = input_dims
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        w = get_CNN_output_size(w, [8, 4, 3], [4, 2, 1])
+        h = get_CNN_output_size(h, [8, 4, 3], [4, 2, 1])
+
+        self.out_shape = (64, w, h)
+
+        self.d = utils.prod(self.out_shape)
+        self.fc1 = nn.Linear(self.d, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.out = nn.Linear(256, 512)
+
+        self.set_device_and_dtype(device, dtype)
+
+    def forward(self, x):
+        return self.features(x)
+
+    def features(self, x):
+        if len(x.shape) == 3:
+            # make a batch of 1 for a single example.
+            x = x[np.newaxis, :, :, :]
+
+        validate_dims(x, (None, *self.input_dims))
+
+        n,c,w,h = x.shape
+
+        x = self.prep_for_model(x)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+
+        assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
+
+        x = F.relu(self.fc1(x.view(n, self.d)))
+        x = F.relu(self.fc2(x))
+        predicted_features = self.out(x)
+
+        return predicted_features
 
 
 class RNDModel(PolicyModel):
@@ -142,35 +197,46 @@ class RNDModel(PolicyModel):
 
     name = "RND"
 
-    def __init__(self, input_dims, actions, device, dtype, **kwargs):
+    def __init__(self, input_dims, actions, device, dtype):
         super().__init__()
 
         single_channel_input_dims = (1, *input_dims[1:])
 
         self.policy_model = CNNModel(input_dims, actions, device, dtype)
-        self.prediction_model = CNNModel(single_channel_input_dims, actions, device, dtype)
+        self.prediction_model = CNNPredictionModel(single_channel_input_dims, actions, device, dtype)
         self.random_model = CNNModel(single_channel_input_dims, actions, device, dtype)
         self.policy_model.int_value_head = True
         self.actions = actions
         self.set_device_and_dtype(device, dtype)
 
-        # normalization constants
-        self.mu = 27 # just guess some constants for the first batch, after that these should be updated...
-        self.sigma = 100
+        self.obs_rms = RunningMeanStd(shape=(single_channel_input_dims))
 
-    def update_normalization_constants(self, mu, sigma):
-        self.mu = self.prep_for_model(mu.astype(np.float32))
-        self.sigma = self.prep_for_model(sigma.astype(np.float32))
+        self.features_mean = 0
+        self.features_std = 0
 
     def prediction_error(self, x):
         """ Returns prediction error for given state. """
 
-        # normalize x
-        x = self.prep_for_model(x[:,0:1]) # only need first channel for this.
-        x = torch.clamp((x-self.mu) / (self.sigma + 1e-5), -5, 5)
+        # only need first channel for this.
+        x = x[:, 0:1]
 
-        random_features = self.random_model.features(x).detach()
-        predicted_features = self.prediction_model.features(x)
+        # update normalization constants
+        self.obs_rms.update(x)
+        mu = self.prep_for_model(self.obs_rms.mean.astype(np.float32))
+        sigma = self.prep_for_model(self.obs_rms.var.astype(np.float32) ** 0.5)
+
+        # normalize x
+        x = self.prep_for_model(x)
+        x = torch.clamp((x-mu) / (sigma + 1e-5), -5, 5)
+
+        # random features have too low varience due to weight initialization being different from the TF default
+        # we adjust it here by simply multiplying the output to scale the features to have approximately 0.5 STD
+        random_features = self.random_model.features(x).detach() * 6
+        predicted_features = self.prediction_model.features(x) * 6
+
+        self.features_mean = float(random_features.mean().detach().cpu())
+        self.features_std = float(random_features.std().detach().cpu())
+        self.features_max = float(random_features.max().detach().cpu())
 
         errors = 0.5 * F.mse_loss(random_features, predicted_features, reduction="none").sum(dim=1)
 

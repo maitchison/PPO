@@ -71,6 +71,7 @@ class Config:
         self.memorize_actions = 0
 
         self.debug_print_frequency = 0
+        self.noop_start = False
 
         self.log_folder = ""
 
@@ -113,7 +114,7 @@ def parse_args():
     parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
-    parser.add_argument("--agents", type=int, default=8)
+    parser.add_argument("--agents", type=int, default=32)
 
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
@@ -163,6 +164,7 @@ def parse_args():
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
+    parser.add_argument("--noop_start", type=str2bool, default=True)
 
     # icm stuff
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")

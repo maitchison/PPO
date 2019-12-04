@@ -1,5 +1,4 @@
 import numpy as np
-import argparse
 import torch
 import os
 import math
@@ -180,7 +179,70 @@ def copy_source_files(source, destination, force=False):
 def comma(x):
     return "{:,.1f}".format(x) if x < 100 else "{:,.0f}".format(x)
 
-    # -------------------------------------------------------------
+# -------------------------------------------------------------
+# RMS
+# -------------------------------------------------------------
+
+def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
+    """
+    Calculate and return running mean and variance.
+    """
+
+    delta = batch_mean - mean
+    tot_count = count + batch_count
+
+    new_mean = mean + delta * batch_count / tot_count
+    m_a = var * count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
+    new_var = M2 / tot_count
+    new_count = tot_count
+
+    return new_mean, new_var, new_count
+
+class RunningMeanStd(object):
+    """
+    Class to handle running mean and standard deviation book-keeping.
+    From https://github.com/openai/baselines/blob/1b092434fc51efcb25d6650e287f07634ada1e08/baselines/common/running_mean_std.py
+    See https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    """
+
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = np.zeros(shape, 'float64')
+        self.var = np.ones(shape, 'float64')
+        self.count = epsilon
+
+    def update(self, x):
+
+        if type(x) in [float, int]:
+            batch_mean = x
+            batch_var = 0
+            batch_count = 1
+        else:
+            batch_mean = np.mean(x, axis=0)
+            batch_var = np.var(x, axis=0)
+            batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        self.mean, self.var, self.count = update_mean_var_count_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
+
+
+    def save_state(self):
+        """
+        Saves running statistics.
+        """
+        return tuple([self.mean, self.var, self.count])
+
+    def restore_state(self, state):
+        """
+        Restores running statistics.
+        """
+        self.mean, self.var, self.count = state
+
+
+# -------------------------------------------------------------
 # Rollouts
 # -------------------------------------------------------------
 
