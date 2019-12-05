@@ -71,6 +71,7 @@ class Config:
         self.memorize_actions = 0
 
         self.debug_print_frequency = 0
+        self.debug_log_frequency = 0
         self.noop_start = False
 
         self.log_folder = ""
@@ -86,7 +87,6 @@ LOCK_KEY = str(uuid.uuid4().hex)
 PROFILE_INFO = False
 VERBOSE = True
 
-LOG_EVERY_SEC = 300
 CHECKPOINT_EVERY_STEPS = int(5e6)
 
 args = Config()
@@ -175,7 +175,8 @@ def parse_args():
                         help="Enables the Random Network Distilation (RND) module.")
 
     # debuging
-    parser.add_argument("--debug_print_frequency", type=int, default=60, help="Number of seconds between debug prints.")
+    parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
+    parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
 
     # model
     parser.add_argument("--model", type=str, default="cnn", help="['cnn']")

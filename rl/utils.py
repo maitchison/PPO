@@ -200,6 +200,24 @@ def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, 
 
     return new_mean, new_var, new_count
 
+
+def explained_variance(ypred, y):
+    """
+    # from https://github.com/openai/random-network-distillation/blob/436c47b7d42ffe904373c7b8ab6b2d0cff9c80d8/utils.py
+    Computes fraction of variance that ypred explains about y.
+    Returns 1 - Var[y-ypred] / Var[y]
+    interpretation:
+        ev=0  =>  might as well have predicted zero
+        ev=1  =>  perfect prediction
+        ev<0  =>  worse than just predicting zero
+    """
+
+    assert y.ndim == 1 and ypred.ndim == 1
+
+    vary = np.var(y)
+
+    return -1 if vary==0 else np.clip(1 - np.var(y-ypred)/vary, -1, 1)
+
 class RunningMeanStd(object):
     """
     Class to handle running mean and standard deviation book-keeping.

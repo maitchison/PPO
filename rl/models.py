@@ -61,6 +61,34 @@ class PolicyModel(nn.Module):
 
         return x
 
+class RandomModel(PolicyModel):
+    """ Just takes random options
+    """
+
+    name = "RANDOM"
+
+    def __init__(self, input_dims, actions):
+
+        super().__init__()
+
+        self.input_dims = input_dims
+        self.actions = actions
+
+    def forward(self, x):
+        """ forwards input through model, returns policy, and value estimates. """
+        pass
+
+    def features(self, x):
+        pass
+
+    def policy(self, x):
+        n = len(x)
+        uniform_prob = np.log(1 / self.actions)
+        return np.ones([n,self.actions]) * uniform_prob
+
+    def value(self, x):
+        n = len(x)
+        return np.zeros(shape=[n])
 
 class CNNModel(PolicyModel):
     """ Nature paper inspired CNN
@@ -214,29 +242,41 @@ class RNDModel(PolicyModel):
         self.features_mean = 0
         self.features_std = 0
 
-    def prediction_error(self, x):
-        """ Returns prediction error for given state. """
-
-        # only need first channel for this.
-        x = x[:, 0:1]
+    def perform_normalization(self, x):
+        """ Applys normalization transform, and updates running mean / std. """
 
         # update normalization constants
-        self.obs_rms.update(x)
+        x = x[:, 0:1]
+        self.obs_rms.update(x.astype(np.float32))
         mu = self.prep_for_model(self.obs_rms.mean.astype(np.float32))
         sigma = self.prep_for_model(self.obs_rms.var.astype(np.float32) ** 0.5)
 
         # normalize x
         x = self.prep_for_model(x)
-        x = torch.clamp((x-mu) / (sigma + 1e-5), -5, 5)
+        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5)
+        return x
+
+    def prediction_error(self, x):
+        """ Returns prediction error for given state. """
+
+        # only need first channel for this.
+        x = self.perform_normalization(x)
 
         # random features have too low varience due to weight initialization being different from the TF default
         # we adjust it here by simply multiplying the output to scale the features to have approximately 0.5 STD
-        random_features = self.random_model.features(x).detach() * 6
-        predicted_features = self.prediction_model.features(x) * 6
+        random_features = self.random_model.features(x).detach()
+        predicted_features = self.prediction_model.features(x)
+
+        random_features = F.normalize(random_features, p=2, dim=1)*10
+        predicted_features = F.normalize(predicted_features, p=2, dim=1)*10
 
         self.features_mean = float(random_features.mean().detach().cpu())
         self.features_std = float(random_features.std().detach().cpu())
         self.features_max = float(random_features.max().detach().cpu())
+
+        # switched to cosine difference as having trouble with scales being different...
+        # cosine distance didn't really work for me... :(
+        #errors = 5*(1.0-F.cosine_similarity(random_features, predicted_features, dim=1))
 
         errors = 0.5 * F.mse_loss(random_features, predicted_features, reduction="none").sum(dim=1)
 

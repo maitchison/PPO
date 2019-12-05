@@ -60,19 +60,17 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
 
     # calculate RND gradient
     if args.use_rnd:
-
         # note: this could be much much more efficent, I really should just be passing in mu and sigma, and then
         # letting the model do the transformation... (i.e. keep everything as uint8)
-
         # train on only 25% of minibatch to slow down the predictor network when used with large number of agents.
-
         predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
         n = int(len(prev_states) * predictor_proportion)
         loss_rnd = model.prediction_error(prev_states[:n]).mean()
         loss += loss_rnd
         log.watch_mean("loss_rnd", loss_rnd)
-        log.watch_mean("rnd_feat_mean", model.features_mean)
-        log.watch_mean("rnd_feat_std", model.features_std)
+        log.watch_mean("rnd_feat_mean", model.features_mean, display_width=0)
+        log.watch_mean("rnd_feat_var", model.features_std**2, display_width=0)
+        log.watch_mean("rnd_feat_max", model.features_max, display_width=0)
 
     # calculate ICM gradient
     # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
@@ -151,7 +149,7 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
     optimizer.step()
 
 def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, log,
-               state_shape, state_dtype, policy_shape):
+               state_shape, state_dtype, policy_shape, is_warmup=False):
     """
     Runs agents given number of steps, using a single thread, but batching the updates
     :return:
@@ -177,7 +175,13 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
     for t in range(N):
 
-        logprobs, value_ext, value_int = (x.detach().cpu().numpy() for x in model.forward(states))
+        if is_warmup:
+            uniform_prob = np.log(1 / model.actions)
+            logprobs = np.ones_like(batch_logpolicy[0]) * uniform_prob
+            value_ext = np.zeros_like(batch_value_ext[0])
+            value_int = np.zeros_like(batch_value_ext[0])
+        else:
+            logprobs, value_ext, value_int = (x.detach().cpu().numpy() for x in model.forward(states))
 
         actions = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
         prev_states = states.copy()
@@ -186,20 +190,19 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
 
         intrinsic_rewards = np.zeros_like(rewards)
 
-        # generate prediction error bonus
-        if args.use_icm and args.icm_eta != 0:
-            pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
-            next_embedding = model.encode(model.extract_down_sampled_frame(states))
-            loss_fdm = 0.5 * F.mse_loss(pred_embedding, next_embedding, reduction='none').sum(dim=1).detach().cpu().numpy() * config.args.icm_eta
-            intrinsic_rewards += loss_fdm
         # generate rnd bonus
         if args.use_rnd:
-            loss_rnd = model.prediction_error(states).detach().cpu().numpy()
-            intrinsic_rewards += loss_rnd
+            if is_warmup:
+                # in random mode just update the normalization constants
+                model.perform_normalization(states)
+            else:
+                loss_rnd = model.prediction_error(states).detach().cpu().numpy()
+                intrinsic_rewards += loss_rnd
 
         raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
 
         # save a copy of the normalization statistics.
+        # probably doesn't need to be done this often... also much be a better method than getting stats from infos.
         for key in ["returns_norm_state"]:
             if key in infos[0]:
                 atari.ENV_STATE[key] = infos[0][key]
@@ -213,8 +216,9 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
             if done:
                 # reset is handled automatically by vectorized environments
                 # so just need to keep track of book-keeping
-                log.watch_full("ep_score", episode_score[i])
-                log.watch_full("ep_length", episode_len[i])
+                if log is not None:
+                    log.watch_full("ep_score", episode_score[i])
+                    log.watch_full("ep_length", episode_len[i])
                 episode_score[i] = 0
                 episode_len[i] = 0
 
@@ -279,6 +283,40 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
+def run_random_agent(env_name, model: models.PolicyModel, log:Logger, iterations):
+    """
+    Runs agent through environment
+    :param env_name:
+    :param model:
+    :param log:
+    :return:
+    """
+    log.info("Warming up model with random agent...")
+
+    env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
+    #vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=False)
+    vec_env = gym.vector.SyncVectorEnv(env_fns)
+
+    episode_score = np.zeros([args.agents], dtype=np.float32)
+    episode_len = np.zeros([args.agents], dtype=np.int32)
+
+    # collect experience
+    states = vec_env.reset()
+    state_shape, state_dtype, policy_shape = get_env_details(env_name, model)
+
+    for iteration in range(iterations):
+        run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, None, state_shape, state_dtype, policy_shape,
+                       is_warmup=True)
+
+def get_env_details(env_name, model):
+    _env = atari.make(env_name)
+    obs = _env.reset()
+    state_shape = obs.shape
+    state_dtype = obs.dtype
+    policy_shape = model.policy(obs[np.newaxis])[0].shape
+    _env.close()
+    return state_shape, state_dtype, policy_shape
+
 def train(env_name, model: models.PolicyModel, log:Logger):
     """
     Default parameters from stable baselines
@@ -304,25 +342,13 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     log.add_variable(LogVariable("ep_score", 100, "stats"))   # these need to be added up-front as it might take some
     log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
 
-    utils.lock_job()
-
     # get shapes and dtypes
-    _env = atari.make(env_name)
-    obs = _env.reset()
-    state_shape = obs.shape
-    state_dtype = obs.dtype
-    policy_shape = model.policy(obs[np.newaxis])[0].shape
-
-    # Just export the model for the moment.
-    if args.tensorboard_logging:
-        writer = SummaryWriter()
-        writer.add_graph(model, torch.tensor(obs))
-        writer.close()
-
-    _env.close()
+    state_shape, state_dtype, policy_shape = get_env_details(env_name, model)
 
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
+
+    intrinsic_returns_rms = utils.RunningMeanStd(shape=())
 
     batch_size = (args.n_steps * args.agents)
 
@@ -338,6 +364,8 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
         for k, v in norm_state.items():
             atari.ENV_STATE[k] = v
+        if args.use_rnd:
+            model.obs_rms.restore_state("observation_norm_state")
 
         log.info("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
@@ -420,37 +448,46 @@ def train(env_name, model: models.PolicyModel, log:Logger):
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
                 state_shape, state_dtype, policy_shape)
 
-        # scale internal rewards...
-        batch_rewards_int *= args.intrinsic_reward_scale
-
         # ----------------------------------------------------
         # calculate returns for intrinsic and extrinsic rewards
         # ----------------------------------------------------
 
         _, final_value_estimate_ext, final_value_estimate_int = (x.detach().cpu().numpy() for x in model.forward(states))
 
+        # calculate unnormalizated returns
+        batch_returns_int_raw = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
         batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
-        # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
-        # the RND paper.
-        batch_returns_int = calculate_returns(batch_rewards_int, 0*batch_terminal, final_value_estimate_int, args.gamma_int)
 
-        log.watch_mean("batch_reward_int", np.mean(batch_rewards_int), display_name="rew_int")
+        if args.use_rnd:
+
+            intrinsic_returns_rms.update(batch_returns_int_raw.reshape(-1))
+
+            # normalize the intrinsic rewards
+            intrinsic_reward_norm_scale = (0.0001 + intrinsic_returns_rms.var ** 0.5)
+            batch_rewards_int = batch_rewards_int * (args.intrinsic_reward_scale / intrinsic_reward_norm_scale)
+
+            # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
+            # the RND paper.
+            batch_returns_int = calculate_returns(batch_rewards_int, 0*batch_terminal, final_value_estimate_int, args.gamma_int)
+
+            log.watch_mean("batch_reward_int", np.mean(batch_rewards_int), display_name="rew_int")
+            log.watch_mean("batch_return_int", np.mean(batch_returns_int), display_name="ret_int")
+            log.watch_mean("batch_return_int_raw_mean", np.mean(batch_returns_int_raw), display_name="ret_int_raw_mu", display_width=0)
+            log.watch_mean("batch_return_int_raw_std", np.std(batch_returns_int_raw), display_name="ret_int_raw_std", display_width=0)
+            log.watch_mean("norm_scale_int", intrinsic_reward_norm_scale, display_width=0)
+            log.watch_mean("norm_scale_obs_mean", np.mean(model.obs_rms.mean), display_width=0)
+            log.watch_mean("norm_scale_obs_var", np.mean(model.obs_rms.var), display_width=0)
+        else:
+            batch_returns_int = np.zeros_like(batch_returns_ext)
+
         log.watch_mean("batch_reward_ext", np.mean(batch_rewards_ext), display_name="rew_ext")
-        log.watch_mean("batch_return_int", np.mean(batch_returns_int), display_name="ret_int")
         log.watch_mean("batch_return_ext", np.mean(batch_returns_ext), display_name="ret_ext")
 
-        # normalize intrinsic reward across rollout such that batch returns have 1 std.
-        # seems like this makes training less stable...
-        # just disable this for the moment..
-        # norm_scale = (np.std(batch_returns_int) + 1e-5)
-        # norm_scale = 1.0
-        #batch_rewards_int = batch_rewards_int / norm_scale * args.intrinsic_reward_scale
-        #batch_returns_int = batch_returns_int / norm_scale * args.intrinsic_reward_scale
-        #log.watch_mean("batch_reward_int_norm", np.mean(batch_rewards_int), display_name="rew_int_n")
-        #log.watch_mean("batch_return_int_norm", np.mean(batch_returns_int), display_name="ret_int_n")
+        log.watch_mean("value_est_ext", np.mean(batch_value_ext), display_name="est_v_ext")
+        log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="est_v_int")
 
-        log.watch_mean("value_est_ext", np.mean(batch_value_ext), display_name="ve_ext")
-        log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="ve_int")
+        log.watch_mean("ev_int", utils.explained_variance(batch_value_int.ravel(), batch_returns_int.ravel()))
+        log.watch_mean("ev_ext", utils.explained_variance(batch_value_ext.ravel(), batch_returns_ext.ravel()))
 
         # calculate summaries
         batch_value = batch_value_ext + batch_value_int
@@ -468,8 +505,6 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         terminal_next_i = np.asarray([False] * args.agents) # this should be final dones...
         value_next_i = final_value_estimate_ext + final_value_estimate_int
         prev_adv = np.zeros([args.agents], dtype=np.float32)
-
-        # second note... this is not correct as we do not separate out the int and ext gammas
 
         # note: I think the terminal next_i is off here, need to look into this
         for i in reversed(range(args.n_steps)):
@@ -542,7 +577,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
             print_counter += 1
 
         # save log and refresh lock
-        if time.time() - last_log_time >= config.LOG_EVERY_SEC:
+        if time.time() - last_log_time >= args.debug_log_frequency:
             utils.lock_job()
             log.export_to_csv()
             log.save_log()
@@ -579,11 +614,6 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     save_progress(log)
     log.export_to_csv()
     log.save_log()
-
-    # ------------------------------------
-    # release the lock
-
-    utils.release_lock()
 
     log.info()
     log.important("Training Complete.")

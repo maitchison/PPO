@@ -233,7 +233,7 @@ def setup_jobs_V4():
             "Freeze_Layers",
             run_name="freeze_layers={}".format(freeze_layers),
             env_name="Pong",
-            epochs=50,
+            epochs=100 if freeze_layers in [3,4] else 50,
             agents=32,
             freeze_layers=freeze_layers,
             priority=5
@@ -243,34 +243,7 @@ def setup_jobs_V4():
     # -------------------------------------------------------------------------------------------
 
     # Reproduction study on RND paper.
-    for int_rew_scale in [0.25, 0.5, 1.0]:
-        add_job(
-            "EXP_RND",
-            run_name="RND Third Test int_rew_scale={}".format(int_rew_scale),
-            env_name="MontezumaRevenge",
-            epochs=30,
-            agents=32,
-            n_steps=128,
-            entropy_bonus=0.001,            # why slow low?
-            learning_rate=1e-4,
-            mini_batch_size=1024,           # seems very high!
-            gae_lambda=0.95,
-            ppo_epsilon=0.1,
-            gamma=0.99,     # separate gamma not working yet..
-            gamma_int=0.99,
-            sticky_actions=True,
-            max_grad_norm=5,                # they use 0... but... nope...
-            reward_normalization=True,      # this just make a lot more sense to me
-            adam_epsilon=1e-5,              # they used 1e-8.. but nope...
-            intrinsic_reward_scale = int_rew_scale,
-
-            use_rnd=True,
-            priority=1
-
-        )
-
-    # Reproduction study on RND paper.
-    for int_rew_scale in [1.0]:
+    for int_rew_scale in [0.5, 1.0, 2.0]:
         add_job(
             "EXP_RND_v4",
             run_name="RND int_rew_scale={}".format(int_rew_scale),
@@ -294,16 +267,43 @@ def setup_jobs_V4():
             intrinsic_reward_scale=int_rew_scale,
 
             use_rnd=True,
+            priority=10
+
+        )
+
+    # Reproduction study on RND paper.
+    for int_rew_scale in [0.25, 0.5, 1.0]:
+        add_job(
+            "EXP_RND_v3",
+            run_name="RND Third Test int_rew_scale={}".format(int_rew_scale),
+            env_name="MontezumaRevenge",
+            epochs=25,
+            agents=32,
+            n_steps=128,
+            entropy_bonus=0.001,  # why slow low?
+            learning_rate=1e-4,
+            mini_batch_size=1024,  # seems very high!
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.99,  # separate gamma not working yet..
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=5,  # they use 0... but... nope...
+            reward_normalization=True,  # this just make a lot more sense to me
+            adam_epsilon=1e-5,  # they used 1e-8.. but nope...
+            intrinsic_reward_scale=int_rew_scale,
+
+            use_rnd=True,
             priority=1
 
         )
 
     # Just make sure pong actually works using these settings
     add_job(
-        "EXP_RND",
+        "EXP_RND_v3",
         run_name="RND Third Test (pong)",
         env_name="Pong",
-        epochs=30,
+        epochs=20,
         agents=32,
         n_steps=128,
         entropy_bonus=0.001,  # why slow low?
@@ -326,10 +326,10 @@ def setup_jobs_V4():
 
     # this one should get close to 2,500 after 50M steps.
     add_job(
-        "EXP_RND",
+        "EXP_RND_v3",
         run_name="PPO Baseline (2)",
         env_name="MontezumaRevenge",
-        epochs=50,
+        epochs=40,
         agents=32,
         n_steps=128,
         entropy_bonus=0.001,

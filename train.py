@@ -110,4 +110,25 @@ if __name__ == "__main__":
         actor_critic_model.freeze_layers = args.freeze_layers
         log.info("Freezing layer {} layers.".format(args.freeze_layers))
 
-    ppo.train(args.env_name, actor_critic_model, log)
+    try:
+
+        utils.lock_job()
+
+        if args.use_rnd:
+            ppo.run_random_agent(args.env_name, actor_critic_model, log, 3)
+
+        ppo.train(args.env_name, actor_critic_model, log)
+
+        utils.release_lock()
+
+    except Exception as e:
+        print("!" * 60)
+        print(e)
+        print("!" * 60)
+        try:
+            log.ERROR(str(e))
+            log.save_log()
+        except:
+            # just ignore any errors while trying to log result
+            pass
+        raise e
