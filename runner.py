@@ -243,12 +243,98 @@ def setup_jobs_V4():
     # -------------------------------------------------------------------------------------------
 
     # Reproduction study on RND paper.
+    for ext_rew_scale in [0.5, 1.0, 2.0]:
+        add_job(
+            "EXP_RND_v6",
+            run_name="RND ext_rew_scale={}".format(ext_rew_scale),
+            env_name="MontezumaRevenge",
+            epochs=50,
+            agents=32,
+            n_steps=128,
+            entropy_bonus=0.001,          # why slow low?
+            learning_rate=1e-4,
+            mini_batch_size=1024,         # seems very high!
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.995,                  # separate gamma not working yet..
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=0,              # they really do set this to 0...
+            reward_normalization=False,
+            noop_start=False,
+            reward_clip=1,
+            adam_epsilon=1e-8,            # they use the default in TF which is 1e-8
+            extrinsic_reward_scale=ext_rew_scale,
+            normalize_advantages=False,
+            use_clipped_value_loss=False,
+
+            use_rnd=True,
+            priority=18
+        )
+
+    add_job(
+        "EXP_RND_v6",
+        run_name="RND (alternative)",
+        env_name="MontezumaRevenge",
+        epochs=50,
+        agents=32,
+        n_steps=128,
+        entropy_bonus=0.001,  # why slow low?
+        learning_rate=1e-4,
+        mini_batch_size=1024,  # seems very high!
+        gae_lambda=0.95,
+        ppo_epsilon=0.1,
+        gamma=0.995,
+        gamma_int=0.99,
+        sticky_actions=True,
+        max_grad_norm=1,  # they really do set this to 0...
+        reward_normalization=True,
+        noop_start=False,
+        adam_epsilon=1e-5,  # they use the default in TF which is 1e-8
+        extrinsic_reward_scale=2.0,
+        normalize_advantages=True,
+        use_clipped_value_loss=True,
+
+        use_rnd=True,
+        priority=20
+    )
+
+    # Reproduction study on RND paper.
+    for int_rew_scale in [0.5, 1.0, 2.0]:
+        add_job(
+            "EXP_RND_v5",
+            run_name="RND int_rew_scale={}".format(int_rew_scale),
+            env_name="MontezumaRevenge",
+            epochs=20,
+            agents=32,
+            n_steps=128,
+            entropy_bonus=0.001,  # why slow low?
+            learning_rate=1e-4,
+            mini_batch_size=1024,  # seems very high!
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.99,  # separate gamma not working yet..
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=1,
+            reward_normalization=False,
+            noop_start=False,
+            reward_clip=1,
+            adam_epsilon=1e-8,  # they used 1e-8 :( seems high...
+            intrinsic_reward_scale=int_rew_scale,
+
+            use_rnd=True,
+            priority=10
+
+        )
+
+    # Reproduction study on RND paper.
     for int_rew_scale in [0.5, 1.0, 2.0]:
         add_job(
             "EXP_RND_v4",
             run_name="RND int_rew_scale={}".format(int_rew_scale),
             env_name="MontezumaRevenge",
-            epochs=50,
+            epochs=20,
             agents=32,
             n_steps=128,
             entropy_bonus=0.001,  # why slow low?
@@ -263,7 +349,7 @@ def setup_jobs_V4():
             reward_normalization=False,
             noop_start=False,
             reward_clip=1,
-            adam_epsilon=1e-5,                      # they used 1e-8.. but nope...
+            adam_epsilon=1e-5,                      # they used 1e-8 :( seems high...
             intrinsic_reward_scale=int_rew_scale,
 
             use_rnd=True,

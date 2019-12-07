@@ -114,9 +114,6 @@ if __name__ == "__main__":
 
         utils.lock_job()
 
-        if args.use_rnd:
-            ppo.run_random_agent(args.env_name, actor_critic_model, log, 3)
-
         ppo.train(args.env_name, actor_critic_model, log)
 
         utils.release_lock()

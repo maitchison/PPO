@@ -48,11 +48,19 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
 
     # this is the trust region clipped value estimator, which reduces variance. taken from the PPO2 OpenAi baseline.
     loss_value = 0
-    for value_prediction, returns, pred_values in [(value_ext_prediction, returns_ext, pred_values_ext), (value_int_prediction, returns_int, pred_values_int)]:
-        value_prediction_clipped = pred_values + torch.clamp(value_prediction - pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
-        vf_losses1 = (value_prediction - returns).pow(2)
-        vf_losses2 = (value_prediction_clipped - returns).pow(2)
-        loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+
+    for value_prediction, returns, old_pred_values in [(value_ext_prediction, returns_ext, pred_values_ext),
+                                                       (value_int_prediction, returns_int, pred_values_int)]:
+        if args.use_clipped_value_loss:
+            # is is essentially trust region for value learning, and seems to help a lot.
+            value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
+            vf_losses1 = (value_prediction - returns).pow(2)
+            vf_losses2 = (value_prediction_clipped - returns).pow(2)
+            loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+        else:
+            # simpler version, just use MSE.
+            vf_losses1 = (value_prediction - returns).pow(2)
+            loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(vf_losses1)
 
     loss_entropy = args.entropy_bonus * utils.log_entropy(logps) / mini_batch_size
 
@@ -65,65 +73,14 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
         # train on only 25% of minibatch to slow down the predictor network when used with large number of agents.
         predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
         n = int(len(prev_states) * predictor_proportion)
+
         loss_rnd = model.prediction_error(prev_states[:n]).mean()
+
         loss += loss_rnd
         log.watch_mean("loss_rnd", loss_rnd)
-        log.watch_mean("rnd_feat_mean", model.features_mean, display_width=0)
-        log.watch_mean("rnd_feat_var", model.features_std**2, display_width=0)
-        log.watch_mean("rnd_feat_max", model.features_max, display_width=0)
-
-    # calculate ICM gradient
-    # this should be done with rewards, but since I'm on PPO I'll do it with gradient rather than reward...
-    # be interesting to compare and see which one is better?
-    if args.use_icm:
-
-        assert type(model) == models.ICMModel, "ICM requires using the ICMModel Network."
-
-        # todo: track how well IDM and FDM is working..
-        # note: the ICM should be a totally seperate module... no reason to build it into the model
-        # this allows other models to be used which is nice.
-
-        # step 1, try to learn IDM model
-        # from https://github.com/pathak22/noreward-rl/blob/master/src/model.py we have
-        # IDM_loss = sparse_softmax_cross_entropy_with_logits(logits, aindex)
-
-        beta = 0.2
-
-        nlog_probs = model.idm(prev_states, next_states)
-        targets = torch.tensor(actions).to(model.device).long()
-        loss_idm = F.nll_loss(nlog_probs, targets) * (1-beta) * 0.1 # loss_idm end up being way to big, so we reduce it here.
-
-        # step 2 learn the FDM
-        # from https://github.com/pathak22/noreward-rl/blob/master/src/model.py we have
-        # FDM_loss = 0.5*MSE * 288 (which is 0.5 * SSE as in the paper)
-        pred_embedding = model.fdm(prev_states, torch.tensor(actions).to(model.device).long())
-        next_frames = model.extract_down_sampled_frame(next_states)
-        next_embedding = model.encode(next_frames)
-
-        loss_fdm = F.mse_loss(pred_embedding, next_embedding) * 288 * beta
-        loss_fdm = 0
-
-        # step 2.5 learn a little of of a reconstruction loss (to stop collapse)
-        # disable this, it's not a good idea...
-        # next_decoding = model.decode(next_embedding)
-        # loss_ae = F.mse_loss(next_decoding, next_frames)
-        loss_ae = 0
-
-        # addition: encourage the representation to be unit norm (this is sometimes done with batch-norm, but this
-        # seems easyer.
-        embedding_mean = next_embedding.mean()
-        embedding_std = next_embedding.std()
-        loss_norm = (embedding_mean - 0.0)**2 + (embedding_std - 1.0)**2
-
-        accuracy = (torch.argmax(nlog_probs, dim=1) == targets).float().mean()
-
-        # todo, get ICM working again...
-        # if my_counter % 100 == 0:
-        #     print("loss_idm {:.3f} accuracy {:.3f} loss_fdm {:.3f} loss_ae {:.3f} loss_norm {:.3f} embd_std {:.3f}".format(
-        #         float(loss_idm), float(accuracy), float(loss_fdm), float(loss_ae), float(loss_norm),
-        #         float(torch.std(next_embedding[0]))))
-
-        loss += (loss_idm + loss_fdm + loss_ae + loss_norm)
+        log.watch_mean("feat_mean", model.features_mean, display_width=0)
+        log.watch_mean("feat_var", model.features_var, display_width=10)
+        log.watch_mean("feat_max", model.features_max, display_width=10, display_precision=1)
 
     optimizer.zero_grad()
     loss.backward()
@@ -131,20 +88,20 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
     if args.max_grad_norm is not None and args.max_grad_norm != 0:
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
     else:
-        # even if we don't clip the gradient we should atleast log the norm. This is probably a bit slow though.
+        # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
         # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
         grad_norm = 0
         parameters = list(filter(lambda p: p.grad is not None, model.parameters()))
         for p in parameters:
             param_norm = p.grad.data.norm(2)
             grad_norm += param_norm.item() ** 2
-        grad_norm = grad_norm ** (0.5)
+        grad_norm = grad_norm ** 0.5
 
     log.watch_mean("loss", loss)
     log.watch_mean("loss_clip", loss_clip)
     log.watch_mean("loss_value", loss_value)
     log.watch_mean("loss_entropy", loss_entropy)
-    log.watch_mean("opt_grad_norm", grad_norm)
+    log.watch_mean("opt_grad", grad_norm)
 
     optimizer.step()
 
@@ -196,6 +153,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
                 # in random mode just update the normalization constants
                 model.perform_normalization(states)
             else:
+                # reward is prediction error on state we land inn.
                 loss_rnd = model.prediction_error(states).detach().cpu().numpy()
                 intrinsic_rewards += loss_rnd
 
@@ -317,6 +275,17 @@ def get_env_details(env_name, model):
     _env.close()
     return state_shape, state_dtype, policy_shape
 
+def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma):
+    batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
+    prev_adv = np.zeros([args.agents], dtype=np.float32)
+    for t in reversed(range(args.n_steps)):
+        is_next_terminal = batch_terminal[t] if batch_terminal is not None else False # batch_terminal[t] records if t+1 is a terminal state)
+        value_next_t = batch_value[t + 1] if t != args.n_steps - 1 else final_value_estimate
+        delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
+        batch_advantage[t] = prev_adv = delta + gamma * args.gae_lambda * (
+                1.0 - is_next_terminal) * prev_adv
+    return batch_advantage
+
 def train(env_name, model: models.PolicyModel, log:Logger):
     """
     Default parameters from stable baselines
@@ -365,16 +334,21 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         for k, v in norm_state.items():
             atari.ENV_STATE[k] = v
         if args.use_rnd:
-            model.obs_rms.restore_state("observation_norm_state")
+            model.obs_rms.restore_state(norm_state["observation_norm_state"])
+        ems_norm = norm_state["ems"]
 
         log.info("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
         walltime = log["walltime"]
         did_restore = True
     else:
+        ems_norm = np.zeros([args.agents])
         start_iteration = 0
         walltime = 0
         did_restore = False
+
+    if not did_restore and args.use_rnd:
+        run_random_agent(args.env_name, model, log, 3)
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"),"w") as f:
@@ -458,40 +432,56 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         batch_returns_int_raw = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
         batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
 
+        # ems norm constant
+        # not sure if I like this or not...
+        for t in range(args.n_steps):
+            ems_norm = 0.99 * ems_norm + batch_rewards_int[t,:]
+            intrinsic_returns_rms.update(ems_norm.reshape(-1))
+
         if args.use_rnd:
 
-            intrinsic_returns_rms.update(batch_returns_int_raw.reshape(-1))
+            log.watch_mean("batch_reward_int_unnorm", np.mean(batch_rewards_int), display_name="rew_int_unnorm", display_width=10, display_priority=-2)
+            log.watch_mean("batch_reward_int_unnorm_std", np.std(batch_rewards_int), display_name="rew_int_unnorm_std", display_width=0)
 
             # normalize the intrinsic rewards
-            intrinsic_reward_norm_scale = (0.0001 + intrinsic_returns_rms.var ** 0.5)
-            batch_rewards_int = batch_rewards_int * (args.intrinsic_reward_scale / intrinsic_reward_norm_scale)
+            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4.
+            intrinsic_reward_norm_scale = (1e-5 + intrinsic_returns_rms.var ** 0.5)
+            batch_rewards_int = batch_rewards_int / intrinsic_reward_norm_scale * 0.4
 
             # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
             # the RND paper.
-            batch_returns_int = calculate_returns(batch_rewards_int, 0*batch_terminal, final_value_estimate_int, args.gamma_int)
+            batch_returns_int = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
 
-            log.watch_mean("batch_reward_int", np.mean(batch_rewards_int), display_name="rew_int")
+            log.watch_mean("batch_reward_int", np.mean(batch_rewards_int), display_name="rew_int", display_width=0)
+            log.watch_mean("batch_reward_int_std", np.std(batch_rewards_int), display_name="rew_int_std", display_width=0)
+
             log.watch_mean("batch_return_int", np.mean(batch_returns_int), display_name="ret_int")
+            log.watch_mean("batch_return_int_std", np.std(batch_returns_int), display_name="ret_int_std")
+
             log.watch_mean("batch_return_int_raw_mean", np.mean(batch_returns_int_raw), display_name="ret_int_raw_mu", display_width=0)
             log.watch_mean("batch_return_int_raw_std", np.std(batch_returns_int_raw), display_name="ret_int_raw_std", display_width=0)
-            log.watch_mean("norm_scale_int", intrinsic_reward_norm_scale, display_width=0)
+
+            log.watch_mean("norm_scale_int", intrinsic_reward_norm_scale, display_width=10)
             log.watch_mean("norm_scale_obs_mean", np.mean(model.obs_rms.mean), display_width=0)
             log.watch_mean("norm_scale_obs_var", np.mean(model.obs_rms.var), display_width=0)
+
+            log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="est_v_int")
+            log.watch_mean("value_est_int_std", np.std(batch_value_int), display_name="est_v_int_std")
+
+            log.watch_mean("ev_int", utils.explained_variance(batch_value_int.ravel(), batch_returns_int.ravel()))
+
+
         else:
             batch_returns_int = np.zeros_like(batch_returns_ext)
 
-        log.watch_mean("batch_reward_ext", np.mean(batch_rewards_ext), display_name="rew_ext")
+        log.watch_mean("batch_reward_ext", np.mean(batch_rewards_ext), display_name="rew_ext", display_width=0)
         log.watch_mean("batch_return_ext", np.mean(batch_returns_ext), display_name="ret_ext")
+        log.watch_mean("batch_return_ext_std", np.std(batch_returns_ext), display_name="ret_ext_std", display_width=0)
 
         log.watch_mean("value_est_ext", np.mean(batch_value_ext), display_name="est_v_ext")
-        log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="est_v_int")
+        log.watch_mean("value_est_ext_std", np.std(batch_value_ext), display_name="est_v_ext_std", display_width=0)
 
-        log.watch_mean("ev_int", utils.explained_variance(batch_value_int.ravel(), batch_returns_int.ravel()))
         log.watch_mean("ev_ext", utils.explained_variance(batch_value_ext.ravel(), batch_returns_ext.ravel()))
-
-        # calculate summaries
-        batch_value = batch_value_ext + batch_value_int
-        batch_reward = batch_rewards_ext + batch_rewards_int
 
         # ----------------------------------------------------
         # estimate advantages
@@ -501,26 +491,21 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         # estimated return is the estimated return being in state i
         # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
 
-        batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
-        terminal_next_i = np.asarray([False] * args.agents) # this should be final dones...
-        value_next_i = final_value_estimate_ext + final_value_estimate_int
-        prev_adv = np.zeros([args.agents], dtype=np.float32)
+        batch_advantage_ext = calculate_gae(batch_rewards_ext, batch_value_ext, final_value_estimate_ext, batch_terminal, args.gamma)
+        batch_advantage_int = calculate_gae(batch_rewards_int, batch_value_int, final_value_estimate_int, None, args.gamma_int)
 
-        # note: I think the terminal next_i is off here, need to look into this
-        for i in reversed(range(args.n_steps)):
-            delta = batch_reward[i] + args.gamma * value_next_i * (1.0-terminal_next_i) - batch_value[i]
-
-            batch_advantage[i] = prev_adv = delta + args.gamma * args.gae_lambda * (1.0-terminal_next_i) * prev_adv
-
-            value_next_i = batch_value[i]
-            terminal_next_i = batch_terminal[i]
+        batch_advantage =  args.intrinsic_reward_scale * batch_advantage_int + args.extrinsic_reward_scale * batch_advantage_ext
 
         rollout_time = (time.time() - step_start_time) / batch_size
 
         train_start_time = time.time()
 
         # normalize batch advantages
-        batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
+        if args.normalize_advantages:
+            batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
+        else:
+            log.watch_mean("adv_mean", np.mean(batch_advantage))
+            log.watch_mean("adv_std", np.std(batch_advantage))
 
         batch_arrays = [
             batch_prev_state.reshape([batch_size, *state_shape]),
@@ -562,22 +547,22 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
         # record some training stats
         log.watch_mean("fps", int(fps))
-        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=1)
+        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=1, display_width=0)
         log.watch_mean("time_step", step_time*1000, display_width=0)
-        log.watch_mean("time_rollout", rollout_time*1000, display_postfix="ms", display_precision=1)
-        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=1, type="float")
+        log.watch_mean("time_rollout", rollout_time*1000, display_postfix="ms", display_precision=1, display_width=0)
+        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=1, type="float", display_width=0)
 
         log.record_step()
 
         # periodically print and save progress
-        if time.time() - last_print_time >= args.debug_print_frequency:
+        if time.time() - last_print_time >= args.debug_print_freq:
             save_progress(log)
             log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
             print_counter += 1
 
         # save log and refresh lock
-        if time.time() - last_log_time >= args.debug_log_frequency:
+        if time.time() - last_log_time >= args.debug_log_freq:
             utils.lock_job()
             log.export_to_csv()
             log.save_log()
@@ -591,6 +576,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
             if args.save_checkpoints:
                 checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
+                atari.ENV_STATE["ems"] = ems_norm
                 utils.save_checkpoint(checkpoint_name, env_step, model, log, optimizer, atari.ENV_STATE)
                 log.log("  -checkpoint saved")
 

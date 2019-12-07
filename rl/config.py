@@ -38,6 +38,7 @@ class Config:
 
         self.observation_normalization = False
         self.intrinsic_reward_scale = 0.0
+        self.extrinsic_reward_scale = 0.0
 
         self.tensorboard_logging = False
 
@@ -70,9 +71,13 @@ class Config:
         self.memorize_cards = 0
         self.memorize_actions = 0
 
-        self.debug_print_frequency = 0
-        self.debug_log_frequency = 0
+        self.debug_print_freq = 0
+        self.debug_log_freq = 0
         self.noop_start = False
+
+        self.normalize_advantages = False
+
+        self.use_clipped_value_loss = False
 
         self.log_folder = ""
 
@@ -141,7 +146,8 @@ def parse_args():
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
-    parser.add_argument("--intrinsic_reward_scale", type=float, default=0.5)
+    parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
+    parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
     parser.add_argument("--tensorboard_logging", type=str2bool, default=False)
     parser.add_argument("--freeze_layers", type=int, default=0, help="Freeze the nth first layers in model.")
@@ -166,6 +172,8 @@ def parse_args():
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
 
+    parser.add_argument("--use_clipped_value_loss", type=str2bool, default=True, help="Use the improved clipped value loss.")
+
     # icm stuff
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")
     parser.add_argument("--icm_eta", type=float, default=0.01,
@@ -173,6 +181,8 @@ def parse_args():
 
     parser.add_argument("--use_rnd", type=str2bool, default=False,
                         help="Enables the Random Network Distilation (RND) module.")
+
+    parser.add_argument("--normalize_advantages", type=str2bool, default=True)
 
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")

@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import math
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -96,7 +97,7 @@ class CNNModel(PolicyModel):
 
     name = "CNN"
 
-    def __init__(self, input_dims, actions, device, dtype, hidden_units=512, **kwargs):
+    def __init__(self, input_dims, actions, device, dtype, hidden_units=512, layer_scale=1, **kwargs):
 
         super().__init__()
 
@@ -119,6 +120,7 @@ class CNNModel(PolicyModel):
         self.fc_value_ext = nn.Linear(hidden_units, 1)
         self.freeze_layers = 0
         self.int_value_head = False
+        self.layer_scale = layer_scale
 
         self.set_device_and_dtype(device, dtype)
 
@@ -133,6 +135,14 @@ class CNNModel(PolicyModel):
             value_int = torch.zeros_like(value_ext)
         return policy, value_ext, value_int
 
+    def conv_layer(self, conv, x, detach=False):
+        x = F.relu(conv(x))
+        if self.layer_scale != 1:
+            x *= self.layer_scale
+        if detach:
+            x = x.detach()
+        return x
+
     def features(self, x):
         if len(x.shape) == 3:
             # make a batch of 1 for a single example.
@@ -144,19 +154,13 @@ class CNNModel(PolicyModel):
 
         x = self.prep_for_model(x)
 
-        x = F.relu(self.conv1(x))
-        if self.freeze_layers >= 1:
-            x = x.detach()
-        x = F.relu(self.conv2(x))
-        if self.freeze_layers >= 2:
-            x = x.detach()
-        x = F.relu(self.conv3(x))
-        if self.freeze_layers >= 3:
-            x = x.detach()
+        x = self.conv_layer(self.conv1, x, self.freeze_layers >= 1)
+        x = self.conv_layer(self.conv2, x, self.freeze_layers >= 2)
+        x = self.conv_layer(self.conv3, x, self.freeze_layers >= 3)
 
         assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
 
-        features = self.fc(x.view(n, self.d))
+        features = self.fc(x.view(n, self.d)) * self.layer_scale
 
         if self.freeze_layers >= 4:
             features = features.detach()
@@ -169,7 +173,7 @@ class CNNPredictionModel(PolicyModel):
 
     name = "CNN_Prediction"
 
-    def __init__(self, input_dims, actions, device, dtype):
+    def __init__(self, input_dims, actions, device, dtype, layer_scale=1):
 
         super().__init__()
 
@@ -189,6 +193,7 @@ class CNNPredictionModel(PolicyModel):
         self.fc1 = nn.Linear(self.d, 256)
         self.fc2 = nn.Linear(256, 256)
         self.out = nn.Linear(256, 512)
+        self.layer_scale = layer_scale
 
         self.set_device_and_dtype(device, dtype)
 
@@ -205,14 +210,14 @@ class CNNPredictionModel(PolicyModel):
         n,c,w,h = x.shape
 
         x = self.prep_for_model(x)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv1(x)) * self.layer_scale
+        x = F.relu(self.conv2(x)) * self.layer_scale
+        x = F.relu(self.conv3(x)) * self.layer_scale
 
         assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
 
-        x = F.relu(self.fc1(x.view(n, self.d)))
-        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc1(x.view(n, self.d))) * self.layer_scale
+        x = F.relu(self.fc2(x)) * self.layer_scale
         predicted_features = self.out(x)
 
         return predicted_features
@@ -233,6 +238,9 @@ class RNDModel(PolicyModel):
         self.policy_model = CNNModel(input_dims, actions, device, dtype)
         self.prediction_model = CNNPredictionModel(single_channel_input_dims, actions, device, dtype)
         self.random_model = CNNModel(single_channel_input_dims, actions, device, dtype)
+
+        self.random_model.layer_scale = math.sqrt(2)
+        self.prediction_model.layer_scale = math.sqrt(2)
         self.policy_model.int_value_head = True
         self.actions = actions
         self.set_device_and_dtype(device, dtype)
@@ -243,17 +251,18 @@ class RNDModel(PolicyModel):
         self.features_std = 0
 
     def perform_normalization(self, x):
-        """ Applys normalization transform, and updates running mean / std. """
+        """ Applies normalization transform, and updates running mean / std. """
 
         # update normalization constants
-        x = x[:, 0:1]
-        self.obs_rms.update(x.astype(np.float32))
+        x = np.float32(x[:, 0:1])
+        self.obs_rms.update(x)
         mu = self.prep_for_model(self.obs_rms.mean.astype(np.float32))
         sigma = self.prep_for_model(self.obs_rms.var.astype(np.float32) ** 0.5)
 
         # normalize x
         x = self.prep_for_model(x)
-        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5)
+        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5) * 1.5 # need more feature variance...
+
         return x
 
     def prediction_error(self, x):
@@ -262,23 +271,19 @@ class RNDModel(PolicyModel):
         # only need first channel for this.
         x = self.perform_normalization(x)
 
-        # random features have too low varience due to weight initialization being different from the TF default
-        # we adjust it here by simply multiplying the output to scale the features to have approximately 0.5 STD
-        random_features = self.random_model.features(x).detach()
-        predicted_features = self.prediction_model.features(x)
+        # random features have too low varience due to weight initialization being different from the OpenAI implementation
+        # we adjust it here by simply multiplying the output to scale the features to have a max of around 3
+        random_features = self.random_model.features(x).detach() * 7
+        predicted_features = self.prediction_model.features(x) * 14
 
-        random_features = F.normalize(random_features, p=2, dim=1)*10
-        predicted_features = F.normalize(predicted_features, p=2, dim=1)*10
+        # note: I really want to normalize these... otherwise scale just makes such a difference.
+        # or maybe tanh the features?
 
         self.features_mean = float(random_features.mean().detach().cpu())
-        self.features_std = float(random_features.std().detach().cpu())
-        self.features_max = float(random_features.max().detach().cpu())
+        self.features_var = float(random_features.var(axis=0).mean().detach().cpu())
+        self.features_max = float(random_features.abs().max().detach().cpu())
 
-        # switched to cosine difference as having trouble with scales being different...
-        # cosine distance didn't really work for me... :(
-        #errors = 5*(1.0-F.cosine_similarity(random_features, predicted_features, dim=1))
-
-        errors = 0.5 * F.mse_loss(random_features, predicted_features, reduction="none").sum(dim=1)
+        errors = (random_features - predicted_features).pow(2).mean(axis=1)
 
         return errors
 

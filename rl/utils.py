@@ -216,7 +216,7 @@ def explained_variance(ypred, y):
 
     vary = np.var(y)
 
-    return -1 if vary==0 else np.clip(1 - np.var(y-ypred)/vary, -1, 1)
+    return -1 if vary == 0 else np.clip(1 - np.var(y-ypred)/vary, -1, 1)
 
 class RunningMeanStd(object):
     """
