@@ -172,6 +172,8 @@ def parse_args():
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
 
+    parser.add_argument("--log_folder", type=str, default=None)
+
     parser.add_argument("--use_clipped_value_loss", type=str2bool, default=True, help="Use the improved clipped value loss.")
 
     # icm stuff

@@ -66,7 +66,7 @@ if __name__ == "__main__":
         else:
             args.model = models.CNNModel
     else:
-        raise Exception("Only the cnn model is implemented at the moment.")
+        raise Exception("Only the cnn, and rnd models are implemented at the moment.")
     args.env_name = get_environment_name(args.environment, args.sticky_actions)
 
     # check the output folder is valid...
@@ -84,7 +84,7 @@ if __name__ == "__main__":
         args.guid = str(uuid.uuid4().hex)
 
     # work out the logging folder...
-    args.log_folder = "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-16:])
+    args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-16:])
     log.info("Logging to folder " + args.log_folder)
 
     log.csv_path = os.path.join(args.log_folder, "training_log.csv")

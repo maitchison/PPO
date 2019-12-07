@@ -242,13 +242,42 @@ def setup_jobs_V4():
     # EXP_RND
     # -------------------------------------------------------------------------------------------
 
+    # this one worked well before
+    add_job(
+        "EXP_RND_v6",
+        run_name="RND repeat best",
+        env_name="MontezumaRevenge",
+        epochs=50,
+        agents=32,
+        n_steps=128,
+        entropy_bonus=0.001,  # why slow low?
+        learning_rate=2.5e-4,
+        mini_batch_size=1024,  # seems very high!
+        gae_lambda=0.95,
+        ppo_epsilon=0.1,
+        gamma=0.99,
+        gamma_int=0.99,
+        sticky_actions=True,
+        max_grad_norm=0,  # they really do set this to 0...
+        reward_normalization=False,
+        noop_start=False,
+        reward_clip=1,
+        adam_epsilon=1e-8,  # they use the default in TF which is 1e-8
+        extrinsic_reward_scale=2.0,
+        normalize_advantages=False,
+        use_clipped_value_loss=True,
+
+        use_rnd=True,
+        priority=25
+    )
+
     # Reproduction study on RND paper.
     for ext_rew_scale in [0.5, 1.0, 2.0]:
         add_job(
             "EXP_RND_v6",
             run_name="RND ext_rew_scale={}".format(ext_rew_scale),
             env_name="MontezumaRevenge",
-            epochs=50,
+            epochs=25,
             agents=32,
             n_steps=128,
             entropy_bonus=0.001,          # why slow low?
@@ -256,7 +285,7 @@ def setup_jobs_V4():
             mini_batch_size=1024,         # seems very high!
             gae_lambda=0.95,
             ppo_epsilon=0.1,
-            gamma=0.995,                  # separate gamma not working yet..
+            gamma=0.995,
             gamma_int=0.99,
             sticky_actions=True,
             max_grad_norm=0,              # they really do set this to 0...
@@ -276,7 +305,7 @@ def setup_jobs_V4():
         "EXP_RND_v6",
         run_name="RND (alternative)",
         env_name="MontezumaRevenge",
-        epochs=50,
+        epochs=25,
         agents=32,
         n_steps=128,
         entropy_bonus=0.001,  # why slow low?
