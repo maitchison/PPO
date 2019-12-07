@@ -226,6 +226,106 @@ class TimeLimitWrapper(gym.Wrapper):
         self._elapsed_steps = 0
         return self.env.reset(**kwargs)
 
+class FoveaWrapper(gym.Wrapper):
+    """
+    Applies a fovea model to the Atari game. This involves stacking global grayscale low resolution frames with
+    local high resolution color frames.
+    """
+
+    def __init__(self, env: gym.Env, global_stacks=4, local_stacks=4, width=42, height=42):
+        """
+        Stack and do other stuff...
+        Input should be (210, 160, 3)
+        Output is a stack of shape (nstacks, width, height)
+        """
+
+        super().__init__(env)
+
+        self.env = env
+
+        self.global_stacks = global_stacks
+        self.local_stacks = local_stacks
+        self._width, self._height = width, height
+
+        assert global_stacks == local_stacks, "Gobal stacks not equal to local stacks not implemented yet."
+
+        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
+
+        self.n_channels = global_stacks + local_stacks * 4
+        self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
+
+        self.local_x = 0
+        self.local_y = 0
+
+        self.channels = []
+        for i in range(self.global_stacks):
+            # right now these are all mixed up but what would be better is to have seperate stacks for each one
+            # so I can have different levels of local and global stacks.
+            self.channels.append("Gray-" + str(i))
+            self.channels.append("ColorR-" + str(i))
+            self.channels.append("ColorG-" + str(i))
+            self.channels.append("ColorB-" + str(i))
+            self.channels.append("Mask-" + str(i))
+
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(self.n_channels, self._width, self._height),
+            dtype=np.uint8,
+        )
+
+    def _get_fovia_rect(self):
+        x1 = np.clip(self.local_x, 0, 160 - self._width)
+        y1 = np.clip(self.local_y, 0, 210 - self._height)
+        x2 = x1 + self._width
+        y2 = y1 + self._height
+        return x1,y1,x2,y2
+
+    def _push_raw_obs(self, obs):
+
+        fr = self._get_fovia_rect()
+
+        # generate fovea location frame
+        mask = np.zeros((210, 160), dtype=np.uint8) + 64
+        mask[fr[0]:fr[2], fr[1]:fr[3]] = 255
+        mask = cv2.resize(mask, (self._height, self._width), interpolation=cv2.INTER_AREA)
+        self._push(mask)
+
+        # generate a local frame
+        local_obs = obs[fr[0]:fr[2], fr[1]:fr[3]]
+        assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect "+str(fr)
+        self._push(local_obs)
+
+        # generate the global frame
+        global_obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+        global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
+        self._push(global_obs)
+
+    def _push(self, frame):
+
+        if len(frame.shape) == 3:
+            # push multiple frames one by one.
+            for i in range(frame.shape[2]):
+                self._push(frame[:,:,i])
+        else:
+            self.stack = np.roll(self.stack, shift=1, axis=0)
+            self.stack[0:1, :, :] = frame
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self._push_raw_obs(obs)
+        info["channels"] = self.channels[:]
+        return self.stack, reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        for _ in range(max(self.local_stacks, self.global_stacks)):
+            self._push_raw_obs(obs)
+        return self.stack
+
+
 class AtariWrapper(gym.Wrapper):
     """
     Applies Atari frame warping, optional gray-scaling, and frame stacking as per nature paper.
@@ -253,6 +353,15 @@ class AtariWrapper(gym.Wrapper):
         self.grayscale = grayscale
         self.n_channels = self.n_stacks * (1 if self.grayscale else 3)
         self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
+
+        self.channels = []
+        for i in range(self.n_stacks):
+            if grayscale:
+                self.channels.append("Gray-" + str(i))
+            else:
+                self.channels.append("ColorR-" + str(i))
+                self.channels.append("ColorG-" + str(i))
+                self.channels.append("ColorB-" + str(i))
 
         self.observation_space = gym.spaces.Box(
             low=0,
@@ -287,6 +396,7 @@ class AtariWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self._push_raw_obs(obs)
+        info["channels"] = self.channels[:]
         return self.stack, reward, done, info
 
     def reset(self):

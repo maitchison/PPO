@@ -78,6 +78,7 @@ class Config:
         self.normalize_advantages = False
 
         self.use_clipped_value_loss = False
+        self.attention = False
 
         self.log_folder = ""
 
@@ -171,6 +172,8 @@ def parse_args():
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
+
+    parser.add_argument("--attention", type=str2bool, default=False, help="Enable attention system.")
 
     parser.add_argument("--log_folder", type=str, default=None)
 

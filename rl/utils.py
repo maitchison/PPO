@@ -7,7 +7,7 @@ import pickle
 import json
 import time
 
-from .logger import Logger
+import torchvision
 
 from . import hybridVecEnv, atari, config
 from .config import args
@@ -352,8 +352,17 @@ def evaluate_diversity(step, model, env_name, num_rollouts=8, save_rollouts=True
 # Movies
 # -------------------------------------------------------------
 
+def expand_gray_frame(x, tint=(1,1,1)):
+    dtype = x.dtype
+    result = []
+    result.append(x * tint[2])
+    result.append(x * tint[1])
+    result.append(x * tint[0])
+    return np.asarray(result, dtype=dtype)
 
-def compose_frame(state_frame, rendered_frame):
+
+
+def compose_frame(state_frame, rendered_frame, channels=None):
     """ Puts together a composite frame containing rendered frame and state. """
 
     # note: untested on non-stacked states.
@@ -367,9 +376,6 @@ def compose_frame(state_frame, rendered_frame):
     # ---------------------------------------
     # preprocess frames
 
-    # state was CWH but needs to be WHC
-    state_frame = np.swapaxes(state_frame, 0, 2)
-    state_frame = np.swapaxes(state_frame, 0, 1)
     # rendered frame is BGR but should be RGB
     rendered_frame = rendered_frame[...,::-1] # get colors around the right way...
 
@@ -379,12 +385,52 @@ def compose_frame(state_frame, rendered_frame):
     assert len(rendered_frame.shape) == 3
     assert rendered_frame.shape[2] == 3, "Invalid rendered shape " + str(rendered_frame.shape)
 
-    s_h, s_w, s_c = state_frame.shape
+    s_c, s_h, s_w = state_frame.shape
     r_h, r_w, r_c = rendered_frame.shape
+
+    if channels is None:
+        # default channels (not very smart, but hopefuly channels is given so we don't need to guess)
+        channels = ["Gray-" + str(i) for i in range(s_c)]
+
+    # combine color frames etc
+    frames = []
+    for i in range(s_c):
+        if channels[i].startswith("Gray"):
+            new_frame = expand_gray_frame(state_frame[i])
+        elif channels[i].startswith("Mask"):
+            new_frame = expand_gray_frame(state_frame[i], (0.25, 0.25, 1.0))
+        elif channels[i].startswith("ColorR"):
+            new_frame = state_frame[i:i+3, :, :]
+        else:
+            continue
+
+        frames.append(torch.tensor(new_frame))
+
+    state_grid = torchvision.utils.make_grid(frames, nrow=3, padding=2)
+    state_grid = state_grid.numpy()
+    state_grid = np.swapaxes(state_grid, 0, 2)
+    state_grid = np.swapaxes(state_grid, 0, 1)
+
+    grid_height, grid_width, _ = state_grid.shape
+
+    full_width = r_w + grid_width
+    full_height = max(r_h, grid_height)
+
+    frame = np.zeros([full_height, full_width, 3], dtype=np.uint8)
+    frame[:, :, :] += 30  # dark gray background.
+
+    # place the rendered frame
+    ofs_y = (full_height - r_h) // 2
+    frame[ofs_y:ofs_y + r_h, 0:r_w] = rendered_frame
+    ofs_y = (full_height - grid_height) // 2
+    frame[ofs_y:ofs_y + grid_height, r_w: r_w + grid_width] = state_grid
+
+    """
 
     is_stacked = s_c % 4 == 0
     is_color = s_c % 3 == 0
 
+    
     full_width = r_w + s_w * (2 if is_stacked else 1)
     full_height = max(r_h, s_h * (2 if is_stacked else 1))
 
@@ -419,6 +465,7 @@ def compose_frame(state_frame, rendered_frame):
             for c in range(3):
                 frame[dy:dy+s_h, dx:dx+s_w, c] = state_frame[:, :, :]
 
+    """
     return frame
 
 
@@ -449,9 +496,10 @@ def export_movie(filename, model, env_name):
     while not done:
         action = sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
         state, reward, done, info = env.step(action)
+        channels = info.get("channels", None)
         rendered_frame = info.get("monitor_obs", state)
 
-        frame = compose_frame(state, rendered_frame)
+        frame = compose_frame(state, rendered_frame, channels)
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 

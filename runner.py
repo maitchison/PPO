@@ -247,7 +247,7 @@ def setup_jobs_V4():
         "EXP_RND_v6",
         run_name="RND repeat best",
         env_name="MontezumaRevenge",
-        epochs=50,
+        epochs=200,
         agents=32,
         n_steps=128,
         entropy_bonus=0.001,  # why slow low?
@@ -277,7 +277,7 @@ def setup_jobs_V4():
             "EXP_RND_v6",
             run_name="RND ext_rew_scale={}".format(ext_rew_scale),
             env_name="MontezumaRevenge",
-            epochs=25,
+            epochs=200,
             agents=32,
             n_steps=128,
             entropy_bonus=0.001,          # why slow low?
@@ -305,7 +305,7 @@ def setup_jobs_V4():
         "EXP_RND_v6",
         run_name="RND (alternative)",
         env_name="MontezumaRevenge",
-        epochs=25,
+        epochs=200,
         agents=32,
         n_steps=128,
         entropy_bonus=0.001,  # why slow low?

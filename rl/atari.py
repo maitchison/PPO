@@ -178,7 +178,10 @@ def make(env_name, non_determinism=None):
         else:
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
-        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
+        if args.attention:
+            env = wrappers.FoveaWrapper(env, width=args.res_x, height=args.res_y)
+        else:
+            env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
         if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,
