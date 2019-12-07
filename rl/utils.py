@@ -494,8 +494,17 @@ def export_movie(filename, model, env_name):
 
     # play the game...
     while not done:
-        action = sample_action_from_logp(model.policy(state[np.newaxis])[0].detach().cpu().numpy())
-        state, reward, done, info = env.step(action)
+
+        logprobs, logprobs_atn, _, _, _ = model.forward(state[np.newaxis])
+        logprobs = logprobs[0].detach().cpu().numpy()
+        logprobs_atn = logprobs_atn[0].detach().cpu().numpy()
+
+        action = sample_action_from_logp(logprobs)
+        action_atn = sample_action_from_logp(logprobs_atn)
+
+        merged_actions = (action, action_atn % 7, action_atn // 7)
+
+        state, reward, done, info = env.step(merged_actions)
         channels = info.get("channels", None)
         rendered_frame = info.get("monitor_obs", state)
 

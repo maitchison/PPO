@@ -258,6 +258,7 @@ class FoveaWrapper(gym.Wrapper):
 
         self.local_x = 0
         self.local_y = 0
+        self.blur_factor = 0
 
         self.channels = []
         for i in range(self.global_stacks):
@@ -289,13 +290,15 @@ class FoveaWrapper(gym.Wrapper):
 
         # generate fovea location frame
         mask = np.zeros((210, 160), dtype=np.uint8) + 64
-        mask[fr[0]:fr[2], fr[1]:fr[3]] = 255
+        mask[fr[1]:fr[3], fr[0]:fr[2]] = 255
         mask = cv2.resize(mask, (self._height, self._width), interpolation=cv2.INTER_AREA)
         self._push(mask)
 
         # generate a local frame
-        local_obs = obs[fr[0]:fr[2], fr[1]:fr[3]]
-        assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect "+str(fr)
+        local_obs = obs[fr[1]:fr[3], fr[0]:fr[2]]
+        assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect {} - {}".format(str(fr), str(local_obs.shape))
+        if self.blur_factor > 1:
+            local_obs = cv2.blur(local_obs, self.blur_factor)
         self._push(local_obs)
 
         # generate the global frame
@@ -314,7 +317,24 @@ class FoveaWrapper(gym.Wrapper):
             self.stack[0:1, :, :] = frame
 
     def step(self, action):
-        obs, reward, done, info = self.env.step(action)
+
+        # get attention
+        if type(action) is int:
+            env_action = action
+        else:
+            env_action, x, y = action
+            x *= 24
+            y *= 24
+            movement_cost = abs(self.local_x - x) + abs(self.local_y - y)
+            self.blur_factor += movement_cost / 100
+
+            self.local_x = x
+            self.local_y = y
+
+        obs, reward, done, info = self.env.step(env_action)
+
+        self.blur_factor = self.blur_factor / 2
+
         self._push_raw_obs(obs)
         info["channels"] = self.channels[:]
         return self.stack, reward, done, info

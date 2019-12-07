@@ -35,8 +35,13 @@ class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
         if self.is_batched:
 
             # put actions into 2d python array.
-            actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
-            actions = [list(actions[i]) for i in range(len(actions))]
+            if type(actions[0]) is tuple:
+                n = len(actions[0])
+                actions = np.reshape(actions, [self.n_parallel, self.n_sequential, n])
+                actions = [list(actions[i]) for i in range(len(actions))]
+            else:
+                actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
+                actions = [list(actions[i]) for i in range(len(actions))]
 
             observations_list, rewards, dones, infos = super(HybridAsyncVectorEnv, self).step(actions)
 

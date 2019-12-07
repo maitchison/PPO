@@ -14,8 +14,16 @@ from .logger import Logger, LogVariable
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next_states, actions,
-                    returns_ext, returns_int, policy_logprobs, advantages, values_ext, values_int):
+# this needs to be a dict...
+def train_minibatch(
+        model: models.PolicyModel, optimizer, log,
+                    prev_states, next_states,
+                    actions, actions_atn,
+                    returns_ext, returns_int, returns_atn,
+                    policy_logprobs, policy_atn_logprobs,
+                    advantages, advantages_atn,
+                    values_ext, values_int, values_atn
+                    ):
     """
     :param model:           The model for this agent.
     :param optimizer:       The optimizer to use.
@@ -32,25 +40,33 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
     # prepare the tensors for the model (moves to GPU and converts to float.
     # note, we don't do this with the states as these are expected to be in uint8 format.
     policy_logprobs = model.prep_for_model(policy_logprobs)
+    policy_atn_logprobs = model.prep_for_model(policy_atn_logprobs)
     advantages = model.prep_for_model(advantages)
+    advantages_atn = model.prep_for_model(advantages_atn)
     returns_ext = model.prep_for_model(returns_ext)
     returns_int = model.prep_for_model(returns_int)
+    returns_atn = model.prep_for_model(returns_atn)
     pred_values_ext = model.prep_for_model(values_ext)
     pred_values_int = model.prep_for_model(values_int)
+    pred_values_atn = model.prep_for_model(values_atn)
 
     mini_batch_size = len(prev_states)
 
-    logps, value_ext_prediction, value_int_prediction = model.forward(prev_states)
+    logps, logps_atn, value_ext_prediction, value_int_prediction, value_atn_prediction = model.forward(prev_states)
 
     ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
-
     loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages))
+
+    ratio_atn = torch.exp(logps_atn[range(mini_batch_size), actions_atn] - policy_atn_logprobs[range(mini_batch_size), actions_atn])
+    loss_clip_atn = torch.mean(torch.min(ratio_atn * advantages_atn, torch.clamp(ratio_atn, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages_atn))
 
     # this is the trust region clipped value estimator, which reduces variance. taken from the PPO2 OpenAi baseline.
     loss_value = 0
 
     for value_prediction, returns, old_pred_values in [(value_ext_prediction, returns_ext, pred_values_ext),
-                                                       (value_int_prediction, returns_int, pred_values_int)]:
+                                                       (value_int_prediction, returns_int, pred_values_int),
+                                                       (value_atn_prediction, returns_atn, pred_values_atn),
+                                                       ]:
         if args.use_clipped_value_loss:
             # is is essentially trust region for value learning, and seems to help a lot.
             value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
@@ -62,9 +78,9 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
             vf_losses1 = (value_prediction - returns).pow(2)
             loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(vf_losses1)
 
-    loss_entropy = args.entropy_bonus * utils.log_entropy(logps) / mini_batch_size
+    loss_entropy = args.entropy_bonus * (utils.log_entropy(logps) + 0.25*utils.log_entropy(logps_atn)) / mini_batch_size
 
-    loss = -(loss_clip + loss_value + loss_entropy)  # gradient ascent.
+    loss = -(loss_clip + loss_clip_atn + loss_value + loss_entropy)  # gradient ascent.
 
     # calculate RND gradient
     if args.use_rnd:
@@ -99,6 +115,7 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
 
     log.watch_mean("loss", loss)
     log.watch_mean("loss_clip", loss_clip)
+    log.watch_mean("loss_atn", loss_clip_atn)
     log.watch_mean("loss_value", loss_value)
     log.watch_mean("loss_entropy", loss_entropy)
     log.watch_mean("opt_grad", grad_norm)
@@ -106,7 +123,7 @@ def train_minibatch(model: models.PolicyModel, optimizer, log, prev_states, next
     optimizer.step()
 
 def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, log,
-               state_shape, state_dtype, policy_shape, is_warmup=False):
+               state_shape, state_dtype, policy_shape, policy_atn_shape, is_warmup=False):
     """
     Runs agents given number of steps, using a single thread, but batching the updates
     :return:
@@ -123,27 +140,35 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
     batch_next_state = np.zeros([N, A, *state_shape], dtype=state_dtype) # this doubles memory, but makes life easier.
     batch_action = np.zeros([N, A], dtype=np.int32)
+    batch_action_atn = np.zeros([N, A], dtype=np.int32)
     batch_reward_ext = np.zeros([N, A], dtype=np.float32)
     batch_reward_int = np.zeros([N, A], dtype=np.float32)
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
+    batch_logpolicy_atn = np.zeros([N, A, *policy_atn_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
     batch_value_ext = np.zeros([N, A], dtype=np.float32)
     batch_value_int = np.zeros([N, A], dtype=np.float32)
+    batch_value_atn = np.zeros([N, A], dtype=np.float32)
 
     for t in range(N):
 
         if is_warmup:
             uniform_prob = np.log(1 / model.actions)
             logprobs = np.ones_like(batch_logpolicy[0]) * uniform_prob
+            logprobs_atn = np.ones_like(batch_logpolicy_atn[0]) * uniform_prob
             value_ext = np.zeros_like(batch_value_ext[0])
             value_int = np.zeros_like(batch_value_ext[0])
+            value_atn = np.zeros_like(batch_value_atn[0])
         else:
-            logprobs, value_ext, value_int = (x.detach().cpu().numpy() for x in model.forward(states))
+            logprobs, logprobs_atn, value_ext, value_int, value_atn = (x.detach().cpu().numpy() for x in model.forward(states))
 
         actions = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
+        actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs_atn], dtype=np.int32)
         prev_states = states.copy()
 
-        states, rewards, dones, infos = vec_envs.step(actions)
+        merged_actions = [(a, x % 7, x // 7) for a, x in zip(actions, actions_atn)]
+
+        states, rewards, dones, infos = vec_envs.step(merged_actions)
 
         intrinsic_rewards = np.zeros_like(rewards)
 
@@ -183,15 +208,19 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         batch_prev_state[t] = prev_states
         batch_next_state[t] = states
         batch_action[t] = actions
+        batch_action_atn[t] = actions_atn
         batch_reward_ext[t] = rewards
         batch_reward_int[t] = intrinsic_rewards
         batch_logpolicy[t] = logprobs
+        batch_logpolicy_atn[t] = logprobs_atn
         batch_terminal[t] = dones
         batch_value_ext[t] = value_ext
         batch_value_int[t] = value_int
+        batch_value_atn[t] = value_atn
 
-    return (batch_prev_state, batch_next_state, batch_action, batch_reward_ext, batch_reward_int, batch_logpolicy,
-            batch_terminal, batch_value_ext, batch_value_int, states)
+    return (batch_prev_state, batch_next_state, batch_action, batch_action_atn, batch_reward_ext, batch_reward_int,
+            batch_logpolicy, batch_logpolicy_atn,
+            batch_terminal, batch_value_ext, batch_value_int, batch_value_atn, states)
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -271,9 +300,10 @@ def get_env_details(env_name, model):
     obs = _env.reset()
     state_shape = obs.shape
     state_dtype = obs.dtype
-    policy_shape = model.policy(obs[np.newaxis])[0].shape
+    states = obs[np.newaxis]
+    logps, logps_atn, _, _, _ = model.forward(states)
     _env.close()
-    return state_shape, state_dtype, policy_shape
+    return state_shape, state_dtype, logps[0].shape, logps_atn[0].shape
 
 def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma):
     batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
@@ -312,7 +342,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
 
     # get shapes and dtypes
-    state_shape, state_dtype, policy_shape = get_env_details(env_name, model)
+    state_shape, state_dtype, policy_shape, policy_atn_shape = get_env_details(env_name, model)
 
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
@@ -417,16 +447,21 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         # this means we can process each step as a vector
 
         # collect experience
-        batch_prev_state, batch_next_state, batch_action, batch_rewards_ext, batch_rewards_int, \
-        batch_logpolicy, batch_terminal, batch_value_ext, batch_value_int, states = \
+        batch_prev_state, batch_next_state, \
+        batch_action, batch_action_atn, \
+        batch_rewards_ext, batch_rewards_int, \
+        batch_logpolicy, batch_logpolicy_atn, \
+        batch_terminal, \
+        batch_value_ext, batch_value_int, batch_value_atn, \
+        states = \
             run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
-                state_shape, state_dtype, policy_shape)
+                state_shape, state_dtype, policy_shape, policy_atn_shape)
 
         # ----------------------------------------------------
         # calculate returns for intrinsic and extrinsic rewards
         # ----------------------------------------------------
 
-        _, final_value_estimate_ext, final_value_estimate_int = (x.detach().cpu().numpy() for x in model.forward(states))
+        _, _, final_value_estimate_ext, final_value_estimate_int, final_value_estimate_atn = (x.detach().cpu().numpy() for x in model.forward(states))
 
         # calculate unnormalizated returns
         batch_returns_int_raw = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
@@ -483,6 +518,10 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
         log.watch_mean("ev_ext", utils.explained_variance(batch_value_ext.ravel(), batch_returns_ext.ravel()))
 
+        # work out attention rewards
+        batch_rewards_atn = 0.1 * batch_rewards_ext
+        batch_returns_atn = calculate_returns(batch_rewards_atn, batch_terminal, final_value_estimate_atn, args.gamma)
+
         # ----------------------------------------------------
         # estimate advantages
         # ----------------------------------------------------
@@ -493,6 +532,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
         batch_advantage_ext = calculate_gae(batch_rewards_ext, batch_value_ext, final_value_estimate_ext, batch_terminal, args.gamma)
         batch_advantage_int = calculate_gae(batch_rewards_int, batch_value_int, final_value_estimate_int, None, args.gamma_int)
+        batch_advantage_atn = calculate_gae(batch_rewards_atn, batch_value_atn, final_value_estimate_atn, batch_terminal, args.gamma)
 
         batch_advantage =  args.intrinsic_reward_scale * batch_advantage_int + args.extrinsic_reward_scale * batch_advantage_ext
 
@@ -503,6 +543,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         # normalize batch advantages
         if args.normalize_advantages:
             batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
+            batch_advantage_atn = (batch_advantage_atn - batch_advantage_atn.mean()) / (batch_advantage_atn.std() + 1e-8)
         else:
             log.watch_mean("adv_mean", np.mean(batch_advantage))
             log.watch_mean("adv_std", np.std(batch_advantage))
@@ -511,12 +552,17 @@ def train(env_name, model: models.PolicyModel, log:Logger):
             batch_prev_state.reshape([batch_size, *state_shape]),
             batch_next_state.reshape([batch_size, *state_shape]),
             batch_action.reshape(batch_size),
+            batch_action_atn.reshape(batch_size),
             batch_returns_ext.reshape(batch_size),
             batch_returns_int.reshape(batch_size),
+            batch_returns_atn.reshape(batch_size),
             batch_logpolicy.reshape([batch_size, *policy_shape]),
+            batch_logpolicy_atn.reshape([batch_size, *policy_atn_shape]),
             batch_advantage.reshape(batch_size),
+            batch_advantage_atn.reshape(batch_size),
             batch_value_ext.reshape(batch_size),
-            batch_value_int.reshape(batch_size)
+            batch_value_int.reshape(batch_size),
+            batch_value_atn.reshape(batch_size)
         ]
 
         for i in range(args.batch_epochs):
