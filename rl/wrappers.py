@@ -297,8 +297,10 @@ class FoveaWrapper(gym.Wrapper):
         # generate a local frame
         local_obs = obs[fr[1]:fr[3], fr[0]:fr[2]]
         assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect {} - {}".format(str(fr), str(local_obs.shape))
+
         if self.blur_factor > 1:
-            local_obs = cv2.blur(local_obs, self.blur_factor)
+            local_obs = cv2.blur(local_obs, (int(self.blur_factor), int(self.blur_factor)))
+
         self._push(local_obs)
 
         # generate the global frame
@@ -321,17 +323,20 @@ class FoveaWrapper(gym.Wrapper):
         # get attention
         if type(action) is int:
             env_action = action
+            movement_cost = 0
         else:
-            env_action, x, y = action
+            env_action, x, y = tuple(action)
             x *= 24
             y *= 24
             movement_cost = abs(self.local_x - x) + abs(self.local_y - y)
-            self.blur_factor += movement_cost / 100
+            self.blur_factor += movement_cost / 10
 
             self.local_x = x
             self.local_y = y
 
         obs, reward, done, info = self.env.step(env_action)
+
+        info["attention_cost"] = movement_cost / 10
 
         self.blur_factor = self.blur_factor / 2
 

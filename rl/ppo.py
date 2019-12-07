@@ -143,6 +143,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
     batch_action_atn = np.zeros([N, A], dtype=np.int32)
     batch_reward_ext = np.zeros([N, A], dtype=np.float32)
     batch_reward_int = np.zeros([N, A], dtype=np.float32)
+    batch_reward_atn = np.zeros([N, A], dtype=np.float32)
     batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
     batch_logpolicy_atn = np.zeros([N, A, *policy_atn_shape], dtype=np.float32)
     batch_terminal = np.zeros([N, A], dtype=np.bool)
@@ -171,6 +172,12 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         states, rewards, dones, infos = vec_envs.step(merged_actions)
 
         intrinsic_rewards = np.zeros_like(rewards)
+
+        attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -0.01 for i in range(args.agents)])
+
+        log.watch_mean("atn_cost", attention_cost.mean())
+
+        attention_rewards = rewards + attention_cost 
 
         # generate rnd bonus
         if args.use_rnd:
@@ -211,6 +218,7 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         batch_action_atn[t] = actions_atn
         batch_reward_ext[t] = rewards
         batch_reward_int[t] = intrinsic_rewards
+        batch_reward_atn[t] = attention_rewards
         batch_logpolicy[t] = logprobs
         batch_logpolicy_atn[t] = logprobs_atn
         batch_terminal[t] = dones
@@ -218,9 +226,13 @@ def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len,
         batch_value_int[t] = value_int
         batch_value_atn[t] = value_atn
 
-    return (batch_prev_state, batch_next_state, batch_action, batch_action_atn, batch_reward_ext, batch_reward_int,
+    return (batch_prev_state, batch_next_state,
+            batch_action, batch_action_atn,
+            batch_reward_ext, batch_reward_int, batch_reward_atn,
             batch_logpolicy, batch_logpolicy_atn,
-            batch_terminal, batch_value_ext, batch_value_int, batch_value_atn, states)
+            batch_terminal,
+            batch_value_ext, batch_value_int, batch_value_atn,
+            states)
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -449,7 +461,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         # collect experience
         batch_prev_state, batch_next_state, \
         batch_action, batch_action_atn, \
-        batch_rewards_ext, batch_rewards_int, \
+        batch_rewards_ext, batch_rewards_int,  batch_rewards_atn, \
         batch_logpolicy, batch_logpolicy_atn, \
         batch_terminal, \
         batch_value_ext, batch_value_int, batch_value_atn, \
@@ -466,6 +478,7 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         # calculate unnormalizated returns
         batch_returns_int_raw = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
         batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
+        batch_returns_atn = calculate_returns(batch_rewards_atn, batch_terminal, final_value_estimate_atn, args.gamma)
 
         # ems norm constant
         # not sure if I like this or not...
@@ -517,10 +530,6 @@ def train(env_name, model: models.PolicyModel, log:Logger):
         log.watch_mean("value_est_ext_std", np.std(batch_value_ext), display_name="est_v_ext_std", display_width=0)
 
         log.watch_mean("ev_ext", utils.explained_variance(batch_value_ext.ravel(), batch_returns_ext.ravel()))
-
-        # work out attention rewards
-        batch_rewards_atn = 0.1 * batch_rewards_ext
-        batch_returns_atn = calculate_returns(batch_rewards_atn, batch_terminal, final_value_estimate_atn, args.gamma)
 
         # ----------------------------------------------------
         # estimate advantages
