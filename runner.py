@@ -191,6 +191,22 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
     job_list.append(Job(experiment_name, run_name, priority, kwargs))
 
 
+def setup_jobs_V5():
+    for movement_cost in [0, 0.2, 0.02]:
+        for global_frame_skip in [1, 10]:
+            add_job(
+                "Fovea",
+                run_name="global_frame_skip={} movement_cost={}".format(global_frame_skip, movement_cost),
+                env_name="Pong",
+                use_atn=True,
+                atn_global_frame_skip=global_frame_skip,
+                atn_movement_cost=movement_cost,
+                epochs=30,
+                agents=64,
+                priority=20
+            )
+
+
 def setup_jobs_V4():
 
     # simple regression test, make sure agent can learn the problem and that normalization constants get saved
@@ -714,6 +730,7 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_jobs_V4()
+    setup_jobs_V5()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

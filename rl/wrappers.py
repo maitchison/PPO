@@ -232,7 +232,7 @@ class FoveaWrapper(gym.Wrapper):
     local high resolution color frames.
     """
 
-    def __init__(self, env: gym.Env, global_stacks=4, local_stacks=4, width=42, height=42):
+    def __init__(self, env: gym.Env, global_stacks=4, local_stacks=4, width=42, height=42, global_frame_skip=1):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
@@ -245,6 +245,7 @@ class FoveaWrapper(gym.Wrapper):
 
         self.global_stacks = global_stacks
         self.local_stacks = local_stacks
+        self.global_frame_skip = global_frame_skip
         self._width, self._height = width, height
 
         assert global_stacks == local_stacks, "Gobal stacks not equal to local stacks not implemented yet."
@@ -259,6 +260,7 @@ class FoveaWrapper(gym.Wrapper):
         self.local_x = 0
         self.local_y = 0
         self.blur_factor = 0
+        self.counter = 0
 
         # dx, dy
         self.action_map = [(0,0)]
@@ -316,9 +318,10 @@ class FoveaWrapper(gym.Wrapper):
         self._push(local_obs)
 
         # generate the global frame
-        global_obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-        global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
-        self._push(global_obs)
+        if self.counter % self.global_frame_skip == 0:
+            global_obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+            global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
+            self._push(global_obs)
 
     def _push(self, frame):
 
@@ -355,7 +358,8 @@ class FoveaWrapper(gym.Wrapper):
 
     def reset(self):
         obs = self.env.reset()
-        for _ in range(max(self.local_stacks, self.global_stacks)):
+        self.counter = 0
+        for _ in range(max(self.local_stacks, self.global_stacks * self.global_frame_skip)):
             self._push_raw_obs(obs)
         return self.stack
 

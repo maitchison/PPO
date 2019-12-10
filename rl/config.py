@@ -72,7 +72,11 @@ class Config:
         self.normalize_advantages = False
 
         self.use_clipped_value_loss = False
+
+        # attention
         self.use_atn = False
+        self.atn_movement_cost = 0.0
+        self.atn_global_frame_skip = 1
 
         self.log_folder = ""
 
@@ -169,7 +173,10 @@ def parse_args():
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
 
+    # attention
     parser.add_argument("--use_atn", type=str2bool, default=False, help="Enable attention system.")
+    parser.add_argument("--atn_movement_cost", type=float, default=0.2)
+    parser.add_argument("--atn_global_frame_skip", type=int, default=1)
 
     parser.add_argument("--log_folder", type=str, default=None)
 

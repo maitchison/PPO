@@ -65,6 +65,13 @@ class Runner():
 
         self.reset()
 
+    def save_checkpoint(self):
+        # remember to save ems, and atari stats...
+        pass
+
+    def load_checkpoint(self):
+        pass
+
     def reset(self):
         # initialize agent
         self.states = self.vec_env.reset()
@@ -96,7 +103,7 @@ class Runner():
                 actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
                 self.states, rewards_ext, dones, infos = self.vec_env.step(list(zip(actions, actions_atn)))
 
-                attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -0.02 for i in range(args.agents)])
+                attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -args.atn_movement_cost for i in range(args.agents)])
                 self.log.watch_mean("atn_cost", attention_cost.mean())
                 attention_rewards = rewards_ext + attention_cost
 
