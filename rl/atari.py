@@ -178,7 +178,7 @@ def make(env_name, non_determinism=None):
         else:
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
-        if args.attention:
+        if args.use_atn:
             env = wrappers.FoveaWrapper(env, width=args.res_x, height=args.res_y)
         else:
             env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)

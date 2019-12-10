@@ -66,20 +66,10 @@ def sample_action_from_logp(logp):
         Returns integer [0..len(probs)-1] based on log probabilities.
         Log probabilities will be normalized.
     """
-
-    # todo: switch to direct sample from logps
-    # this would probably work...
-    # u = tf.random_uniform(tf.shape(self.logits), dtype=self.logits.dtype)
-    # return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
-
-    p = np.asarray(np.exp(logp), dtype=np.float64)
-
-    # this shouldn't happen, but sometimes does
-    if any(np.isnan(p)):
-        raise Exception("Found nans in probabilities", p)
-
-    p /= p.sum()  # probs are sometimes off by a little due to precision error
-    return np.random.choice(range(len(p)), p=p)
+    # taken from https://github.com/openai/baselines/blob/master/baselines/common/distributions.py
+    # this is trick to sample directly from log probabilties without exponentiation.
+    u = np.random.uniform(size=np.shape(logp))
+    return np.argmax(logp - np.log(-np.log(u)), axis=-1)
 
 
 def smooth(X, alpha=0.98):
@@ -495,16 +485,21 @@ def export_movie(filename, model, env_name):
     # play the game...
     while not done:
 
-        logprobs, logprobs_atn, _, _, _ = model.forward(state[np.newaxis])
-        logprobs = logprobs[0].detach().cpu().numpy()
-        logprobs_atn = logprobs_atn[0].detach().cpu().numpy()
+        model_out = model.forward(state[np.newaxis])
+        logprobs = model_out["log_policy"][0].detach().cpu().numpy()
+
+        # stub support attention modeling
+
+        #logprobs_atn = logprobs_atn[0].detach().cpu().numpy()
 
         action = sample_action_from_logp(logprobs)
-        action_atn = sample_action_from_logp(logprobs_atn)
+        #action_atn = sample_action_from_logp(logprobs_atn)
 
-        merged_actions = (action, action_atn % 7, action_atn // 7)
+        #merged_actions = (action, action_atn % 7, action_atn // 7)
 
-        state, reward, done, info = env.step(merged_actions)
+        #state, reward, done, info = env.step(merged_actions)
+
+        state, reward, done, info = env.step(action)
         channels = info.get("channels", None)
         rendered_frame = info.get("monitor_obs", state)
 

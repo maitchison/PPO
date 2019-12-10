@@ -14,225 +14,390 @@ from .logger import Logger, LogVariable
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
-# this needs to be a dict...
-def train_minibatch(
-        model: models.PolicyModel, optimizer, log,
-                    prev_states, next_states,
-                    actions, actions_atn,
-                    returns_ext, returns_int, returns_atn,
-                    policy_logprobs, policy_atn_logprobs,
-                    advantages, advantages_atn,
-                    values_ext, values_int, values_atn
-                    ):
-    """
-    :param model:           The model for this agent.
-    :param optimizer:       The optimizer to use.
-    :param prev_states:     tensor of dims [N, C, H, W]
-    :param actions:         tensor of dims [N]
-    :param returns:         tensor of dims [N]
-    :param policy_logprobs: tensor of dims [N, Actions]
-    :param advantages:      tensor of dims [N]
-    :param values_ext:      tensor of dims [N]
-    :param values_int:      tensor of dims [N]
-    :return:
-    """
+class Runner():
 
-    # prepare the tensors for the model (moves to GPU and converts to float.
-    # note, we don't do this with the states as these are expected to be in uint8 format.
-    policy_logprobs = model.prep_for_model(policy_logprobs)
-    policy_atn_logprobs = model.prep_for_model(policy_atn_logprobs)
-    advantages = model.prep_for_model(advantages)
-    advantages_atn = model.prep_for_model(advantages_atn)
-    returns_ext = model.prep_for_model(returns_ext)
-    returns_int = model.prep_for_model(returns_int)
-    returns_atn = model.prep_for_model(returns_atn)
-    pred_values_ext = model.prep_for_model(values_ext)
-    pred_values_int = model.prep_for_model(values_int)
-    pred_values_atn = model.prep_for_model(values_atn)
+    def __init__(self, model, optimizer, vec_envs, log):
+        """ Setup our rollout runner. """
 
-    mini_batch_size = len(prev_states)
+        self.model = model
+        self.optimizer = optimizer
+        self.vec_envs = vec_envs
+        self.log = log
 
-    logps, logps_atn, value_ext_prediction, value_int_prediction, value_atn_prediction = model.forward(prev_states)
+        self.N = N = args.n_steps
+        self.A = A = args.agents
 
-    ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
-    loss_clip = torch.mean(torch.min(ratio * advantages, torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages))
+        self.state_shape = model.input_dims
+        self.policy_shape = [model.actions]
+        self.policy_atn_shape = [25]
 
-    ratio_atn = torch.exp(logps_atn[range(mini_batch_size), actions_atn] - policy_atn_logprobs[range(mini_batch_size), actions_atn])
-    loss_clip_atn = torch.mean(torch.min(ratio_atn * advantages_atn, torch.clamp(ratio_atn, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages_atn))
+        self.episode_score = np.zeros([A], dtype=np.float32)
+        self.episode_len = np.zeros([A], dtype=np.int32)
+        self.states = np.zeros([A, *self.state_shape], dtype=np.uint8)
 
-    # this is the trust region clipped value estimator, which reduces variance. taken from the PPO2 OpenAi baseline.
-    loss_value = 0
 
-    for value_prediction, returns, old_pred_values in [(value_ext_prediction, returns_ext, pred_values_ext),
-                                                       (value_int_prediction, returns_int, pred_values_int),
-                                                       (value_atn_prediction, returns_atn, pred_values_atn),
-                                                       ]:
-        if args.use_clipped_value_loss:
-            # is is essentially trust region for value learning, and seems to help a lot.
-            value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values, -args.ppo_epsilon, +args.ppo_epsilon)
-            vf_losses1 = (value_prediction - returns).pow(2)
-            vf_losses2 = (value_prediction_clipped - returns).pow(2)
-            loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
-        else:
-            # simpler version, just use MSE.
-            vf_losses1 = (value_prediction - returns).pow(2)
-            loss_value = loss_value - args.vf_coef * 0.5 * torch.mean(vf_losses1)
+        self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
+        self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)  # this doubles memory, but makes life easier.
+        self.action = np.zeros([N, A], dtype=np.int32)
+        self.rewards_ext = np.zeros([N, A], dtype=np.float32)
+        self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
+        self.terminal = np.zeros([N, A], dtype=np.bool)
+        self.value_ext = np.zeros([N, A], dtype=np.float32)
 
-    loss_entropy = args.entropy_bonus * (utils.log_entropy(logps) + 0.25*utils.log_entropy(logps_atn)) / mini_batch_size
+        # intrinsic rewards
+        self.reward_int = np.zeros([N, A], dtype=np.float32)
+        self.value_int = np.zeros([N, A], dtype=np.float32)
 
-    loss = -(loss_clip + loss_clip_atn + loss_value + loss_entropy)  # gradient ascent.
+        # attention
+        self.reward_atn = np.zeros([N, A], dtype=np.float32)
+        self.action_atn = np.zeros([N, A], dtype=np.int32)
+        self.log_policy_atn = np.zeros([N, A, *self.policy_atn_shape], dtype=np.float32)
+        self.value_atn = np.zeros([N, A], dtype=np.float32)
 
-    # calculate RND gradient
-    if args.use_rnd:
-        # note: this could be much much more efficent, I really should just be passing in mu and sigma, and then
-        # letting the model do the transformation... (i.e. keep everything as uint8)
-        # train on only 25% of minibatch to slow down the predictor network when used with large number of agents.
-        predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
-        n = int(len(prev_states) * predictor_proportion)
+        # calculated later...
+        self.returns_ext = np.zeros([N, A], dtype=np.float32)
+        self.returns_int_raw = np.zeros([N, A], dtype=np.float32)
+        self.returns_atn = np.zeros([N, A], dtype=np.float32)
+        self.rewards_int = np.zeros([N, A], dtype=np.float32)
+        self.advantage = np.zeros([N, A], dtype=np.float32)
 
-        loss_rnd = model.prediction_error(prev_states[:n]).mean()
+        self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
 
-        loss += loss_rnd
-        log.watch_mean("loss_rnd", loss_rnd)
-        log.watch_mean("feat_mean", model.features_mean, display_width=0)
-        log.watch_mean("feat_var", model.features_var, display_width=10)
-        log.watch_mean("feat_max", model.features_max, display_width=10, display_precision=1)
+    def generate_rollout(self, is_warmup=False):
 
-    optimizer.zero_grad()
-    loss.backward()
+        for t in range(self.N):
 
-    if args.max_grad_norm is not None and args.max_grad_norm != 0:
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-    else:
-        # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
-        # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
-        grad_norm = 0
-        parameters = list(filter(lambda p: p.grad is not None, model.parameters()))
-        for p in parameters:
-            param_norm = p.grad.data.norm(2)
-            grad_norm += param_norm.item() ** 2
-        grad_norm = grad_norm ** 0.5
+            prev_states = self.states.copy()
 
-    log.watch_mean("loss", loss)
-    log.watch_mean("loss_clip", loss_clip)
-    log.watch_mean("loss_atn", loss_clip_atn)
-    log.watch_mean("loss_value", loss_value)
-    log.watch_mean("loss_entropy", loss_entropy)
-    log.watch_mean("opt_grad", grad_norm)
+            # forward state through model, then detach the result and convert to numpy.
+            model_out = self.model.forward(self.states)
+            log_policy = model_out["log_policy"].detach().cpu().numpy()
+            value_ext = model_out["value_ext"].detach().cpu().numpy()
 
-    optimizer.step()
-
-def run_agents_vec(n_steps, model, vec_envs, states, episode_score, episode_len, log,
-               state_shape, state_dtype, policy_shape, policy_atn_shape, is_warmup=False):
-    """
-    Runs agents given number of steps, using a single thread, but batching the updates
-    :return:
-        N is number of steps per run
-        A is number of agents
-
-        batch_prev_state [N, A, (obs dims)]
-        ...
-    """
-
-    N = n_steps
-    A = args.agents
-
-    batch_prev_state = np.zeros([N, A, *state_shape], dtype=state_dtype)
-    batch_next_state = np.zeros([N, A, *state_shape], dtype=state_dtype) # this doubles memory, but makes life easier.
-    batch_action = np.zeros([N, A], dtype=np.int32)
-    batch_action_atn = np.zeros([N, A], dtype=np.int32)
-    batch_reward_ext = np.zeros([N, A], dtype=np.float32)
-    batch_reward_int = np.zeros([N, A], dtype=np.float32)
-    batch_reward_atn = np.zeros([N, A], dtype=np.float32)
-    batch_logpolicy = np.zeros([N, A, *policy_shape], dtype=np.float32)
-    batch_logpolicy_atn = np.zeros([N, A, *policy_atn_shape], dtype=np.float32)
-    batch_terminal = np.zeros([N, A], dtype=np.bool)
-    batch_value_ext = np.zeros([N, A], dtype=np.float32)
-    batch_value_int = np.zeros([N, A], dtype=np.float32)
-    batch_value_atn = np.zeros([N, A], dtype=np.float32)
-
-    for t in range(N):
-
-        if is_warmup:
-            uniform_prob = np.log(1 / model.actions)
-            logprobs = np.ones_like(batch_logpolicy[0]) * uniform_prob
-            logprobs_atn = np.ones_like(batch_logpolicy_atn[0]) * uniform_prob
-            value_ext = np.zeros_like(batch_value_ext[0])
-            value_int = np.zeros_like(batch_value_ext[0])
-            value_atn = np.zeros_like(batch_value_atn[0])
-        else:
-            logprobs, logprobs_atn, value_ext, value_int, value_atn = (x.detach().cpu().numpy() for x in model.forward(states))
-
-        actions = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
-        actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in logprobs_atn], dtype=np.int32)
-        prev_states = states.copy()
-
-        merged_actions = [(a, x % 7, x // 7) for a, x in zip(actions, actions_atn)]
-
-        states, rewards, dones, infos = vec_envs.step(merged_actions)
-
-        intrinsic_rewards = np.zeros_like(rewards)
-
-        attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -0.01 for i in range(args.agents)])
-
-        log.watch_mean("atn_cost", attention_cost.mean())
-
-        attention_rewards = rewards + attention_cost 
-
-        # generate rnd bonus
-        if args.use_rnd:
+            # during warm-up we simply collect experience through a uniform random policy.
             if is_warmup:
-                # in random mode just update the normalization constants
-                model.perform_normalization(states)
+                actions = np.random.randint(0, self.model.actions, size=[self.N, self.A], dtype=np.int32)
             else:
-                # reward is prediction error on state we land inn.
-                loss_rnd = model.prediction_error(states).detach().cpu().numpy()
-                intrinsic_rewards += loss_rnd
+                # sample actions and run through environment.
+                actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
-        raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(rewards, infos)], dtype=np.float32)
+            # if args.use_atn:
+            #     # stub: get this working (with new attention system
+            #     # log_policy_atn = model_out["log_policy_atn"].detach().cpu().numpy()
+            #     # actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
+            #     # states, rewards, dones, infos = vec_envs.step(merged_actions)
+            #     pass
+            #     # attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -0.01 for i in range(args.agents)])
+            #     # log.watch_mean("atn_cost", attention_cost.mean())
+            #     # attention_rewards = rewards + attention_cost
+            # else:
+            self.states, rewards_ext, dones, infos = self.vec_envs.step(actions)
+            if "returns_norm_state" in infos[0]:
+                atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
 
-        # save a copy of the normalization statistics.
-        # probably doesn't need to be done this often... also much be a better method than getting stats from infos.
-        for key in ["returns_norm_state"]:
-            if key in infos[0]:
-                atari.ENV_STATE[key] = infos[0][key]
+            # work out our intrinsic rewards
+            # if args.use_intrinsic_rewards:
+            #     rewards_int = np.zeros_like(rewards_ext)
+            #     if is_warmup:
+            #         # in random mode just update the normalization constants
+            #         self.model.perform_normalization(states)
+            #     else:
+            #         # reward is prediction error on state we land inn.
+            #         loss_rnd = self.model.prediction_error(states).detach().cpu().numpy()
+            #         rewards_int += loss_rnd
+
+            # save raw rewards for monitoring the agents progress
+            raw_rewards = np.asarray([info.get("raw_reward", rewards_ext) for reward, info in zip(rewards_ext, infos)],
+                                     dtype=np.float32)
+
+            self.episode_score += raw_rewards
+            self.episode_len += 1
+
+            for i, done in enumerate(dones):
+                if done:
+                    # reset is handled automatically by vectorized environments
+                    # so just need to keep track of book-keeping
+                    if not is_warmup:
+                        self.log.watch_full("ep_score", self.episode_score[i])
+                        self.log.watch_full("ep_length", self.episode_len[i])
+                    self.episode_score[i] = 0
+                    self.episode_len[i] = 0
+
+            self.prev_state[t] = prev_states
+            self.next_state[t] = self.states
+            self.action[t] = actions
+
+            # if args.use_intrinsic_rewards:
+            #     batch_reward_int[t] = rewards_int
+            #     batch_value_int[t] = value_int
+
+            # if args.use_atn:
+            #     batch_action_atn[t] = actions_atn
+            #     batch_value_atn[t] = value_atn
+            #     batch_reward_atn[t] = attention_rewards
+            #     batch_log_policy_atn[t] = log_probs_atn
+
+            self.rewards_ext[t] = rewards_ext
+            self.log_policy[t] = log_policy
+            self.terminal[t] = dones
+            self.value_ext[t] = value_ext
+
+        #  save a copy of the normalization statistics.
         if args.use_rnd:
-            atari.ENV_STATE["observation_norm_state"] = model.obs_rms.save_state()
+            atari.ENV_STATE["observation_norm_state"] = self.model.obs_rms.save_state()
 
-        episode_score += raw_rewards
-        episode_len += 1
+        # get value estimates for final state.
+        model_out = self.model.forward(self.states)
+        self.final_value_estimate_ext = model_out["value_ext"].detach().cpu().numpy()
+        if "value_int" in model_out:
+            self.final_value_estimate_int = model_out["value_int"].detach().cpu().numpy()
+        if "value_atn" in model_out:
+            self.final_value_estimate_atn = model_out["value_atn"].detach().cpu().numpy()
 
-        for i, done in enumerate(dones):
-            if done:
-                # reset is handled automatically by vectorized environments
-                # so just need to keep track of book-keeping
-                if log is not None:
-                    log.watch_full("ep_score", episode_score[i])
-                    log.watch_full("ep_length", episode_len[i])
-                episode_score[i] = 0
-                episode_len[i] = 0
+    def calculate_returns(self):
 
-        batch_prev_state[t] = prev_states
-        batch_next_state[t] = states
-        batch_action[t] = actions
-        batch_action_atn[t] = actions_atn
-        batch_reward_ext[t] = rewards
-        batch_reward_int[t] = intrinsic_rewards
-        batch_reward_atn[t] = attention_rewards
-        batch_logpolicy[t] = logprobs
-        batch_logpolicy_atn[t] = logprobs_atn
-        batch_terminal[t] = dones
-        batch_value_ext[t] = value_ext
-        batch_value_int[t] = value_int
-        batch_value_atn[t] = value_atn
+        self.returns_ext = calculate_returns(self.rewards_ext, self.terminal, self.final_value_estimate_ext, args.gamma)
+        self.advantage_ext = calculate_gae(self.rewards_ext, self.value_ext, self.final_value_estimate_ext,
+                                            self.terminal, args.gamma, args.normalize_advantages)
 
-    return (batch_prev_state, batch_next_state,
-            batch_action, batch_action_atn,
-            batch_reward_ext, batch_reward_int, batch_reward_atn,
-            batch_logpolicy, batch_logpolicy_atn,
-            batch_terminal,
-            batch_value_ext, batch_value_int, batch_value_atn,
-            states)
+        if args.use_intrinsic_rewards:
+            # calculate the returns, but let returns propagate through terminal states.
+            self.returns_int_raw = calculate_returns(self.rewards_int, 0 * self.terminal, self.final_value_estimate_int,
+                                                     args.gamma_int)
+
+            # normalize returns using EMS
+            for t in range(self.N):
+                self.ems_norm = 0.99 * self.ems_norm + self.rewards_int[t, :]
+                self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
+
+            # normalize the intrinsic rewards
+            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4.
+            self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
+            self.batch_rewards_int = self.rewards_int / self.intrinsic_reward_norm_scale * 0.4
+
+            # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per the RND paper.
+            self.returns_int = calculate_returns(self.rewards_int, 0 * self.terminal, self.final_value_estimate_int,
+                                                 args.gamma_int)
+            self.advantage_int = calculate_gae(self.rewards_int, self.value_int, self.final_value_estimate_int, None,
+                                               args.gamma_int)
+
+        if args.use_atn:
+            self.returns_atn = calculate_returns(self.rewards_atn, self.terminal, self.final_value_estimate_atn,
+                                                 args.gamma)
+            self.advantage_atn = calculate_gae(self.rewards_atn, self.value_atn, self.final_value_estimate_atn,
+                                               self.terminal, args.gamma, args.normalize_advantages)
+
+        self.advantage = args.extrinsic_reward_scale * self.advantage_ext
+        if args.use_intrinsic_rewards:
+            self.advantage += args.intrinsic_reward_scale * self.advantage_int
+
+        # if norm obs
+        # log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
+        #             log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
+
+
+        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width = 0 if args.normalize_advantages else 10)
+        self.log.watch_mean("adv_std", np.std(self.advantage), display_width = 0 if args.normalize_advantages else 10)
+        self.log.watch_mean("batch_reward_ext", np.mean(self.rewards_ext), display_name="rew_ext", display_width=0)
+        self.log.watch_mean("batch_return_ext", np.mean(self.returns_ext), display_name="ret_ext")
+        self.log.watch_mean("batch_return_ext_std", np.std(self.returns_ext), display_name="ret_ext_std", display_width=0)
+        self.log.watch_mean("value_est_ext", np.mean(self.value_ext), display_name="est_v_ext")
+        self.log.watch_mean("value_est_ext_std", np.std(self.value_ext), display_name="est_v_ext_std", display_width=0)
+        self.log.watch_mean("ev_ext", utils.explained_variance(self.value_ext.ravel(), self.returns_ext.ravel()))
+
+        if args.use_intrinsic_rewards:
+            self.log.watch_mean("batch_reward_int", np.mean(self.rewards_int), display_name="rew_int", display_width=0)
+            self.log.watch_mean("batch_reward_int_std", np.std(self.rewards_int), display_name="rew_int_std",
+                           display_width=0)
+            self.log.watch_mean("batch_return_int", np.mean(self.returns_int), display_name="ret_int")
+            self.log.watch_mean("batch_return_int_std", np.std(self.returns_int), display_name="ret_int_std")
+            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.returns_int_raw), display_name="ret_int_raw_mu",
+                           display_width=0)
+            self.log.watch_mean("batch_return_int_raw_std", np.std(self.returns_int_raw), display_name="ret_int_raw_std",
+                           display_width=0)
+            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=10)
+            self.log.watch_mean("value_est_int", np.mean(self.value_int), display_name="est_v_int")
+            self.log.watch_mean("value_est_int_std", np.std(self.value_int), display_name="est_v_int_std")
+            self.log.watch_mean("ev_int", utils.explained_variance(self.value_int.ravel(), self.returns_int.ravel()))
+            self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.rewards_int), display_name="rew_int_unnorm",
+                           display_width=10, display_priority=-2)
+            self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.rewards_int), display_name="rew_int_unnorm_std",
+                           display_width=0)
+
+    # this needs to be a dict...
+    def train_minibatch(self, data):
+
+        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_pg
+        # -------------------------------------------------------------------------
+
+        prev_states = data["prev_state"]
+        actions = data["actions"]
+        policy_logprobs = data["log_policy"]
+        advantages = data["advantages"]
+        mini_batch_size = len(prev_states)
+
+        model_out = self.model.forward(prev_states)
+        logps = model_out["log_policy"]
+        model_out["value_ext_prediction"] = model_out["value_ext"]
+
+        ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
+        loss_clip = torch.mean(
+            torch.min(ratio * advantages, torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages))
+        self.log.watch_mean("loss_pg", loss_clip)
+        loss += loss_clip
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_value
+        # -------------------------------------------------------------------------
+
+        value_heads = ["ext"]
+
+        if args.use_rnd:
+            value_heads.append("int")
+        if args.use_atn:
+            value_heads.append("atn")
+
+        for value_head in value_heads:
+            value_prediction = model_out["value_{}_prediction".format(value_head)]
+            returns = data["returns_{}".format(value_head)]
+            old_pred_values = data["value_{}".format(value_head)]
+
+            if args.use_clipped_value_loss:
+                # is is essentially trust region for value learning, and seems to help a lot.
+                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
+                                                                         -args.ppo_epsilon, +args.ppo_epsilon)
+                vf_losses1 = (value_prediction - returns).pow(2)
+                vf_losses2 = (value_prediction_clipped - returns).pow(2)
+                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+            else:
+                # simpler version, just use MSE.
+                vf_losses1 = (value_prediction - returns).pow(2)
+                loss_value = -0.5 * torch.mean(vf_losses1)
+            loss_value *= args.vf_coef
+            self.log.watch_mean("loss_v_" + value_head, loss_value)
+            loss += loss_value
+
+        # -------------------------------------------------------------------------
+        # Calculate Attention losses
+        # -------------------------------------------------------------------------
+
+        if args.use_atn:
+            logps_atn = model_out["policy_atn"]
+
+            # policy gradient
+            actions_atn = self.model.prepare_for_model(data["actions_atn"])
+            policy_atn_logprobs = self.model.prepare_for_model(data["log_policy_atn"])
+            advantages_atn = self.model.prepare_for_model(data["advantages_atn"])
+            ratio_atn = torch.exp(logps_atn[range(mini_batch_size), actions_atn] - policy_atn_logprobs[
+                range(mini_batch_size), actions_atn])
+
+            loss_clip_atn = torch.mean(torch.min(ratio_atn * advantages_atn,
+                                                 torch.clamp(ratio_atn, 1 - args.ppo_epsilon,
+                                                             1 + args.ppo_epsilon) * advantages_atn))
+            self.log.watch_mean("loss_atn_pg", loss_clip)
+            loss += loss_clip_atn
+
+            # entropy
+            loss_entropy_atn = utils.log_entropy(logps_atn)
+            self.log.watch_mean("loss_ent_atn", loss_entropy_atn)
+            loss += loss_entropy_atn
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_entropy
+        # -------------------------------------------------------------------------
+
+        loss_entropy = args.entropy_bonus * (utils.log_entropy(logps)) / mini_batch_size
+        self.log.watch_mean("loss_ent", loss_entropy)
+        loss += loss_entropy
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_rnd
+        # -------------------------------------------------------------------------
+
+        if args.use_rnd:
+            predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
+            n = int(len(prev_states) * predictor_proportion)
+            loss_rnd = self.model.prediction_error(prev_states[:n]).mean()
+            loss += loss_rnd
+
+            self.log.watch_mean("loss_rnd", loss_rnd)
+
+            self.log.watch_mean("feat_mean", self.model.features_mean, display_width=0)
+            self.log.watch_mean("feat_var", self.model.features_var, display_width=10)
+            self.log.watch_mean("feat_max", self.model.features_max, display_width=10, display_precision=1)
+
+        # -------------------------------------------------------------------------
+        # Run optimizer
+        # -------------------------------------------------------------------------
+
+        self.log.watch_mean("loss", loss)
+
+        self.optimizer.zero_grad()
+        (-loss).backward()
+
+        if args.max_grad_norm is not None and args.max_grad_norm != 0:
+            grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), args.max_grad_norm)
+        else:
+            # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
+            # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
+            grad_norm = 0
+            parameters = list(filter(lambda p: p.grad is not None, self.model.parameters()))
+            for p in parameters:
+                param_norm = p.grad.data.norm(2)
+                grad_norm += param_norm.item() ** 2
+            grad_norm = grad_norm ** 0.5
+
+        self.log.watch_mean("opt_grad", grad_norm)
+
+        self.optimizer.step()
+
+    def train(self):
+
+        # organise our data...
+        batch_data = {}
+        batch_size = self.N * self.A
+
+        batch_data["prev_state"] = self.prev_state.reshape([batch_size, *self.state_shape])
+        batch_data["actions"] = self.action.reshape(batch_size).astype(np.long)
+        batch_data["returns_ext"] = self.returns_ext.reshape(batch_size)
+        batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
+        batch_data["advantages"] = self.advantage.reshape(batch_size)
+        batch_data["value_ext"] = self.value_ext.reshape(batch_size)
+
+        if args.use_rnd:
+            batch_data["returns_int"] = self.returns_int.reshape(batch_size)
+            batch_data["value_int"] = self.value_int.reshape(batch_size)
+
+        if args.use_atn:
+            batch_data["action_atn"] = self.action_atn.reshape(batch_size)
+            batch_data["returns_atn"] = self.returns_atn.reshape(batch_size).astype(np.long)
+            batch_data["log_policy_atn"] = self.log_policy_atn.reshape([batch_size, *self.policy_atn_shape])
+            batch_data["advantage_atn"] = self.advantage_atn.reshape(batch_size)
+            batch_data["value_atn"] = self.value_atn.reshape(batch_size)
+
+        for i in range(args.batch_epochs):
+
+            ordering = list(range(batch_size))
+            np.random.shuffle(ordering)
+
+            n_batches = math.ceil(batch_size / args.mini_batch_size)
+
+            for j in range(n_batches):
+
+                # put together a minibatch.
+                batch_start = j * args.mini_batch_size
+                batch_end = (j + 1) * args.mini_batch_size
+                sample = ordering[batch_start:batch_end]
+
+                minibatch_data = {}
+                for k, v in batch_data.items():
+                    minibatch_data[k] = torch.tensor(v[sample]).to(self.model.device)
+
+                self.train_minibatch(minibatch_data)
+
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -282,42 +447,30 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
-def run_random_agent(env_name, model: models.PolicyModel, log:Logger, iterations):
-    """
-    Runs agent through environment
-    :param env_name:
-    :param model:
-    :param log:
-    :return:
-    """
-    log.info("Warming up model with random agent...")
+# def run_random_agent(env_name, model: models.BaseModel, log:Logger, iterations):
+#     """
+#     Runs agent through environment
+#     :param env_name:
+#     :param model:
+#     :param log:
+#     :return:
+#     """
+#     log.info("Warming up model with random agent...")
+#
+#     env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
+#     vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=False)
+#
+#     episode_score = np.zeros([args.agents], dtype=np.float32)
+#     episode_len = np.zeros([args.agents], dtype=np.int32)
+#
+#     # collect experience
+#     states = vec_env.reset()
+#
+#     for iteration in range(iterations):
+#         run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log=None, is_warmup=True)
 
-    env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
-    #vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=False)
-    vec_env = gym.vector.SyncVectorEnv(env_fns)
 
-    episode_score = np.zeros([args.agents], dtype=np.float32)
-    episode_len = np.zeros([args.agents], dtype=np.int32)
-
-    # collect experience
-    states = vec_env.reset()
-    state_shape, state_dtype, policy_shape = get_env_details(env_name, model)
-
-    for iteration in range(iterations):
-        run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, None, state_shape, state_dtype, policy_shape,
-                       is_warmup=True)
-
-def get_env_details(env_name, model):
-    _env = atari.make(env_name)
-    obs = _env.reset()
-    state_shape = obs.shape
-    state_dtype = obs.dtype
-    states = obs[np.newaxis]
-    logps, logps_atn, _, _, _ = model.forward(states)
-    _env.close()
-    return state_shape, state_dtype, logps[0].shape, logps_atn[0].shape
-
-def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma):
+def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, normalize=False):
     batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
     prev_adv = np.zeros([args.agents], dtype=np.float32)
     for t in reversed(range(args.n_steps)):
@@ -326,9 +479,11 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
         delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
         batch_advantage[t] = prev_adv = delta + gamma * args.gae_lambda * (
                 1.0 - is_next_terminal) * prev_adv
+    if normalize:
+        batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
 
-def train(env_name, model: models.PolicyModel, log:Logger):
+def train(env_name, model: models.BaseModel, log:Logger):
     """
     Default parameters from stable baselines
     
@@ -354,12 +509,12 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
 
     # get shapes and dtypes
-    state_shape, state_dtype, policy_shape, policy_atn_shape = get_env_details(env_name, model)
+    state_shape = model.input_dims
+    policy_shape = [model.actions]
+    policy_atn_shape = [25]
 
     # epsilon = 1e-5 is required for stability.
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
-
-    intrinsic_returns_rms = utils.RunningMeanStd(shape=())
 
     batch_size = (args.n_steps * args.agents)
 
@@ -395,9 +550,6 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"),"w") as f:
         params = {k:v for k,v in args.__dict__.items()}
-        # fixup some of the non-serializable types.
-        params["dtype"] = str(params["dtype"])
-        params["model"] = params["model"].name
         f.write(json.dumps(params, indent=4))
 
     # make a copy of training files for reference
@@ -439,6 +591,8 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
     log_time = 0
 
+    runner = Runner(model, optimizer, vec_env, log)
+
     for iteration in range(start_iteration, n_iterations+1):
 
         step_start_time = time.time()
@@ -453,144 +607,15 @@ def train(env_name, model: models.PolicyModel, log:Logger):
 
         adjust_learning_rate(optimizer, env_step / 1e6)
 
-        # the idea here is that all our batch arrays are of dims
-        # N, A, ...,
-        # Where n is the number of steps, and A is the number of agents.
-        # this means we can process each step as a vector
-
-        # collect experience
-        batch_prev_state, batch_next_state, \
-        batch_action, batch_action_atn, \
-        batch_rewards_ext, batch_rewards_int,  batch_rewards_atn, \
-        batch_logpolicy, batch_logpolicy_atn, \
-        batch_terminal, \
-        batch_value_ext, batch_value_int, batch_value_atn, \
-        states = \
-            run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log,
-                state_shape, state_dtype, policy_shape, policy_atn_shape)
-
-        # ----------------------------------------------------
-        # calculate returns for intrinsic and extrinsic rewards
-        # ----------------------------------------------------
-
-        _, _, final_value_estimate_ext, final_value_estimate_int, final_value_estimate_atn = (x.detach().cpu().numpy() for x in model.forward(states))
-
-        # calculate unnormalizated returns
-        batch_returns_int_raw = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
-        batch_returns_ext = calculate_returns(batch_rewards_ext, batch_terminal, final_value_estimate_ext, args.gamma)
-        batch_returns_atn = calculate_returns(batch_rewards_atn, batch_terminal, final_value_estimate_atn, args.gamma)
-
-        # ems norm constant
-        # not sure if I like this or not...
-        for t in range(args.n_steps):
-            ems_norm = 0.99 * ems_norm + batch_rewards_int[t,:]
-            intrinsic_returns_rms.update(ems_norm.reshape(-1))
-
-        if args.use_rnd:
-
-            log.watch_mean("batch_reward_int_unnorm", np.mean(batch_rewards_int), display_name="rew_int_unnorm", display_width=10, display_priority=-2)
-            log.watch_mean("batch_reward_int_unnorm_std", np.std(batch_rewards_int), display_name="rew_int_unnorm_std", display_width=0)
-
-            # normalize the intrinsic rewards
-            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4.
-            intrinsic_reward_norm_scale = (1e-5 + intrinsic_returns_rms.var ** 0.5)
-            batch_rewards_int = batch_rewards_int / intrinsic_reward_norm_scale * 0.4
-
-            # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per
-            # the RND paper.
-            batch_returns_int = calculate_returns(batch_rewards_int, 0 * batch_terminal, final_value_estimate_int, args.gamma_int)
-
-            log.watch_mean("batch_reward_int", np.mean(batch_rewards_int), display_name="rew_int", display_width=0)
-            log.watch_mean("batch_reward_int_std", np.std(batch_rewards_int), display_name="rew_int_std", display_width=0)
-
-            log.watch_mean("batch_return_int", np.mean(batch_returns_int), display_name="ret_int")
-            log.watch_mean("batch_return_int_std", np.std(batch_returns_int), display_name="ret_int_std")
-
-            log.watch_mean("batch_return_int_raw_mean", np.mean(batch_returns_int_raw), display_name="ret_int_raw_mu", display_width=0)
-            log.watch_mean("batch_return_int_raw_std", np.std(batch_returns_int_raw), display_name="ret_int_raw_std", display_width=0)
-
-            log.watch_mean("norm_scale_int", intrinsic_reward_norm_scale, display_width=10)
-            log.watch_mean("norm_scale_obs_mean", np.mean(model.obs_rms.mean), display_width=0)
-            log.watch_mean("norm_scale_obs_var", np.mean(model.obs_rms.var), display_width=0)
-
-            log.watch_mean("value_est_int", np.mean(batch_value_int), display_name="est_v_int")
-            log.watch_mean("value_est_int_std", np.std(batch_value_int), display_name="est_v_int_std")
-
-            log.watch_mean("ev_int", utils.explained_variance(batch_value_int.ravel(), batch_returns_int.ravel()))
-
-
-        else:
-            batch_returns_int = np.zeros_like(batch_returns_ext)
-
-        log.watch_mean("batch_reward_ext", np.mean(batch_rewards_ext), display_name="rew_ext", display_width=0)
-        log.watch_mean("batch_return_ext", np.mean(batch_returns_ext), display_name="ret_ext")
-        log.watch_mean("batch_return_ext_std", np.std(batch_returns_ext), display_name="ret_ext_std", display_width=0)
-
-        log.watch_mean("value_est_ext", np.mean(batch_value_ext), display_name="est_v_ext")
-        log.watch_mean("value_est_ext_std", np.std(batch_value_ext), display_name="est_v_ext_std", display_width=0)
-
-        log.watch_mean("ev_ext", utils.explained_variance(batch_value_ext.ravel(), batch_returns_ext.ravel()))
-
-        # ----------------------------------------------------
-        # estimate advantages
-        # ----------------------------------------------------
-
-        # we calculate the advantages by going backwards..
-        # estimated return is the estimated return being in state i
-        # this is largely based off https://github.com/hill-a/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
-
-        batch_advantage_ext = calculate_gae(batch_rewards_ext, batch_value_ext, final_value_estimate_ext, batch_terminal, args.gamma)
-        batch_advantage_int = calculate_gae(batch_rewards_int, batch_value_int, final_value_estimate_int, None, args.gamma_int)
-        batch_advantage_atn = calculate_gae(batch_rewards_atn, batch_value_atn, final_value_estimate_atn, batch_terminal, args.gamma)
-
-        batch_advantage =  args.intrinsic_reward_scale * batch_advantage_int + args.extrinsic_reward_scale * batch_advantage_ext
-
+        # generate the rollout
+        runner.generate_rollout()
         rollout_time = (time.time() - step_start_time) / batch_size
 
+        # calculate returns
+        runner.calculate_returns()
+
         train_start_time = time.time()
-
-        # normalize batch advantages
-        if args.normalize_advantages:
-            batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
-            batch_advantage_atn = (batch_advantage_atn - batch_advantage_atn.mean()) / (batch_advantage_atn.std() + 1e-8)
-        else:
-            log.watch_mean("adv_mean", np.mean(batch_advantage))
-            log.watch_mean("adv_std", np.std(batch_advantage))
-
-        batch_arrays = [
-            batch_prev_state.reshape([batch_size, *state_shape]),
-            batch_next_state.reshape([batch_size, *state_shape]),
-            batch_action.reshape(batch_size),
-            batch_action_atn.reshape(batch_size),
-            batch_returns_ext.reshape(batch_size),
-            batch_returns_int.reshape(batch_size),
-            batch_returns_atn.reshape(batch_size),
-            batch_logpolicy.reshape([batch_size, *policy_shape]),
-            batch_logpolicy_atn.reshape([batch_size, *policy_atn_shape]),
-            batch_advantage.reshape(batch_size),
-            batch_advantage_atn.reshape(batch_size),
-            batch_value_ext.reshape(batch_size),
-            batch_value_int.reshape(batch_size),
-            batch_value_atn.reshape(batch_size)
-        ]
-
-        for i in range(args.batch_epochs):
-
-            ordering = list(range(batch_size))
-            np.random.shuffle(ordering)
-
-            n_batches = math.ceil(batch_size / args.mini_batch_size)
-
-            for j in range(n_batches):
-
-                # put together a minibatch.
-                batch_start = j * args.mini_batch_size
-                batch_end = (j + 1) * args.mini_batch_size
-                sample = ordering[batch_start:batch_end]
-
-                slices = (x[sample] for x in batch_arrays)
-
-                train_minibatch(model, optimizer, log, *slices)
+        runner.train()
 
         train_time = (time.time() - train_start_time) / batch_size
 
@@ -659,7 +684,3 @@ def train(env_name, model: models.PolicyModel, log:Logger):
     log.info()
     log.important("Training Complete.")
     log.info()
-
-
-
-

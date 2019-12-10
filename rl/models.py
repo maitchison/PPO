@@ -7,20 +7,76 @@ import torch.nn.functional as F
 from . import utils
 from .utils import RunningMeanStd
 
-class PolicyModel(nn.Module):
+# ----------------------------------------------------------------------------------------------------------------
+# Heads (feature extractors)
+# ----------------------------------------------------------------------------------------------------------------
 
-    name = ""
+class BaseHead(nn.Module):
+    def __init__(self, input_dims, hidden_units):
+        super().__init__()
+        self.input_dims = input_dims
+        self.hidden_units = hidden_units
+
+class NatureCNNHead(BaseHead):
+    """ Takes stacked frames as input, and outputs features.
+        Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
+    """
+
+    def __init__(self, input_dims, hidden_units=512, weight_scale=1.0, bias_scale=1.0):
+
+        super().__init__(input_dims, hidden_units)
+
+        input_channels = input_dims[0]
+
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        fake_input = torch.zeros((1, *input_dims))
+        _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
+
+        self.out_shape = (c, w, h)
+        self.d = utils.prod(self.out_shape)
+        self.fc = nn.Linear(self.d, hidden_units)
+
+        if weight_scale != 1.0:
+            self.conv1.weights *= weight_scale
+            self.conv2.weights *= weight_scale
+            self.conv3.weights *= weight_scale
+            self.fc.weights *= weight_scale
+
+        if bias_scale != 1.0:
+            self.conv1.bias *= bias_scale
+            self.conv2.bias *= bias_scale
+            self.conv3.bias *= bias_scale
+            self.fc.bias *= bias_scale
+
 
     def forward(self, x):
-        raise NotImplemented()
+        """ forwards input through model, returns features (without relu) """
+        N = len(x)
+        D = self.d
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = torch.reshape(x, [N,D])
+        x = self.fc(x)
+        return x
 
-    def features(self, x):
-        raise NotImplemented()
+# ----------------------------------------------------------------------------------------------------------------
+# Models
+# ----------------------------------------------------------------------------------------------------------------
+
+class BaseModel(nn.Module):
+    def __init__(self, input_dims, actions):
+        super().__init__()
+        self.input_dims = input_dims
+        self.actions = actions
+        self.device = None
+        self.dtype = None
 
     def set_device_and_dtype(self, device, dtype):
-
         self.to(device)
-
         if dtype == torch.half:
             self.half()
         elif dtype == torch.float:
@@ -32,10 +88,15 @@ class PolicyModel(nn.Module):
 
         self.device, self.dtype = device, dtype
 
-    def prep_for_model(self, x):
+    def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
             Can accept tensor or ndarray.
+            scale_int scales uint8 to [0..1]
          """
+
+        assert self.device is not None, "Must call set_device_and_dtype."
+
+        validate_dims(x, (None, *self.input_dims))
 
         # if this is numpy convert it over
         if type(x) is np.ndarray:
@@ -46,90 +107,135 @@ class PolicyModel(nn.Module):
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if x.dtype == torch.uint8:
-            x = x.to(dtype=self.dtype, non_blocking=True) / 255
-        elif x.dtype == self.dtype:
             x = x.to(dtype=self.dtype, non_blocking=True)
+            if scale_int:
+                x = x / 255
+        elif x.dtype == self.dtype:
+            pass
         else:
             raise Exception("Invalid dtype {}".format(x.dtype))
 
         return x
 
+class ActorCriticModel(BaseModel):
+    """ Actor critic model, outputs policy, and value estimate."""
 
-class CNNModel(PolicyModel):
-    """ Nature paper inspired CNN
-    """
-
-    name = "CNN"
-
-    def __init__(self, input_dims, actions, device, dtype, hidden_units=512, layer_scale=1):
-
-        super().__init__()
-
-        self.input_dims = input_dims
-        self.actions = actions
-        c, w, h = input_dims
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-
-        w = get_CNN_output_size(w, [8, 4, 3], [4, 2, 1])
-        h = get_CNN_output_size(h, [8, 4, 3], [4, 2, 1])
-
-        self.out_shape = (64, w, h)
-
-        self.d = utils.prod(self.out_shape)
-        self.fc = nn.Linear(self.d, hidden_units)
-        self.fc_policy = nn.Linear(hidden_units, actions)
-        self.fc_policy_atn = nn.Linear(hidden_units, 49)
-        self.fc_value_int = nn.Linear(hidden_units, 1)
-        self.fc_value_ext = nn.Linear(hidden_units, 1)
-        self.fc_value_atn = nn.Linear(hidden_units, 1)
-        self.freeze_layers = 0
-        self.layer_scale = layer_scale
-
+    def __init__(self, head: str, input_dims, actions, device, dtype, **kwargs):
+        super().__init__(input_dims, actions)
+        self.name = "AC-"+head
+        self.head = constructHead(head, input_dims, **kwargs)
+        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
+        self.fc_value = nn.Linear(self.head.hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
 
     def forward(self, x):
-        """ forwards input through model, returns policy, and value estimates. """
-        x = F.relu(self.features(x))
-        policy = F.log_softmax(self.fc_policy(x), dim=1)
-        attention_policy = F.log_softmax(self.fc_policy_atn(x), dim=1)
-        value_ext = self.fc_value_ext(x).squeeze(dim=1)
-        value_int = self.fc_value_int(x).squeeze(dim=1)
-        value_attn = self.fc_value_atn(x).squeeze(dim=1)
-        return policy, attention_policy, value_ext, value_int, value_attn
-
-    def conv_layer(self, conv, x, detach=False):
-        x = F.relu(conv(x))
-        if self.layer_scale != 1:
-            x *= self.layer_scale
-        if detach:
-            x = x.detach()
-        return x
-
-    def features(self, x):
-        if len(x.shape) == 3:
-            # make a batch of 1 for a single example.
-            x = x[np.newaxis, :, :, :]
-
-        validate_dims(x, (None, *self.input_dims))
-
-        n,c,w,h = x.shape
-
         x = self.prep_for_model(x)
+        x = F.relu(self.head.forward(x))
+        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
+        return {'log_policy': log_policy, 'value_ext': value, 'value': value}
 
-        x = self.conv_layer(self.conv1, x, self.freeze_layers >= 1)
-        x = self.conv_layer(self.conv2, x, self.freeze_layers >= 2)
-        x = self.conv_layer(self.conv3, x, self.freeze_layers >= 3)
 
-        assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
+# class CNNModel(PolicyModel):
+#     """ Nature paper inspired CNN
+#     """
+#
+#     name = "CNN"
+#
+#     def __init__(self, input_dims, actions, device, dtype, hidden_units=512, layer_scale=1):
+#
+#         super().__init__()
+#
+#         self.input_dims = input_dims
+#         self.actions = actions
+#         c, w, h = input_dims
+#         self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
+#         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+#         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+#
+#         w = get_CNN_output_size(w, [8, 4, 3], [4, 2, 1])
+#         h = get_CNN_output_size(h, [8, 4, 3], [4, 2, 1])
+#
+#         self.out_shape = (64, w, h)
+#
+#         self.d = utils.prod(self.out_shape)
+#         self.fc = nn.Linear(self.d, hidden_units)
+#         self.fc_policy = nn.Linear(hidden_units, actions)
+#         self.fc_policy_atn = nn.Linear(hidden_units, 49)
+#         self.fc_value_int = nn.Linear(hidden_units, 1)
+#         self.fc_value_ext = nn.Linear(hidden_units, 1)
+#         self.fc_value_atn = nn.Linear(hidden_units, 1)
+#         self.freeze_layers = 0
+#         self.layer_scale = layer_scale
+#
+#         self.set_device_and_dtype(device, dtype)
+#
+#     def forward(self, x):
+#         """ forwards input through model, returns policy, and value estimates. """
+#         x = F.relu(self.features(x))
+#         policy = F.log_softmax(self.fc_policy(x), dim=1)
+#         attention_policy = F.log_softmax(self.fc_policy_atn(x), dim=1)
+#         value_ext = self.fc_value_ext(x).squeeze(dim=1)
+#         value_int = self.fc_value_int(x).squeeze(dim=1)
+#         value_attn = self.fc_value_atn(x).squeeze(dim=1)
+#         return policy, attention_policy, value_ext, value_int, value_attn
+#
+#     def conv_layer(self, conv, x, detach=False):
+#         x = F.relu(conv(x))
+#         if self.layer_scale != 1:
+#             x *= self.layer_scale
+#         if detach:
+#             x = x.detach()
+#         return x
+#
+#     def features(self, x):
+#         if len(x.shape) == 3:
+#             # make a batch of 1 for a single example.
+#             x = x[np.newaxis, :, :, :]
+#
+#         validate_dims(x, (None, *self.input_dims))
+#
+#         n,c,w,h = x.shape
+#
+#         x = self.prep_for_model(x)
+#
+#         x = self.conv_layer(self.conv1, x, self.freeze_layers >= 1)
+#         x = self.conv_layer(self.conv2, x, self.freeze_layers >= 2)
+#         x = self.conv_layer(self.conv3, x, self.freeze_layers >= 3)
+#
+#         assert x.shape[1:] == self.out_shape, "Invalid output dims {} expecting {}".format(x.shape[1:], self.out_shape)
+#
+#         features = self.fc(x.view(n, self.d)) * self.layer_scale
+#
+#         if self.freeze_layers >= 4:
+#             features = features.detach()
+#
+#         return features
+#
 
-        features = self.fc(x.view(n, self.d)) * self.layer_scale
+# ----------------------------------------------------------------------------------------------------------------
+# Utilities
+# ----------------------------------------------------------------------------------------------------------------
 
-        if self.freeze_layers >= 4:
-            features = features.detach()
+def constructHead(head_name, input_dims, **kwargs) -> BaseHead:
+    head_name = head_name.lower()
+    if head_name == "nature":
+        return NatureCNNHead(input_dims, **kwargs)
+    else:
+        raise Exception("No model head named {}".format(head_name))
 
-        return features
+def validate_dims(x, dims, dtype=None):
+    """ Makes sure x has the correct dims and dtype.
+        None will ignore that dim.
+    """
+
+    if dtype is not None:
+        assert x.dtype == dtype, "Invalid dtype, expected {} but found {}".format(str(dtype), str(x.dtype))
+
+    assert len(x.shape) == len(dims), "Invalid dims, expected {} but found {}".format(dims, x.shape)
+
+    assert all((a is None) or a == b for a,b in zip(dims, x.shape)), "Invalid dims, expected {} but found {}".format(dims, x.shape)
+
 
 
 # class CNNPredictionModel(PolicyModel):
@@ -413,36 +519,3 @@ def get_CNN_output_size(input_size, kernel_sizes, strides, max_pool=False):
             size = (size - (kernel_size - 1) - 1) // stride + 1
     return size
 
-def add_xy(x):
-    """ Adds an xy channel to tensor"""
-
-    n, c, w, h = x.shape
-    # from https://gist.github.com/leVirve/0377a8fbac455bfd44e374e5cf8b1260
-    xx_channel = torch.arange(w).repeat(1, h, 1)
-    yy_channel = torch.arange(h).repeat(1, w, 1).transpose(1, 2)
-
-    xx_channel = xx_channel.float() / (w - 1)
-    yy_channel = yy_channel.float() / (h - 1)
-
-    xx_channel = xx_channel * 2 - 1
-    yy_channel = yy_channel * 2 - 1
-
-    xx_channel = xx_channel.repeat(n, 1, 1, 1).transpose(2, 3)
-    yy_channel = yy_channel.repeat(n, 1, 1, 1).transpose(2, 3)
-
-    return torch.cat([
-        x,
-        xx_channel.type_as(x),
-        yy_channel.type_as(x)], dim=1)
-
-def validate_dims(x, dims, dtype=None):
-    """ Makes sure x has the correct dims and dtype.
-        None will ignore that dim.
-    """
-
-    if dtype is not None:
-        assert x.dtype == dtype, "Invalid dtype, expected {} but found {}".format(str(dtype), str(x.dtype))
-
-    assert len(x.shape) == len(dims), "Invalid dims, expected {} but found {}".format(dims, x.shape)
-
-    assert all((a is None) or a == b for a,b in zip(dims, x.shape)), "Invalid dims, expected {} but found {}".format(dims, x.shape)

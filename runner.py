@@ -298,7 +298,7 @@ def setup_jobs_V4():
             use_clipped_value_loss=False,
 
             use_rnd=True,
-            priority=18
+            priority=25 if ext_rew_scale == 2.0 else 18
         )
 
     add_job(

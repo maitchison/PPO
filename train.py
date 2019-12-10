@@ -58,15 +58,6 @@ if __name__ == "__main__":
         raise Exception("Can only use either ICM or RND, not both.")
 
     # get model
-    if args.model.lower() == "cnn":
-        if args.use_icm:
-            args.model = models.ICMModel
-        elif args.use_rnd:
-            args.model = models.RNDModel
-        else:
-            args.model = models.CNNModel
-    else:
-        raise Exception("Only the cnn, and rnd models are implemented at the moment.")
     args.env_name = get_environment_name(args.environment, args.sticky_actions)
 
     # check the output folder is valid...
@@ -98,17 +89,8 @@ if __name__ == "__main__":
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
-    model_params = {}
-    if args.model_hidden_units is not None:
-        assert args.model is models.CNNModel, "Setting number of hidden units only supported on base CNN model."
-        model_params["hidden_units"] = args.model_hidden_units
-
-    actor_critic_model = args.model(obs_space, n_actions, args.device, args.dtype, **model_params)
-
-    if args.freeze_layers != 0:
-        assert actor_critic_model.name == "CNN", "freeze layers only works with default CNN model, RND and ICM not supported."
-        actor_critic_model.freeze_layers = args.freeze_layers
-        log.info("Freezing layer {} layers.".format(args.freeze_layers))
+    actor_critic_model = models.ActorCriticModel(head="Nature", input_dims=obs_space, actions=n_actions,
+                                                 device=args.device, dtype=torch.float32)
 
     try:
 

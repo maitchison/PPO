@@ -24,8 +24,6 @@ class Config:
         self.vf_coef = 0.0
         self.max_grad_norm = 0.0
 
-        self.freeze_layers = 0
-
         self.input_crop = False
         self.learning_rate = 0.0
         self.learning_rate_decay = 0.0
@@ -51,7 +49,6 @@ class Config:
         self.color = False
         self.entropy_bonus = 0.0
         self.threads = 0
-        self.dtype = ""
         self.export_video = False
         self.device = ""
         self.save_checkpoints = False
@@ -65,9 +62,6 @@ class Config:
 
         self.use_rnd = False
 
-        self.model = None
-        self.model_hidden_units = 0
-
         self.memorize_cards = 0
         self.memorize_actions = 0
 
@@ -78,7 +72,7 @@ class Config:
         self.normalize_advantages = False
 
         self.use_clipped_value_loss = False
-        self.attention = False
+        self.use_atn = False
 
         self.log_folder = ""
 
@@ -86,6 +80,10 @@ class Config:
 
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
+
+    @property
+    def use_intrinsic_rewards(self):
+        return self.use_rnd
 
 LOCK_KEY = str(uuid.uuid4().hex)
 
@@ -151,7 +149,6 @@ def parse_args():
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
     parser.add_argument("--tensorboard_logging", type=str2bool, default=False)
-    parser.add_argument("--freeze_layers", type=int, default=0, help="Freeze the nth first layers in model.")
 
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
@@ -163,7 +160,6 @@ def parse_args():
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--dtype", type=str, default=torch.float)
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)
@@ -173,7 +169,7 @@ def parse_args():
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
 
-    parser.add_argument("--attention", type=str2bool, default=False, help="Enable attention system.")
+    parser.add_argument("--use_atn", type=str2bool, default=False, help="Enable attention system.")
 
     parser.add_argument("--log_folder", type=str, default=None)
 
@@ -194,8 +190,8 @@ def parse_args():
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
 
     # model
-    parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
-    parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
+    #parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
+    #parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
 
     # memorize game
     parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
