@@ -89,7 +89,12 @@ if __name__ == "__main__":
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
-    actor_critic_model = models.ActorCriticModel(head="Nature", input_dims=obs_space, actions=n_actions,
+    if args.use_atn:
+        ACModel = models.AttentionModel
+    else:
+        ACModel = models.ActorCriticModel
+
+    actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
                                                  device=args.device, dtype=torch.float32)
 
     try:

@@ -260,6 +260,18 @@ class FoveaWrapper(gym.Wrapper):
         self.local_y = 0
         self.blur_factor = 0
 
+        # dx, dy
+        self.action_map = [(0,0)]
+        for step in [1, 4, 8]:
+            self.action_map.append((-step, 0))
+            self.action_map.append((+step, 0))
+            self.action_map.append((0, -step))
+            self.action_map.append((0, -step))
+            self.action_map.append((-step, +step))
+            self.action_map.append((+step, -step))
+            self.action_map.append((-step, -step))
+            self.action_map.append((+step, +step))
+
         self.channels = []
         for i in range(self.global_stacks):
             # right now these are all mixed up but what would be better is to have seperate stacks for each one
@@ -324,21 +336,18 @@ class FoveaWrapper(gym.Wrapper):
         if type(action) is int:
             env_action = action
             movement_cost = 0
+            self.blur_factor = 0
         else:
-            env_action, x, y = tuple(action)
-            x *= 24
-            y *= 24
-            movement_cost = abs(self.local_x - x) + abs(self.local_y - y)
-            self.blur_factor += movement_cost / 10
-
-            self.local_x = x
-            self.local_y = y
+            env_action, fovia_action = tuple(action)
+            dx, dy = self.action_map[fovia_action]
+            movement_cost = abs(dx) + abs(dy)
+            self.blur_factor = movement_cost
+            self.local_x = np.clip(self.local_x + dx, 0, 160)
+            self.local_y = np.clip(self.local_y + dy, 0, 210)
 
         obs, reward, done, info = self.env.step(env_action)
 
-        info["attention_cost"] = movement_cost / 10
-
-        self.blur_factor = self.blur_factor / 2
+        info["attention_cost"] = movement_cost / 100
 
         self._push_raw_obs(obs)
         info["channels"] = self.channels[:]

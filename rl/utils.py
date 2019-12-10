@@ -487,19 +487,15 @@ def export_movie(filename, model, env_name):
 
         model_out = model.forward(state[np.newaxis])
         logprobs = model_out["log_policy"][0].detach().cpu().numpy()
+        actions = sample_action_from_logp(logprobs)
 
-        # stub support attention modeling
+        if "log_policy_atn" in model_out:
+            logprobs_atn = model_out["log_policy_atn"][0].detach().cpu().numpy()
+            action_atn = sample_action_from_logp(logprobs_atn)
+            actions = (actions, action_atn)
 
-        #logprobs_atn = logprobs_atn[0].detach().cpu().numpy()
+        state, reward, done, info = env.step(actions)
 
-        action = sample_action_from_logp(logprobs)
-        #action_atn = sample_action_from_logp(logprobs_atn)
-
-        #merged_actions = (action, action_atn % 7, action_atn // 7)
-
-        #state, reward, done, info = env.step(merged_actions)
-
-        state, reward, done, info = env.step(action)
         channels = info.get("channels", None)
         rendered_frame = info.get("monitor_obs", state)
 

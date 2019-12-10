@@ -16,12 +16,12 @@ from .config import args
 
 class Runner():
 
-    def __init__(self, model, optimizer, vec_envs, log):
+    def __init__(self, model, optimizer, vec_env, log):
         """ Setup our rollout runner. """
 
         self.model = model
         self.optimizer = optimizer
-        self.vec_envs = vec_envs
+        self.vec_env = vec_env
         self.log = log
 
         self.N = N = args.n_steps
@@ -37,31 +37,39 @@ class Runner():
 
 
         self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
-        self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)  # this doubles memory, but makes life easier.
-        self.action = np.zeros([N, A], dtype=np.int32)
+        self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
+        self.actions = np.zeros([N, A], dtype=np.int32)
         self.rewards_ext = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
-        self.terminal = np.zeros([N, A], dtype=np.bool)
+        self.terminals = np.zeros([N, A], dtype=np.bool)
         self.value_ext = np.zeros([N, A], dtype=np.float32)
 
         # intrinsic rewards
-        self.reward_int = np.zeros([N, A], dtype=np.float32)
-        self.value_int = np.zeros([N, A], dtype=np.float32)
+        self.int_rewards = np.zeros([N, A], dtype=np.float32)
+        self.int_value = np.zeros([N, A], dtype=np.float32)
 
         # attention
-        self.reward_atn = np.zeros([N, A], dtype=np.float32)
-        self.action_atn = np.zeros([N, A], dtype=np.int32)
-        self.log_policy_atn = np.zeros([N, A, *self.policy_atn_shape], dtype=np.float32)
-        self.value_atn = np.zeros([N, A], dtype=np.float32)
+        self.atn_rewards = np.zeros([N, A], dtype=np.float32)
+        self.atn_actions = np.zeros([N, A], dtype=np.int32)
+        self.atn_log_policy = np.zeros([N, A, *self.policy_atn_shape], dtype=np.float32)
+        self.atn_value = np.zeros([N, A], dtype=np.float32)
 
-        # calculated later...
-        self.returns_ext = np.zeros([N, A], dtype=np.float32)
-        self.returns_int_raw = np.zeros([N, A], dtype=np.float32)
-        self.returns_atn = np.zeros([N, A], dtype=np.float32)
-        self.rewards_int = np.zeros([N, A], dtype=np.float32)
+        # returns generation
+        self.ext_returns = np.zeros([N, A], dtype=np.float32)
+        self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
+        self.atn_returns = np.zeros([N, A], dtype=np.float32)
+        self.int_rewards = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
+
+        self.reset()
+
+    def reset(self):
+        # initialize agent
+        self.states = self.vec_env.reset()
+        self.episode_score *= 0
+        self.episode_len *= 0
 
     def generate_rollout(self, is_warmup=False):
 
@@ -81,30 +89,41 @@ class Runner():
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
-            # if args.use_atn:
-            #     # stub: get this working (with new attention system
-            #     # log_policy_atn = model_out["log_policy_atn"].detach().cpu().numpy()
-            #     # actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
-            #     # states, rewards, dones, infos = vec_envs.step(merged_actions)
-            #     pass
-            #     # attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -0.01 for i in range(args.agents)])
-            #     # log.watch_mean("atn_cost", attention_cost.mean())
-            #     # attention_rewards = rewards + attention_cost
-            # else:
-            self.states, rewards_ext, dones, infos = self.vec_envs.step(actions)
+            # perform the agents action.
+            if args.use_atn:
+                log_policy_atn = model_out["log_policy_atn"].detach().cpu().numpy()
+                value_atn = model_out["value_atn"].detach().cpu().numpy()
+                actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
+                self.states, rewards_ext, dones, infos = self.vec_env.step(list(zip(actions, actions_atn)))
+
+                attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -0.02 for i in range(args.agents)])
+                self.log.watch_mean("atn_cost", attention_cost.mean())
+                attention_rewards = rewards_ext + attention_cost
+
+                self.atn_actions[t] = actions_atn
+                self.atn_value[t] = value_atn
+                self.atn_rewards[t] = attention_rewards
+                self.atn_log_policy[t] = log_policy_atn
+            else:
+                self.states, rewards_ext, dones, infos = self.vec_env.step(actions)
+
+            # it's a bit silly to have this here...
             if "returns_norm_state" in infos[0]:
                 atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
 
             # work out our intrinsic rewards
-            # if args.use_intrinsic_rewards:
-            #     rewards_int = np.zeros_like(rewards_ext)
-            #     if is_warmup:
-            #         # in random mode just update the normalization constants
-            #         self.model.perform_normalization(states)
-            #     else:
-            #         # reward is prediction error on state we land inn.
-            #         loss_rnd = self.model.prediction_error(states).detach().cpu().numpy()
-            #         rewards_int += loss_rnd
+            if args.use_intrinsic_rewards:
+                value_int = model_out["value_int"].detach().cpu().numpy()
+                rewards_int = np.zeros_like(rewards_ext)
+                if is_warmup:
+                    # in random mode just update the normalization constants
+                    self.model.perform_normalization(self.states)
+                else:
+                    # reward is prediction error on state we land inn.
+                    loss_rnd = self.model.prediction_error(self.states).detach().cpu().numpy()
+                    rewards_int += loss_rnd
+                self.int_rewards[t] = rewards_int
+                self.int_value[t] = value_int
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", rewards_ext) for reward, info in zip(rewards_ext, infos)],
@@ -125,21 +144,11 @@ class Runner():
 
             self.prev_state[t] = prev_states
             self.next_state[t] = self.states
-            self.action[t] = actions
-
-            # if args.use_intrinsic_rewards:
-            #     batch_reward_int[t] = rewards_int
-            #     batch_value_int[t] = value_int
-
-            # if args.use_atn:
-            #     batch_action_atn[t] = actions_atn
-            #     batch_value_atn[t] = value_atn
-            #     batch_reward_atn[t] = attention_rewards
-            #     batch_log_policy_atn[t] = log_probs_atn
+            self.actions[t] = actions
 
             self.rewards_ext[t] = rewards_ext
             self.log_policy[t] = log_policy
-            self.terminal[t] = dones
+            self.terminals[t] = dones
             self.value_ext[t] = value_ext
 
         #  save a copy of the normalization statistics.
@@ -156,42 +165,43 @@ class Runner():
 
     def calculate_returns(self):
 
-        self.returns_ext = calculate_returns(self.rewards_ext, self.terminal, self.final_value_estimate_ext, args.gamma)
+        self.ext_returns = calculate_returns(self.rewards_ext, self.terminals, self.final_value_estimate_ext, args.gamma)
         self.advantage_ext = calculate_gae(self.rewards_ext, self.value_ext, self.final_value_estimate_ext,
-                                            self.terminal, args.gamma, args.normalize_advantages)
+                                           self.terminals, args.gamma, args.normalize_advantages)
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
-            self.returns_int_raw = calculate_returns(self.rewards_int, 0 * self.terminal, self.final_value_estimate_int,
+            self.int_returns_raw = calculate_returns(self.int_rewards, 0 * self.terminals, self.final_value_estimate_int,
                                                      args.gamma_int)
 
             # normalize returns using EMS
             for t in range(self.N):
-                self.ems_norm = 0.99 * self.ems_norm + self.rewards_int[t, :]
+                self.ems_norm = 0.99 * self.ems_norm + self.int_rewards[t, :]
                 self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
 
             # normalize the intrinsic rewards
             # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4.
             self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-            self.batch_rewards_int = self.rewards_int / self.intrinsic_reward_norm_scale * 0.4
+            self.batch_rewards_int = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
 
             # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per the RND paper.
-            self.returns_int = calculate_returns(self.rewards_int, 0 * self.terminal, self.final_value_estimate_int,
+            self.returns_int = calculate_returns(self.int_rewards, 0 * self.terminals, self.final_value_estimate_int,
                                                  args.gamma_int)
-            self.advantage_int = calculate_gae(self.rewards_int, self.value_int, self.final_value_estimate_int, None,
+            self.advantage_int = calculate_gae(self.int_rewards, self.int_value, self.final_value_estimate_int, None,
                                                args.gamma_int)
 
         if args.use_atn:
-            self.returns_atn = calculate_returns(self.rewards_atn, self.terminal, self.final_value_estimate_atn,
+            self.atn_returns = calculate_returns(self.atn_rewards, self.terminals, self.final_value_estimate_atn,
                                                  args.gamma)
-            self.advantage_atn = calculate_gae(self.rewards_atn, self.value_atn, self.final_value_estimate_atn,
-                                               self.terminal, args.gamma, args.normalize_advantages)
+            self.advantage_atn = calculate_gae(self.atn_rewards, self.atn_value, self.final_value_estimate_atn,
+                                               self.terminals, args.gamma, args.normalize_advantages)
 
         self.advantage = args.extrinsic_reward_scale * self.advantage_ext
         if args.use_intrinsic_rewards:
             self.advantage += args.intrinsic_reward_scale * self.advantage_int
 
-        # if norm obs
+        # stub add back in..
+        # if norm obs..
         # log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
         #             log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
@@ -199,30 +209,30 @@ class Runner():
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width = 0 if args.normalize_advantages else 10)
         self.log.watch_mean("adv_std", np.std(self.advantage), display_width = 0 if args.normalize_advantages else 10)
         self.log.watch_mean("batch_reward_ext", np.mean(self.rewards_ext), display_name="rew_ext", display_width=0)
-        self.log.watch_mean("batch_return_ext", np.mean(self.returns_ext), display_name="ret_ext")
-        self.log.watch_mean("batch_return_ext_std", np.std(self.returns_ext), display_name="ret_ext_std", display_width=0)
+        self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
+        self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std", display_width=0)
         self.log.watch_mean("value_est_ext", np.mean(self.value_ext), display_name="est_v_ext")
         self.log.watch_mean("value_est_ext_std", np.std(self.value_ext), display_name="est_v_ext_std", display_width=0)
-        self.log.watch_mean("ev_ext", utils.explained_variance(self.value_ext.ravel(), self.returns_ext.ravel()))
+        self.log.watch_mean("ev_ext", utils.explained_variance(self.value_ext.ravel(), self.ext_returns.ravel()))
 
         if args.use_intrinsic_rewards:
-            self.log.watch_mean("batch_reward_int", np.mean(self.rewards_int), display_name="rew_int", display_width=0)
-            self.log.watch_mean("batch_reward_int_std", np.std(self.rewards_int), display_name="rew_int_std",
-                           display_width=0)
+            self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
+            self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
+                                display_width=0)
             self.log.watch_mean("batch_return_int", np.mean(self.returns_int), display_name="ret_int")
             self.log.watch_mean("batch_return_int_std", np.std(self.returns_int), display_name="ret_int_std")
-            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.returns_int_raw), display_name="ret_int_raw_mu",
-                           display_width=0)
-            self.log.watch_mean("batch_return_int_raw_std", np.std(self.returns_int_raw), display_name="ret_int_raw_std",
-                           display_width=0)
+            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw), display_name="ret_int_raw_mu",
+                                display_width=0)
+            self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw), display_name="ret_int_raw_std",
+                                display_width=0)
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=10)
-            self.log.watch_mean("value_est_int", np.mean(self.value_int), display_name="est_v_int")
-            self.log.watch_mean("value_est_int_std", np.std(self.value_int), display_name="est_v_int_std")
-            self.log.watch_mean("ev_int", utils.explained_variance(self.value_int.ravel(), self.returns_int.ravel()))
-            self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.rewards_int), display_name="rew_int_unnorm",
-                           display_width=10, display_priority=-2)
-            self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.rewards_int), display_name="rew_int_unnorm_std",
-                           display_width=0)
+            self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
+            self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
+            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.returns_int.ravel()))
+            self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
+                                display_width=10, display_priority=-2)
+            self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards), display_name="rew_int_unnorm_std",
+                                display_width=0)
 
     # this needs to be a dict...
     def train_minibatch(self, data):
@@ -241,7 +251,6 @@ class Runner():
 
         model_out = self.model.forward(prev_states)
         logps = model_out["log_policy"]
-        model_out["value_ext_prediction"] = model_out["value_ext"]
 
         ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
         loss_clip = torch.mean(
@@ -261,9 +270,9 @@ class Runner():
             value_heads.append("atn")
 
         for value_head in value_heads:
-            value_prediction = model_out["value_{}_prediction".format(value_head)]
-            returns = data["returns_{}".format(value_head)]
-            old_pred_values = data["value_{}".format(value_head)]
+            value_prediction = model_out["value_{}".format(value_head)]
+            returns = data["{}_returns".format(value_head)]
+            old_pred_values = data["{}_value".format(value_head)]
 
             if args.use_clipped_value_loss:
                 # is is essentially trust region for value learning, and seems to help a lot.
@@ -285,23 +294,23 @@ class Runner():
         # -------------------------------------------------------------------------
 
         if args.use_atn:
-            logps_atn = model_out["policy_atn"]
+            logps_atn = model_out["log_policy_atn"]
 
             # policy gradient
-            actions_atn = self.model.prepare_for_model(data["actions_atn"])
-            policy_atn_logprobs = self.model.prepare_for_model(data["log_policy_atn"])
-            advantages_atn = self.model.prepare_for_model(data["advantages_atn"])
-            ratio_atn = torch.exp(logps_atn[range(mini_batch_size), actions_atn] - policy_atn_logprobs[
-                range(mini_batch_size), actions_atn])
+            atn_actions = data["atn_actions"].long()
+            atn_policy_logprobs = data["atn_log_policy"]
+            atn_advantages = data["atn_advantages"]
+            atn_ratio = torch.exp(logps_atn[range(mini_batch_size), atn_actions] - atn_policy_logprobs[
+                range(mini_batch_size), atn_actions])
 
-            loss_clip_atn = torch.mean(torch.min(ratio_atn * advantages_atn,
-                                                 torch.clamp(ratio_atn, 1 - args.ppo_epsilon,
-                                                             1 + args.ppo_epsilon) * advantages_atn))
+            loss_clip_atn = torch.mean(torch.min(atn_ratio * atn_advantages,
+                                                 torch.clamp(atn_ratio, 1 - args.ppo_epsilon,
+                                                             1 + args.ppo_epsilon) * atn_advantages))
             self.log.watch_mean("loss_atn_pg", loss_clip)
             loss += loss_clip_atn
 
             # entropy
-            loss_entropy_atn = utils.log_entropy(logps_atn)
+            loss_entropy_atn = args.entropy_bonus * utils.log_entropy(logps_atn) / mini_batch_size
             self.log.watch_mean("loss_ent_atn", loss_entropy_atn)
             loss += loss_entropy_atn
 
@@ -361,22 +370,22 @@ class Runner():
         batch_size = self.N * self.A
 
         batch_data["prev_state"] = self.prev_state.reshape([batch_size, *self.state_shape])
-        batch_data["actions"] = self.action.reshape(batch_size).astype(np.long)
-        batch_data["returns_ext"] = self.returns_ext.reshape(batch_size)
+        batch_data["actions"] = self.actions.reshape(batch_size).astype(np.long)
+        batch_data["ext_returns"] = self.ext_returns.reshape(batch_size)
         batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
         batch_data["advantages"] = self.advantage.reshape(batch_size)
-        batch_data["value_ext"] = self.value_ext.reshape(batch_size)
+        batch_data["ext_value"] = self.value_ext.reshape(batch_size)
 
         if args.use_rnd:
             batch_data["returns_int"] = self.returns_int.reshape(batch_size)
-            batch_data["value_int"] = self.value_int.reshape(batch_size)
+            batch_data["value_int"] = self.int_value.reshape(batch_size)
 
         if args.use_atn:
-            batch_data["action_atn"] = self.action_atn.reshape(batch_size)
-            batch_data["returns_atn"] = self.returns_atn.reshape(batch_size).astype(np.long)
-            batch_data["log_policy_atn"] = self.log_policy_atn.reshape([batch_size, *self.policy_atn_shape])
-            batch_data["advantage_atn"] = self.advantage_atn.reshape(batch_size)
-            batch_data["value_atn"] = self.value_atn.reshape(batch_size)
+            batch_data["atn_actions"] = self.atn_actions.reshape(batch_size)
+            batch_data["atn_returns"] = self.atn_returns.reshape(batch_size).astype(np.long)
+            batch_data["atn_log_policy"] = self.atn_log_policy.reshape([batch_size, *self.policy_atn_shape])
+            batch_data["atn_advantages"] = self.advantage_atn.reshape(batch_size)
+            batch_data["atn_value"] = self.atn_value.reshape(batch_size)
 
         for i in range(args.batch_epochs):
 
@@ -573,11 +582,6 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
     log.info()
 
-    # initialize agent
-    states = vec_env.reset()
-
-    episode_score = np.zeros([args.agents], dtype = np.float32)
-    episode_len = np.zeros([args.agents], dtype = np.int32)
 
     last_print_time = -1
     last_log_time = -1

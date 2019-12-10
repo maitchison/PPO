@@ -133,7 +133,38 @@ class ActorCriticModel(BaseModel):
         x = F.relu(self.head.forward(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
-        return {'log_policy': log_policy, 'value_ext': value, 'value': value}
+        return {
+            'log_policy': log_policy,
+            'value_ext': value
+        }
+
+
+class AttentionModel(BaseModel):
+    """ Has extra value and policy heads for fovea attention."""
+
+    def __init__(self, head: str, input_dims, actions, device, dtype, **kwargs):
+        super().__init__(input_dims, actions)
+        self.name = "AC-"+head
+        self.head = constructHead(head, input_dims, **kwargs)
+        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
+        self.fc_value = nn.Linear(self.head.hidden_units, 1)
+        self.fc_policy_atn = nn.Linear(self.head.hidden_units, 25)
+        self.fc_value_atn = nn.Linear(self.head.hidden_units, 1)
+        self.set_device_and_dtype(device, dtype)
+
+    def forward(self, x):
+        x = self.prep_for_model(x)
+        x = F.relu(self.head.forward(x))
+        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value = self.fc_value(x).squeeze(dim=1)
+        log_policy_atn = F.log_softmax(self.fc_policy_atn(x), dim=1)
+        value_atn = self.fc_value_atn(x).squeeze(dim=1)
+        return {
+            'log_policy': log_policy,
+            'log_policy_atn': log_policy_atn,
+            'value_ext': value,
+            'value_atn': value_atn
+        }
 
 
 # class CNNModel(PolicyModel):
