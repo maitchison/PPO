@@ -518,42 +518,6 @@ def get_checkpoint_path(step, postfix):
     """ Returns the full path to a checkpoint file with given step count and postfix. """
     return os.path.join(args.log_folder, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
-
-def save_checkpoint(filename, step, model, log, optimizer, norm_state):
-    torch.save({
-        'step': step ,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'logs': log,
-        'norm_state': norm_state
-    }, filename)
-
-
-def get_checkpoints(path):
-    """ Returns list of (epoch, filename) for each checkpoint in given folder. """
-    results = []
-    if not os.path.exists(path):
-        return []
-    for f in os.listdir(path):
-        if f.startswith("checkpoint") and f.endswith(".pt"):
-            epoch = int(f[11:14])
-            results.append((epoch, f))
-    results.sort(reverse=True)
-    return results
-
-
-def load_checkpoint(checkpoint_path, model, optimizer=None):
-    """ Restores model from checkpoint. Returns current env_step"""
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    step = checkpoint['step']
-    log = checkpoint['logs']
-    norm_state = checkpoint['norm_state']
-    return step, log, norm_state
-
-
 def generate_hash_image(key, hash_size, obs_size):
 
     rng =  np.random.RandomState(key % (2 ** 32))  # rng requires 32bit number...

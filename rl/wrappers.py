@@ -3,6 +3,7 @@ import math
 import numpy as np
 import cv2
 import hashlib
+import collections
 from . import utils
 
 class HashWrapper(gym.Wrapper):
@@ -323,6 +324,8 @@ class FoveaWrapper(gym.Wrapper):
             global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
             self._push(global_obs)
 
+        self.counter += 1
+
     def _push(self, frame):
 
         if len(frame.shape) == 3:
@@ -370,7 +373,7 @@ class AtariWrapper(gym.Wrapper):
     Note: unlike Nature the initial frame cropping is disabled by default.
     """
 
-    def __init__(self, env: gym.Env, n_stacks=4, grayscale=True, width=84, height=84):
+    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
@@ -381,7 +384,6 @@ class AtariWrapper(gym.Wrapper):
 
         self.env = env
 
-        self.n_stacks = n_stacks
         self._width, self._height = width, height
 
         assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
@@ -389,17 +391,7 @@ class AtariWrapper(gym.Wrapper):
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
         self.grayscale = grayscale
-        self.n_channels = self.n_stacks * (1 if self.grayscale else 3)
-        self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
-
-        self.channels = []
-        for i in range(self.n_stacks):
-            if grayscale:
-                self.channels.append("Gray-" + str(i))
-            else:
-                self.channels.append("ColorR-" + str(i))
-                self.channels.append("ColorG-" + str(i))
-                self.channels.append("ColorB-" + str(i))
+        self.n_channels = 1 if self.grayscale else 3
 
         self.observation_space = gym.spaces.Box(
             low=0,
@@ -408,7 +400,7 @@ class AtariWrapper(gym.Wrapper):
             dtype=np.uint8,
         )
 
-    def _push_raw_obs(self, obs):
+    def _process_frame(self, obs):
 
         if self.grayscale:
             obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
@@ -422,26 +414,15 @@ class AtariWrapper(gym.Wrapper):
         if len(obs.shape) == 2:
             obs = obs[:, :, np.newaxis]
 
-        self.stack = np.roll(self.stack, shift=(1 if self.grayscale else 3), axis=0)
-
-        if self.grayscale:
-            self.stack[0:1, :, :] = obs[:, :, 0]
-        else:
-            obs = np.swapaxes(obs, 0, 2)
-            obs = np.swapaxes(obs, 1, 2)
-            self.stack[0:3, :, :] = obs
+        return obs
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        self._push_raw_obs(obs)
-        info["channels"] = self.channels[:]
-        return self.stack, reward, done, info
+        return self._process_frame(obs), reward, done, info
 
     def reset(self):
         obs = self.env.reset()
-        for _ in range(self.n_stacks):
-            self._push_raw_obs(obs)
-        return self.stack
+        return self._process_frame(obs)
 
 class NoopResetWrapper(gym.Wrapper):
     """
@@ -475,3 +456,129 @@ class NoopResetWrapper(gym.Wrapper):
 
     def step(self, ac):
         return self.env.step(ac)
+
+class FrameStack(gym.Wrapper):
+    """ This is the original frame stacker that works by making duplicates of the frames,
+        For large numbers of frames this can be quite slow.
+    """
+
+    def __init__(self, env, n_stacks=4):
+
+        super().__init__(env)
+
+        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
+
+        c,h,w = env.observation_space.shape
+
+        assert c in [1, 3], "Invalid shape {}".format(env.observation_space.shape)
+
+        self.n_stacks = n_stacks
+        self.original_channels = c
+        self.n_channels = self.n_stacks * self.original_channels
+
+        self.stack = np.zeros((self.n_channels, w, h), dtype=np.uint8)
+
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(self.n_channels, w, h),
+            dtype=np.uint8,
+        )
+
+    def _push_obs(self, obs):
+
+        self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
+
+        if self.original_channels == 1:
+            self.stack[0:1, :, :] = obs[:, :, 0]
+        elif self.original_channels == 3:
+            obs = np.swapaxes(obs, 0, 2)
+            obs = np.swapaxes(obs, 1, 2)
+            self.stack[0:3, :, :] = obs
+        else:
+            raise Exception("Invalid number of channels.")
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self._push_obs(obs)
+        return self.stack, reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        for _ in range(self.n_stacks):
+            self._push_obs(obs)
+        return self.stack
+
+class FrameStack_Lazy(gym.Wrapper):
+    # taken from https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
+    # modified for channels first.
+
+    def __init__(self, env, k):
+        """Stack k last frames.
+        Returns lazy array, which is much more memory efficient.
+        See Also
+        --------
+        baselines.common.atari_wrappers.LazyFrames
+        """
+        gym.Wrapper.__init__(self, env)
+        self.k = k
+        self.frames = collections.deque([], maxlen=k)
+
+        new_shape = list(env.observation_space.shape)
+        new_shape[0] *= k
+        new_shape = tuple(new_shape)
+
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=new_shape, dtype=env.observation_space.dtype)
+
+    def reset(self):
+        ob = self.env.reset()
+        for _ in range(self.k):
+            self.frames.append(ob)
+        return self._get_ob()
+
+    def step(self, action):
+        ob, reward, done, info = self.env.step(action)
+        self.frames.append(ob)
+        return self._get_ob(), reward, done, info
+
+    def _get_ob(self):
+        assert len(self.frames) == self.k
+        result = LazyFrames(list(self.frames))
+        return result
+
+class LazyFrames(object):
+    # taken from https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
+    def __init__(self, frames):
+        """This object ensures that common frames between the observations are only stored once.
+        It exists purely to optimize memory usage which can be huge for DQN's 1M frames replay
+        buffers.
+        This object should only be converted to numpy array before being passed to the model.
+        You'd not believe how complex the previous solution was."""
+        self._frames = frames
+        self._out = None
+
+    def _force(self):
+        if self._out is None:
+            self._out = np.concatenate(self._frames, axis=0)
+            self._frames = None
+        return self._out
+
+    def __array__(self, dtype=None):
+        out = self._force()
+        if dtype is not None:
+            out = out.astype(dtype)
+        return out
+
+    def __len__(self):
+        return len(self._force())
+
+    def __getitem__(self, i):
+        return self._force()[i]
+
+    def count(self):
+        frames = self._force()
+        return frames.shape[frames.ndim - 1]
+
+    def frame(self, i):
+        return self._force()[..., i]

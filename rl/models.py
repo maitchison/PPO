@@ -63,52 +63,6 @@ class NatureCNNHead(BaseHead):
         x = self.fc(x)
         return x
 
-class ResNetCNNHead(BaseHead):
-    """ Takes stacked frames as input, and outputs features.
-    """
-
-    def __init__(self, input_dims, hidden_units=512):
-
-        super().__init__(input_dims, hidden_units)
-
-        input_channels = input_dims[0]
-
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-
-        fake_input = torch.zeros((1, *input_dims))
-        _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
-
-        self.out_shape = (c, w, h)
-        self.d = utils.prod(self.out_shape)
-        self.fc = nn.Linear(self.d, hidden_units)
-
-        if weight_scale != 1.0:
-            self.conv1.weights *= weight_scale
-            self.conv2.weights *= weight_scale
-            self.conv3.weights *= weight_scale
-            self.fc.weights *= weight_scale
-
-        if bias_scale != 1.0:
-            self.conv1.bias *= bias_scale
-            self.conv2.bias *= bias_scale
-            self.conv3.bias *= bias_scale
-            self.fc.bias *= bias_scale
-
-
-    def forward(self, x):
-        """ forwards input through model, returns features (without relu) """
-        N = len(x)
-        D = self.d
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = torch.reshape(x, [N,D])
-        x = self.fc(x)
-        return x
-
-
 # ----------------------------------------------------------------------------------------------------------------
 # Models
 # ----------------------------------------------------------------------------------------------------------------

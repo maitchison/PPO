@@ -16,12 +16,12 @@ from .config import args
 
 class Runner():
 
-    def __init__(self, model, optimizer, vec_env, log):
+    def __init__(self, model, optimizer, log):
         """ Setup our rollout runner. """
 
         self.model = model
         self.optimizer = optimizer
-        self.vec_env = vec_env
+        self.vec_env = None
         self.log = log
 
         self.N = N = args.n_steps
@@ -62,17 +62,70 @@ class Runner():
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
+        self.ems_norm = np.zeros([args.agents])
 
-        self.reset()
+    def create_envs(self, env_name):
+        """ Creates environments for runner"""
+        env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
+        self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers,
+                                                    verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
+        self.log.important("Generated {} agents ({}) using {} ({}) model.".
+                      format(args.agents, "async" if not args.sync_envs else "sync", self.model.name, self.model.dtype))
 
-    def save_checkpoint(self):
-        # remember to save ems, and atari stats...
-        pass
+    def save_checkpoint(self, filename, step):
 
-    def load_checkpoint(self):
-        pass
+        data = {
+            'step': step,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'logs': self.log,
+            'env_state': atari.ENV_STATE
+        }
+
+        if args.use_intrinsic_rewards:
+            data['ems_norm'] = self.ems_norm
+            data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
+
+        if args.use_rnd:
+            data["observation_norm_state"] = self.model.obs_rms.save_state()
+
+        torch.save(data, filename)
+
+    def get_checkpoints(self, path):
+        """ Returns list of (epoch, filename) for each checkpoint in given folder. """
+        results = []
+        if not os.path.exists(path):
+            return []
+        for f in os.listdir(path):
+            if f.startswith("checkpoint") and f.endswith(".pt"):
+                epoch = int(f[11:14])
+                results.append((epoch, f))
+        results.sort(reverse=True)
+        return results
+
+    def load_checkpoint(self, checkpoint_path):
+        """ Restores model from checkpoint. Returns current env_step"""
+        checkpoint = torch.load(checkpoint_path)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        if self.optimizer is not None:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        step = checkpoint['step']
+        self.log = checkpoint['logs']
+
+        self.ems_norm = checkpoint['ems_norm']
+        self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
+        atari.ENV_STATE = checkpoint['env_state']
+
+        if args.use_rnd:
+            self.model.obs_rms.restore_state(checkpoint["observation_norm_state"])
+
+        return step
+
 
     def reset(self):
+
+        assert self.vec_env is not None, "Please call create_envs first."
+
         # initialize agent
         self.states = self.vec_env.reset()
         self.episode_score *= 0
@@ -80,12 +133,15 @@ class Runner():
 
     def generate_rollout(self, is_warmup=False):
 
+        assert self.vec_env is not None, "Please call create_envs first."
+
         for t in range(self.N):
 
             prev_states = self.states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
             model_out = self.model.forward(self.states)
+
             log_policy = model_out["log_policy"].detach().cpu().numpy()
             value_ext = model_out["value_ext"].detach().cpu().numpy()
 
@@ -112,7 +168,10 @@ class Runner():
                 self.atn_rewards[t] = attention_rewards
                 self.atn_log_policy[t] = log_policy_atn
             else:
+                start_time = time.time()
                 self.states, rewards_ext, dones, infos = self.vec_env.step(actions)
+                self.log.watch_mean("STEP", (time.time() - start_time) * 1000 / 64, display_priority=10,
+                                    history_length=100)
 
             # it's a bit silly to have this here...
             if "returns_norm_state" in infos[0]:
@@ -524,41 +583,34 @@ def train(env_name, model: models.BaseModel, log:Logger):
     log.add_variable(LogVariable("ep_score", 100, "stats"))   # these need to be added up-front as it might take some
     log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
 
-    # get shapes and dtypes
-    state_shape = model.input_dims
-    policy_shape = [model.actions]
-    policy_atn_shape = [25]
-
-    # epsilon = 1e-5 is required for stability.
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
-
+    # calculate some variables
     batch_size = (args.n_steps * args.agents)
-
     final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
     n_iterations = math.ceil((final_epoch * 1e6) / batch_size)
 
+    # create an optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
+
+    # create our runner
+    runner = Runner(model, optimizer, log)
+
     # detect a previous experiment
-    checkpoints = utils.get_checkpoints(args.log_folder)
+    checkpoints = runner.get_checkpoints(args.log_folder)
     if len(checkpoints) > 0:
         log.info("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
-        restored_step, log, norm_state = utils.load_checkpoint(checkpoint_path, model, optimizer)
-
-        for k, v in norm_state.items():
-            atari.ENV_STATE[k] = v
-        if args.use_rnd:
-            model.obs_rms.restore_state(norm_state["observation_norm_state"])
-        ems_norm = norm_state["ems"]
-
+        restored_step = runner.load_checkpoint(checkpoint_path)
         log.info("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
         walltime = log["walltime"]
         did_restore = True
     else:
-        ems_norm = np.zeros([args.agents])
         start_iteration = 0
         walltime = 0
         did_restore = False
+
+    runner.create_envs(env_name)
+    runner.reset()
 
     if not did_restore and args.use_rnd:
         run_random_agent(args.env_name, model, log, 3)
@@ -570,11 +622,6 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
     # make a copy of training files for reference
     utils.copy_source_files("./", args.log_folder)
-
-    env_fns = [lambda : atari.make(env_name) for _ in range(args.agents)]
-    vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
-
-    log.important("Generated {} agents ({}) using {} ({}) model.".format(args.agents, "async" if not args.sync_envs else "sync", model.name, model.dtype))
 
     print_counter = 0
 
@@ -594,15 +641,12 @@ def train(env_name, model: models.BaseModel, log:Logger):
     last_log_time = -1
 
     # add a few checkpoints early on
-
     checkpoints = [x // batch_size for x in range(0, n_iterations*batch_size+1, config.CHECKPOINT_EVERY_STEPS)]
     checkpoints += [x // batch_size for x in [1e6]] #add a checkpoint early on (1m steps)
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))
 
     log_time = 0
-
-    runner = Runner(model, optimizer, vec_env, log)
 
     for iteration in range(start_iteration, n_iterations+1):
 
@@ -619,15 +663,17 @@ def train(env_name, model: models.BaseModel, log:Logger):
         adjust_learning_rate(optimizer, env_step / 1e6)
 
         # generate the rollout
+        rollout_start_time = time.time()
         runner.generate_rollout()
-        rollout_time = (time.time() - step_start_time) / batch_size
+        rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
+        returns_start_time = time.time()
         runner.calculate_returns()
+        returns_time = (time.time() - returns_start_time) / batch_size
 
         train_start_time = time.time()
         runner.train()
-
         train_time = (time.time() - train_start_time) / batch_size
 
         step_time = (time.time() - step_start_time) / batch_size
@@ -638,10 +684,11 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
         # record some training stats
         log.watch_mean("fps", int(fps))
-        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=1, display_width=0)
-        log.watch_mean("time_step", step_time*1000, display_width=0)
-        log.watch_mean("time_rollout", rollout_time*1000, display_postfix="ms", display_precision=1, display_width=0)
-        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=1, type="float", display_width=0)
+        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
+        log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
 
         log.record_step()
 
@@ -667,8 +714,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
             if args.save_checkpoints:
                 checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
-                atari.ENV_STATE["ems"] = ems_norm
-                utils.save_checkpoint(checkpoint_name, env_step, model, log, optimizer, atari.ENV_STATE)
+                runner.save_checkpoint(checkpoint_name, env_step)
                 log.log("  -checkpoint saved")
 
             if args.export_video:
