@@ -11,13 +11,13 @@ from .utils import RunningMeanStd
 # Heads (feature extractors)
 # ----------------------------------------------------------------------------------------------------------------
 
-class BaseHead(nn.Module):
+class Base_Net(nn.Module):
     def __init__(self, input_dims, hidden_units):
         super().__init__()
         self.input_dims = input_dims
         self.hidden_units = hidden_units
 
-class NatureCNNHead(BaseHead):
+class NatureCNN_Net(Base_Net):
     """ Takes stacked frames as input, and outputs features.
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
     """
@@ -50,7 +50,74 @@ class NatureCNNHead(BaseHead):
         x = self.fc(x)
         return x
 
-class RNDTargetHead(BaseHead):
+class FDMEncoder_Net(Base_Net):
+    """ Encoder for forward dynamics model
+    """
+
+    def __init__(self, input_dims, hidden_units=512):
+
+        super().__init__(input_dims, hidden_units)
+
+        input_channels = input_dims[0]
+
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
+        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
+
+        fake_input = torch.zeros((1, *input_dims))
+        _, c, w, h = self.conv4(self.conv3(self.conv2(self.conv1(fake_input)))).shape
+
+        self.out_shape = (c, w, h)
+        self.d = utils.prod(self.out_shape)
+        self.fc = nn.Linear(self.d, hidden_units)
+
+        # stub
+        print("final output is", self.out_shape)
+
+    def forward(self, x):
+        """ forwards input through model, returns features (without relu) """
+        N = len(x)
+        D = self.d
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = torch.reshape(x, [N, D])
+        x = self.fc(x)
+        return x
+
+class FDMDecoder_Net(Base_Net):
+    """ Encoder for forward dynamics model
+    """
+
+    def __init__(self, input_dims, hidden_units=512):
+
+        super().__init__(input_dims, hidden_units)
+
+        self.conv1 = nn.ConvTranspose2d(64, 64, kernel_size=3, stride=2)
+        self.conv2 = nn.ConvTranspose2d(64, 64, kernel_size=3, stride=2)
+        self.conv3 = nn.ConvTranspose2d(32, 64, kernel_size=3, stride=2)
+        self.conv4 = nn.ConvTranspose2d(1, 32, kernel_size=3, stride=2)
+
+        self.in_shape = (64, 7, 7)
+        self.d = utils.prod(self.in_shape)
+        self.fc = nn.Linear(hidden_units, self.d)
+
+    def forward(self, x):
+        """ forwards input through model, returns features (without relu) """
+        N = len(x)
+
+        x = F.relu(self.fc(x))
+        x = x.reshape(x, [N, *self.in_shape])
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.sigmoid(self.conv4(x))
+        return x
+
+
+class RNDTarget_Net(Base_Net):
     """ Used to predict output of random network.
         see https://github.com/openai/random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
         for details.
@@ -92,7 +159,7 @@ class RNDTargetHead(BaseHead):
         return x
 
 
-class RNDPredictorHead(BaseHead):
+class RNDPredictor_Net(Base_Net):
     """ Used to predict output of random network.
         see https://github.com/openai/random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
         for details.
@@ -194,14 +261,14 @@ class ActorCriticModel(BaseModel):
     def __init__(self, head: str, input_dims, actions, device, dtype, **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC-"+head
-        self.head = constructHead(head, input_dims, **kwargs)
-        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
-        self.fc_value = nn.Linear(self.head.hidden_units, 1)
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
+        self.fc_value = nn.Linear(self.net.hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
 
     def forward(self, x):
         x = self.prep_for_model(x)
-        x = F.relu(self.head.forward(x))
+        x = F.relu(self.net.forward(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
         return {
@@ -216,16 +283,16 @@ class AttentionModel(BaseModel):
     def __init__(self, head: str, input_dims, actions, device, dtype, **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC-"+head
-        self.head = constructHead(head, input_dims, **kwargs)
-        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
-        self.fc_value = nn.Linear(self.head.hidden_units, 1)
-        self.fc_policy_atn = nn.Linear(self.head.hidden_units, 25)
-        self.fc_value_atn = nn.Linear(self.head.hidden_units, 1)
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
+        self.fc_value = nn.Linear(self.net.hidden_units, 1)
+        self.fc_policy_atn = nn.Linear(self.net.hidden_units, 25)
+        self.fc_value_atn = nn.Linear(self.net.hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
 
     def forward(self, x):
         x = self.prep_for_model(x)
-        x = F.relu(self.head.forward(x))
+        x = F.relu(self.net.forward(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
         log_policy_atn = F.log_softmax(self.fc_policy_atn(x), dim=1)
@@ -236,6 +303,46 @@ class AttentionModel(BaseModel):
             'ext_value': value,
             'atn_value': value_atn
         }
+
+
+class EMIModel(BaseModel):
+    """
+    Estimated Model Improvement model
+    """
+
+    def __init__(self, head:str, input_dims, actions, device, dtype, **kwargs):
+        super().__init__(input_dims, actions)
+
+        self.name = "EMI-" + head
+
+        single_channel_input_dims = (1, *input_dims[1:])
+
+        self.head = constructNet(head, input_dims, **kwargs)
+        self.fdm_encoder = FDMEncoder_Net(input_dims)
+        self.fdm_decoder = FDMDecoder_Net(input_dims)
+        self.improvement_net = FDMEncoder_Net(input_dims)
+
+        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
+        self.fc_value_ext = nn.Linear(self.head.hidden_units, 1)
+        self.fc_value_int = nn.Linear(self.head.hidden_units, 1)
+        self.fc_pred_improvement = nn.Linear(self.head.hidden_units, 1)
+
+        self.set_device_and_dtype(device, dtype)
+
+    def fdm(self, prev_state, action):
+        """
+        Predicts the next state given the previous
+        """
+        features = self.fdm_encoder.forward(prev_state)
+        result = self.fdm_decoder(features)
+        return result
+
+    def fdm_error(self, prev_state, action, next_state):
+        predicted_next_state = self.fdm(prev_state, action)
+        # only look at error on first frame as others are trivial to reconstruct from input.
+        error = ((predicted_next_state[:,0] - next_state[:,0])**2).mean()
+        return error
+
 
 class RNDModel(BaseModel):
     """
@@ -249,13 +356,13 @@ class RNDModel(BaseModel):
 
         single_channel_input_dims = (1, *input_dims[1:])
 
-        self.head = constructHead(head, input_dims, **kwargs)
-        self.prediction_net = RNDPredictorHead(single_channel_input_dims)
-        self.target_net = RNDTargetHead(single_channel_input_dims)
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
+        self.target_net = RNDTarget_Net(single_channel_input_dims)
 
-        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
-        self.fc_value_ext = nn.Linear(self.head.hidden_units, 1)
-        self.fc_value_int = nn.Linear(self.head.hidden_units, 1)
+        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
+        self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
+        self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
 
         self.obs_rms = RunningMeanStd(shape=(single_channel_input_dims))
 
@@ -312,7 +419,7 @@ class RNDModel(BaseModel):
 
     def forward(self, x):
         x = self.prep_for_model(x)
-        x = F.relu(self.head.forward(x))
+        x = F.relu(self.net.forward(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value_ext = self.fc_value_ext(x).squeeze(dim=1)
         value_int = self.fc_value_int(x).squeeze(dim=1)
@@ -326,10 +433,10 @@ class RNDModel(BaseModel):
 # Utilities
 # ----------------------------------------------------------------------------------------------------------------
 
-def constructHead(head_name, input_dims, **kwargs) -> BaseHead:
+def constructNet(head_name, input_dims, **kwargs) -> Base_Net:
     head_name = head_name.lower()
     if head_name == "nature":
-        return NatureCNNHead(input_dims, **kwargs)
+        return NatureCNN_Net(input_dims, **kwargs)
     else:
         raise Exception("No model head named {}".format(head_name))
 
