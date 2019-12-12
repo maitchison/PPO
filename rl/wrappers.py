@@ -418,6 +418,7 @@ class AtariWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
+        info["channels"] = ["Gray"] if self.grayscale else ["ColorR", "ColorG", "ColorB"]
         return self._process_frame(obs), reward, done, info
 
     def reset(self):
@@ -502,6 +503,8 @@ class FrameStack(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self._push_obs(obs)
+        if "channels" in info:
+            info["channels"] = info["channels"] * self.n_stacks
         return self.stack, reward, done, info
 
     def reset(self):

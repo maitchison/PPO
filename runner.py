@@ -192,6 +192,17 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 
 def setup_jobs_V5():
+
+    # regression testing
+    for env_name in ["Pong", "Seaquest", "Breakout", "Alien", "MonetzumaRevenge"]:
+        add_job(
+            "Regression "+env_name,
+            run_name="Regression v0.5",
+            env_name=env_name,
+            epochs=200 if env_name != "Pong" else 50,
+            priority=0
+        )
+
     for movement_cost in [0, 0.2, 0.02]:
         for global_frame_skip in [1, 10]:
             add_job(
@@ -203,8 +214,68 @@ def setup_jobs_V5():
                 atn_movement_cost=movement_cost,
                 epochs=30,
                 agents=64,
-                priority=20
+                priority=0
             )
+
+    # try to find some better hyperparameters
+    for extrinsic_reward_scale in [1.0, 2.0, 4.0]:
+        add_job(
+            "EXP_RND_v7",
+            run_name="RND ext_rew={}".format(extrinsic_reward_scale),
+            env_name="MontezumaRevenge",
+            epochs=200,
+            agents=64,
+            n_steps=128,
+            entropy_bonus=0.001,
+            learning_rate=1e-4,
+            mini_batch_size=1024,  # seems very high!
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.995,
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=5,  # they really do set this to 0...
+            reward_normalization=True,
+            noop_start=True,
+            adam_epsilon=1e-5,
+            intrinsic_reward_scale=1.0,
+            extrinsic_reward_scale=extrinsic_reward_scale,
+            normalize_advantages=True,
+            use_clipped_value_loss=True,
+
+            use_rnd=True,
+            priority=0
+        )
+
+    # this one worked well before
+    add_job(
+        "EXP_RND_v7",
+        run_name="RND prior_best",
+        env_name="MontezumaRevenge",
+        epochs=200,
+        agents=32,
+        n_steps=128,
+        entropy_bonus=0.001,  # why slow low?
+        learning_rate=1e-4,
+        mini_batch_size=1024,  # seems very high!
+        gae_lambda=0.95,
+        ppo_epsilon=0.1,
+        gamma=0.995,
+        gamma_int=0.99,
+        sticky_actions=True,
+        max_grad_norm=0,  # they really do set this to 0...
+        reward_normalization=False,
+        noop_start=False,
+        reward_clip=1,
+        adam_epsilon=1e-8,  # they use the default in TF which is 1e-8
+        intrinsic_reward_scale=1.0,
+        extrinsic_reward_scale=2.0,
+        normalize_advantages=False,
+        use_clipped_value_loss=False,
+
+        use_rnd=True,
+        priority=2
+    )
 
 
 def setup_jobs_V4():
@@ -729,7 +800,7 @@ def show_experiments(filter_jobs=None, all=False):
 if __name__ == "__main__":
     id = 0
     job_list = []
-    setup_jobs_V4()
+    #setup_jobs_V4()
     setup_jobs_V5()
 
     if len(sys.argv) == 1:

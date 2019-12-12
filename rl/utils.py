@@ -396,7 +396,7 @@ def compose_frame(state_frame, rendered_frame, channels=None):
 
         frames.append(torch.tensor(new_frame))
 
-    state_grid = torchvision.utils.make_grid(frames, nrow=3, padding=2)
+    state_grid = torchvision.utils.make_grid(frames, nrow=3 if len(frames) > 4 else 2, padding=2)
     state_grid = state_grid.numpy()
     state_grid = np.swapaxes(state_grid, 0, 2)
     state_grid = np.swapaxes(state_grid, 0, 1)

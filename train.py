@@ -89,8 +89,13 @@ if __name__ == "__main__":
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
+    if args.use_atn and args.use_intrinsic_rewards:
+        raise Exception("ATN and RND are not compatible.")
+
     if args.use_atn:
         ACModel = models.AttentionModel
+    elif args.use_intrinsic_rewards:
+        ACModel = models.RNDModel
     else:
         ACModel = models.ActorCriticModel
 

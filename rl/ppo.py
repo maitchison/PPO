@@ -112,8 +112,10 @@ class Runner():
         step = checkpoint['step']
         self.log = checkpoint['logs']
 
-        self.ems_norm = checkpoint['ems_norm']
-        self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
+        if args.use_intrinsic_rewards:
+            self.ems_norm = checkpoint.get['ems_norm']
+            self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
+
         atari.ENV_STATE = checkpoint['env_state']
 
         if args.use_rnd:
@@ -131,6 +133,22 @@ class Runner():
         self.episode_score *= 0
         self.episode_len *= 0
 
+    def run_random_agent(self, iterations):
+        """
+        Runs agent through environment
+        :param env_name:
+        :param model:
+        :param log:
+        :return:
+        """
+        self.log.info("Warming up model with random agent...")
+
+        # collect experience
+        self.reset()
+
+        for iteration in range(iterations):
+            self.generate_rollout(is_warmup=True)
+
     def generate_rollout(self, is_warmup=False):
 
         assert self.vec_env is not None, "Please call create_envs first."
@@ -140,22 +158,25 @@ class Runner():
             prev_states = self.states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
+            # stub
+            start_time = time.time()
             model_out = self.model.forward(self.states)
+            self.log.watch_mean("model_time", (time.time()-start_time)*1000, display_priority=10)
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
-            value_ext = model_out["value_ext"].detach().cpu().numpy()
+            value_ext = model_out["ext_value"].detach().cpu().numpy()
 
             # during warm-up we simply collect experience through a uniform random policy.
             if is_warmup:
-                actions = np.random.randint(0, self.model.actions, size=[self.N, self.A], dtype=np.int32)
+                actions = np.random.randint(0, self.model.actions, size=[self.A], dtype=np.int32)
             else:
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
             # perform the agents action.
             if args.use_atn:
-                log_policy_atn = model_out["log_policy_atn"].detach().cpu().numpy()
-                value_atn = model_out["value_atn"].detach().cpu().numpy()
+                log_policy_atn = model_out["atn_log_policy"].detach().cpu().numpy()
+                value_atn = model_out["atn_value"].detach().cpu().numpy()
                 actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
                 self.states, rewards_ext, dones, infos = self.vec_env.step(list(zip(actions, actions_atn)))
 
@@ -170,8 +191,7 @@ class Runner():
             else:
                 start_time = time.time()
                 self.states, rewards_ext, dones, infos = self.vec_env.step(actions)
-                self.log.watch_mean("STEP", (time.time() - start_time) * 1000 / 64, display_priority=10,
-                                    history_length=100)
+                self.log.watch_mean("step_time", (time.time()-start_time)*1000, display_priority=10)
 
             # it's a bit silly to have this here...
             if "returns_norm_state" in infos[0]:
@@ -179,7 +199,7 @@ class Runner():
 
             # work out our intrinsic rewards
             if args.use_intrinsic_rewards:
-                value_int = model_out["value_int"].detach().cpu().numpy()
+                value_int = model_out["int_value"].detach().cpu().numpy()
                 rewards_int = np.zeros_like(rewards_ext)
                 if is_warmup:
                     # in random mode just update the normalization constants
@@ -223,11 +243,11 @@ class Runner():
 
         # get value estimates for final state.
         model_out = self.model.forward(self.states)
-        self.final_value_estimate_ext = model_out["value_ext"].detach().cpu().numpy()
-        if "value_int" in model_out:
-            self.final_value_estimate_int = model_out["value_int"].detach().cpu().numpy()
-        if "value_atn" in model_out:
-            self.final_value_estimate_atn = model_out["value_atn"].detach().cpu().numpy()
+        self.final_value_estimate_ext = model_out["ext_value"].detach().cpu().numpy()
+        if "int_value" in model_out:
+            self.final_value_estimate_int = model_out["int_value"].detach().cpu().numpy()
+        if "atn_value" in model_out:
+            self.final_value_estimate_atn = model_out["atn_value"].detach().cpu().numpy()
 
     def calculate_returns(self):
 
@@ -246,7 +266,8 @@ class Runner():
                 self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
 
             # normalize the intrinsic rewards
-            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4.
+            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
+            # which is approximately where normalized returns will sit.
             self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
             self.batch_rewards_int = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
 
@@ -266,10 +287,9 @@ class Runner():
         if args.use_intrinsic_rewards:
             self.advantage += args.intrinsic_reward_scale * self.advantage_int
 
-        # stub add back in..
-        # if norm obs..
-        # log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
-        #             log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
+        if args.use_rnd:
+            self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
+            self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
 
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width = 0 if args.normalize_advantages else 10)
@@ -291,7 +311,7 @@ class Runner():
                                 display_width=0)
             self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw), display_name="ret_int_raw_std",
                                 display_width=0)
-            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=10)
+            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
             self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
             self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.returns_int.ravel()))
@@ -336,7 +356,7 @@ class Runner():
             value_heads.append("atn")
 
         for value_head in value_heads:
-            value_prediction = model_out["value_{}".format(value_head)]
+            value_prediction = model_out["{}_value".format(value_head)]
             returns = data["{}_returns".format(value_head)]
             old_pred_values = data["{}_value".format(value_head)]
 
@@ -360,7 +380,7 @@ class Runner():
         # -------------------------------------------------------------------------
 
         if args.use_atn:
-            logps_atn = model_out["log_policy_atn"]
+            logps_atn = model_out["atn_log_policy"]
 
             # policy gradient
             atn_actions = data["atn_actions"].long()
@@ -395,7 +415,7 @@ class Runner():
         if args.use_rnd:
             predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
             n = int(len(prev_states) * predictor_proportion)
-            loss_rnd = self.model.prediction_error(prev_states[:n]).mean()
+            loss_rnd = -self.model.prediction_error(prev_states[:n]).mean()
             loss += loss_rnd
 
             self.log.watch_mean("loss_rnd", loss_rnd)
@@ -443,8 +463,8 @@ class Runner():
         batch_data["ext_value"] = self.value_ext.reshape(batch_size)
 
         if args.use_rnd:
-            batch_data["returns_int"] = self.returns_int.reshape(batch_size)
-            batch_data["value_int"] = self.int_value.reshape(batch_size)
+            batch_data["int_returns"] = self.returns_int.reshape(batch_size)
+            batch_data["int_value"] = self.int_value.reshape(batch_size)
 
         if args.use_atn:
             batch_data["atn_actions"] = self.atn_actions.reshape(batch_size)
@@ -522,28 +542,6 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
-# def run_random_agent(env_name, model: models.BaseModel, log:Logger, iterations):
-#     """
-#     Runs agent through environment
-#     :param env_name:
-#     :param model:
-#     :param log:
-#     :return:
-#     """
-#     log.info("Warming up model with random agent...")
-#
-#     env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
-#     vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=False)
-#
-#     episode_score = np.zeros([args.agents], dtype=np.float32)
-#     episode_len = np.zeros([args.agents], dtype=np.int32)
-#
-#     # collect experience
-#     states = vec_env.reset()
-#
-#     for iteration in range(iterations):
-#         run_agents_vec(args.n_steps, model, vec_env, states, episode_score, episode_len, log=None, is_warmup=True)
-
 
 def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, normalize=False):
     batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
@@ -600,6 +598,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
         log.info("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step = runner.load_checkpoint(checkpoint_path)
+        log = runner.log
         log.info("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
         start_iteration = (restored_step // batch_size) + 1
         walltime = log["walltime"]
@@ -610,10 +609,12 @@ def train(env_name, model: models.BaseModel, log:Logger):
         did_restore = False
 
     runner.create_envs(env_name)
-    runner.reset()
 
     if not did_restore and args.use_rnd:
-        run_random_agent(args.env_name, model, log, 3)
+        # this will get an initial estimate for the normalization constants.
+        runner.run_random_agent(20)
+
+    runner.reset()
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"),"w") as f:
