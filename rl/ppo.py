@@ -88,7 +88,7 @@ class Runner():
 
         if args.use_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
-            data['intrinsic_returns_rms'] = self.intrinsic_returns_rms,
+            data['intrinsic_returns_rms'] = self.intrinsic_returns_rms
 
         if args.use_rnd:
             data["observation_norm_state"] = self.model.obs_rms.save_state()
@@ -117,7 +117,7 @@ class Runner():
         self.log = checkpoint['logs']
 
         if args.use_intrinsic_rewards:
-            self.ems_norm = checkpoint.get['ems_norm']
+            self.ems_norm = checkpoint['ems_norm']
             self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
 
         atari.ENV_STATE = checkpoint['env_state']
