@@ -11,6 +11,8 @@ from collections import deque
 from torch.utils.tensorboard import SummaryWriter
 from .logger import Logger, LogVariable
 
+import torch.multiprocessing
+
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
@@ -35,7 +37,6 @@ class Runner():
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.states = np.zeros([A, *self.state_shape], dtype=np.uint8)
 
-
         self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.actions = np.zeros([N, A], dtype=np.int32)
@@ -58,8 +59,11 @@ class Runner():
         self.ext_returns = np.zeros([N, A], dtype=np.float32)
         self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
         self.atn_returns = np.zeros([N, A], dtype=np.float32)
-        self.int_rewards = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
+
+        self.final_value_estimate_ext = np.zeros([A], dtype=np.float32)
+        self.final_value_estimate_int = np.zeros([A], dtype=np.float32)
+        self.final_value_estimate_atn = np.zeros([A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
         self.ems_norm = np.zeros([args.agents])
@@ -158,10 +162,7 @@ class Runner():
             prev_states = self.states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            # stub
-            start_time = time.time()
             model_out = self.model.forward(self.states)
-            self.log.watch_mean("model_time", (time.time()-start_time)*1000, display_priority=10)
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
             value_ext = model_out["ext_value"].detach().cpu().numpy()
@@ -189,9 +190,7 @@ class Runner():
                 self.atn_rewards[t] = attention_rewards
                 self.atn_log_policy[t] = log_policy_atn
             else:
-                start_time = time.time()
                 self.states, rewards_ext, dones, infos = self.vec_env.step(actions)
-                self.log.watch_mean("step_time", (time.time()-start_time)*1000, display_priority=10)
 
             # it's a bit silly to have this here...
             if "returns_norm_state" in infos[0]:
@@ -665,6 +664,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
         # generate the rollout
         rollout_start_time = time.time()
+
         runner.generate_rollout()
         rollout_time = (time.time() - rollout_start_time) / batch_size
 
@@ -742,3 +742,4 @@ def train(env_name, model: models.BaseModel, log:Logger):
     log.info()
     log.important("Training Complete.")
     log.info()
+
