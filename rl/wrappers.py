@@ -244,8 +244,8 @@ class FoveaWrapper(gym.Wrapper):
 
         self.env = env
 
-        self.global_stacks = global_stacks
-        self.local_stacks = local_stacks
+        self.global_stack_count = global_stacks
+        self.local_stack_count = local_stacks
         self.global_frame_skip = global_frame_skip
         self._width, self._height = width, height
 
@@ -255,8 +255,9 @@ class FoveaWrapper(gym.Wrapper):
         assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
-        self.n_channels = global_stacks + local_stacks * 4
-        self.stack = np.zeros((self.n_channels, self._width, self._height), dtype=np.uint8)
+        self.local_stack = collections.deque(maxlen=local_stacks)
+        self.mask_stack = collections.deque(maxlen=local_stacks)
+        self.global_stack = collections.deque(maxlen=global_stacks)
 
         self.local_x = 0
         self.local_y = 0
@@ -269,21 +270,25 @@ class FoveaWrapper(gym.Wrapper):
             self.action_map.append((-step, 0))
             self.action_map.append((+step, 0))
             self.action_map.append((0, -step))
-            self.action_map.append((0, -step))
+            self.action_map.append((0, +step))
             self.action_map.append((-step, +step))
             self.action_map.append((+step, -step))
             self.action_map.append((-step, -step))
             self.action_map.append((+step, +step))
 
         self.channels = []
-        for i in range(self.global_stacks):
+        for i in range(self.global_stack_count):
             # right now these are all mixed up but what would be better is to have seperate stacks for each one
             # so I can have different levels of local and global stacks.
             self.channels.append("Gray-" + str(i))
+        for i in range(self.local_stack_count):
             self.channels.append("ColorR-" + str(i))
             self.channels.append("ColorG-" + str(i))
             self.channels.append("ColorB-" + str(i))
+        for i in range(self.local_stack_count):
             self.channels.append("Mask-" + str(i))
+
+        self.n_channels = len(self.channels)
 
         self.observation_space = gym.spaces.Box(
             low=0,
@@ -299,42 +304,42 @@ class FoveaWrapper(gym.Wrapper):
         y2 = y1 + self._height
         return x1,y1,x2,y2
 
-    def _push_raw_obs(self, obs):
-
+    def _get_local_frame(self, obs):
         fr = self._get_fovia_rect()
 
         # generate fovea location frame
         mask = np.zeros((210, 160), dtype=np.uint8) + 64
         mask[fr[1]:fr[3], fr[0]:fr[2]] = 255
         mask = cv2.resize(mask, (self._height, self._width), interpolation=cv2.INTER_AREA)
-        self._push(mask)
+        mask = mask[np.newaxis, :, :]
 
         # generate a local frame
         local_obs = obs[fr[1]:fr[3], fr[0]:fr[2]]
-        assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect {} - {}".format(str(fr), str(local_obs.shape))
+        assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect {} - {}".format(str(fr), str(
+            local_obs.shape))
 
         if self.blur_factor > 1:
             local_obs = cv2.blur(local_obs, (int(self.blur_factor), int(self.blur_factor)))
 
-        self._push(local_obs)
+        local_obs = np.transpose(local_obs, (2, 0, 1))
+        local_obs = local_obs[::-1, :, :]
 
+        return local_obs, mask
+
+    def _get_global_frame(self, obs):
+        global_obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+        global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
+        return global_obs[np.newaxis, :, :]
+
+    def _push_raw_obs(self, obs):
+        local_obs, mask_obs = self._get_local_frame(obs)
+        self.local_stack.append(local_obs)
+        self.mask_stack.append(mask_obs)
         # generate the global frame
         if self.counter % self.global_frame_skip == 0:
-            global_obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-            global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
-            self._push(global_obs)
-
+            global_obs = self._get_global_frame(obs)
+            self.global_stack.append(global_obs)
         self.counter += 1
-
-    def _push(self, frame):
-
-        if len(frame.shape) == 3:
-            # push multiple frames one by one.
-            for i in range(frame.shape[2]):
-                self._push(frame[:,:,i])
-        else:
-            self.stack = np.roll(self.stack, shift=1, axis=0)
-            self.stack[0:1, :, :] = frame
 
     def step(self, action):
 
@@ -352,18 +357,26 @@ class FoveaWrapper(gym.Wrapper):
             self.local_y = np.clip(self.local_y + dy, 0, 210)
 
         obs, reward, done, info = self.env.step(env_action)
-
         info["attention_cost"] = movement_cost / 100
-
         self._push_raw_obs(obs)
         info["channels"] = self.channels[:]
         return self.stack, reward, done, info
 
+    @property
+    def stack(self):
+        stack = np.concatenate([*self.global_stack, *self.local_stack, *self.mask_stack], axis=0)
+        return stack
+
     def reset(self):
         obs = self.env.reset()
         self.counter = 0
-        for _ in range(max(self.local_stacks, self.global_stacks * self.global_frame_skip)):
-            self._push_raw_obs(obs)
+        local_obs, mask_obs = self._get_local_frame(obs)
+        global_obs = self._get_global_frame(obs)
+        for _ in range(self.local_stack_count):
+            self.local_stack.append(local_obs)
+            self.mask_stack.append(mask_obs)
+        for _ in range(self.global_stack_count):
+            self.global_stack.append(global_obs)
         return self.stack
 
 
@@ -371,6 +384,10 @@ class AtariWrapper(gym.Wrapper):
     """
     Applies Atari frame warping, optional gray-scaling, and frame stacking as per nature paper.
     Note: unlike Nature the initial frame cropping is disabled by default.
+
+    input: 160x210x3 uint8 RGB frames
+    output: 84x84x1 uint8 grayscale frame (by default)
+
     """
 
     def __init__(self, env: gym.Env, grayscale=True, width=84, height=84):

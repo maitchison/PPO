@@ -396,7 +396,13 @@ def compose_frame(state_frame, rendered_frame, channels=None):
 
         frames.append(torch.tensor(new_frame))
 
-    state_grid = torchvision.utils.make_grid(frames, nrow=3 if len(frames) > 4 else 2, padding=2)
+    cols = 2
+    if len(frames) > 4:
+        cols = 3
+    if len(frames) > 9:
+        cols = 4
+
+    state_grid = torchvision.utils.make_grid(frames, nrow=cols, padding=2)
     state_grid = state_grid.numpy()
     state_grid = np.swapaxes(state_grid, 0, 2)
     state_grid = np.swapaxes(state_grid, 0, 1)
@@ -489,8 +495,8 @@ def export_movie(filename, model, env_name):
         logprobs = model_out["log_policy"][0].detach().cpu().numpy()
         actions = sample_action_from_logp(logprobs)
 
-        if "log_policy_atn" in model_out:
-            logprobs_atn = model_out["log_policy_atn"][0].detach().cpu().numpy()
+        if "atn_log_policy" in model_out:
+            logprobs_atn = model_out["atn_log_policy"][0].detach().cpu().numpy()
             action_atn = sample_action_from_logp(logprobs_atn)
             actions = (actions, action_atn)
 

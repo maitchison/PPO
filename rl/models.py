@@ -1,6 +1,8 @@
 import numpy as np
 import torch
+import torchvision
 import math
+import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -60,60 +62,52 @@ class FDMEncoder_Net(Base_Net):
 
         input_channels = input_dims[0]
 
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
-        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=4, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=4, stride=2)
 
         fake_input = torch.zeros((1, *input_dims))
-        _, c, w, h = self.conv4(self.conv3(self.conv2(self.conv1(fake_input)))).shape
+        _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
 
         self.out_shape = (c, w, h)
         self.d = utils.prod(self.out_shape)
         self.fc = nn.Linear(self.d, hidden_units)
 
-        # stub
-        print("final output is", self.out_shape)
-
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
-        N = len(x)
-        D = self.d
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
-        x = torch.reshape(x, [N, D])
-        x = self.fc(x)
+        x = torch.reshape(x, [len(x), self.d])
+        x = F.relu(self.fc(x))
         return x
 
-class FDMDecoder_Net(Base_Net):
+class FDMDecoder_Net(nn.Module):
     """ Encoder for forward dynamics model
     """
 
-    def __init__(self, input_dims, hidden_units=512):
+    def __init__(self, input_units, in_shape):
 
-        super().__init__(input_dims, hidden_units)
+        super().__init__()
 
-        self.conv1 = nn.ConvTranspose2d(64, 64, kernel_size=3, stride=2)
-        self.conv2 = nn.ConvTranspose2d(64, 64, kernel_size=3, stride=2)
-        self.conv3 = nn.ConvTranspose2d(32, 64, kernel_size=3, stride=2)
-        self.conv4 = nn.ConvTranspose2d(1, 32, kernel_size=3, stride=2)
-
-        self.in_shape = (64, 7, 7)
+        self.in_shape = in_shape
         self.d = utils.prod(self.in_shape)
-        self.fc = nn.Linear(hidden_units, self.d)
+        self.fc = nn.Linear(input_units, self.d)
+        self.conv1 = nn.ConvTranspose2d(in_shape[0], 64, kernel_size=3, stride=1)
+        self.conv2 = nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2)
+        self.conv4 = nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2)
+
 
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
-        N = len(x)
-
         x = F.relu(self.fc(x))
-        x = x.reshape(x, [N, *self.in_shape])
+        x = torch.reshape(x, [len(x), *self.in_shape])
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = F.sigmoid(self.conv4(x))
+        x = torch.sigmoid(self.conv4(x))
+        x = x[:, :, 4:4+84, 4:4+84]
         return x
 
 
@@ -292,7 +286,7 @@ class AttentionModel(BaseModel):
 
     def forward(self, x):
         x = self.prep_for_model(x)
-        x = F.relu(self.net.forward(x))
+        x = F.relu(self.net(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
         log_policy_atn = F.log_softmax(self.fc_policy_atn(x), dim=1)
@@ -315,38 +309,84 @@ class EMIModel(BaseModel):
 
         self.name = "EMI-" + head
 
-        single_channel_input_dims = (1, *input_dims[1:])
+        # note:
+        # shouldn't we use the same network (the encoder?) to do improvement prediction...
 
-        self.head = constructNet(head, input_dims, **kwargs)
-        self.fdm_encoder = FDMEncoder_Net(input_dims)
-        self.fdm_decoder = FDMDecoder_Net(input_dims)
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.fdm_encoder = FDMEncoder_Net(input_dims, hidden_units=1024)
+        self.fdm_decoder = FDMDecoder_Net(input_units=1024+actions, in_shape=self.fdm_encoder.out_shape)
         self.improvement_net = FDMEncoder_Net(input_dims)
 
-        self.fc_policy = nn.Linear(self.head.hidden_units, actions)
-        self.fc_value_ext = nn.Linear(self.head.hidden_units, 1)
-        self.fc_value_int = nn.Linear(self.head.hidden_units, 1)
-        self.fc_pred_improvement = nn.Linear(self.head.hidden_units, 1)
+        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
+        self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
+        self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
+        self.fc_pred_improvement = nn.Linear(self.net.hidden_units, 1)
 
         self.set_device_and_dtype(device, dtype)
+        self.counter = 0
 
-    def fdm(self, prev_state, action):
+    def predict_model_improvement(self, states):
+        """ Returns the predicted model improvement from landing in given state. """
+        states = self.prep_for_model(states)
+        return self.fc_pred_improvement(F.relu(self.improvement_net(states))).squeeze(dim=1)
+
+    def forward(self, x):
+        x = self.prep_for_model(x)
+        x = F.relu(self.net(x))
+        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
+        ext_value = self.fc_value_ext(x).squeeze(dim=1)
+        int_value = self.fc_value_int(x).squeeze(dim=1)
+        return {
+            'log_policy': log_policy,
+            'ext_value': ext_value,
+            'int_value': int_value
+        }
+
+    def fdm(self, prev_states, actions):
         """
         Predicts the next state given the previous
         """
-        features = self.fdm_encoder.forward(prev_state)
-        result = self.fdm_decoder(features)
-        return result
+        prev_states = self.prep_for_model(prev_states)
+        if type(actions) is np.ndarray:
+            actions = torch.from_numpy(actions)
+        actions = actions.to(dtype=torch.int64, device=self.device)
+        state_embeddings = self.fdm_encoder(prev_states)
+        action_embeddings = F.one_hot(actions, self.actions).float()
+        x = torch.cat((state_embeddings, action_embeddings), dim=1)
+        x = self.fdm_decoder(x)
+        return x
 
-    def fdm_error(self, prev_state, action, next_state):
-        predicted_next_state = self.fdm(prev_state, action)
+    def fdm_error(self, prev_states, actions, next_states):
+
+        # stub this is modified to just be an auto-encoder...
+        prev_states = self.prep_for_model(prev_states)
+        next_states = self.prep_for_model(next_states)
+        predicted_next_states = self.fdm(prev_states, actions)
+
         # only look at error on first frame as others are trivial to reconstruct from input.
-        error = ((predicted_next_state[:,0] - next_state[:,0])**2).mean()
+        error = ((predicted_next_states[:,0] - next_states[:,0])**2).mean() * 256 # increase error as we transformed scale during preprocessing
+
         return error
+
+    def generate_debug_image(self, prev_states, actions, next_states):
+        predicted_next_states = self.fdm(prev_states[0:1], actions[0:1])
+        prev_img = prev_states[0, 0]
+        next_img = next_states[0, 0]
+        pred_img = predicted_next_states[0, 0]
+        delt_img = torch.abs(predicted_next_states[0, 0] - next_states[0, 0])
+
+        tst1_img = self.fdm(prev_states * 0, actions * 0)[0, 0]
+        tst2_img = self.fdm(prev_states, actions * 0)[0, 0]
+
+        images = [x[np.newaxis] for x in [prev_img, next_img, pred_img, delt_img, tst1_img, tst2_img]]
+        debug_image = torchvision.utils.make_grid(images, nrow=3)
+        debug_image = F.interpolate(debug_image[np.newaxis], scale_factor=(4, 4))[0]
+        return debug_image
 
 
 class RNDModel(BaseModel):
     """
-    Random network distilation model
+    Random network distillation model
     """
 
     def __init__(self, head:str, input_dims, actions, device, dtype, **kwargs):

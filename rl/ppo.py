@@ -2,6 +2,7 @@ import os
 import numpy as np
 import gym
 import torch
+import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 import time
@@ -39,11 +40,16 @@ class Runner():
 
         self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
-        self.actions = np.zeros([N, A], dtype=np.int32)
+        self.actions = np.zeros([N, A], dtype=np.int64)
         self.rewards_ext = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.terminals = np.zeros([N, A], dtype=np.bool)
         self.value_ext = np.zeros([N, A], dtype=np.float32)
+
+        # emi
+        self.emi_prev_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
+        self.emi_next_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
+        self.emi_actions = np.zeros([args.emi_test_size], dtype=np.int64)
 
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
@@ -51,7 +57,7 @@ class Runner():
 
         # attention
         self.atn_rewards = np.zeros([N, A], dtype=np.float32)
-        self.atn_actions = np.zeros([N, A], dtype=np.int32)
+        self.atn_actions = np.zeros([N, A], dtype=np.int64)
         self.atn_log_policy = np.zeros([N, A, *self.policy_atn_shape], dtype=np.float32)
         self.atn_value = np.zeros([N, A], dtype=np.float32)
 
@@ -196,8 +202,15 @@ class Runner():
             if "returns_norm_state" in infos[0]:
                 atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
 
+            if args.use_emi:
+                value_int = model_out["int_value"].detach().cpu().numpy()
+                rewards_int = self.model.predict_model_improvement(self.states).detach().cpu().numpy()
+
+                self.int_rewards[t] = rewards_int
+                self.int_value[t] = value_int
+
             # work out our intrinsic rewards
-            if args.use_intrinsic_rewards:
+            if args.use_rnd:
                 value_int = model_out["int_value"].detach().cpu().numpy()
                 rewards_int = np.zeros_like(rewards_ext)
                 if is_warmup:
@@ -314,9 +327,10 @@ class Runner():
             self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
             self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.returns_int.ravel()))
-            self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
+            if args.use_rnd:
+                self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
                                 display_width=10, display_priority=-2)
-            self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards), display_name="rew_int_unnorm_std",
+                self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards), display_name="rew_int_unnorm_std",
                                 display_width=0)
 
     # this needs to be a dict...
@@ -399,6 +413,7 @@ class Runner():
             self.log.watch_mean("loss_ent_atn", loss_entropy_atn)
             loss += loss_entropy_atn
 
+
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
@@ -448,6 +463,56 @@ class Runner():
 
         self.optimizer.step()
 
+        # -------------------------------------------------------------------------
+        # Calculate loss_emi
+        # -------------------------------------------------------------------------
+
+        if args.use_emi:
+
+            # todo: have this as a sepereate training function, that does not use the same batching. Just use
+            # microbatching (instead of minibatches) and maybe just run for 2 epochs?
+
+            micro_batch_size = 128
+
+            next_states = data["next_state"]
+
+            micro_batches = args.mini_batch_size // micro_batch_size
+
+            with torch.no_grad():
+                model_performance = self.model.fdm_error(self.emi_prev_state, self.emi_actions, self.emi_next_state)
+
+            for i in range(micro_batches):
+
+                mb_prev_states = prev_states[i * micro_batch_size:(i + 1) * micro_batch_size]
+                mb_next_states = next_states[i * micro_batch_size:(i + 1) * micro_batch_size]
+                mb_actions = actions[i * micro_batch_size:(i + 1) * micro_batch_size]
+
+                # perform an update on forward dynamics model
+                loss_emi_fdm = self.model.fdm_error(mb_prev_states, mb_actions, mb_next_states)
+                self.log.watch_mean("loss_emi_fdm", loss_emi_fdm)
+                self.optimizer.zero_grad()
+                loss_emi_fdm.backward()
+                self.optimizer.step()
+
+                # update estimate of models performance on previous transitions
+                with torch.no_grad():
+                    new_model_performance = self.model.fdm_error(self.emi_prev_state, self.emi_actions, self.emi_next_state)
+
+                fdm_improvement = (model_performance - new_model_performance) * 4*4*micro_batches # epochs*minibatches*microbatches
+                self.log.watch_mean("emi_aft", new_model_performance)
+                self.log.watch_mean("emi_imp", fdm_improvement)
+
+                # train the model improvement estimator (note this could be done better all at once later on)
+                loss_emi_pred = (self.model.predict_model_improvement(mb_next_states) - fdm_improvement).pow(2).mean()
+                self.log.watch_mean("loss_emi_pred", loss_emi_pred)
+                self.optimizer.zero_grad()
+                loss_emi_pred.backward()
+                self.optimizer.step()
+
+                model_performance = new_model_performance
+
+
+
     def train(self):
 
         # organise our data...
@@ -455,13 +520,14 @@ class Runner():
         batch_size = self.N * self.A
 
         batch_data["prev_state"] = self.prev_state.reshape([batch_size, *self.state_shape])
+        batch_data["next_state"] = self.next_state.reshape([batch_size, *self.state_shape])
         batch_data["actions"] = self.actions.reshape(batch_size).astype(np.long)
         batch_data["ext_returns"] = self.ext_returns.reshape(batch_size)
         batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.value_ext.reshape(batch_size)
 
-        if args.use_rnd:
+        if args.use_rnd or args.use_emi:
             batch_data["int_returns"] = self.returns_int.reshape(batch_size)
             batch_data["int_value"] = self.int_value.reshape(batch_size)
 
@@ -487,11 +553,26 @@ class Runner():
                 sample = ordering[batch_start:batch_end]
 
                 minibatch_data = {}
+
                 for k, v in batch_data.items():
                     minibatch_data[k] = torch.tensor(v[sample]).to(self.model.device)
 
                 self.train_minibatch(minibatch_data)
 
+        if args.use_emi:
+            # save batch data for next EMI training step.
+            ordering = list(range(batch_size))
+            np.random.shuffle(ordering)
+            ordering = ordering[:args.emi_test_size]
+            # saves some time uploading these once here.
+            self.emi_prev_state, self.emi_next_state = [
+                self.model.prep_for_model(x.reshape([batch_size, *self.state_shape])[ordering])
+                    for x in [self.prev_state, self.next_state]
+            ]
+            self.emi_actions = torch.from_numpy(
+                self.actions.reshape([batch_size])[ordering]).to(
+                device=self.model.device, dtype=torch.int64
+            )
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -700,12 +781,26 @@ def train(env_name, model: models.BaseModel, log:Logger):
             last_print_time = time.time()
             print_counter += 1
 
+            # export debug frames
+            if args.use_emi:
+                try:
+                    with torch.no_grad():
+                        img = model.generate_debug_image(runner.emi_prev_state, runner.emi_actions,
+                                                         runner.emi_next_state)
+                    os.makedirs(os.path.join(args.log_folder, "emi"), exist_ok=True)
+                    torchvision.utils.save_image(img, os.path.join(args.log_folder, "emi",
+                                                                   "fdm-{:04d}K.png".format(env_step // 1000)))
+                except Exception as e:
+                    log.warn(str(e))
+
         # save log and refresh lock
         if time.time() - last_log_time >= args.debug_log_freq:
             utils.lock_job()
             log.export_to_csv()
             log.save_log()
             last_log_time = time.time()
+
+
 
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):

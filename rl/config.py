@@ -73,6 +73,9 @@ class Config:
 
         self.use_clipped_value_loss = False
 
+        # emi
+        self.use_emi = False
+
         # attention
         self.use_atn = False
         self.atn_movement_cost = 0.0
@@ -87,7 +90,7 @@ class Config:
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd
+        return self.use_rnd or self.use_emi
 
 LOCK_KEY = str(uuid.uuid4().hex)
 
@@ -172,6 +175,11 @@ def parse_args():
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
+
+    # EMI
+    parser.add_argument("--use_emi", type=str2bool, default=False)
+    parser.add_argument("--emi_test_size", type=float, default=256)
+
 
     # attention
     parser.add_argument("--use_atn", type=str2bool, default=False, help="Enable attention system.")

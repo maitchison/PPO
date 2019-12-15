@@ -191,18 +191,9 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
     job_list.append(Job(experiment_name, run_name, priority, kwargs))
 
 
-def setup_jobs_V5():
+def setup_jobs_V6():
 
-    # regression testing
-    for env_name in ["Pong", "Seaquest", "Breakout", "Alien", "MonetzumaRevenge"]:
-        add_job(
-            "Regression "+env_name,
-            run_name="Regression v0.5",
-            env_name=env_name,
-            epochs=200 if env_name != "Pong" else 50,
-            priority=0
-        )
-
+    # there were bugs in the V5 version...
     for movement_cost in [0, 0.2, 0.02]:
         for global_frame_skip in [1, 10]:
             add_job(
@@ -216,6 +207,48 @@ def setup_jobs_V5():
                 agents=64,
                 priority=0
             )
+
+    # try to find some better hyperparameters
+    for extrinsic_reward_scale in [0.1, 1.0, 10.0]:
+        add_job(
+            "EXP_EMI_v1",
+            run_name="EMI ext_rew={}".format(extrinsic_reward_scale),
+            env_name="MontezumaRevenge",
+            epochs=200,
+            agents=64,
+            n_steps=128,
+            entropy_bonus=0.001,
+            learning_rate=1e-4,
+            mini_batch_size=1024,
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.995,
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=5,
+            reward_normalization=True,
+            noop_start=True,
+            adam_epsilon=1e-5,
+            intrinsic_reward_scale=1.0,
+            extrinsic_reward_scale=extrinsic_reward_scale,
+            normalize_advantages=True,
+            use_clipped_value_loss=True,
+
+            use_emi=True,
+            priority=0
+        )
+
+def setup_jobs_V5():
+
+    # regression testing
+    for env_name in ["Pong", "Seaquest", "Breakout", "Alien", "MonetzumaRevenge"]:
+        add_job(
+            "Regression "+env_name,
+            run_name="Regression v0.5",
+            env_name=env_name,
+            epochs=200 if env_name != "Pong" else 50,
+            priority=0
+        )
 
     # try to find some better hyperparameters
     for extrinsic_reward_scale in [1.0, 2.0, 4.0]:
@@ -800,8 +833,7 @@ def show_experiments(filter_jobs=None, all=False):
 if __name__ == "__main__":
     id = 0
     job_list = []
-    #setup_jobs_V4()
-    setup_jobs_V5()
+    setup_jobs_V6()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
