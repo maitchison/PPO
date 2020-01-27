@@ -1,13 +1,11 @@
 import numpy as np
 import torch
 import torchvision
-import math
-import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
 
 from . import utils
-from .utils import RunningMeanStd
+from . import utils
 
 # ----------------------------------------------------------------------------------------------------------------
 # Heads (feature extractors)
@@ -404,7 +402,7 @@ class RNDModel(BaseModel):
         self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
         self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
 
-        self.obs_rms = RunningMeanStd(shape=(single_channel_input_dims))
+        self.obs_rms = utils.RunningMeanStd(shape=(single_channel_input_dims))
 
         self.features_mean = 0
         self.features_std = 0

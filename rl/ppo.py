@@ -4,12 +4,9 @@ import gym
 import torch
 import torchvision
 import torch.nn as nn
-import torch.nn.functional as F
 import time
 import json
 import math
-from collections import deque
-from torch.utils.tensorboard import SummaryWriter
 from .logger import Logger, LogVariable
 
 import torch.multiprocessing

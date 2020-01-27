@@ -38,8 +38,6 @@ class Config:
         self.intrinsic_reward_scale = 0.0
         self.extrinsic_reward_scale = 0.0
 
-        self.tensorboard_logging = False
-
         self.reward_clip = 0.0
         self.reward_normalization = True
 
@@ -80,6 +78,9 @@ class Config:
         self.use_atn = False
         self.atn_movement_cost = 0.0
         self.atn_global_frame_skip = 1
+
+        # population based learning
+        self.random_rewards = False
 
         self.log_folder = ""
 
@@ -155,8 +156,6 @@ def parse_args():
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
-    parser.add_argument("--tensorboard_logging", type=str2bool, default=False)
-
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
 
@@ -212,6 +211,8 @@ def parse_args():
     parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
     parser.add_argument("--memorize_actions", type=int, default=2,
                         help="Memorize environment: Number of actions to pick from.")
+
+    parser.add_argument("--random_rewards", type=str2bool, default=False, help="Enable random auxilary rewards.")
 
     args.update(**parser.parse_args().__dict__)
 

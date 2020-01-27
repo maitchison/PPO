@@ -6,6 +6,38 @@ import hashlib
 import collections
 from . import utils
 
+class AuxReward(gym.Wrapper):
+    """
+    Adds an auxiliary reward to environment
+
+    aux_reward_function: A function mapping from obs, action, obs -> real number.
+
+    """
+
+    def __init__(self, env, aux_reward_function):
+        super().__init__(env)
+        self.env = env
+        self.aux_reward_function = aux_reward_function
+        self.prev_obs = None
+
+    def step(self, action):
+
+        obs, env_reward, done, info = self.env.step(action)
+
+        aux_reward = self.aux_reward_function(self.prev_obs, action, obs)
+
+        info["aux_reward"] = aux_reward
+        info["env_reward"] = env_reward
+
+        self.prev_obs = obs
+
+        return obs, aux_reward + env_reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        self.prev_obs = obs
+        return obs
+
 class HashWrapper(gym.Wrapper):
     """
     Maps observation onto a random sequence of pixels.
