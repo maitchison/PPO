@@ -32,7 +32,7 @@ class RandomReward(wrappers.AuxReward):
         super().__init__(env, lambda prev_obs, action, obs : self.get_random_reward(prev_obs, action, obs))
         self.scale = scale
 
-        self.initial_seed = seed or random.randint(0,1e9)
+        self.initial_seed = seed if seed is not None else random.randint(0,1e9)
 
         # note: we can't use random_network.to("cuda") here as we're in a forked subprocess
         # switch to spawn might help, but the overhead is too high. The better solution is to
