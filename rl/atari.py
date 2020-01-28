@@ -21,101 +21,6 @@ for env in gym.envs.registry.all():
 def get_env_state(key):
     return ENV_STATE.get(key, None)
 
-
-class RandomReward(wrappers.AuxReward):
-    """
-    Adds random auxilary rewards to environment.
-    """
-
-    def __init__(self, env, scale = 1.0, seed = None, decay_rewards=0.9):
-
-        super().__init__(env, lambda prev_obs, action, obs : self.get_random_reward(prev_obs, action, obs))
-        self.scale = scale
-
-        self.initial_seed = seed if seed is not None else random.randint(0,1e9)
-
-        # note: we can't use random_network.to("cuda") here as we're in a forked subprocess
-        # switch to spawn might help, but the overhead is too high. The better solution is to
-        # calculate these rewards together on batches during training, and not as part of the environment.
-
-        # this means right now this network is running on CPU which slows things down quite a bit...
-
-        self.random_network = NatureCNN_Net(env.observation_space.shape, hidden_units=16)
-
-        self.small_rate = 1/10
-        self.big_rate = 1/100
-        self.decay_rewards = decay_rewards
-
-        self.given_rewards = defaultdict(int)
-        self.counter = 0
-
-    def _mark_reward(self, reward_value, state):
-        """ Returns value of given reward, and increments it's visited counter."""
-
-        self.given_rewards[state] += 1
-        reward_value = reward_value * (1/math.sqrt(self.given_rewards[state]))
-
-
-        if self.counter % 100 == 1:
-            #print("reward {} in state {} with seed {}".format(reward_value, state, self.seed))
-            pass
-
-        self.counter += 1
-
-        return reward_value
-
-    def get_random_reward(self, prev_obs, action, obs):
-
-        # run the final state through a randomly connected neural network then
-        # output 16 bits -> 65536 states (i.e. random mapping to a discrete state space)
-        # assign some percentage of these 'states' as high value states (1 reward)
-        # assign another percentage of these 'states' as low value states (0.1 reward)
-
-        # some prep is required to get the input ready for the model.
-        obs_in = torch.tensor(obs[np.newaxis, :, :, :]).float()/255.0
-        out = self.random_network(obs_in)
-        out = torch.tanh(out)
-        out = out.detach().cpu().numpy()
-        out = out[0]
-
-        out = [1 if x >= 0 else 0 for x in out]
-        state = int("".join(str(i) for i in out), 2)
-
-        if state in self.high_reward_states:
-            reward = self._mark_reward(1.0, state)
-            self._set_seed(self.seed + 1)
-            return reward
-        elif state in self.small_reward_states:
-            reward = self._mark_reward(0.1, state)
-            self._set_seed(self.seed + 1)
-            return reward
-        else:
-            return 0
-
-    def _set_seed(self, seed):
-        """ Sets rewards to given seed. """
-
-        st0 = np.random.get_state()
-
-        np.random.seed(seed)
-
-        state_space = 2**16
-
-        small_rewards = int(state_space * self.small_rate)
-        big_rewards = int(state_space * self.big_rate)
-
-        self.high_reward_states = set(np.random.choice(state_space, big_rewards))
-        self.small_reward_states = set(np.random.choice(state_space, small_rewards))
-        self.seed = seed
-
-        np.random.set_state(st0)
-
-
-    def reset(self):
-        self._set_seed(self.initial_seed)
-        return self.env.reset()
-
-
 def make(env_name, non_determinism=None):
     """ Construct environment of given name, including any required wrappers."""
 
@@ -171,11 +76,6 @@ def make(env_name, non_determinism=None):
         else:
             env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
             env = wrappers.FrameStack(env)
-
-        if args.random_rewards_scale > 0:
-            # this is done before normalization which isn't great... maybe normalize before and after?
-            # also what scale is needed so that this matches the normalized rewards? Hard to say... but maybe 10?
-            env = RandomReward(env, scale=args.random_rewards_scale, seed=args.random_rewards_seed) # each worker should really get it's own seed, and own parameters...
 
         if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,

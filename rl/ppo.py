@@ -43,6 +43,11 @@ class Runner():
         self.terminals = np.zeros([N, A], dtype=np.bool)
         self.value_ext = np.zeros([N, A], dtype=np.float32)
 
+        # rar
+        rar_state_space = 2 ** 16
+        self.rar_visited = [set() for _ in range(A)]
+        self.rar_reward_states = set(np.random.choice(rar_state_space, int(rar_state_space * args.rar_frequency)))
+
         # emi
         self.emi_prev_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
         self.emi_next_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
@@ -140,6 +145,8 @@ class Runner():
         self.episode_score *= 0
         self.episode_len *= 0
 
+        self.rar_visited = [set() for _ in range(len(self.rar_visited))]
+
     def run_random_agent(self, iterations):
         """
         Runs agent through environment
@@ -199,26 +206,40 @@ class Runner():
             if "returns_norm_state" in infos[0]:
                 atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
 
-            if args.use_emi:
-                value_int = model_out["int_value"].detach().cpu().numpy()
-                rewards_int = self.model.predict_model_improvement(self.states).detach().cpu().numpy()
-
-                self.int_rewards[t] = rewards_int
-                self.int_value[t] = value_int
-
             # work out our intrinsic rewards
-            if args.use_rnd:
+            if args.use_intrinsic_rewards:
                 value_int = model_out["int_value"].detach().cpu().numpy()
+
                 rewards_int = np.zeros_like(rewards_ext)
-                if is_warmup:
-                    # in random mode just update the normalization constants
-                    self.model.perform_normalization(self.states)
-                else:
-                    # reward is prediction error on state we land inn.
-                    loss_rnd = self.model.prediction_error(self.states).detach().cpu().numpy()
-                    rewards_int += loss_rnd
+
+                if args.use_rar:
+                    # convert pixels to a smaller state space
+                    states = self.model.get_mapped_states(self.states)
+
+                    # check if these states have aux rewards in them
+                    for i, state in enumerate(states):
+                        # give reward for being in a reward state.
+                        if state in self.rar_reward_states and state not in self.rar_visited[i]:
+                            rewards_int[i] += args.rar_scale
+                            self.rar_visited[i].add(state)
+                            if i == 0:
+                                print("Hit", i, state, len(self.rar_visited[i]))
+
+                if args.use_emi:
+                    rewards_int = self.model.predict_model_improvement(self.states).detach().cpu().numpy()
+
+                if args.use_rnd:
+                    if is_warmup:
+                        # in random mode just update the normalization constants
+                        self.model.perform_normalization(self.states)
+                    else:
+                        # reward is prediction error on state we land inn.
+                        loss_rnd = self.model.prediction_error(self.states).detach().cpu().numpy()
+                        rewards_int += loss_rnd
+
                 self.int_rewards[t] = rewards_int
                 self.int_value[t] = value_int
+
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", rewards_ext) for reward, info in zip(rewards_ext, infos)],
@@ -236,6 +257,10 @@ class Runner():
                         self.log.watch_full("ep_length", self.episode_len[i])
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
+
+                    if args.use_rar:
+                        # random reward visited needs to be reset to 0 on environment reset
+                        self.rar_visited[i] = set()
 
             self.prev_state[t] = prev_states
             self.next_state[t] = self.states
@@ -269,16 +294,20 @@ class Runner():
             self.int_returns_raw = calculate_returns(self.int_rewards, 0 * self.terminals, self.final_value_estimate_int,
                                                      args.gamma_int)
 
-            # normalize returns using EMS
-            for t in range(self.N):
-                self.ems_norm = 0.99 * self.ems_norm + self.int_rewards[t, :]
-                self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
+            if args.normalize_intrinsic_rewards:
 
-            # normalize the intrinsic rewards
-            # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
-            # which is approximately where normalized returns will sit.
-            self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-            self.batch_rewards_int = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
+                # normalize returns using EMS
+                for t in range(self.N):
+                    self.ems_norm = 0.99 * self.ems_norm + self.int_rewards[t, :]
+                    self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
+
+                # normalize the intrinsic rewards
+                # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
+                # which is approximately where normalized returns will sit.
+                self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
+                self.batch_rewards_int = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
+            else:
+                self.batch_rewards_int = self.int_rewards
 
             # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per the RND paper.
             self.returns_int = calculate_returns(self.int_rewards, 0 * self.terminals, self.final_value_estimate_int,
@@ -320,7 +349,7 @@ class Runner():
                                 display_width=0)
             self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw), display_name="ret_int_raw_std",
                                 display_width=0)
-            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
+
             self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
             self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.returns_int.ravel()))
@@ -329,6 +358,9 @@ class Runner():
                                 display_width=10, display_priority=-2)
                 self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards), display_name="rew_int_unnorm_std",
                                 display_width=0)
+
+        if args.normalize_intrinsic_rewards:
+            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
     # this needs to be a dict...
     def train_minibatch(self, data):
@@ -524,7 +556,7 @@ class Runner():
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.value_ext.reshape(batch_size)
 
-        if args.use_rnd or args.use_emi:
+        if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.returns_int.reshape(batch_size)
             batch_data["int_value"] = self.int_value.reshape(batch_size)
 

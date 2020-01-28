@@ -193,14 +193,15 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs_V7():
     # this is a test to see how well random auxilary rewards help hard exploration games
-    for seed in [x*100 for x in range(64)]:
-        for reward_scale in [0, 1, 10]:
+    for seed in [x*100 for x in range(32)]:
+        for reward_frequency in [0, 1/10, 1/100]:
             add_job(
                 "Random_Rewards",
-                run_name="scale={} seed={} ".format(reward_scale, seed),
+                run_name="freq={} seed={} ".format(reward_frequency, seed),
                 env_name="MontezumaRevenge",
-                random_rewards_scale=reward_scale,
-                random_rewards_seed=seed,
+                use_rar=reward_frequency > 0,
+                rar_frequency=reward_frequency,
+                rar_seed=seed,
                 epochs=10,
                 agents=64,
                 priority=0

@@ -80,8 +80,10 @@ class Config:
         self.atn_global_frame_skip = 1
 
         # population based learning
-        self.random_rewards_scale = 0.0
-        self.random_rewards_seed = 0
+        self.use_rar = False
+        self.rar_scale = 0.0
+        self.rar_seed = 0
+        self.rar_frequency = 0
 
         self.log_folder = ""
 
@@ -92,6 +94,10 @@ class Config:
 
     @property
     def use_intrinsic_rewards(self):
+        return self.use_rnd or self.use_emi or self.use_rar
+
+    @property
+    def normalize_intrinsic_rewards(self):
         return self.use_rnd or self.use_emi
 
 LOCK_KEY = str(uuid.uuid4().hex)
@@ -213,8 +219,10 @@ def parse_args():
     parser.add_argument("--memorize_actions", type=int, default=2,
                         help="Memorize environment: Number of actions to pick from.")
 
-    parser.add_argument("--random_rewards_scale", type=float, default=0, help="Enable random auxiliary rewards.")
-    parser.add_argument("--random_rewards_seed", type=int, default=1, help="Seed for random auxiliary rewards.")
+    parser.add_argument("--use_rar", type=str2bool, default=False, help="Enable random auxiliary rewards.")
+    parser.add_argument("--rar_scale", type=float, default=10, help="Scale of random auxiliary rewards.")
+    parser.add_argument("--rar_seed", type=int, default=0, help="Seed for random auxiliary rewards.")
+    parser.add_argument("--rar_frequency", type=float, default=(1/10), help="Frequency of random auxiliary rewards.")
 
     args.update(**parser.parse_args().__dict__)
 

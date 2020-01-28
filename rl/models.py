@@ -467,6 +467,57 @@ class RNDModel(BaseModel):
             'int_value': value_int
         }
 
+class RARModel(BaseModel):
+    """
+    Random auxiliary rewards model.
+    """
+
+    def __init__(self, head:str, input_dims, actions, device, dtype, seed=0, **kwargs):
+        super().__init__(input_dims, actions)
+
+        self.name = "RAR-" + head
+
+        torch.manual_seed(seed)
+
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.state_mapping = constructNet("Nature", input_dims, hidden_units=16)
+
+        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
+        self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
+        self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
+
+        self.set_device_and_dtype(device, dtype)
+
+    def get_mapped_states(self, states):
+        """ Applies a mapping from the environment observational space to a smaller state space. """
+
+        # convert this state into a 16bit state index
+        states = self.prep_for_model(states)
+        states = self.state_mapping.forward((states-0.5)*10) # increase the variance in the states a bit.
+        states = states.detach().cpu().numpy()
+
+        mapped_states = []
+        for state_bits in states:
+            state = [1 if x >= 0 else 0 for x in state_bits]
+            state = int("".join(str(i) for i in state), 2)
+            mapped_states.append(state)
+
+        return np.asarray(mapped_states)
+
+    def forward(self, x):
+        x = self.prep_for_model(x)
+        x = F.relu(self.net.forward(x))
+        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
+        value_ext = self.fc_value_ext(x).squeeze(dim=1)
+        value_int = self.fc_value_int(x).squeeze(dim=1)
+        return {
+            'log_policy': log_policy,
+            'ext_value': value_ext,
+            'int_value': value_int
+        }
+
+
+
 # ----------------------------------------------------------------------------------------------------------------
 # Utilities
 # ----------------------------------------------------------------------------------------------------------------
