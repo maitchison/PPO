@@ -80,7 +80,8 @@ class Config:
         self.atn_global_frame_skip = 1
 
         # population based learning
-        self.random_rewards = False
+        self.random_rewards_scale = 0.0
+        self.random_rewards_seed = 0
 
         self.log_folder = ""
 
@@ -212,7 +213,8 @@ def parse_args():
     parser.add_argument("--memorize_actions", type=int, default=2,
                         help="Memorize environment: Number of actions to pick from.")
 
-    parser.add_argument("--random_rewards", type=str2bool, default=False, help="Enable random auxilary rewards.")
+    parser.add_argument("--random_rewards_scale", type=float, default=0, help="Enable random auxiliary rewards.")
+    parser.add_argument("--random_rewards_seed", type=int, default=1, help="Seed for random auxiliary rewards.")
 
     args.update(**parser.parse_args().__dict__)
 

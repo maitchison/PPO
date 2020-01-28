@@ -1,6 +1,7 @@
 import gym
 import numpy as np
 import random
+import math
 from collections import defaultdict
 
 from . import wrappers
@@ -8,13 +9,6 @@ from .config import args
 from .models import NatureCNN_Net
 
 import torch
-
-from gym.envs.registration import register
-
-register(
-    id='MemorizeNoFrameskip-v4',
-    entry_point='rl.atari:MemorizeGame',
-)
 
 ENV_STATE = {}
 
@@ -40,6 +34,12 @@ class RandomReward(wrappers.AuxReward):
 
         self.initial_seed = seed or random.randint(0,1e9)
 
+        # note: we can't use random_network.to("cuda") here as we're in a forked subprocess
+        # switch to spawn might help, but the overhead is too high. The better solution is to
+        # calculate these rewards together on batches during training, and not as part of the environment.
+
+        # this means right now this network is running on CPU which slows things down quite a bit...
+
         self.random_network = NatureCNN_Net(env.observation_space.shape, hidden_units=16)
 
         self.small_rate = 1/10
@@ -53,10 +53,12 @@ class RandomReward(wrappers.AuxReward):
         """ Returns value of given reward, and increments it's visited counter."""
 
         self.given_rewards[state] += 1
-        reward_value = reward_value * (0.9**self.given_rewards[state])
+        reward_value = reward_value * (1/math.sqrt(self.given_rewards[state]))
+
 
         if self.counter % 100 == 1:
-            print("reward {} in state {} with seed {}".format(reward_value, state, self.seed))
+            #print("reward {} in state {} with seed {}".format(reward_value, state, self.seed))
+            pass
 
         self.counter += 1
 
@@ -170,11 +172,10 @@ def make(env_name, non_determinism=None):
             env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
             env = wrappers.FrameStack(env)
 
-        if args.random_rewards:
-            print("Enabling random rewards")
+        if args.random_rewards_scale > 0:
             # this is done before normalization which isn't great... maybe normalize before and after?
             # also what scale is needed so that this matches the normalized rewards? Hard to say... but maybe 10?
-            env = RandomReward(env, scale=10, seed=1) # each worker should really get it's own seed, and own parameters...
+            env = RandomReward(env, scale=args.random_rewards_scale, seed=args.random_rewards_seed) # each worker should really get it's own seed, and own parameters...
 
         if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,

@@ -4,6 +4,14 @@ import numpy as np
 
 from . import utils
 
+from gym.envs.registration import register
+
+register(
+    id='MemorizeNoFrameskip-v4',
+    entry_point='rl.atari:MemorizeGame',
+)
+
+
 class MemorizeGame(gym.Env):
     """
     Note: some modification to the game.

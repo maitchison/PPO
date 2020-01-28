@@ -191,6 +191,21 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
     job_list.append(Job(experiment_name, run_name, priority, kwargs))
 
 
+def setup_jobs_V7():
+    # this is a test to see how well random auxilary rewards help hard exploration games
+    for seed in [x*100 for x in range(64)]:
+        for reward_scale in [0, 1, 10]:
+            add_job(
+                "Random_Rewards",
+                run_name="scale={} seed={} ".format(reward_scale, seed),
+                env_name="MontezumaRevenge",
+                random_rewards_scale=reward_scale,
+                random_rewards_seed=seed,
+                epochs=10,
+                agents=64,
+                priority=0
+            )
+
 def setup_jobs_V6():
 
     # there were bugs in the V5 version...
@@ -833,7 +848,7 @@ def show_experiments(filter_jobs=None, all=False):
 if __name__ == "__main__":
     id = 0
     job_list = []
-    setup_jobs_V6()
+    setup_jobs_V7()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
