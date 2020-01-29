@@ -93,6 +93,10 @@ class Config:
         self.__dict__.update(kwargs)
 
     @property
+    def propagate_intrinsic_rewards(self):
+        return not self.use_rnd
+
+    @property
     def use_intrinsic_rewards(self):
         return self.use_rnd or self.use_emi or self.use_rar
 

@@ -193,8 +193,9 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs_V7():
     # this is a test to see how well random auxilary rewards help hard exploration games
-    for seed in [x*100 for x in range(32)]:
-        for reward_frequency in [0, 1/10, 1/100]:
+    # this experiment failed as intrinsic reward head wasn't being trained
+    for seed in [x*100 for x in range(16)]:
+        for reward_frequency in [0]:
             add_job(
                 "Random_Rewards",
                 run_name="freq={} seed={} ".format(reward_frequency, seed),
@@ -206,6 +207,36 @@ def setup_jobs_V7():
                 agents=64,
                 priority=0
             )
+
+    # emi had a bug that stoped it working before (intrinsic value head wasn't being trained) so I'm running it again...
+    for extrinsic_reward_scale in [1.0]:
+        add_job(
+            "EMI_v2",
+            run_name="EMI ext_rew={}".format(extrinsic_reward_scale),
+            env_name="MontezumaRevenge",
+            epochs=200,
+            agents=64,
+            n_steps=128,
+            entropy_bonus=0.001,
+            learning_rate=1e-4,
+            mini_batch_size=1024,
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.995,
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=5,
+            reward_normalization=True,
+            noop_start=True,
+            adam_epsilon=1e-5,
+            intrinsic_reward_scale=1.0,
+            extrinsic_reward_scale=extrinsic_reward_scale,
+            normalize_advantages=True,
+            use_clipped_value_loss=True,
+
+            use_emi=True,
+            priority=20
+        )
 
 def setup_jobs_V6():
 

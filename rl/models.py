@@ -467,10 +467,38 @@ class RNDModel(BaseModel):
             'int_value': value_int
         }
 
+class TokenNet(nn.Module):
+
+    def __init__(self, token_count=32, token_length=16, token_filters=128):
+        super().__init__()
+
+        # this is the number of different tokens the model can recognise
+        self.conv = nn.Conv2d(1, token_filters, kernel_size=(1, token_length))
+
+    def forward(self, x):
+        """ forwards input through model, returns token indicators.
+            X tensor of shape [N, token_count, token_length]
+            outputs tensor of shape [N, token_channels]
+        """
+
+        x = x[:, np.newaxis, :, :] # need to add an empty channel to the tokens
+        x = torch.sigmoid(self.conv(x))
+
+        # max pool means each filter will register if the token it's looking for exists anywhere.
+        x = torch.max_pool2d(x, kernel_size=(32,1))
+        x = x.squeeze() # remove those 1 dims.
+
+        return x
+
+
 class RARModel(BaseModel):
     """
     Random auxiliary rewards model.
     """
+
+    TOKEN_LENGTH = 16   # length of tokens in bits.
+    TOKEN_COUNT = 32    # number of tokens in the models side channel input.
+    TOKEN_FILTERS = 64  # this is roughly how many tokens the model is able to identify.
 
     def __init__(self, head:str, input_dims, actions, device, dtype, seed=0, **kwargs):
         super().__init__(input_dims, actions)
@@ -481,10 +509,17 @@ class RARModel(BaseModel):
 
         self.net = constructNet(head, input_dims, **kwargs)
         self.state_mapping = constructNet("Nature", input_dims, hidden_units=16)
+        self.token_net = TokenNet(
+            token_count=self.TOKEN_COUNT,
+            token_length=self.TOKEN_LENGTH,
+            token_filters=self.TOKEN_FILTERS
+        )
 
-        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
-        self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
-        self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
+        h = self.net.hidden_units + self.TOKEN_FILTERS
+
+        self.fc_policy = nn.Linear(h, actions)
+        self.fc_value_ext = nn.Linear(h, 1)
+        self.fc_value_int = nn.Linear(h, 1)
 
         self.set_device_and_dtype(device, dtype)
 
@@ -504,9 +539,41 @@ class RARModel(BaseModel):
 
         return np.asarray(mapped_states)
 
-    def forward(self, x):
+    def token_encode(self, x):
+        """ Encodes a state number as a bit vector. """
+        return np.asarray([int(bit) for bit in '{0:08b}'.format(x)], dtype=np.uint8)
+
+    def make_tokens(self, visited_reward_sets):
+        """ Converts visited state sets to tokens.
+
+            output is [batch_size, token_count, token_length]
+        """
+        N = len(visited_reward_sets)
+        # convert state into tokens
+        tokens = torch.zeros((N, self.TOKEN_COUNT, self.TOKEN_LENGTH), dtype=torch.float)
+        for i in range(N):
+            for j, state in enumerate(visited_reward_sets[i]):
+                tokens[i, j % self.TOKEN_COUNT] = torch.from_numpy(self.token_encode(state))
+        return tokens
+
+    def forward(self, x, reward_tokens=None):
+        """
+        Optionally takes a set of reward reward tokens as input.
+        """
         x = self.prep_for_model(x)
+
         x = F.relu(self.net.forward(x))
+
+        if reward_tokens is None:
+            token_activations = torch.zeros((len(x), self.TOKEN_FILTERS), dtype=self.dtype, device=self.device)
+        else:
+            if type(reward_tokens) is np.ndarray:
+                reward_tokens = torch.from_numpy(reward_tokens)
+            reward_tokens = reward_tokens.to(dtype=self.dtype, device=self.device)
+            token_activations = self.token_net.forward(reward_tokens)
+
+        x = torch.cat((x, token_activations), dim=1)
+
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value_ext = self.fc_value_ext(x).squeeze(dim=1)
         value_int = self.fc_value_int(x).squeeze(dim=1)
@@ -515,8 +582,6 @@ class RARModel(BaseModel):
             'ext_value': value_ext,
             'int_value': value_int
         }
-
-
 
 # ----------------------------------------------------------------------------------------------------------------
 # Utilities

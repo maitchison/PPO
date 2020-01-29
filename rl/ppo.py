@@ -45,8 +45,10 @@ class Runner():
 
         # rar
         rar_state_space = 2 ** 16
+        self.token_shape = (32,16) # 32 tokens, of length 16
         self.rar_visited = [set() for _ in range(A)]
         self.rar_reward_states = set(np.random.choice(rar_state_space, int(rar_state_space * args.rar_frequency)))
+        self.rar_reward_tokens = np.zeros([N, A, *self.token_shape], dtype=np.uint8)
 
         # emi
         self.emi_prev_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
@@ -163,6 +165,18 @@ class Runner():
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
+    def forward(self, states=None, tokens=None):
+        """ Forward states through model, resturns output, which is a dictionary containing
+            "log_policy" etc.
+        """
+        if args.use_rar:
+            return self.model.forward(
+                self.states if states is None else states,
+                self.model.make_tokens(self.rar_visited) if tokens is None else tokens
+            )
+        else:
+            return self.model.forward(self.states if states is None else states)
+
     def generate_rollout(self, is_warmup=False):
 
         assert self.vec_env is not None, "Please call create_envs first."
@@ -172,7 +186,7 @@ class Runner():
             prev_states = self.states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            model_out = self.model.forward(self.states)
+            model_out = self.forward()
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
             value_ext = model_out["ext_value"].detach().cpu().numpy()
@@ -222,8 +236,6 @@ class Runner():
                         if state in self.rar_reward_states and state not in self.rar_visited[i]:
                             rewards_int[i] += args.rar_scale
                             self.rar_visited[i].add(state)
-                            if i == 0:
-                                print("Hit", i, state, len(self.rar_visited[i]))
 
                 if args.use_emi:
                     rewards_int = self.model.predict_model_improvement(self.states).detach().cpu().numpy()
@@ -259,12 +271,14 @@ class Runner():
                     self.episode_len[i] = 0
 
                     if args.use_rar:
-                        # random reward visited needs to be reset to 0 on environment reset
+                        # random reward  visited needs to be reset to 0 on environment reset
                         self.rar_visited[i] = set()
 
             self.prev_state[t] = prev_states
             self.next_state[t] = self.states
             self.actions[t] = actions
+            if args.use_rar:
+                self.rar_reward_tokens[t] = self.model.make_tokens(self.rar_visited)
 
             self.rewards_ext[t] = rewards_ext
             self.log_policy[t] = log_policy
@@ -276,7 +290,8 @@ class Runner():
             atari.ENV_STATE["observation_norm_state"] = self.model.obs_rms.save_state()
 
         # get value estimates for final state.
-        model_out = self.model.forward(self.states)
+        model_out = self.forward()
+
         self.final_value_estimate_ext = model_out["ext_value"].detach().cpu().numpy()
         if "int_value" in model_out:
             self.final_value_estimate_int = model_out["int_value"].detach().cpu().numpy()
@@ -291,8 +306,12 @@ class Runner():
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
-            self.int_returns_raw = calculate_returns(self.int_rewards, 0 * self.terminals, self.final_value_estimate_int,
-                                                     args.gamma_int)
+            self.int_returns_raw = calculate_returns(
+                self.int_rewards,
+                args.propagate_intrinsic_rewards * self.terminals,
+                self.final_value_estimate_int,
+                args.gamma_int
+            )
 
             if args.normalize_intrinsic_rewards:
 
@@ -307,11 +326,19 @@ class Runner():
                 self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
                 self.batch_rewards_int = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
             else:
+                self.intrinsic_reward_norm_scale = 1
                 self.batch_rewards_int = self.int_rewards
 
-            # note: we zero all the terminals here so that intrinsic rewards propagate through episodes as per the RND paper.
-            self.returns_int = calculate_returns(self.int_rewards, 0 * self.terminals, self.final_value_estimate_int,
-                                                 args.gamma_int)
+            self.returns_int = calculate_returns(
+                self.int_rewards,
+                args.propagate_intrinsic_rewards * self.terminals,
+                self.final_value_estimate_int,
+                args.gamma_int
+            )
+
+            # stub, see how this is going negative...
+            print(np.min(self.int_rewards), np.min(self.final_value_estimate_int), np.min(self.returns_int), np.mean(self.returns_int))
+
             self.advantage_int = calculate_gae(self.int_rewards, self.int_value, self.final_value_estimate_int, None,
                                                args.gamma_int)
 
@@ -362,7 +389,6 @@ class Runner():
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
-    # this needs to be a dict...
     def train_minibatch(self, data):
 
         loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
@@ -375,9 +401,13 @@ class Runner():
         actions = data["actions"]
         policy_logprobs = data["log_policy"]
         advantages = data["advantages"]
+
         mini_batch_size = len(prev_states)
 
-        model_out = self.model.forward(prev_states)
+        if args.use_rar:
+            model_out = self.forward(prev_states, data["rar_reward_tokens"])
+        else:
+            model_out = self.forward(prev_states)
         logps = model_out["log_policy"]
 
         ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
@@ -392,7 +422,7 @@ class Runner():
 
         value_heads = ["ext"]
 
-        if args.use_rnd:
+        if args.use_intrinsic_rewards:
             value_heads.append("int")
         if args.use_atn:
             value_heads.append("atn")
@@ -498,7 +528,7 @@ class Runner():
 
         if args.use_emi:
 
-            # todo: have this as a sepereate training function, that does not use the same batching. Just use
+            # todo: have this as a separate training function, that does not use the same batching. Just use
             # microbatching (instead of minibatches) and maybe just run for 2 epochs?
 
             micro_batch_size = 128
@@ -566,6 +596,9 @@ class Runner():
             batch_data["atn_log_policy"] = self.atn_log_policy.reshape([batch_size, *self.policy_atn_shape])
             batch_data["atn_advantages"] = self.advantage_atn.reshape(batch_size)
             batch_data["atn_value"] = self.atn_value.reshape(batch_size)
+
+        if args.use_rar:
+            batch_data["rar_reward_tokens"] = self.rar_reward_tokens.reshape(batch_size, *self.token_shape)
 
         for i in range(args.batch_epochs):
 
