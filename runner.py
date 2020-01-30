@@ -205,11 +205,28 @@ def setup_jobs_V7():
                 rar_seed=seed,
                 epochs=10,
                 agents=64,
-                priority=0
+                priority=1
             )
 
+    for seed in [x*100 for x in range(4)]:
+        for reward_frequency in [0.1]:
+            for use_tokens in [True, False]:
+                add_job(
+                    "RAR_V2",
+                    run_name="freq={} tokens={} seed={}".format(reward_frequency, use_tokens, seed),
+                    env_name="MontezumaRevenge",
+                    use_rar=reward_frequency > 0,
+                    rar_frequency=reward_frequency,
+                    rar_seed=seed,
+                    rar_use_tokens=use_tokens,
+                    epochs=10,
+                    agents=64,
+                    priority=0
+                )
+
     # emi had a bug that stoped it working before (intrinsic value head wasn't being trained) so I'm running it again...
-    for extrinsic_reward_scale in [1.0]:
+    # these where all done with a default 'false' for intrinsic reward propagation
+    for extrinsic_reward_scale in [0.01, 0.1, 1]:
         add_job(
             "EMI_v2",
             run_name="EMI ext_rew={}".format(extrinsic_reward_scale),
@@ -234,8 +251,40 @@ def setup_jobs_V7():
             normalize_advantages=True,
             use_clipped_value_loss=True,
 
+            intrinsic_reward_propagation=False,
             use_emi=True,
-            priority=20
+            priority=5
+        )
+        
+    for extrinsic_reward_scale in [0.1]:
+        add_job(
+            "EMI_v2",
+            run_name="EMI ext_rew={} int_prop=False".format(extrinsic_reward_scale),
+            env_name="MontezumaRevenge",
+            epochs=200,
+            agents=64,
+            n_steps=128,
+            entropy_bonus=0.001,
+            learning_rate=1e-4,
+            mini_batch_size=1024,
+            gae_lambda=0.95,
+            ppo_epsilon=0.1,
+            gamma=0.995,
+            gamma_int=0.99,
+            sticky_actions=True,
+            max_grad_norm=5,
+            reward_normalization=True,
+            noop_start=True,
+            adam_epsilon=1e-5,
+            intrinsic_reward_scale=1.0,
+            extrinsic_reward_scale=extrinsic_reward_scale,
+            normalize_advantages=True,
+            use_clipped_value_loss=True,
+            
+            intrinsic_reward_propagation=True,
+    
+            use_emi=True,
+            priority=5
         )
 
 def setup_jobs_V6():

@@ -98,7 +98,10 @@ class LogVariable():
         elif self._type == "float":
             result = str(nice_round(value*self.display_scale, self.display_precision))
         elif self._type == "stats":
-            result = "{} ±{} ({}/{})".format(*(nice_round(x, self.display_precision) for x in value))
+            if self.display_width > 20:
+                result = "{} ±{} ({}/{})".format(*(nice_round(x, self.display_precision) for x in value))
+            else:
+                result = "{}".format(*(nice_round(x, self.display_precision) for x in value))
         elif self._type == "str":
             result = str(value)
         else:

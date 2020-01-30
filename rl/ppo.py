@@ -169,7 +169,7 @@ class Runner():
         """ Forward states through model, resturns output, which is a dictionary containing
             "log_policy" etc.
         """
-        if args.use_rar:
+        if args.use_rar and args.rar_use_tokens:
             return self.model.forward(
                 self.states if states is None else states,
                 self.model.make_tokens(self.rar_visited) if tokens is None else tokens
@@ -308,7 +308,7 @@ class Runner():
             # calculate the returns, but let returns propagate through terminal states.
             self.int_returns_raw = calculate_returns(
                 self.int_rewards,
-                args.propagate_intrinsic_rewards * self.terminals,
+                args.intrinsic_reward_propagation * self.terminals,
                 self.final_value_estimate_int,
                 args.gamma_int
             )
@@ -331,13 +331,10 @@ class Runner():
 
             self.returns_int = calculate_returns(
                 self.int_rewards,
-                args.propagate_intrinsic_rewards * self.terminals,
+                args.intrinsic_reward_propagation * self.terminals,
                 self.final_value_estimate_int,
                 args.gamma_int
             )
-
-            # stub, see how this is going negative...
-            print(np.min(self.int_rewards), np.min(self.final_value_estimate_int), np.min(self.returns_int), np.mean(self.returns_int))
 
             self.advantage_int = calculate_gae(self.int_rewards, self.int_value, self.final_value_estimate_int, None,
                                                args.gamma_int)
@@ -720,8 +717,8 @@ def train(env_name, model: models.BaseModel, log:Logger):
     """
 
     # setup logging
-    log.add_variable(LogVariable("ep_score", 100, "stats"))   # these need to be added up-front as it might take some
-    log.add_variable(LogVariable("ep_length", 100, "stats"))  # time get get first score / length.
+    log.add_variable(LogVariable("ep_score", 100, "stats", display_width=16))   # these need to be added up-front as it might take some
+    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
 
     # calculate some variables
     batch_size = (args.n_steps * args.agents)

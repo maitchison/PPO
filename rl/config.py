@@ -84,6 +84,7 @@ class Config:
         self.rar_scale = 0.0
         self.rar_seed = 0
         self.rar_frequency = 0
+        self.rar_use_tokens = False
 
         self.log_folder = ""
 
@@ -209,6 +210,9 @@ def parse_args():
                         help="Enables the Random Network Distilation (RND) module.")
 
     parser.add_argument("--normalize_advantages", type=str2bool, default=True)
+    parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
+                        help="allows intrinsic returns to propagate through end of episode."
+    )
 
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
@@ -227,6 +231,11 @@ def parse_args():
     parser.add_argument("--rar_scale", type=float, default=10, help="Scale of random auxiliary rewards.")
     parser.add_argument("--rar_seed", type=int, default=0, help="Seed for random auxiliary rewards.")
     parser.add_argument("--rar_frequency", type=float, default=(1/10), help="Frequency of random auxiliary rewards.")
+    parser.add_argument("--rar_use_tokens", type=str2bool, default=True, help="Gives model information about which rewards have been seen.")
 
     args.update(**parser.parse_args().__dict__)
+
+    # set defaults
+    if args.intrinsic_reward_propagation is None:
+        args.intrinsic_reward_propagation = args.use_rnd or args.use_emi
 
