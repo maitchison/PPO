@@ -85,6 +85,7 @@ class Config:
         self.rar_seed = 0
         self.rar_frequency = 0
         self.rar_use_tokens = False
+        self.rar_super_state_size = int()
 
         self.log_folder = ""
 
@@ -232,6 +233,7 @@ def parse_args():
     parser.add_argument("--rar_seed", type=int, default=0, help="Seed for random auxiliary rewards.")
     parser.add_argument("--rar_frequency", type=float, default=(1/10), help="Frequency of random auxiliary rewards.")
     parser.add_argument("--rar_use_tokens", type=str2bool, default=True, help="Gives model information about which rewards have been seen.")
+    parser.add_argument("--rar_super_state_size", type=int, default=32, help="Larger values increase how often states change.")
 
     args.update(**parser.parse_args().__dict__)
 

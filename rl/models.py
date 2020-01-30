@@ -3,6 +3,7 @@ import torch
 import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
+import hashlib
 
 from . import utils
 from . import utils
@@ -486,7 +487,7 @@ class TokenNet(nn.Module):
 
         # max pool means each filter will register if the token it's looking for exists anywhere.
         x = torch.max_pool2d(x, kernel_size=(32,1))
-        x = x.squeeze() # remove those 1 dims.
+        x = x[:,:,0, 0] # remove that last 1 dims.
 
         return x
 
@@ -500,7 +501,7 @@ class RARModel(BaseModel):
     TOKEN_COUNT = 32    # number of tokens in the models side channel input.
     TOKEN_FILTERS = 64  # this is roughly how many tokens the model is able to identify.
 
-    def __init__(self, head:str, input_dims, actions, device, dtype, seed=0, **kwargs):
+    def __init__(self, head:str, input_dims, actions, device, dtype, seed=0, super_state_size=64, **kwargs):
         super().__init__(input_dims, actions)
 
         self.name = "RAR-" + head
@@ -508,7 +509,7 @@ class RARModel(BaseModel):
         torch.manual_seed(seed)
 
         self.net = constructNet(head, input_dims, **kwargs)
-        self.state_mapping = constructNet("Nature", input_dims, hidden_units=16)
+        self.state_mapping = constructNet("nature", input_dims, hidden_units=super_state_size)
         self.token_net = TokenNet(
             token_count=self.TOKEN_COUNT,
             token_length=self.TOKEN_LENGTH,
@@ -523,6 +524,8 @@ class RARModel(BaseModel):
 
         self.set_device_and_dtype(device, dtype)
 
+        self.m = hashlib.sha256()
+
     def get_mapped_states(self, states):
         """ Applies a mapping from the environment observational space to a smaller state space. """
 
@@ -534,14 +537,15 @@ class RARModel(BaseModel):
         mapped_states = []
         for state_bits in states:
             state = [1 if x >= 0 else 0 for x in state_bits]
-            state = int("".join(str(i) for i in state), 2)
+            state_hex = hashlib.md5(("".join(str(i) for i in state)).encode()).hexdigest()
+            state = int(state_hex[-4:],16)
             mapped_states.append(state)
 
         return np.asarray(mapped_states)
 
     def token_encode(self, x):
         """ Encodes a state number as a bit vector. """
-        return np.asarray([int(bit) for bit in '{0:08b}'.format(x)], dtype=np.uint8)
+        return np.asarray([int(bit) for bit in '{0:016b}'.format(x)], dtype=np.uint8)
 
     def make_tokens(self, visited_reward_sets):
         """ Converts visited state sets to tokens.

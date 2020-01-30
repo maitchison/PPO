@@ -350,7 +350,18 @@ def expand_gray_frame(x, tint=(1,1,1)):
     result.append(x * tint[0])
     return np.asarray(result, dtype=dtype)
 
+def draw_pixel(frame, dx, dy, c, sx=1, sy=1):
+    for x in range(sx):
+        for y in range(sy):
+            frame[dy+y, dx+x,:] = c[::-1]
 
+def draw_image(frame, im, dx, dy, scale=4):
+    """ paints image (2d nd array) onto a frame. """
+    height, width = im.shape
+    for x in range(width):
+        for y in range(height):
+            c = (im[y,x]*255,im[y,x]*255,im[y,x]*255)
+            draw_pixel(frame, dx+x*scale, dy+y*scale, c, sx=scale, sy=scale)
 
 def compose_frame(state_frame, rendered_frame, channels=None):
     """ Puts together a composite frame containing rendered frame and state. """
@@ -463,57 +474,6 @@ def compose_frame(state_frame, rendered_frame, channels=None):
 
     """
     return frame
-
-
-def export_movie(filename, model, env_name):
-    """ Exports a movie of agent playing game.
-        which_frames: model, real, or both
-    """
-
-    scale = 2
-
-    env = atari.make(env_name)
-    _ = env.reset()
-    state, reward, done, info = env.step(0)
-    rendered_frame = info.get("monitor_obs", state)
-
-    # work out our height
-    first_frame = compose_frame(state, rendered_frame)
-    height, width, channels = first_frame.shape
-    width = (width * scale) // 4 * 4 # make sure these are multiples of 4
-    height = (height * scale) // 4 * 4
-
-    # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-    video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
-
-    state = env.reset()
-
-    # play the game...
-    while not done:
-
-        model_out = model.forward(state[np.newaxis])
-        logprobs = model_out["log_policy"][0].detach().cpu().numpy()
-        actions = sample_action_from_logp(logprobs)
-
-        if "atn_log_policy" in model_out:
-            logprobs_atn = model_out["atn_log_policy"][0].detach().cpu().numpy()
-            action_atn = sample_action_from_logp(logprobs_atn)
-            actions = (actions, action_atn)
-
-        state, reward, done, info = env.step(actions)
-
-        channels = info.get("channels", None)
-        rendered_frame = info.get("monitor_obs", state)
-
-        frame = compose_frame(state, rendered_frame, channels)
-        if frame.shape[0] != width or frame.shape[1] != height:
-            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
-
-        assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format((width, height, 3), frame.shape)
-
-        video_out.write(frame)
-
-    video_out.release()
 
 
 # -------------------------------------------------------------

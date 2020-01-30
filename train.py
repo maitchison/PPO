@@ -93,6 +93,8 @@ if __name__ == "__main__":
         # todo: this should be a setting, not a set of bools
         raise Exception("ATN, EMI, RND, and RAR are not compatible.")
 
+    model_args = {}
+
     if args.use_atn:
         ACModel = models.AttentionModel
     elif args.use_rnd:
@@ -101,11 +103,12 @@ if __name__ == "__main__":
         ACModel = models.EMIModel
     elif args.use_rar:
         ACModel = models.RARModel
+        model_args["super_state_size"] = args.rar_super_state_size
     else:
         ACModel = models.ActorCriticModel
 
     actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
-                                                 device=args.device, dtype=torch.float32)
+                                                 device=args.device, dtype=torch.float32, **model_args)
 
     try:
 

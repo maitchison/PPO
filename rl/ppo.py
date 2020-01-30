@@ -7,6 +7,7 @@ import torch.nn as nn
 import time
 import json
 import math
+import cv2
 from .logger import Logger, LogVariable
 
 import torch.multiprocessing
@@ -176,6 +177,75 @@ class Runner():
             )
         else:
             return self.model.forward(self.states if states is None else states)
+
+    def export_movie(self, filename, model, env_name):
+        """ Exports a movie of agent playing game.
+            which_frames: model, real, or both
+        """
+
+        scale = 2
+
+        env = atari.make(env_name)
+        _ = env.reset()
+        state, reward, done, info = env.step(0)
+        rendered_frame = info.get("monitor_obs", state)
+
+        # work out our height
+        first_frame = utils.compose_frame(state, rendered_frame)
+        height, width, channels = first_frame.shape
+        width = (width * scale) // 4 * 4  # make sure these are multiples of 4
+        height = (height * scale) // 4 * 4
+
+        # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
+        video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+
+        state = env.reset()
+
+        rar_visited = set()
+
+        # play the game...
+        while not done:
+
+            if args.use_rar:
+                model_out = model.forward(state[np.newaxis], self.model.make_tokens([rar_visited]))
+            else:
+                model_out = model.forward(state[np.newaxis])
+            logprobs = model_out["log_policy"][0].detach().cpu().numpy()
+            actions = utils.sample_action_from_logp(logprobs)
+
+            if args.use_atn:
+                logprobs_atn = model_out["atn_log_policy"][0].detach().cpu().numpy()
+                action_atn = utils.sample_action_from_logp(logprobs_atn)
+                actions = (actions, action_atn)
+
+            state, reward, done, info = env.step(actions)
+
+            channels = info.get("channels", None)
+            rendered_frame = info.get("monitor_obs", state)
+
+            frame = utils.compose_frame(state, rendered_frame, channels)
+            if frame.shape[0] != width or frame.shape[1] != height:
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
+
+            if args.use_rar:
+                mapped_state = self.model.get_mapped_states(state[np.newaxis])[0]
+                state_token = self.model.make_tokens([{mapped_state}])[0][0:1,:]
+                utils.draw_image(frame, state_token, 0, 0, scale=4)
+                if mapped_state in self.rar_reward_states and mapped_state not in rar_visited:
+                    utils.draw_pixel(frame, 10, 10, [255, 0, 0], sx=10, sy=10)
+                    rar_visited.add(mapped_state)
+                visited_tokens = self.model.make_tokens([rar_visited])[0]
+                utils.draw_image(frame, visited_tokens, 150, 0, scale=4)
+
+            # show current state
+
+
+            assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format(
+                (width, height, 3), frame.shape)
+
+            video_out.write(frame)
+
+        video_out.release()
 
     def generate_rollout(self, is_warmup=False):
 
@@ -877,7 +947,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
             if args.export_video:
                 video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
-                utils.export_movie(video_name, model, env_name)
+                runner.export_movie(video_name, model, env_name)
                 log.info("  -video exported")
 
             log.info()
