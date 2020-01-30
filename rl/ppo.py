@@ -238,7 +238,10 @@ class Runner():
                             self.rar_visited[i].add(state)
 
                 if args.use_emi:
-                    rewards_int = self.model.predict_model_improvement(self.states).detach().cpu().numpy()
+                    # relu makes sure that only positive rewards are counted.
+                    # otherwise intrinsic reward may become negative causing agent to terminate the episode as quickly
+                    # as possible.
+                    rewards_int = torch.nn.functional.relu(self.model.predict_model_improvement(self.states)).detach().cpu().numpy()
 
                 if args.use_rnd:
                     if is_warmup:

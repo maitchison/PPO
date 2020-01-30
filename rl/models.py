@@ -326,7 +326,7 @@ class EMIModel(BaseModel):
     def predict_model_improvement(self, states):
         """ Returns the predicted model improvement from landing in given state. """
         states = self.prep_for_model(states)
-        return F.relu(self.fc_pred_improvement(F.relu(self.improvement_net(states))).squeeze(dim=1))
+        return self.fc_pred_improvement(F.relu(self.improvement_net(states))).squeeze(dim=1)
 
     def forward(self, x):
         x = self.prep_for_model(x)
