@@ -192,6 +192,7 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 
 def setup_jobs_V7():
+
     # this is a test to see how well random auxilary rewards help hard exploration games
     # this experiment failed as intrinsic reward head wasn't being trained
     for seed in [x*100 for x in range(16)]:
@@ -209,7 +210,7 @@ def setup_jobs_V7():
             )
 
     for seed in [x*100 for x in range(4)]:
-        for reward_frequency in [0.1]:
+        for reward_frequency in [0.1, 0.01]:
             for use_tokens in [True, False]:
                 add_job(
                     "RAR_V2",
@@ -253,7 +254,7 @@ def setup_jobs_V7():
 
             intrinsic_reward_propagation=False,
             use_emi=True,
-            priority=5
+            priority=2
         )
         
     for extrinsic_reward_scale in [0.1]:
