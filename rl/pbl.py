@@ -15,6 +15,7 @@ import torch.multiprocessing
 from . import utils, models, atari, hybridVecEnv, config
 from .config import args
 
+
 class Runner():
 
     def __init__(self, model, optimizer, log):
@@ -46,14 +47,9 @@ class Runner():
 
         # rar
         rar_state_space = 2 ** 16
-        self.token_shape = (32,16) # 32 tokens, of length 16
+        self.token_shape = (32, 16)  # 32 tokens, of length 16
         self.rar_visited = [set() for _ in range(A)]
-
-        rnd_state = np.random.get_state()
-        np.random.seed(args.rar_seed)
         self.rar_reward_states = set(np.random.choice(rar_state_space, int(rar_state_space * args.rar_frequency)))
-        np.random.set_state(rnd_state)
-
         self.rar_reward_tokens = np.zeros([N, A, *self.token_shape], dtype=np.uint8)
 
         # emi
@@ -88,9 +84,11 @@ class Runner():
         """ Creates environments for runner"""
         env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
         self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers,
-                                                    verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
+                                                         verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(
+            env_fns)
         self.log.important("Generated {} agents ({}) using {} ({}) model.".
-                      format(args.agents, "async" if not args.sync_envs else "sync", self.model.name, self.model.dtype))
+                           format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
+                                  self.model.dtype))
 
     def save_checkpoint(self, filename, step):
 
@@ -142,7 +140,6 @@ class Runner():
             self.model.obs_rms.restore_state(checkpoint["observation_norm_state"])
 
         return step
-
 
     def reset(self):
 
@@ -234,16 +231,16 @@ class Runner():
 
             if args.use_rar:
                 mapped_state = self.model.get_mapped_states(state[np.newaxis])[0]
-                state_token = self.model.make_tokens([{mapped_state}])[0][0:1,:]
+                state_token = self.model.make_tokens([{mapped_state}])[0][0:1, :]
                 utils.draw_image(frame, state_token, 0, 0, scale=4)
                 if mapped_state in self.rar_reward_states and mapped_state not in rar_visited:
                     utils.draw_pixel(frame, 10, 10, [255, 0, 0], sx=10, sy=10)
                     rar_visited.add(mapped_state)
-                    print("Found", mapped_state)
                 visited_tokens = self.model.make_tokens([rar_visited])[0]
-                utils.draw_image(frame, visited_tokens[:len(rar_visited),:], 150, 0, scale=4)
+                utils.draw_image(frame, visited_tokens, 150, 0, scale=4)
 
             # show current state
+
             assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format(
                 (width, height, 3), frame.shape)
 
@@ -276,10 +273,12 @@ class Runner():
             if args.use_atn:
                 log_policy_atn = model_out["atn_log_policy"].detach().cpu().numpy()
                 value_atn = model_out["atn_value"].detach().cpu().numpy()
-                actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
+                actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn],
+                                         dtype=np.int32)
                 self.states, rewards_ext, dones, infos = self.vec_env.step(list(zip(actions, actions_atn)))
 
-                attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -args.atn_movement_cost for i in range(args.agents)])
+                attention_cost = np.asarray(
+                    [infos[i].get("attention_cost", 0) * -args.atn_movement_cost for i in range(args.agents)])
                 self.log.watch_mean("atn_cost", attention_cost.mean())
                 attention_rewards = rewards_ext + attention_cost
 
@@ -315,7 +314,8 @@ class Runner():
                     # relu makes sure that only positive rewards are counted.
                     # otherwise intrinsic reward may become negative causing agent to terminate the episode as quickly
                     # as possible.
-                    rewards_int = torch.nn.functional.relu(self.model.predict_model_improvement(self.states)).detach().cpu().numpy()
+                    rewards_int = torch.nn.functional.relu(
+                        self.model.predict_model_improvement(self.states)).detach().cpu().numpy()
 
                 if args.use_rnd:
                     if is_warmup:
@@ -328,7 +328,6 @@ class Runner():
 
                 self.int_rewards[t] = rewards_int
                 self.int_value[t] = value_int
-
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", rewards_ext) for reward, info in zip(rewards_ext, infos)],
@@ -377,7 +376,8 @@ class Runner():
 
     def calculate_returns(self):
 
-        self.ext_returns = calculate_returns(self.rewards_ext, self.terminals, self.final_value_estimate_ext, args.gamma)
+        self.ext_returns = calculate_returns(self.rewards_ext, self.terminals, self.final_value_estimate_ext,
+                                             args.gamma)
         self.advantage_ext = calculate_gae(self.rewards_ext, self.value_ext, self.final_value_estimate_ext,
                                            self.terminals, args.gamma, args.normalize_advantages)
 
@@ -430,12 +430,12 @@ class Runner():
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
-
-        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width = 0 if args.normalize_advantages else 10)
-        self.log.watch_mean("adv_std", np.std(self.advantage), display_width = 0 if args.normalize_advantages else 10)
+        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0 if args.normalize_advantages else 10)
+        self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0 if args.normalize_advantages else 10)
         self.log.watch_mean("batch_reward_ext", np.mean(self.rewards_ext), display_name="rew_ext", display_width=0)
         self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
-        self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std", display_width=0)
+        self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std",
+                            display_width=0)
         self.log.watch_mean("value_est_ext", np.mean(self.value_ext), display_name="est_v_ext")
         self.log.watch_mean("value_est_ext_std", np.std(self.value_ext), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.value_ext.ravel(), self.ext_returns.ravel()))
@@ -446,9 +446,11 @@ class Runner():
                                 display_width=0)
             self.log.watch_mean("batch_return_int", np.mean(self.returns_int), display_name="ret_int")
             self.log.watch_mean("batch_return_int_std", np.std(self.returns_int), display_name="ret_int_std")
-            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw), display_name="ret_int_raw_mu",
+            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
+                                display_name="ret_int_raw_mu",
                                 display_width=0)
-            self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw), display_name="ret_int_raw_std",
+            self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw),
+                                display_name="ret_int_raw_std",
                                 display_width=0)
 
             self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
@@ -456,9 +458,10 @@ class Runner():
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.returns_int.ravel()))
             if args.use_rnd:
                 self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
-                                display_width=10, display_priority=-2)
-                self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards), display_name="rew_int_unnorm_std",
-                                display_width=0)
+                                    display_width=10, display_priority=-2)
+                self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards),
+                                    display_name="rew_int_unnorm_std",
+                                    display_width=0)
 
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
@@ -546,7 +549,6 @@ class Runner():
             self.log.watch_mean("loss_ent_atn", loss_entropy_atn)
             loss += loss_entropy_atn
 
-
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
@@ -615,7 +617,6 @@ class Runner():
                 model_performance = self.model.fdm_error(self.emi_prev_state, self.emi_actions, self.emi_next_state)
 
             for i in range(micro_batches):
-
                 mb_prev_states = prev_states[i * micro_batch_size:(i + 1) * micro_batch_size]
                 mb_next_states = next_states[i * micro_batch_size:(i + 1) * micro_batch_size]
                 mb_actions = actions[i * micro_batch_size:(i + 1) * micro_batch_size]
@@ -629,9 +630,11 @@ class Runner():
 
                 # update estimate of models performance on previous transitions
                 with torch.no_grad():
-                    new_model_performance = self.model.fdm_error(self.emi_prev_state, self.emi_actions, self.emi_next_state)
+                    new_model_performance = self.model.fdm_error(self.emi_prev_state, self.emi_actions,
+                                                                 self.emi_next_state)
 
-                fdm_improvement = (model_performance - new_model_performance) * 4*4*micro_batches # epochs*minibatches*microbatches
+                fdm_improvement = (
+                                              model_performance - new_model_performance) * 4 * 4 * micro_batches  # epochs*minibatches*microbatches
                 self.log.watch_mean("emi_aft", new_model_performance)
                 self.log.watch_mean("emi_imp", fdm_improvement)
 
@@ -643,8 +646,6 @@ class Runner():
                 self.optimizer.step()
 
                 model_performance = new_model_performance
-
-
 
     def train(self):
 
@@ -703,12 +704,13 @@ class Runner():
             # saves some time uploading these once here.
             self.emi_prev_state, self.emi_next_state = [
                 self.model.prep_for_model(x.reshape([batch_size, *self.state_shape])[ordering])
-                    for x in [self.prev_state, self.next_state]
+                for x in [self.prev_state, self.next_state]
             ]
             self.emi_actions = torch.from_numpy(
                 self.actions.reshape([batch_size])[ordering]).to(
                 device=self.model.device, dtype=torch.int64
             )
+
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -719,6 +721,7 @@ def adjust_learning_rate(optimizer, epoch):
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         return lr
+
 
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
@@ -748,7 +751,7 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
     :return:
     """
 
-    N,A = rewards.shape
+    N, A = rewards.shape
 
     returns = np.zeros([N, A], dtype=np.float32)
     current_return = final_value_estimate
@@ -763,7 +766,8 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
     batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
     prev_adv = np.zeros([args.agents], dtype=np.float32)
     for t in reversed(range(args.n_steps)):
-        is_next_terminal = batch_terminal[t] if batch_terminal is not None else False # batch_terminal[t] records if t+1 is a terminal state)
+        is_next_terminal = batch_terminal[
+            t] if batch_terminal is not None else False  # batch_terminal[t] records if t+1 is a terminal state)
         value_next_t = batch_value[t + 1] if t != args.n_steps - 1 else final_value_estimate
         delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
         batch_advantage[t] = prev_adv = delta + gamma * args.gae_lambda * (
@@ -772,29 +776,18 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
 
-def train(env_name, model: models.BaseModel, log:Logger):
+
+def train(env_name, ModelConstructor, log: Logger):
     """
-    Default parameters from stable baselines
-    
-    https://stable-baselines.readthedocs.io/en/master/modules/ppo2.html
-    
-    gamma             0.99
-    n_steps            128
-    ent_coef          0.01
-    learning_rate   2.5e-4
-    vf_coef            0.5
-    max_grad_norm      0.5
-    lam               0.95
-    nminibatches         4
-    noptepoch            4
-    cliprange          0.1 
-    
-    atari usually requires ~10M steps 
-    
+    Trains a population of models, each with their own set of parameters, and potentially their own set of goals.
+
+    env_name: The name of the environment to train in
+    model: Function without required parameters that constructs a model.
     """
 
     # setup logging
-    log.add_variable(LogVariable("ep_score", 100, "stats", display_width=16))   # these need to be added up-front as it might take some
+    log.add_variable(LogVariable("ep_score", 100, "stats",
+                                 display_width=16))  # these need to be added up-front as it might take some
     log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
 
     # calculate some variables
@@ -815,7 +808,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step = runner.load_checkpoint(checkpoint_path)
         log = runner.log
-        log.info("  (resumed from step {:.0f}M)".format(restored_step/1000/1000))
+        log.info("  (resumed from step {:.0f}M)".format(restored_step / 1000 / 1000))
         start_iteration = (restored_step // batch_size) + 1
         walltime = log["walltime"]
         did_restore = True
@@ -833,8 +826,8 @@ def train(env_name, model: models.BaseModel, log:Logger):
     runner.reset()
 
     # make a copy of params
-    with open(os.path.join(args.log_folder, "params.txt"),"w") as f:
-        params = {k:v for k,v in args.__dict__.items()}
+    with open(os.path.join(args.log_folder, "params.txt"), "w") as f:
+        params = {k: v for k, v in args.__dict__.items()}
         f.write(json.dumps(params, indent=4))
 
     # make a copy of training files for reference
@@ -843,7 +836,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
     print_counter = 0
 
     if start_iteration == 0 and (args.limit_epochs is None):
-        log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations*batch_size/1000/1000))
+        log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations * batch_size / 1000 / 1000))
     else:
         log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
             str(round(start_iteration * batch_size / 1000 / 1000)),
@@ -853,19 +846,18 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
     log.info()
 
-
     last_print_time = -1
     last_log_time = -1
 
     # add a few checkpoints early on
-    checkpoints = [x // batch_size for x in range(0, n_iterations*batch_size+1, config.CHECKPOINT_EVERY_STEPS)]
-    checkpoints += [x // batch_size for x in [1e6]] #add a checkpoint early on (1m steps)
+    checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, config.CHECKPOINT_EVERY_STEPS)]
+    checkpoints += [x // batch_size for x in [1e6]]  # add a checkpoint early on (1m steps)
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))
 
     log_time = 0
 
-    for iteration in range(start_iteration, n_iterations+1):
+    for iteration in range(start_iteration, n_iterations + 1):
 
         step_start_time = time.time()
 
@@ -902,11 +894,11 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
         # record some training stats
         log.watch_mean("fps", int(fps))
-        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
+        log.watch_mean("time_train", train_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_step", step_time * 1000, display_postfix="ms", display_precision=2, display_width=10)
         log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_log", log_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
 
         log.record_step()
 
@@ -936,8 +928,6 @@ def train(env_name, model: models.BaseModel, log:Logger):
             log.save_log()
             last_log_time = time.time()
 
-
-
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
@@ -950,7 +940,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
                 log.log("  -checkpoint saved")
 
             if args.export_video:
-                video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
+                video_name = utils.get_checkpoint_path(env_step, env_name + ".mp4")
                 runner.export_movie(video_name, model, env_name)
                 log.info("  -video exported")
 

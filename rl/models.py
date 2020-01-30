@@ -524,8 +524,6 @@ class RARModel(BaseModel):
 
         self.set_device_and_dtype(device, dtype)
 
-        self.m = hashlib.sha256()
-
     def get_mapped_states(self, states):
         """ Applies a mapping from the environment observational space to a smaller state space. """
 

@@ -87,6 +87,8 @@ class Config:
         self.rar_use_tokens = False
         self.rar_super_state_size = int()
 
+        self.algo = str()
+
         self.log_folder = ""
 
         self.__dict__.update(kwargs)
@@ -140,6 +142,7 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
     parser.add_argument("--agents", type=int, default=32)
+    parser.add_argument("--algo", type=str, default="ppo", help="Algorithm to use [ppo|pbl]")
 
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")

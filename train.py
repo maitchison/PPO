@@ -3,7 +3,7 @@ import torch
 import uuid
 import multiprocessing
 
-from rl import utils, models, ppo, atari, config, logger
+from rl import utils, models, ppo, pbl, atari, config, logger
 from rl.config import args
 
 resolution_map = {
@@ -107,14 +107,22 @@ if __name__ == "__main__":
     else:
         ACModel = models.ActorCriticModel
 
-    actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
-                                                 device=args.device, dtype=torch.float32, **model_args)
 
     try:
 
         utils.lock_job()
 
-        ppo.train(args.env_name, actor_critic_model, log)
+        if args.algo.lower() == "ppo":
+            actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
+                                         device=args.device, dtype=torch.float32, **model_args)
+            ppo.train(args.env_name, actor_critic_model, log)
+        elif args.algo.lower() == "pbl":
+            pbl.train(
+                args.env_name,
+                lambda : ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
+                                         device=args.device, dtype=torch.float32, **model_args),
+                log
+            )
 
         utils.release_lock()
 

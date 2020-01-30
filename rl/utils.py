@@ -351,9 +351,7 @@ def expand_gray_frame(x, tint=(1,1,1)):
     return np.asarray(result, dtype=dtype)
 
 def draw_pixel(frame, dx, dy, c, sx=1, sy=1):
-    for x in range(sx):
-        for y in range(sy):
-            frame[dy+y, dx+x,:] = c[::-1]
+    frame[dy:dy+sy, dx:dx+sx,:] = c[::-1]
 
 def draw_image(frame, im, dx, dy, scale=4):
     """ paints image (2d nd array) onto a frame. """
