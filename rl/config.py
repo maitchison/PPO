@@ -79,13 +79,16 @@ class Config:
         self.atn_movement_cost = 0.0
         self.atn_global_frame_skip = 1
 
-        # population based learning
+        # random auxiliary rewards.
         self.use_rar = False
         self.rar_scale = 0.0
         self.rar_seed = 0
         self.rar_frequency = 0
         self.rar_use_tokens = False
         self.rar_super_state_size = int()
+
+        # population based learning
+        self.pbl_population_size = int()
 
         self.algo = str()
 
@@ -237,6 +240,9 @@ def parse_args():
     parser.add_argument("--rar_frequency", type=float, default=(1/10), help="Frequency of random auxiliary rewards.")
     parser.add_argument("--rar_use_tokens", type=str2bool, default=True, help="Gives model information about which rewards have been seen.")
     parser.add_argument("--rar_super_state_size", type=int, default=32, help="Larger values increase how often states change.")
+
+    # population stuff
+    parser.add_argument("--pbl_population_size", type=int, default=16, help="Number of agents in population.")
 
     args.update(**parser.parse_args().__dict__)
 

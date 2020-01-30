@@ -243,19 +243,18 @@ def setup_jobs_V7():
                             rar_super_state_size=super_space,
                             epochs=10,
                             agents=64,
-                            priority=2
+                            priority=0
                         )
 
     # additional tests on best performing hyper-parameters.
     # we also hope to find a good seed with this experiment too.
-    """
     for seed in [x*100 for x in range(16)]:
         for super_space in [16]:
             for reward_frequency in [0.01]:
                 for reward_scale in [1]:
                     for use_tokens in [True]:
                         add_job(
-                            "RAR_v3",
+                            "RAR_v4",
                             run_name="freq={} tokens={} seed={} scale={} super={}".format(reward_frequency, use_tokens, seed, reward_scale, super_space),
                             env_name="MontezumaRevenge",
                             use_rar=reward_frequency > 0,
@@ -266,10 +265,10 @@ def setup_jobs_V7():
                             rar_super_state_size=super_space,
                             epochs=10,
                             agents=64,
-                            priority=2
+                            priority=0
                         )
-    """
-    # todo rar_v3 looking for 'good' seeds
+
+    # todo rar_v4 retest 'good' seeds.
 
     # emi had a bug that stopped it working before (intrinsic value head wasn't being trained) so I'm running it again...
     # these where all done with a default 'false' for intrinsic reward propagation

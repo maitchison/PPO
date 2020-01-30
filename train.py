@@ -3,7 +3,7 @@ import torch
 import uuid
 import multiprocessing
 
-from rl import utils, models, ppo, pbl, atari, config, logger
+from rl import utils, models, ppo, atari, config, logger
 from rl.config import args
 
 resolution_map = {
@@ -117,7 +117,7 @@ if __name__ == "__main__":
                                          device=args.device, dtype=torch.float32, **model_args)
             ppo.train(args.env_name, actor_critic_model, log)
         elif args.algo.lower() == "pbl":
-            pbl.train(
+            ppo.train_population(
                 args.env_name,
                 lambda : ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
                                          device=args.device, dtype=torch.float32, **model_args),

@@ -183,7 +183,7 @@ class Runner():
         else:
             return self.model.forward(self.states if states is None else states)
 
-    def export_movie(self, filename, model, env_name):
+    def export_movie(self, filename, env_name):
         """ Exports a movie of agent playing game.
             which_frames: model, real, or both
         """
@@ -212,9 +212,9 @@ class Runner():
         while not done:
 
             if args.use_rar:
-                model_out = model.forward(state[np.newaxis], self.model.make_tokens([rar_visited]))
+                model_out = self.model.forward(state[np.newaxis], self.model.make_tokens([rar_visited]))
             else:
-                model_out = model.forward(state[np.newaxis])
+                model_out = self.model.forward(state[np.newaxis])
             logprobs = model_out["log_policy"][0].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(logprobs)
 
@@ -239,7 +239,6 @@ class Runner():
                 if mapped_state in self.rar_reward_states and mapped_state not in rar_visited:
                     utils.draw_pixel(frame, 10, 10, [255, 0, 0], sx=10, sy=10)
                     rar_visited.add(mapped_state)
-                    print("Found", mapped_state)
                 visited_tokens = self.model.make_tokens([rar_visited])[0]
                 utils.draw_image(frame, visited_tokens[:len(rar_visited),:], 150, 0, scale=4)
 
@@ -644,8 +643,6 @@ class Runner():
 
                 model_performance = new_model_performance
 
-
-
     def train(self):
 
         # organise our data...
@@ -771,6 +768,179 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
     if normalize:
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
+
+
+def train_population(self, env_name, ModelConstructor, log: Logger):
+    """
+    Trains a population of models, each with their own set of parameters, and potentially their own set of goals.
+
+    env_name: The name of the environment to train in
+    ModelConstructor: Function without required parameters that constructs a model.
+    """
+
+    # create a population of models, each with their own parameters.
+    models = []
+    for i in range(args.pbl_population_size):
+        models.append(ModelConstructor())
+
+
+    # setup logging
+    log.add_variable(LogVariable("ep_score", 100, "stats", display_width=16))   # these need to be added up-front as it might take some
+    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
+
+    # calculate some variables
+    batch_size = (args.n_steps * args.agents)
+    final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
+    n_iterations = math.ceil((final_epoch * 1e6) / batch_size)
+
+    # create optimizers
+    optimizers = [torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon) for model in models]
+
+    # create our runners
+    runners = [Runner(model, optimizer, log) for model, optimizer in zip(models, optimizers)]
+
+    # todo allow for restoration from checkpoint
+    start_iteration = 0
+    walltime = 0
+    did_restore = False
+
+    # create environments for each agent.
+    for runner in runners:
+        runner.create_envs(env_name)
+        runner.reset()
+
+    # make a copy of params
+    with open(os.path.join(args.log_folder, "params.txt"),"w") as f:
+        params = {k:v for k,v in args.__dict__.items()}
+        f.write(json.dumps(params, indent=4))
+
+    # make a copy of training files for reference
+    utils.copy_source_files("./", args.log_folder)
+
+    print_counter = 0
+
+    if start_iteration == 0 and (args.limit_epochs is None):
+        log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations*batch_size/1000/1000))
+    else:
+        log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
+            str(round(start_iteration * batch_size / 1000 / 1000)),
+            str(round(n_iterations * batch_size / 1000 / 1000)),
+            str(round(args.epochs))
+        ))
+
+    log.info()
+
+    last_print_time = -1
+    last_log_time = -1
+
+    # add a few checkpoints early on
+    checkpoints = [x // batch_size for x in range(0, n_iterations*batch_size+1, config.CHECKPOINT_EVERY_STEPS)]
+    checkpoints += [x // batch_size for x in [1e6]] #add a checkpoint early on (1m steps)
+    checkpoints.append(n_iterations)
+    checkpoints = sorted(set(checkpoints))
+
+    log_time = 0
+
+    # train all models together
+    for iteration in range(start_iteration, n_iterations+1):
+
+        step_start_time = time.time()
+
+        env_step = iteration * batch_size
+
+        log.watch("iteration", iteration, display_priority=5)
+        log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
+                  display_precision=2)
+        log.watch("walltime", walltime,
+                  display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
+
+        for optimizer in optimizers:
+            adjust_learning_rate(optimizer, env_step / 1e6)
+
+        # generate the rollout
+        rollout_start_time = time.time()
+        for runner in runners:
+            runner.generate_rollout()
+        rollout_time = (time.time() - rollout_start_time) / batch_size / len(runners)
+
+        # calculate returns
+        returns_start_time = time.time()
+        for runner in runners:
+            runner.calculate_returns()
+        returns_time = (time.time() - returns_start_time) / batch_size / len(runners)
+
+        train_start_time = time.time()
+        for runner in runners:
+            runner.train()
+        train_time = (time.time() - train_start_time) / batch_size / len(runners)
+
+        step_time = (time.time() - step_start_time) / batch_size / len(runners)
+
+        log_start_time = time.time()
+
+        fps = 1.0 / (step_time)
+
+        # record some training stats
+        log.watch_mean("fps", int(fps))
+        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
+        log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+
+        log.record_step()
+
+        # periodically print and save progress
+        if time.time() - last_print_time >= args.debug_print_freq:
+            save_progress(log)
+            log.print_variables(include_header=print_counter % 10 == 0)
+            last_print_time = time.time()
+            print_counter += 1
+
+        # save log and refresh lock
+        if time.time() - last_log_time >= args.debug_log_freq:
+            utils.lock_job()
+            log.export_to_csv()
+            log.save_log()
+            last_log_time = time.time()
+
+        # periodically save checkpoints
+        if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
+
+            log.info()
+            log.important("Checkpoint: {}".format(args.log_folder))
+
+            if args.save_checkpoints:
+                for i, runner in enumerate(runners):
+                    checkpoint_name = utils.get_checkpoint_path(env_step, "params_{}.pt".format(i))
+                    runner.save_checkpoint(checkpoint_name, env_step)
+                    log.log("  -checkpoint saved")
+
+            if args.export_video:
+                video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
+                runner[0].export_movie(video_name, env_name)
+                log.info("  -video exported")
+
+            log.info()
+
+        log_time = (time.time() - log_start_time) / batch_size
+
+        # update walltime
+        # this is not technically wall time, as I pause time when the job is not processing, and do not include
+        # any of the logging time.
+        walltime += (step_time * batch_size)
+
+    # -------------------------------------
+    # save final information
+
+    save_progress(log)
+    log.export_to_csv()
+    log.save_log()
+
+    log.info()
+    log.important("Training Complete.")
+    log.info()
+
 
 def train(env_name, model: models.BaseModel, log:Logger):
     """
@@ -936,8 +1106,6 @@ def train(env_name, model: models.BaseModel, log:Logger):
             log.save_log()
             last_log_time = time.time()
 
-
-
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
@@ -951,7 +1119,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
 
             if args.export_video:
                 video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
-                runner.export_movie(video_name, model, env_name)
+                runner.export_movie(video_name, env_name)
                 log.info("  -video exported")
 
             log.info()
