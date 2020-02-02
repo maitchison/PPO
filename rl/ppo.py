@@ -9,7 +9,7 @@ import json
 import math
 import cv2
 import pickle
-import gzip, bz2, blosc
+import gzip, bz2, lzma
 from collections import defaultdict
 from .logger import Logger, LogVariable
 
@@ -663,13 +663,15 @@ class Runner():
         save_dict["value_ext"] = self.value_ext
         save_dict["final_value_estimate_ext"] = self.final_value_estimate_ext
 
-        output_file = os.path.join(folder,filename)
+        output_file = os.path.join(folder,filename+".bzip")
 
         os.makedirs(folder, exist_ok=True)
 
         # Atari is about 250Mb per iteration, which for 3,000 iterations would be 750GB, which is far too much
         # the video frames do compress very well though, so we apply compression.
         # using bzip gets to < 0.25 Mb, which is 0.75GB per agent trained.
+
+        # I tried gzip, bzip, and lzma, and bzip gave the best compression.
 
         with bz2.open(output_file, "wb", compresslevel=5) as f:
             pickle.dump(save_dict, f)
@@ -1053,14 +1055,6 @@ def train_population(ModelConstructor, master_log: Logger):
 
         train_start_time = time.time()
 
-        # save experience
-        if args.pbl_save_experience:
-            for i in range(2):
-                runners[i].save_experience(
-                    os.path.join(args.log_folder,"agent_experience-{}".format(i)),
-                    "iteration-{}.dat".format(iteration)
-                )
-
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
         assert len(runners) == 4, "Only population sizes of 4 are supported at the moment."
@@ -1075,13 +1069,21 @@ def train_population(ModelConstructor, master_log: Logger):
 
         fps = 1.0 / (step_time)
 
+        # save experience
+        if args.pbl_save_experience:
+            for i in range(2):
+                runners[i].save_experience(
+                    os.path.join(args.log_folder, "agent_experience-{}".format(i)),
+                    "iteration-{}".format(iteration)
+                )
+
         # record some training stats
         master_log.watch_mean("fps", int(fps))
-        master_log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=2, display_width=0)
-        master_log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
+        master_log.watch_mean("time_train", train_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        master_log.watch_mean("time_step", step_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         master_log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         master_log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        master_log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        master_log.watch_mean("time_log", log_time * 1000, type="float", display_postfix="ms", display_precision=2, display_width=0)
 
         master_log.aggretate_logs(logs, ignore=["iteration", "env_step", "walltime"])
         master_log.record_step()
@@ -1256,7 +1258,6 @@ def train(model: models.BaseModel, log:Logger):
 
         # generate the rollout
         rollout_start_time = time.time()
-
         runner.generate_rollout()
         rollout_time = (time.time() - rollout_start_time) / batch_size
 

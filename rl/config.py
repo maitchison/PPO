@@ -26,7 +26,7 @@ class Config:
 
         self.input_crop = False
         self.learning_rate = 0.0
-        self.learning_rate_decay = 0.0
+        self.learning_rate_decay = float()
         self.adam_epsilon = 0.0
         self.workers = 0
         self.n_steps = 0
