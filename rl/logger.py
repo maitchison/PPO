@@ -215,7 +215,11 @@ class Logger():
                 if this_var._type in ["stats"]:
                     summary.append(this_var.value[0]) # just record mean for the moment.
 
-            self.watch(var.name, np.mean(summary), display_width=this_var.display_width)
+            self.watch(var.name, np.mean(summary),
+                        type = "int" if this_var._type == "int" else "float",
+                        display_width=this_var.display_width,
+                        display_precision=this_var.display_precision
+                       )
 
     def record_step(self):
         """ Records state of all watched variables for this given step. """

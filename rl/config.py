@@ -89,6 +89,7 @@ class Config:
 
         # population based learning
         self.pbl_population_size = int()
+        self.pbl_save_experience = bool()
 
         self.algo = str()
 
@@ -243,6 +244,9 @@ def parse_args():
 
     # population stuff
     parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
+    parser.add_argument("--pbl_save_experience", type=str2bool, default=False, help="Saves experience of all members in population. Can take a lot of disk space.")
+
+
 
     args.update(**parser.parse_args().__dict__)
 

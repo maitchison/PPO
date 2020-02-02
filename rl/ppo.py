@@ -8,6 +8,8 @@ import time
 import json
 import math
 import cv2
+import pickle
+import gzip, bz2, blosc
 from collections import defaultdict
 from .logger import Logger, LogVariable
 
@@ -647,6 +649,30 @@ class Runner():
 
                 model_performance = new_model_performance
 
+    def save_experience(self, folder, filename):
+        """ Saves all necessary experience for agent. """
+
+        # only saves extrinsic rewards at the moment.
+
+        save_dict = {}
+        save_dict["prev_state"] = self.prev_state
+        save_dict["actions"] = self.actions
+        save_dict["rewards"] = self.rewards_ext
+        save_dict["ext_returns"] = self.ext_returns
+        save_dict["log_policy"] = self.log_policy
+        save_dict["value_ext"] = self.value_ext
+        save_dict["final_value_estimate_ext"] = self.final_value_estimate_ext
+
+        output_file = os.path.join(folder,filename)
+
+        os.makedirs(folder, exist_ok=True)
+
+        # Atari is about 250Mb per iteration, which for 3,000 iterations would be 750GB, which is far too much
+        # the video frames do compress very well though, so we apply compression.
+        # using bzip gets to < 0.25 Mb, which is 0.75GB per agent trained.
+
+        with bz2.open(output_file, "wb", compresslevel=5) as f:
+            pickle.dump(save_dict, f)
 
     def train_from_off_policy_experience(self, other_agents):
         """ trains agents using experience from given agents"""
@@ -677,8 +703,9 @@ class Runner():
                 batch_data["rar_reward_tokens"].append(agent.rar_reward_tokens.reshape(batch_size, *agent.token_shape))
 
             # apply off-policy correction (v-trace)
+
             # todo: also apply to intrinsic reward? This is a bit harder as I need to apply my intrinsic reward
-            # to their actions.
+            #       to their actions.
             behavour_policy = np.exp(agent.log_policy)
             target_policy = np.exp(self.log_policy)
             actions = agent.actions
@@ -1025,6 +1052,14 @@ def train_population(ModelConstructor, master_log: Logger):
         returns_time = (time.time() - returns_start_time) / batch_size / len(runners)
 
         train_start_time = time.time()
+
+        # save experience
+        if args.pbl_save_experience:
+            for i in range(2):
+                runners[i].save_experience(
+                    os.path.join(args.log_folder,"agent_experience-{}".format(i)),
+                    "iteration-{}.dat".format(iteration)
+                )
 
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
