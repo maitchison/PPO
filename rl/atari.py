@@ -21,10 +21,12 @@ for env in gym.envs.registry.all():
 def get_env_state(key):
     return ENV_STATE.get(key, None)
 
-def make(env_name, non_determinism=None):
+def make(non_determinism=None):
     """ Construct environment of given name, including any required wrappers."""
 
     env_type = None
+
+    env_name = args.env_name
 
     for k,v in _game_envs.items():
         if env_name in v:

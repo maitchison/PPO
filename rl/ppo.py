@@ -8,11 +8,12 @@ import time
 import json
 import math
 import cv2
+from collections import defaultdict
 from .logger import Logger, LogVariable
 
 import torch.multiprocessing
 
-from . import utils, models, atari, hybridVecEnv, config
+from . import utils, models, atari, hybridVecEnv, config, logger
 from .config import args
 
 class Runner():
@@ -20,10 +21,12 @@ class Runner():
     def __init__(self, model, optimizer, log):
         """ Setup our rollout runner. """
 
+
         self.model = model
         self.optimizer = optimizer
         self.vec_env = None
         self.log = log
+
 
         self.N = N = args.n_steps
         self.A = A = args.agents
@@ -84,9 +87,10 @@ class Runner():
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
         self.ems_norm = np.zeros([args.agents])
 
-    def create_envs(self, env_name):
+    def create_envs(self):
         """ Creates environments for runner"""
-        env_fns = [lambda: atari.make(env_name) for _ in range(args.agents)]
+        env_fns = [atari.make for _ in range(args.agents)]
+
         self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers,
                                                     verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(env_fns)
         self.log.important("Generated {} agents ({}) using {} ({}) model.".
@@ -183,14 +187,14 @@ class Runner():
         else:
             return self.model.forward(self.states if states is None else states)
 
-    def export_movie(self, filename, env_name):
+    def export_movie(self, filename):
         """ Exports a movie of agent playing game.
             which_frames: model, real, or both
         """
 
         scale = 2
 
-        env = atari.make(env_name)
+        env = atari.make()
         _ = env.reset()
         state, reward, done, info = env.step(0)
         rendered_frame = info.get("monitor_obs", state)
@@ -643,7 +647,83 @@ class Runner():
 
                 model_performance = new_model_performance
 
+
+    def train_from_off_policy_experience(self, other_agents):
+        """ trains agents using experience from given agents"""
+        # organise our data...
+
+        # todo: save experience, and train after the fact on it. This will let me test off-policy algorithms.
+
+        assert not args.use_emi, "EMI does not work with population based training."
+        assert not args.use_atn, "ATN does not work with population based training."
+
+        # create a super-batch of data from all the agents.
+
+        batch_data = defaultdict(list)
+        for agent in other_agents:
+            batch_size = agent.N * agent.A
+            assert agent.N == self.N and agent.A == self.A, "all agents must share the same number of sub-agents, and rollout length."
+            batch_data["prev_state"].append(agent.prev_state.reshape([batch_size, *agent.state_shape]))
+            batch_data["next_state"].append(agent.next_state.reshape([batch_size, *agent.state_shape]))
+            batch_data["actions"].append(agent.actions.reshape(batch_size).astype(np.long))
+            batch_data["ext_returns"].append(agent.ext_returns.reshape(batch_size))
+            batch_data["log_policy"].append(agent.log_policy.reshape([batch_size, *agent.policy_shape]))
+
+            if args.use_intrinsic_rewards:
+                batch_data["int_returns"].append(agent.returns_int.reshape(batch_size))
+                batch_data["int_value"].append(agent.int_value.reshape(batch_size))
+
+            if args.use_rar:
+                batch_data["rar_reward_tokens"].append(agent.rar_reward_tokens.reshape(batch_size, *agent.token_shape))
+
+            # apply off-policy correction (v-trace)
+            # todo: also apply to intrinsic reward? This is a bit harder as I need to apply my intrinsic reward
+            # to their actions.
+            behavour_policy = np.exp(agent.log_policy)
+            target_policy = np.exp(self.log_policy)
+            actions = agent.actions
+            rewards = agent.rewards_ext
+            target_value_estimates = self.value_ext
+            target_value_final_estimate = self.final_value_estimate_ext
+
+            vs, pg_adv = importance_sampling_v_trace(behavour_policy, target_policy, actions,
+                                        rewards, target_value_estimates, target_value_final_estimate, args.gamma)
+
+            batch_data["ext_value"].append(vs.reshape(batch_size))
+            batch_data["advantages"].append(pg_adv.reshape(batch_size))
+
+
+
+        # make one large super-batch from each agent
+        for k,v in batch_data.items():
+            batch_data[k] = np.concatenate(v, axis=0)
+
+        batch_size = self.N * self.A * len(other_agents)
+
+        for i in range(args.batch_epochs):
+
+            ordering = list(range(batch_size))
+            np.random.shuffle(ordering)
+
+            n_batches = math.ceil(batch_size / args.mini_batch_size)
+
+            for j in range(n_batches):
+
+                # put together a minibatch.
+                batch_start = j * args.mini_batch_size
+                batch_end = (j + 1) * args.mini_batch_size
+                sample = ordering[batch_start:batch_end]
+
+                minibatch_data = {}
+
+                for k, v in batch_data.items():
+                    minibatch_data[k] = torch.tensor(v[sample]).to(self.model.device)
+
+                self.train_minibatch(minibatch_data)
+
+
     def train(self):
+        """ trains agent on it's own experience """
 
         # organise our data...
         batch_data = {}
@@ -723,7 +803,11 @@ def save_progress(log: Logger):
     details = {}
     details["max_epochs"] = args.epochs
     details["completed_epochs"] = log["env_step"] / 1e6  # include the current completed step.
-    details["score"] = log["ep_score"][0]
+    # ep_score could be states, or a float (population based is the group mean which is a float)
+    if type(log["ep_score"]) is float:
+        details["score"] = log["ep_score"]
+    else:
+        details["score"] = log["ep_score"][0]
     details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
     details["fps"] = log["fps"]
     frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
@@ -732,7 +816,6 @@ def save_progress(log: Logger):
     details["last_modified"] = time.time()
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
-
 
 def calculate_returns(rewards, dones, final_value_estimate, gamma):
     """
@@ -755,6 +838,72 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
+def importance_sampling_v_trace(behaviour_policy, target_policy, actions, rewards, target_value_estimates,
+                                target_value_final_estimate, gamma):
+    """
+    Calculate importance weights, and value estimates from off-policy data.
+
+    N is number of time steps, B the batch size, and A the number of actions.
+
+    Based on https://arxiv.org/pdf/1802.01561.pdf
+
+    :param behaviour_policy             np array [N, B, A], (i.e. the policy that generated the experience)
+    :param target_policy                np array [N, B, A], (i.e. the policy that we want to update)
+    :param actions                      np array [N, B], action taken by behaviour policy at each step
+    :param rewards                      np array [N, B], reward received at each step
+
+    :param target_value_estimates       np array [N, B], the value estimates for the target policy.
+    :param target_value_final_estimate  np array [B], the value estimate for target policy at time N
+
+    :param gamma                        float, discount rate
+
+    :return:
+        vs,                             np array [N, B], the value estimates for pi learned from off-policy data.
+        weighted_advantages,            np array [N, B], weighted (by rho) advantage estimates that can be used in policy graident updates.
+
+    """
+
+    # todo:
+    # check if I've got cs right
+    # create a test script to validate this function
+    # maybe switch over to log_policy (it's safer and faster)
+
+    N, B, A = behaviour_policy.shape
+
+    vs = np.zeros_like(target_value_estimates)
+    rhos = np.zeros_like(target_value_estimates)
+
+    # to check
+    # log probs are log probs, not neg log probs right?
+
+    # get just the part of the policy we need
+    target_policy = target_policy.take(actions)
+    behaviour_policy = behaviour_policy.take(actions)
+
+    lam = 0.95
+
+    for i in reversed(range(N)):
+        next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
+        rhos[i] = np.minimum(1, target_policy[i] / behaviour_policy[i])
+        tdv = rhos[i] * (rewards[i] + gamma * next_target_value_estimate - target_value_estimates[i])
+        cs = lam * rhos[i] # in the paper these seem to be different, but I have them the same here?
+        # note: this doesn't seem right to me, why are we initializing vs[i+1] to be 0,
+        # the github code (https://github.com/deepmind/scalable_agent/blob/master/vtrace.py) seems to do this
+        # by supplying a 0 initial value.
+        # a better method would be using the final_value estimate, which is what they do in the advantage estimate.
+        next_vs = vs[i + 1] if i + 1 != N else 0
+        vs[i] = tdv + gamma * cs * next_vs
+
+
+    # add value estimates back in
+    vs = vs + target_value_estimates
+    vs_plus_one = np.concatenate((vs[1:], [target_value_final_estimate]))
+
+    # calculate advantage estimates
+    weighted_advantages = rhos * (rewards + gamma * vs_plus_one - target_value_estimates)
+
+    return vs, weighted_advantages
+
 
 def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, normalize=False):
     batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
@@ -770,23 +919,29 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
     return batch_advantage
 
 
-def train_population(self, env_name, ModelConstructor, log: Logger):
+def train_population(ModelConstructor, master_log: Logger):
     """
     Trains a population of models, each with their own set of parameters, and potentially their own set of goals.
 
-    env_name: The name of the environment to train in
     ModelConstructor: Function without required parameters that constructs a model.
     """
 
     # create a population of models, each with their own parameters.
     models = []
+    logs = []
     for i in range(args.pbl_population_size):
         models.append(ModelConstructor())
+        log = logger.Logger()
+
+        log.csv_path = os.path.join(args.log_folder, "training_log_{}.csv".format(i))
+        log.txt_path = os.path.join(args.log_folder, "log_{}.txt".format(i))
+
+        log.add_variable(LogVariable("ep_score", 100, "stats",
+                                     display_width=16))  # these need to be added up-front as it might take some
+        log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
 
 
-    # setup logging
-    log.add_variable(LogVariable("ep_score", 100, "stats", display_width=16))   # these need to be added up-front as it might take some
-    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
+        logs.append(log)
 
     # calculate some variables
     batch_size = (args.n_steps * args.agents)
@@ -797,7 +952,7 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
     optimizers = [torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon) for model in models]
 
     # create our runners
-    runners = [Runner(model, optimizer, log) for model, optimizer in zip(models, optimizers)]
+    runners = [Runner(model, optimizer, log) for model, optimizer, log in zip(models, optimizers, logs)]
 
     # todo allow for restoration from checkpoint
     start_iteration = 0
@@ -806,7 +961,7 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
 
     # create environments for each agent.
     for runner in runners:
-        runner.create_envs(env_name)
+        runner.create_envs()
         runner.reset()
 
     # make a copy of params
@@ -820,15 +975,15 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
     print_counter = 0
 
     if start_iteration == 0 and (args.limit_epochs is None):
-        log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations*batch_size/1000/1000))
+        master_log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations*batch_size/1000/1000))
     else:
-        log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
+        master_log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
             str(round(start_iteration * batch_size / 1000 / 1000)),
             str(round(n_iterations * batch_size / 1000 / 1000)),
             str(round(args.epochs))
         ))
 
-    log.info()
+    master_log.info()
 
     last_print_time = -1
     last_log_time = -1
@@ -848,10 +1003,10 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
 
         env_step = iteration * batch_size
 
-        log.watch("iteration", iteration, display_priority=5)
-        log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
+        master_log.watch("iteration", iteration, display_priority=5)
+        master_log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
                   display_precision=2)
-        log.watch("walltime", walltime,
+        master_log.watch("walltime", walltime,
                   display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
 
         for optimizer in optimizers:
@@ -870,10 +1025,15 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
         returns_time = (time.time() - returns_start_time) / batch_size / len(runners)
 
         train_start_time = time.time()
-        for runner in runners:
-            runner.train()
-        train_time = (time.time() - train_start_time) / batch_size / len(runners)
 
+        # train our population...
+        # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
+        assert len(runners) == 4, "Only population sizes of 4 are supported at the moment."
+        train_time = (time.time() - train_start_time) / batch_size / len(runners)
+        runners[0].train()
+        runners[1].train()
+        runners[2].train_from_off_policy_experience([runners[0], runners[1]])
+        runners[3].train_from_off_policy_experience([runners[3], runners[2]])
         step_time = (time.time() - step_start_time) / batch_size / len(runners)
 
         log_start_time = time.time()
@@ -881,47 +1041,57 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
         fps = 1.0 / (step_time)
 
         # record some training stats
-        log.watch_mean("fps", int(fps))
-        log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
-        log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        master_log.watch_mean("fps", int(fps))
+        master_log.watch_mean("time_train", train_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        master_log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
+        master_log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        master_log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
+        master_log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
 
-        log.record_step()
+        master_log.aggretate_logs(logs, ignore=["iteration", "env_step", "walltime"])
+        master_log.record_step()
+
+        for log in logs:
+            # move some variables from master log to the individual logs
+            for var_name in ["iteration", "env_step", "walltime"]:
+                log.watch(var_name, master_log[var_name])
+            log.record_step()
 
         # periodically print and save progress
         if time.time() - last_print_time >= args.debug_print_freq:
-            save_progress(log)
-            log.print_variables(include_header=print_counter % 10 == 0)
+            save_progress(master_log)
+            master_log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
             print_counter += 1
 
         # save log and refresh lock
         if time.time() - last_log_time >= args.debug_log_freq:
             utils.lock_job()
-            log.export_to_csv()
-            log.save_log()
+            master_log.export_to_csv()
+            master_log.save_log()
+            for log in logs:
+                log.export_to_csv()
+                log.save_log()
             last_log_time = time.time()
 
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
 
-            log.info()
-            log.important("Checkpoint: {}".format(args.log_folder))
+            master_log.info()
+            master_log.important("Checkpoint: {}".format(args.log_folder))
 
             if args.save_checkpoints:
                 for i, runner in enumerate(runners):
                     checkpoint_name = utils.get_checkpoint_path(env_step, "params_{}.pt".format(i))
                     runner.save_checkpoint(checkpoint_name, env_step)
-                    log.log("  -checkpoint saved")
+                master_log.log("  -checkpoints saved")
 
             if args.export_video:
-                video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
-                runner[0].export_movie(video_name, env_name)
-                log.info("  -video exported")
+                video_name  = utils.get_checkpoint_path(env_step, args.environment+".mp4")
+                runners[0].export_movie(video_name)
+                master_log.info("  -video exported")
 
-            log.info()
+            master_log.info()
 
         log_time = (time.time() - log_start_time) / batch_size
 
@@ -933,16 +1103,16 @@ def train_population(self, env_name, ModelConstructor, log: Logger):
     # -------------------------------------
     # save final information
 
-    save_progress(log)
-    log.export_to_csv()
-    log.save_log()
+    save_progress(master_log)
+    master_log.export_to_csv()
+    master_log.save_log()
 
-    log.info()
-    log.important("Training Complete.")
-    log.info()
+    master_log.info()
+    master_log.important("Training Complete.")
+    master_log.info()
 
 
-def train(env_name, model: models.BaseModel, log:Logger):
+def train(model: models.BaseModel, log:Logger):
     """
     Default parameters from stable baselines
     
@@ -994,7 +1164,7 @@ def train(env_name, model: models.BaseModel, log:Logger):
         walltime = 0
         did_restore = False
 
-    runner.create_envs(env_name)
+    runner.create_envs()
 
     if not did_restore and args.use_rnd:
         # this will get an initial estimate for the normalization constants.
@@ -1118,8 +1288,8 @@ def train(env_name, model: models.BaseModel, log:Logger):
                 log.log("  -checkpoint saved")
 
             if args.export_video:
-                video_name  = utils.get_checkpoint_path(env_step, env_name+".mp4")
-                runner.export_movie(video_name, env_name)
+                video_name  = utils.get_checkpoint_path(env_step, args.environment+".mp4")
+                runner.export_movie(video_name)
                 log.info("  -video exported")
 
             log.info()

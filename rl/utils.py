@@ -267,8 +267,9 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
             observations as a list np arrays of dims [c,w,h] in uint8 format.
     """
 
-    env_fns = [lambda : atari.make(env_name, non_determinism="none" if deterministic else "noop") for _ in range(num_rollouts)]
-    env = hybridVecEnv.HybridAsyncVectorEnv(env_fns)
+    # todo get non_determinism working again...
+    #env_fns = [lambda : atari.make(env_name, non_determinism="none" if deterministic else "noop") for _ in range(num_rollouts)]
+    env = hybridVecEnv.HybridAsyncVectorEnv([atari.make for _ in range(num_rollouts)])
 
     _ = env.reset()
     state, reward, done, info = env.step([0]*num_rollouts)

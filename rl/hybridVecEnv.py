@@ -1,5 +1,6 @@
 import gym
 import numpy as np
+import functools
 
 class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
     """ Async vector env, that limits the number of worker threads spawned """
@@ -16,11 +17,13 @@ class HybridAsyncVectorEnv(gym.vector.AsyncVectorEnv):
             self.n_parallel = max_cpus
             vec_functions = []
             for i in range(self.n_parallel):
-                vec_functions.append(lambda : gym.vector.SyncVectorEnv(env_fns[i*self.n_sequential:(i+1)*self.n_sequential], **kwargs))
+                # I prefer the lambda, but it won't work with pickle, and I want to multiprocessor this...
+                constructor = functools.partial(gym.vector.SyncVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], **kwargs)
+                vec_functions.append(constructor)
 
             if verbose:
                 print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
-            super(HybridAsyncVectorEnv, self).__init__(vec_functions, **kwargs)
+            super().__init__(vec_functions, **kwargs)
 
             self.is_batched = True
 

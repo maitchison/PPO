@@ -226,7 +226,7 @@ def setup_jobs_V7():
                 )
 
 
-    for seed in [x*100 for x in range(2)]:
+    for seed in [x*100 for x in range(1)]:
         for super_space in [8, 16, 32]:
             for reward_frequency in [0.1, 0.01]:
                 for reward_scale in [0.1, 1, 10]:
@@ -241,7 +241,7 @@ def setup_jobs_V7():
                             rar_seed=seed,
                             rar_use_tokens=use_tokens,
                             rar_super_state_size=super_space,
-                            epochs=10,
+                            epochs=20 if (reward_frequency==0.01) else 10,
                             agents=64,
                             priority=0
                         )
@@ -268,7 +268,27 @@ def setup_jobs_V7():
                             priority=0
                         )
 
-    # todo rar_v4 retest 'good' seeds.
+    # good seed: freq = 0.01, tokens = True, seed = 900, scale = 1, super = 16
+    for run in range(4):
+        seed = 900
+        super_space = 16
+        reward_frequency = 0.01
+        reward_scale = 1
+        use_tokens = True
+        add_job(
+            "RAR_v4",
+            run_name="freq={} tokens={} seed={} scale={} super={} run={}".format(reward_frequency, use_tokens, seed, reward_scale, super_space, run),
+            env_name="MontezumaRevenge",
+            use_rar=reward_frequency > 0,
+            rar_frequency=reward_frequency,
+            rar_scale=reward_scale,
+            rar_seed=seed,
+            rar_use_tokens=use_tokens,
+            rar_super_state_size=super_space,
+            epochs=10,
+            agents=64,
+            priority=2
+        )
 
     # emi had a bug that stopped it working before (intrinsic value head wasn't being trained) so I'm running it again...
     # these where all done with a default 'false' for intrinsic reward propagation

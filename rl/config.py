@@ -242,7 +242,7 @@ def parse_args():
     parser.add_argument("--rar_super_state_size", type=int, default=32, help="Larger values increase how often states change.")
 
     # population stuff
-    parser.add_argument("--pbl_population_size", type=int, default=16, help="Number of agents in population.")
+    parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
 
     args.update(**parser.parse_args().__dict__)
 

@@ -199,6 +199,24 @@ class Logger():
             output_string = output_string + (var.display.rjust(var.display_width - 1, " ") + " ")
         self.log(output_string)
 
+    def aggretate_logs(self, logs, ignore=None):
+        """ Records  the mean of the int/float/stats variables in the log. """
+
+        values = logs[0]._vars.values()
+
+        for var in sorted(values):
+            if var.name in ignore:
+                continue
+            summary = []
+            for log in logs:
+                this_var = log._vars[var.name]
+                if this_var._type in ["int", "float"]:
+                    summary.append(this_var.value)
+                if this_var._type in ["stats"]:
+                    summary.append(this_var.value[0]) # just record mean for the moment.
+
+            self.watch(var.name, np.mean(summary))
+
     def record_step(self):
         """ Records state of all watched variables for this given step. """
         row = {}

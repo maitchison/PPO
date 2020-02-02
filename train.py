@@ -84,7 +84,7 @@ if __name__ == "__main__":
     os.makedirs(args.log_folder, exist_ok=True)
 
     """ Runs experient specifed by config.args """
-    env = atari.make(args.env_name)
+    env = atari.make()
     n_actions = env.action_space.n
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
@@ -115,14 +115,12 @@ if __name__ == "__main__":
         if args.algo.lower() == "ppo":
             actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
                                          device=args.device, dtype=torch.float32, **model_args)
-            ppo.train(args.env_name, actor_critic_model, log)
+            ppo.train(actor_critic_model, log)
         elif args.algo.lower() == "pbl":
-            ppo.train_population(
-                args.env_name,
-                lambda : ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
-                                         device=args.device, dtype=torch.float32, **model_args),
-                log
-            )
+
+            model_constructor = lambda : ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
+                                         device=args.device, dtype=torch.float32, **model_args)
+            ppo.train_population(model_constructor, log)
 
         utils.release_lock()
 
