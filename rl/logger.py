@@ -215,7 +215,7 @@ class Logger():
                 if this_var._type in ["stats"]:
                     summary.append(this_var.value[0]) # just record mean for the moment.
 
-            self.watch(var.name, np.mean(summary))
+            self.watch(var.name, np.mean(summary), display_width=this_var.display_width)
 
     def record_step(self):
         """ Records state of all watched variables for this given step. """

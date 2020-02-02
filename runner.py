@@ -241,7 +241,7 @@ def setup_jobs_V7():
                             rar_seed=seed,
                             rar_use_tokens=use_tokens,
                             rar_super_state_size=super_space,
-                            epochs=20 if (reward_frequency==0.01) else 10,
+                            epochs=50 if (reward_frequency==0.01) else 10,
                             agents=64,
                             priority=0
                         )
@@ -269,7 +269,7 @@ def setup_jobs_V7():
                         )
 
     # good seed: freq = 0.01, tokens = True, seed = 900, scale = 1, super = 16
-    for run in range(4):
+    for run in range(16):
         seed = 900
         super_space = 16
         reward_frequency = 0.01
