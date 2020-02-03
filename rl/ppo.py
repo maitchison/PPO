@@ -661,16 +661,16 @@ class Runner():
             batch_data["ext_returns"].append(agent.ext_returns.reshape(batch_size))
 
             # generate our policy probabilities, and value estimates
-            target_policy = np.zeros_like(agent.log_policy)
+            target_log_policy = np.zeros_like(agent.log_policy)
             target_value_estimates = np.zeros_like(agent.ext_value)
             for i in range(agent.N):
                 # note, this could be mini-batched to make it a bit faster...
                 model_out = self.model.forward(agent.prev_state[i])
-                target_policy[i] = np.exp(model_out["log_policy"].detach().cpu().numpy())
+                target_log_policy[i] = model_out["log_policy"].detach().cpu().numpy()
                 target_value_estimates[i] = model_out["ext_value"].detach().cpu().numpy()
 
             batch_data["ext_value"].append(target_value_estimates.reshape(batch_size))
-            batch_data["log_policy"].append(target_policy.reshape([batch_size, *agent.policy_shape]))
+            batch_data["log_policy"].append(target_log_policy.reshape([batch_size, *agent.policy_shape]))
 
             # get estimate for last state.
             model_out = self.model.forward(agent.next_state[-1])
@@ -678,6 +678,7 @@ class Runner():
 
             # apply off-policy correction (v-trace)
             behaviour_policy = np.exp(agent.log_policy)
+            target_policy = np.exp(target_log_policy)
             actions = agent.actions
             rewards = agent.ext_rewards
 
