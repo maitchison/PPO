@@ -35,7 +35,6 @@ class Runner():
 
         self.state_shape = model.input_dims
         self.policy_shape = [model.actions]
-        self.policy_atn_shape = [25]
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
@@ -44,10 +43,10 @@ class Runner():
         self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.actions = np.zeros([N, A], dtype=np.int64)
-        self.rewards_ext = np.zeros([N, A], dtype=np.float32)
+        self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.terminals = np.zeros([N, A], dtype=np.bool)
-        self.value_ext = np.zeros([N, A], dtype=np.float32)
+        self.ext_value = np.zeros([N, A], dtype=np.float32)
 
         # rar
         rar_state_space = 2 ** 16
@@ -70,24 +69,19 @@ class Runner():
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
         self.int_value = np.zeros([N, A], dtype=np.float32)
 
-        # attention
-        self.atn_rewards = np.zeros([N, A], dtype=np.float32)
-        self.atn_actions = np.zeros([N, A], dtype=np.int64)
-        self.atn_log_policy = np.zeros([N, A, *self.policy_atn_shape], dtype=np.float32)
-        self.atn_value = np.zeros([N, A], dtype=np.float32)
-
         # returns generation
         self.ext_returns = np.zeros([N, A], dtype=np.float32)
         self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
-        self.atn_returns = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
-        self.final_value_estimate_ext = np.zeros([A], dtype=np.float32)
-        self.final_value_estimate_int = np.zeros([A], dtype=np.float32)
-        self.final_value_estimate_atn = np.zeros([A], dtype=np.float32)
+        self.ext_final_value_estimate = np.zeros([A], dtype=np.float32)
+        self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
         self.ems_norm = np.zeros([args.agents])
+
+        # path to load experience from (disables rollouts and training)
+        self.experience_path = None
 
     def create_envs(self):
         """ Creates environments for runner"""
@@ -216,18 +210,12 @@ class Runner():
 
         # play the game...
         while not done:
-
             if args.use_rar:
                 model_out = self.model.forward(state[np.newaxis], self.model.make_tokens([rar_visited]))
             else:
                 model_out = self.model.forward(state[np.newaxis])
             logprobs = model_out["log_policy"][0].detach().cpu().numpy()
             actions = utils.sample_action_from_logp(logprobs)
-
-            if args.use_atn:
-                logprobs_atn = model_out["atn_log_policy"][0].detach().cpu().numpy()
-                action_atn = utils.sample_action_from_logp(logprobs_atn)
-                actions = (actions, action_atn)
 
             state, reward, done, info = env.step(actions)
 
@@ -258,6 +246,14 @@ class Runner():
 
     def generate_rollout(self, is_warmup=False):
 
+        if self.experience_path is not None:
+            # special code to disable runner
+            if self.experience_path == "!":
+                return
+            # just load the exprience from file.
+            self.load_experience(self.experience_path, "iteration-{}".format(self.log["iteration"]))
+            return
+
         assert self.vec_env is not None, "Please call create_envs first."
 
         for t in range(self.N):
@@ -268,7 +264,7 @@ class Runner():
             model_out = self.forward()
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
-            value_ext = model_out["ext_value"].detach().cpu().numpy()
+            ext_value = model_out["ext_value"].detach().cpu().numpy()
 
             # during warm-up we simply collect experience through a uniform random policy.
             if is_warmup:
@@ -277,23 +273,7 @@ class Runner():
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
-            # perform the agents action.
-            if args.use_atn:
-                log_policy_atn = model_out["atn_log_policy"].detach().cpu().numpy()
-                value_atn = model_out["atn_value"].detach().cpu().numpy()
-                actions_atn = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy_atn], dtype=np.int32)
-                self.states, rewards_ext, dones, infos = self.vec_env.step(list(zip(actions, actions_atn)))
-
-                attention_cost = np.asarray([infos[i].get("attention_cost", 0) * -args.atn_movement_cost for i in range(args.agents)])
-                self.log.watch_mean("atn_cost", attention_cost.mean())
-                attention_rewards = rewards_ext + attention_cost
-
-                self.atn_actions[t] = actions_atn
-                self.atn_value[t] = value_atn
-                self.atn_rewards[t] = attention_rewards
-                self.atn_log_policy[t] = log_policy_atn
-            else:
-                self.states, rewards_ext, dones, infos = self.vec_env.step(actions)
+            self.states, ext_rewards, dones, infos = self.vec_env.step(actions)
 
             # it's a bit silly to have this here...
             if "returns_norm_state" in infos[0]:
@@ -303,7 +283,7 @@ class Runner():
             if args.use_intrinsic_rewards:
                 value_int = model_out["int_value"].detach().cpu().numpy()
 
-                rewards_int = np.zeros_like(rewards_ext)
+                int_rewards = np.zeros_like(ext_rewards)
 
                 if args.use_rar:
                     # convert pixels to a smaller state space
@@ -313,14 +293,14 @@ class Runner():
                     for i, state in enumerate(states):
                         # give reward for being in a reward state.
                         if state in self.rar_reward_states and state not in self.rar_visited[i]:
-                            rewards_int[i] += args.rar_scale
+                            int_rewards[i] += args.rar_scale
                             self.rar_visited[i].add(state)
 
                 if args.use_emi:
                     # relu makes sure that only positive rewards are counted.
                     # otherwise intrinsic reward may become negative causing agent to terminate the episode as quickly
                     # as possible.
-                    rewards_int = torch.nn.functional.relu(self.model.predict_model_improvement(self.states)).detach().cpu().numpy()
+                    int_rewards = torch.nn.functional.relu(self.model.predict_model_improvement(self.states)).detach().cpu().numpy()
 
                 if args.use_rnd:
                     if is_warmup:
@@ -329,14 +309,14 @@ class Runner():
                     else:
                         # reward is prediction error on state we land inn.
                         loss_rnd = self.model.prediction_error(self.states).detach().cpu().numpy()
-                        rewards_int += loss_rnd
+                        int_rewards += loss_rnd
 
-                self.int_rewards[t] = rewards_int
+                self.int_rewards[t] = int_rewards
                 self.int_value[t] = value_int
 
 
             # save raw rewards for monitoring the agents progress
-            raw_rewards = np.asarray([info.get("raw_reward", rewards_ext) for reward, info in zip(rewards_ext, infos)],
+            raw_rewards = np.asarray([info.get("raw_reward", ext_rewards) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
 
             self.episode_score += raw_rewards
@@ -362,10 +342,10 @@ class Runner():
             if args.use_rar:
                 self.rar_reward_tokens[t] = self.model.make_tokens(self.rar_visited)
 
-            self.rewards_ext[t] = rewards_ext
+            self.ext_rewards[t] = ext_rewards
             self.log_policy[t] = log_policy
             self.terminals[t] = dones
-            self.value_ext[t] = value_ext
+            self.ext_value[t] = ext_value
 
         #  save a copy of the normalization statistics.
         if args.use_rnd:
@@ -374,16 +354,17 @@ class Runner():
         # get value estimates for final state.
         model_out = self.forward()
 
-        self.final_value_estimate_ext = model_out["ext_value"].detach().cpu().numpy()
+        self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
         if "int_value" in model_out:
-            self.final_value_estimate_int = model_out["int_value"].detach().cpu().numpy()
-        if "atn_value" in model_out:
-            self.final_value_estimate_atn = model_out["atn_value"].detach().cpu().numpy()
+            self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
 
     def calculate_returns(self):
 
-        self.ext_returns = calculate_returns(self.rewards_ext, self.terminals, self.final_value_estimate_ext, args.gamma)
-        self.advantage_ext = calculate_gae(self.rewards_ext, self.value_ext, self.final_value_estimate_ext,
+        if self.experience_path is not None:
+            return
+
+        self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate, args.gamma)
+        self.ext_advantage = calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
                                            self.terminals, args.gamma, args.normalize_advantages)
 
         if args.use_intrinsic_rewards:
@@ -391,7 +372,7 @@ class Runner():
             self.int_returns_raw = calculate_returns(
                 self.int_rewards,
                 args.intrinsic_reward_propagation * self.terminals,
-                self.final_value_estimate_int,
+                self.int_final_value_estimate,
                 args.gamma_int
             )
 
@@ -406,30 +387,24 @@ class Runner():
                 # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
                 # which is approximately where normalized returns will sit.
                 self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-                self.batch_rewards_int = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
+                self.batch_int_rewards = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
             else:
                 self.intrinsic_reward_norm_scale = 1
-                self.batch_rewards_int = self.int_rewards
+                self.batch_int_rewards = self.int_rewards
 
-            self.returns_int = calculate_returns(
+            self.int_returns = calculate_returns(
                 self.int_rewards,
                 args.intrinsic_reward_propagation * self.terminals,
-                self.final_value_estimate_int,
+                self.int_final_value_estimate,
                 args.gamma_int
             )
 
-            self.advantage_int = calculate_gae(self.int_rewards, self.int_value, self.final_value_estimate_int, None,
+            self.int_advantage = calculate_gae(self.int_rewards, self.int_value, self.int_final_value_estimate, None,
                                                args.gamma_int)
 
-        if args.use_atn:
-            self.atn_returns = calculate_returns(self.atn_rewards, self.terminals, self.final_value_estimate_atn,
-                                                 args.gamma)
-            self.advantage_atn = calculate_gae(self.atn_rewards, self.atn_value, self.final_value_estimate_atn,
-                                               self.terminals, args.gamma, args.normalize_advantages)
-
-        self.advantage = args.extrinsic_reward_scale * self.advantage_ext
+        self.advantage = args.extrinsic_reward_scale * self.ext_advantage
         if args.use_intrinsic_rewards:
-            self.advantage += args.intrinsic_reward_scale * self.advantage_int
+            self.advantage += args.intrinsic_reward_scale * self.int_advantage
 
         if args.use_rnd:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
@@ -438,19 +413,19 @@ class Runner():
 
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width = 0 if args.normalize_advantages else 10)
         self.log.watch_mean("adv_std", np.std(self.advantage), display_width = 0 if args.normalize_advantages else 10)
-        self.log.watch_mean("batch_reward_ext", np.mean(self.rewards_ext), display_name="rew_ext", display_width=0)
+        self.log.watch_mean("batch_reward_ext", np.mean(self.ext_rewards), display_name="rew_ext", display_width=0)
         self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
         self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std", display_width=0)
-        self.log.watch_mean("value_est_ext", np.mean(self.value_ext), display_name="est_v_ext")
-        self.log.watch_mean("value_est_ext_std", np.std(self.value_ext), display_name="est_v_ext_std", display_width=0)
-        self.log.watch_mean("ev_ext", utils.explained_variance(self.value_ext.ravel(), self.ext_returns.ravel()))
+        self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext")
+        self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
+        self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
             self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
                                 display_width=0)
-            self.log.watch_mean("batch_return_int", np.mean(self.returns_int), display_name="ret_int")
-            self.log.watch_mean("batch_return_int_std", np.std(self.returns_int), display_name="ret_int_std")
+            self.log.watch_mean("batch_return_int", np.mean(self.int_returns), display_name="ret_int")
+            self.log.watch_mean("batch_return_int_std", np.std(self.int_returns), display_name="ret_int_std")
             self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw), display_name="ret_int_raw_mu",
                                 display_width=0)
             self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw), display_name="ret_int_raw_std",
@@ -458,7 +433,7 @@ class Runner():
 
             self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
             self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
-            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.returns_int.ravel()))
+            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.int_returns.ravel()))
             if args.use_rnd:
                 self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
                                 display_width=10, display_priority=-2)
@@ -503,8 +478,6 @@ class Runner():
 
         if args.use_intrinsic_rewards:
             value_heads.append("int")
-        if args.use_atn:
-            value_heads.append("atn")
 
         for value_head in value_heads:
             value_prediction = model_out["{}_value".format(value_head)]
@@ -525,32 +498,6 @@ class Runner():
             loss_value *= args.vf_coef
             self.log.watch_mean("loss_v_" + value_head, loss_value)
             loss += loss_value
-
-        # -------------------------------------------------------------------------
-        # Calculate Attention losses
-        # -------------------------------------------------------------------------
-
-        if args.use_atn:
-            logps_atn = model_out["atn_log_policy"]
-
-            # policy gradient
-            atn_actions = data["atn_actions"].long()
-            atn_policy_logprobs = data["atn_log_policy"]
-            atn_advantages = data["atn_advantages"]
-            atn_ratio = torch.exp(logps_atn[range(mini_batch_size), atn_actions] - atn_policy_logprobs[
-                range(mini_batch_size), atn_actions])
-
-            loss_clip_atn = torch.mean(torch.min(atn_ratio * atn_advantages,
-                                                 torch.clamp(atn_ratio, 1 - args.ppo_epsilon,
-                                                             1 + args.ppo_epsilon) * atn_advantages))
-            self.log.watch_mean("loss_atn_pg", loss_clip)
-            loss += loss_clip_atn
-
-            # entropy
-            loss_entropy_atn = args.entropy_bonus * utils.log_entropy(logps_atn) / mini_batch_size
-            self.log.watch_mean("loss_ent_atn", loss_entropy_atn)
-            loss += loss_entropy_atn
-
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
@@ -649,6 +596,26 @@ class Runner():
 
                 model_performance = new_model_performance
 
+    def load_experience(self, folder, filename):
+
+        input_file = os.path.join(folder, filename + ".bzip")
+        # just load the data and return
+
+        with bz2.open(input_file, "rb") as f:
+            load_dict = pickle.load(f)
+
+        self.prev_state = load_dict["prev_state"]
+        final_state = load_dict["final_state"]
+        self.actions = load_dict["actions"]
+        self.rewards = load_dict["rewards"]
+        self.ext_returns = load_dict["ext_returns"]
+        self.log_policy = load_dict["log_policy"]
+        self.ext_value = load_dict["ext_value"]
+        self.ext_final_value_estimate = load_dict["ext_final_value_estimate"]
+
+        # we don't actually save the next_states, so I recreate it here.
+        self.next_state = np.concatenate([self.prev_state[1:], final_state])
+
     def save_experience(self, folder, filename):
         """ Saves all necessary experience for agent. """
 
@@ -656,12 +623,13 @@ class Runner():
 
         save_dict = {}
         save_dict["prev_state"] = self.prev_state
+        save_dict["final_state"] = self.next_state[-1]
         save_dict["actions"] = self.actions
-        save_dict["rewards"] = self.rewards_ext
+        save_dict["rewards"] = self.ext_rewards
         save_dict["ext_returns"] = self.ext_returns
         save_dict["log_policy"] = self.log_policy
-        save_dict["value_ext"] = self.value_ext
-        save_dict["final_value_estimate_ext"] = self.final_value_estimate_ext
+        save_dict["ext_value"] = self.ext_value
+        save_dict["ext_final_value_estimate"] = self.ext_final_value_estimate
 
         output_file = os.path.join(folder,filename+".bzip")
 
@@ -683,7 +651,6 @@ class Runner():
         # todo: save experience, and train after the fact on it. This will let me test off-policy algorithms.
 
         assert not args.use_emi, "EMI does not work with population based training."
-        assert not args.use_atn, "ATN does not work with population based training."
 
         # create a super-batch of data from all the agents.
 
@@ -691,6 +658,7 @@ class Runner():
         for agent in other_agents:
             batch_size = agent.N * agent.A
             assert agent.N == self.N and agent.A == self.A, "all agents must share the same number of sub-agents, and rollout length."
+
             batch_data["prev_state"].append(agent.prev_state.reshape([batch_size, *agent.state_shape]))
             batch_data["next_state"].append(agent.next_state.reshape([batch_size, *agent.state_shape]))
             batch_data["actions"].append(agent.actions.reshape(batch_size).astype(np.long))
@@ -698,30 +666,39 @@ class Runner():
             batch_data["log_policy"].append(agent.log_policy.reshape([batch_size, *agent.policy_shape]))
 
             if args.use_intrinsic_rewards:
-                batch_data["int_returns"].append(agent.returns_int.reshape(batch_size))
+                batch_data["int_returns"].append(agent.int_returns.reshape(batch_size))
                 batch_data["int_value"].append(agent.int_value.reshape(batch_size))
 
             if args.use_rar:
                 batch_data["rar_reward_tokens"].append(agent.rar_reward_tokens.reshape(batch_size, *agent.token_shape))
 
+            # generate our policy probabilities, and value estimates
+            target_policy = np.zeros_like(agent.log_policy)
+            target_value_estimates = np.zeros_like(agent.ext_value)
+            for i in range(N):
+                # note, this could be mini-batched to make it a bit faster...
+                model_out = self.model.forward(agent.prev_state[i])
+                target_policy[i] = np.exp(model_out["log_policy"].detach().cpu().numpy())
+                target_value_estimates[i] = model_out["ext_value"].detach().cpu().numpy()
+
+            target_policy = np.asarray(target_policy)
+            target_value_estimates = np.asarray(target_policy)
+
+            # get estimate for last state.
+            model_out = self.model.forward(agent.next_state[-1])
+            target_value_final_estimate = model_out["ext_value"].detach().cpu().numpy()
+
             # apply off-policy correction (v-trace)
 
-            # todo: also apply to intrinsic reward? This is a bit harder as I need to apply my intrinsic reward
-            #       to their actions.
             behavour_policy = np.exp(agent.log_policy)
-            target_policy = np.exp(self.log_policy)
             actions = agent.actions
-            rewards = agent.rewards_ext
-            target_value_estimates = self.value_ext
-            target_value_final_estimate = self.final_value_estimate_ext
+            rewards = agent.ext_rewards
 
             vs, pg_adv = importance_sampling_v_trace(behavour_policy, target_policy, actions,
                                         rewards, target_value_estimates, target_value_final_estimate, args.gamma)
 
-            batch_data["ext_value"].append(vs.reshape(batch_size))
+            batch_data["ext_returns"].append(vs.reshape(batch_size))
             batch_data["advantages"].append(pg_adv.reshape(batch_size))
-
-
 
         # make one large super-batch from each agent
         for k,v in batch_data.items():
@@ -754,6 +731,9 @@ class Runner():
     def train(self):
         """ trains agent on it's own experience """
 
+        if self.experience_path is not None:
+            return
+
         # organise our data...
         batch_data = {}
         batch_size = self.N * self.A
@@ -764,18 +744,11 @@ class Runner():
         batch_data["ext_returns"] = self.ext_returns.reshape(batch_size)
         batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
         batch_data["advantages"] = self.advantage.reshape(batch_size)
-        batch_data["ext_value"] = self.value_ext.reshape(batch_size)
+        batch_data["ext_value"] = self.ext_value.reshape(batch_size)
 
         if args.use_intrinsic_rewards:
-            batch_data["int_returns"] = self.returns_int.reshape(batch_size)
+            batch_data["int_returns"] = self.int_returns.reshape(batch_size)
             batch_data["int_value"] = self.int_value.reshape(batch_size)
-
-        if args.use_atn:
-            batch_data["atn_actions"] = self.atn_actions.reshape(batch_size)
-            batch_data["atn_returns"] = self.atn_returns.reshape(batch_size).astype(np.long)
-            batch_data["atn_log_policy"] = self.atn_log_policy.reshape([batch_size, *self.policy_atn_shape])
-            batch_data["atn_advantages"] = self.advantage_atn.reshape(batch_size)
-            batch_data["atn_value"] = self.atn_value.reshape(batch_size)
 
         if args.use_rar:
             batch_data["rar_reward_tokens"] = self.rar_reward_tokens.reshape(batch_size, *self.token_shape)
@@ -902,14 +875,11 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     vs = np.zeros_like(target_value_estimates)
     rhos = np.zeros_like(target_value_estimates)
 
-    # to check
-    # log probs are log probs, not neg log probs right?
-
     # get just the part of the policy we need
     target_policy = target_policy.take(actions)
     behaviour_policy = behaviour_policy.take(actions)
 
-    lam = 0.95
+    lam = 1.0 # the use 1.0 for some reason? Should look into this..
 
     for i in reversed(range(N)):
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
@@ -969,6 +939,8 @@ def train_population(ModelConstructor, master_log: Logger):
                                      display_width=16))  # these need to be added up-front as it might take some
         log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
 
+        log.add_variable(LogVariable("iteration", 0))
+
 
         logs.append(log)
 
@@ -1025,6 +997,14 @@ def train_population(ModelConstructor, master_log: Logger):
 
     log_time = 0
 
+    # setup agents within the population
+    if args.pbl_use_experience is not None:
+        runners[0].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-0")
+        runners[1].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-1")
+        # stub: disable runners 2 and 3 from training, makes training super fast.
+        runners[2].experience_path = "!"
+        runners[3].experience_path = "!"
+
     # train all models together
     for iteration in range(start_iteration, n_iterations+1):
 
@@ -1053,16 +1033,16 @@ def train_population(ModelConstructor, master_log: Logger):
             runner.calculate_returns()
         returns_time = (time.time() - returns_start_time) / batch_size / len(runners)
 
-        train_start_time = time.time()
-
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
+        train_start_time = time.time()
         assert len(runners) == 4, "Only population sizes of 4 are supported at the moment."
         train_time = (time.time() - train_start_time) / batch_size / len(runners)
         runners[0].train()
         runners[1].train()
         runners[2].train_from_off_policy_experience([runners[0], runners[1]])
-        runners[3].train_from_off_policy_experience([runners[3], runners[2]])
+        # stub
+        #runners[3].train_from_off_policy_experience([runners[3], runners[2]])
         step_time = (time.time() - step_start_time) / batch_size / len(runners)
 
         log_start_time = time.time()

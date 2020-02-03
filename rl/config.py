@@ -74,11 +74,6 @@ class Config:
         # emi
         self.use_emi = False
 
-        # attention
-        self.use_atn = False
-        self.atn_movement_cost = 0.0
-        self.atn_global_frame_skip = 1
-
         # random auxiliary rewards.
         self.use_rar = False
         self.rar_scale = 0.0
@@ -90,6 +85,7 @@ class Config:
         # population based learning
         self.pbl_population_size = int()
         self.pbl_save_experience = bool()
+        self.pbl_use_experience = str()
 
         self.algo = str()
 
@@ -200,11 +196,6 @@ def parse_args():
     parser.add_argument("--emi_test_size", type=float, default=256)
 
 
-    # attention
-    parser.add_argument("--use_atn", type=str2bool, default=False, help="Enable attention system.")
-    parser.add_argument("--atn_movement_cost", type=float, default=0.2)
-    parser.add_argument("--atn_global_frame_skip", type=int, default=1)
-
     parser.add_argument("--log_folder", type=str, default=None)
 
     parser.add_argument("--use_clipped_value_loss", type=str2bool, default=True, help="Use the improved clipped value loss.")
@@ -245,6 +236,8 @@ def parse_args():
     # population stuff
     parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
     parser.add_argument("--pbl_save_experience", type=str2bool, default=False, help="Saves experience of all members in population. Can take a lot of disk space.")
+    parser.add_argument("--pbl_use_experience", type=str, default=None,
+                        help="Path to load prior experience from for population based learning.")
 
 
 

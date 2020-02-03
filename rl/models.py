@@ -317,8 +317,8 @@ class EMIModel(BaseModel):
         self.improvement_net = FDMEncoder_Net(input_dims)
 
         self.fc_policy = nn.Linear(self.net.hidden_units, actions)
-        self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
-        self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
+        self.fc_ext_value = nn.Linear(self.net.hidden_units, 1)
+        self.fc_int_value = nn.Linear(self.net.hidden_units, 1)
         self.fc_pred_improvement = nn.Linear(self.net.hidden_units, 1)
 
         self.set_device_and_dtype(device, dtype)
@@ -333,8 +333,8 @@ class EMIModel(BaseModel):
         x = self.prep_for_model(x)
         x = F.relu(self.net(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
-        ext_value = self.fc_value_ext(x).squeeze(dim=1)
-        int_value = self.fc_value_int(x).squeeze(dim=1)
+        ext_value = self.fc_ext_value(x).squeeze(dim=1)
+        int_value = self.fc_int_value(x).squeeze(dim=1)
         return {
             'log_policy': log_policy,
             'ext_value': ext_value,
@@ -400,8 +400,8 @@ class RNDModel(BaseModel):
         self.target_net = RNDTarget_Net(single_channel_input_dims)
 
         self.fc_policy = nn.Linear(self.net.hidden_units, actions)
-        self.fc_value_ext = nn.Linear(self.net.hidden_units, 1)
-        self.fc_value_int = nn.Linear(self.net.hidden_units, 1)
+        self.fc_ext_value = nn.Linear(self.net.hidden_units, 1)
+        self.fc_int_value = nn.Linear(self.net.hidden_units, 1)
 
         self.obs_rms = utils.RunningMeanStd(shape=(single_channel_input_dims))
 
@@ -460,12 +460,12 @@ class RNDModel(BaseModel):
         x = self.prep_for_model(x)
         x = F.relu(self.net.forward(x))
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value_ext = self.fc_value_ext(x).squeeze(dim=1)
-        value_int = self.fc_value_int(x).squeeze(dim=1)
+        ext_value = self.fc_ext_value(x).squeeze(dim=1)
+        int_value = self.fc_int_value(x).squeeze(dim=1)
         return {
             'log_policy': log_policy,
-            'ext_value': value_ext,
-            'int_value': value_int
+            'ext_value': ext_value,
+            'int_value': int_value
         }
 
 class TokenNet(nn.Module):
@@ -519,8 +519,8 @@ class RARModel(BaseModel):
         h = self.net.hidden_units + self.TOKEN_FILTERS
 
         self.fc_policy = nn.Linear(h, actions)
-        self.fc_value_ext = nn.Linear(h, 1)
-        self.fc_value_int = nn.Linear(h, 1)
+        self.fc_ext_value = nn.Linear(h, 1)
+        self.fc_int_value = nn.Linear(h, 1)
 
         self.set_device_and_dtype(device, dtype)
 
@@ -577,12 +577,12 @@ class RARModel(BaseModel):
         x = torch.cat((x, token_activations), dim=1)
 
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value_ext = self.fc_value_ext(x).squeeze(dim=1)
-        value_int = self.fc_value_int(x).squeeze(dim=1)
+        ext_value = self.fc_ext_value(x).squeeze(dim=1)
+        int_value = self.fc_int_value(x).squeeze(dim=1)
         return {
             'log_policy': log_policy,
-            'ext_value': value_ext,
-            'int_value': value_int
+            'ext_value': ext_value,
+            'int_value': int_value
         }
 
 # ----------------------------------------------------------------------------------------------------------------

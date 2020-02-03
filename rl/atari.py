@@ -73,11 +73,8 @@ def make(non_determinism=None):
         else:
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
-        if args.use_atn:
-            env = wrappers.FoveaWrapper(env, width=args.res_x, height=args.res_y, global_frame_skip=args.atn_global_frame_skip)
-        else:
-            env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
-            env = wrappers.FrameStack(env)
+        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
+        env = wrappers.FrameStack(env)
 
         if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,

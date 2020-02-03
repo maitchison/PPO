@@ -89,15 +89,13 @@ if __name__ == "__main__":
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
-    if (args.use_atn + args.use_rnd + args.use_emi + args.use_rar) > 1:
+    if (args.use_rnd + args.use_emi + args.use_rar) > 1:
         # todo: this should be a setting, not a set of bools
-        raise Exception("ATN, EMI, RND, and RAR are not compatible.")
+        raise Exception("EMI, RND, and RAR are not compatible.")
 
     model_args = {}
 
-    if args.use_atn:
-        ACModel = models.AttentionModel
-    elif args.use_rnd:
+    if args.use_rnd:
         ACModel = models.RNDModel
     elif args.use_emi:
         ACModel = models.EMIModel
