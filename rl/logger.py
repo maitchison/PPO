@@ -200,7 +200,7 @@ class Logger():
         self.log(output_string)
 
     def aggretate_logs(self, logs, ignore=None):
-        """ Records  the mean of the int/float/stats variables in the log. """
+        """ Records the mean of the int/float/stats variables in logs the this log. """
 
         values = logs[0]._vars.values()
 
@@ -209,6 +209,8 @@ class Logger():
                 continue
             summary = []
             for log in logs:
+                if not var.name in log._vars:
+                    continue
                 this_var = log._vars[var.name]
                 if this_var._type in ["int", "float"]:
                     summary.append(this_var.value)

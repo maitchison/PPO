@@ -250,7 +250,7 @@ class Runner():
             # special code to disable runner
             if self.experience_path == "!":
                 return
-            # just load the exprience from file.
+            # just load the experience from file.
             self.load_experience(self.experience_path, "iteration-{}".format(self.log["iteration"]))
             return
 
@@ -640,7 +640,6 @@ class Runner():
         # using bzip gets to < 0.25 Mb, which is 0.75GB per agent trained.
 
         # I tried gzip, bzip, and lzma, and bzip gave the best compression.
-
         with bz2.open(output_file, "wb", compresslevel=5) as f:
             pickle.dump(save_dict, f)
 
@@ -663,7 +662,6 @@ class Runner():
             batch_data["next_state"].append(agent.next_state.reshape([batch_size, *agent.state_shape]))
             batch_data["actions"].append(agent.actions.reshape(batch_size).astype(np.long))
             batch_data["ext_returns"].append(agent.ext_returns.reshape(batch_size))
-            batch_data["log_policy"].append(agent.log_policy.reshape([batch_size, *agent.policy_shape]))
 
             if args.use_intrinsic_rewards:
                 batch_data["int_returns"].append(agent.int_returns.reshape(batch_size))
@@ -675,14 +673,14 @@ class Runner():
             # generate our policy probabilities, and value estimates
             target_policy = np.zeros_like(agent.log_policy)
             target_value_estimates = np.zeros_like(agent.ext_value)
-            for i in range(N):
+            for i in range(agent.N):
                 # note, this could be mini-batched to make it a bit faster...
                 model_out = self.model.forward(agent.prev_state[i])
                 target_policy[i] = np.exp(model_out["log_policy"].detach().cpu().numpy())
                 target_value_estimates[i] = model_out["ext_value"].detach().cpu().numpy()
 
-            target_policy = np.asarray(target_policy)
-            target_value_estimates = np.asarray(target_policy)
+            batch_data["ext_value"].append(target_value_estimates.reshape(batch_size))
+            batch_data["log_policy"].append(target_policy.reshape([batch_size, *agent.policy_shape]))
 
             # get estimate for last state.
             model_out = self.model.forward(agent.next_state[-1])
@@ -690,11 +688,11 @@ class Runner():
 
             # apply off-policy correction (v-trace)
 
-            behavour_policy = np.exp(agent.log_policy)
+            behaviour_policy = np.exp(agent.log_policy)
             actions = agent.actions
             rewards = agent.ext_rewards
 
-            vs, pg_adv = importance_sampling_v_trace(behavour_policy, target_policy, actions,
+            vs, pg_adv = importance_sampling_v_trace(behaviour_policy, target_policy, actions,
                                         rewards, target_value_estimates, target_value_final_estimate, args.gamma)
 
             batch_data["ext_returns"].append(vs.reshape(batch_size))
@@ -1041,8 +1039,7 @@ def train_population(ModelConstructor, master_log: Logger):
         runners[0].train()
         runners[1].train()
         runners[2].train_from_off_policy_experience([runners[0], runners[1]])
-        # stub
-        #runners[3].train_from_off_policy_experience([runners[3], runners[2]])
+        runners[3].train_from_off_policy_experience([runners[3], runners[2]])
         step_time = (time.time() - step_start_time) / batch_size / len(runners)
 
         log_start_time = time.time()
