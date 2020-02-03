@@ -644,12 +644,9 @@ class Runner():
             pickle.dump(save_dict, f)
 
     def train_from_off_policy_experience(self, other_agents):
-        """ trains agents using experience from given agents"""
-        # organise our data...
+        """ trains agents using experience from given other agents. """
 
-        # todo: save experience, and train after the fact on it. This will let me test off-policy algorithms.
-
-        assert not args.use_emi, "EMI does not work with population based training."
+        assert not args.use_intrinsic_rewards, "PBL does not work with intrisic rewards yet."
 
         # create a super-batch of data from all the agents.
 
@@ -662,13 +659,6 @@ class Runner():
             batch_data["next_state"].append(agent.next_state.reshape([batch_size, *agent.state_shape]))
             batch_data["actions"].append(agent.actions.reshape(batch_size).astype(np.long))
             batch_data["ext_returns"].append(agent.ext_returns.reshape(batch_size))
-
-            if args.use_intrinsic_rewards:
-                batch_data["int_returns"].append(agent.int_returns.reshape(batch_size))
-                batch_data["int_value"].append(agent.int_value.reshape(batch_size))
-
-            if args.use_rar:
-                batch_data["rar_reward_tokens"].append(agent.rar_reward_tokens.reshape(batch_size, *agent.token_shape))
 
             # generate our policy probabilities, and value estimates
             target_policy = np.zeros_like(agent.log_policy)
@@ -687,7 +677,6 @@ class Runner():
             target_value_final_estimate = model_out["ext_value"].detach().cpu().numpy()
 
             # apply off-policy correction (v-trace)
-
             behaviour_policy = np.exp(agent.log_policy)
             actions = agent.actions
             rewards = agent.ext_rewards
@@ -740,6 +729,7 @@ class Runner():
         batch_data["next_state"] = self.next_state.reshape([batch_size, *self.state_shape])
         batch_data["actions"] = self.actions.reshape(batch_size).astype(np.long)
         batch_data["ext_returns"] = self.ext_returns.reshape(batch_size)
+
         batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.ext_value.reshape(batch_size)
@@ -752,6 +742,23 @@ class Runner():
             batch_data["rar_reward_tokens"] = self.rar_reward_tokens.reshape(batch_size, *self.token_shape)
 
         for i in range(args.batch_epochs):
+
+            if args.refresh_every and i % args.refresh_every == args.refresh_every-1:
+                assert not args.use_intrinsic_rewards, "Refresh not supported with intrinsic rewards yet."
+                # refresh out value estimate and policy
+                for t in range(self.N):
+                    model_out = self.model.forward(self.prev_state[t])
+
+                    # update the advantages? should be advantage += (new_value-old_value)
+                    self.advantage[t] += (model_out["ext_value"].detach().cpu().numpy() - self.ext_value[t])
+
+                    self.log_policy[t] = model_out["log_policy"].detach().cpu().numpy()
+                    self.ext_value[t] = model_out["ext_value"].detach().cpu().numpy()
+
+                batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
+                batch_data["advantages"] = self.advantage.reshape(batch_size)
+                batch_data["ext_value"] = self.ext_value.reshape(batch_size)
+
 
             ordering = list(range(batch_size))
             np.random.shuffle(ordering)
@@ -858,8 +865,10 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     :param gamma                        float, discount rate
 
     :return:
-        vs,                             np array [N, B], the value estimates for pi learned from off-policy data.
-        weighted_advantages,            np array [N, B], weighted (by rho) advantage estimates that can be used in policy graident updates.
+        vs                              np array [N, B], the value estimates for pi learned from off-policy data. These
+                                        can be used as targets for policy gradient learning.
+        weighted_advantages             np array [N, B], weighted (by rho) advantage estimates that can be used in
+                                        policy graident updates.
 
     """
 

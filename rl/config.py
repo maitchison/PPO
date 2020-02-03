@@ -8,78 +8,79 @@ class Config:
 
     def __init__(self, **kwargs):
         # put these here just so IDE can detect common parameters...
-        self.environment = ""
-        self.experiment_name = ""
-        self.run_name = ""
-        self.agents = 0
-        self.filter = ""
+        self.environment        = str()
+        self.experiment_name    = str()
+        self.run_name           = str()
+        self.agents             = int()
+        self.filter             = str()
 
-        self.hash_size = 0
-        self.restore = False
+        self.hash_size          = int()
+        self.restore            = bool()
 
-        self.gamma = 0.0
-        self.gamma_int = 0.0
-        self.gae_lambda = 0.0
-        self.ppo_epsilon = 0.0
-        self.vf_coef = 0.0
-        self.max_grad_norm = 0.0
+        self.gamma              = float()
+        self.gamma_int          = float()
+        self.gae_lambda         = float()
+        self.ppo_epsilon        = float()
+        self.vf_coef            = float()
+        self.max_grad_norm      = float()
 
-        self.input_crop = False
-        self.learning_rate = 0.0
+        self.input_crop         = bool()
+        self.learning_rate      = float()
         self.learning_rate_decay = float()
-        self.adam_epsilon = 0.0
-        self.workers = 0
-        self.n_steps = 0
-        self.epochs = 0
-        self.limit_epochs = 0
-        self.batch_epochs = 0
+        self.adam_epsilon       = float()
+        self.workers            = int()
+        self.n_steps            = int()
+        self.epochs             = int()
+        self.limit_epochs       = int()
+        self.batch_epochs       = int()
+        self.refresh_every      = int()
 
-        self.observation_normalization = False
-        self.intrinsic_reward_scale = 0.0
-        self.extrinsic_reward_scale = 0.0
+        self.observation_normalization = bool()
+        self.intrinsic_reward_scale = float()
+        self.extrinsic_reward_scale = float()
 
-        self.reward_clip = 0.0
-        self.reward_normalization = True
+        self.reward_clip        = float()
+        self.reward_normalization = bool()
 
-        self.mini_batch_size = 0
-        self.sync_envs = False
-        self.resolution = ""
-        self.color = False
-        self.entropy_bonus = 0.0
-        self.threads = 0
-        self.export_video = False
-        self.device = ""
-        self.save_checkpoints = False
-        self.output_folder = ""
-        self.hostname = ""
-        self.sticky_actions = False
-        self.guid = ""
+        self.mini_batch_size    = int()
+        self.sync_envs          = bool()
+        self.resolution         = str()
+        self.color              = bool()
+        self.entropy_bonus      = float()
+        self.threads            = int()
+        self.export_video       = bool()
+        self.device             = str()
+        self.save_checkpoints   = bool()
+        self.output_folder      = str()
+        self.hostname           = str()
+        self.sticky_actions     = bool()
+        self.guid               = str()
 
-        self.use_icm = False
-        self.icm_eta = 0.0
+        self.use_icm            = bool()
+        self.icm_eta            = str()
 
-        self.use_rnd = False
+        self.use_rnd            = bool()
 
-        self.memorize_cards = 0
-        self.memorize_actions = 0
+        self.memorize_cards     = int()
+        self.memorize_actions   = int()
 
-        self.debug_print_freq = 0
-        self.debug_log_freq = 0
-        self.noop_start = False
+        self.debug_print_freq   = int()
+        self.debug_log_freq     = int()
+        self.noop_start         = bool()
 
-        self.normalize_advantages = False
+        self.normalize_advantages = bool()
 
-        self.use_clipped_value_loss = False
+        self.use_clipped_value_loss = bool()
 
         # emi
-        self.use_emi = False
+        self.use_emi            = bool()
 
         # random auxiliary rewards.
-        self.use_rar = False
-        self.rar_scale = 0.0
-        self.rar_seed = 0
-        self.rar_frequency = 0
-        self.rar_use_tokens = False
+        self.use_rar            = bool()
+        self.rar_scale          = float()
+        self.rar_seed           = int()
+        self.rar_frequency      = int()
+        self.rar_use_tokens     = bool()
         self.rar_super_state_size = int()
 
         # population based learning
@@ -87,9 +88,9 @@ class Config:
         self.pbl_save_experience = bool()
         self.pbl_use_experience = str()
 
-        self.algo = str()
+        self.algo               = str()
 
-        self.log_folder = ""
+        self.log_folder         = str()
 
         self.__dict__.update(kwargs)
 
@@ -167,6 +168,7 @@ def parse_args():
                         help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
+    parser.add_argument("--refresh_every", type=int, default=0, help="How often to refresh policy and value estimates during training.")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)

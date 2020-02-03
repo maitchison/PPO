@@ -193,6 +193,19 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs_V7():
 
+    for refresh_every in [0, 1, 2, 4]:
+        for batch_epochs in [2,4,8]:
+            add_job(
+                "Pong_Refresh",
+                run_name="batch_epochs={} refresh_every={}".format(batch_epochs, refresh_every),
+                env_name="Pong",
+                batch_epochs=batch_epochs,
+                refresh_every=refresh_every,
+                epochs=20,
+                agents=64,
+                priority=5
+            )
+
     # this is a test to see how well random auxilary rewards help hard exploration games
     # this experiment failed as intrinsic reward head wasn't being trained
     for seed in [x*100 for x in range(16)]:
