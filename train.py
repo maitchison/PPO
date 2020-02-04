@@ -78,7 +78,7 @@ if __name__ == "__main__":
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-16:])
     log.info("Logging to folder " + args.log_folder)
 
-    log.csv_path = os.path.join(args.log_folder, "training_log.csv")
+    log.csv_path = os.path.join(args.log_folder, "training_log.csv" if args.algo == "ppo" else "training_log_master.csv")
     log.txt_path = os.path.join(args.log_folder, "log.txt")
 
     os.makedirs(args.log_folder, exist_ok=True)

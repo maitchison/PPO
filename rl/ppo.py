@@ -744,14 +744,16 @@ class Runner():
 
         for i in range(args.batch_epochs):
 
-            if args.refresh_every and i % args.refresh_every == args.refresh_every-1:
+            if args.refresh_every and i != 0 and i % args.refresh_every == 0:
                 assert not args.use_intrinsic_rewards, "Refresh not supported with intrinsic rewards yet."
                 # refresh out value estimate and policy
                 for t in range(self.N):
                     model_out = self.model.forward(self.prev_state[t])
 
                     # update the advantages? should be advantage += (new_value-old_value)
-                    self.advantage[t] += (model_out["ext_value"].detach().cpu().numpy() - self.ext_value[t])
+                    # this won't work because advantages are normalized, but it can be calculated by running GRE
+                    # again with new estimates
+                    # self.advantage[t] += (model_out["ext_value"].detach().cpu().numpy() - self.ext_value[t])
 
                     self.log_policy[t] = model_out["log_policy"].detach().cpu().numpy()
                     self.ext_value[t] = model_out["ext_value"].detach().cpu().numpy()
