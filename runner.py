@@ -205,21 +205,6 @@ def setup_jobs_V7():
         priority=10
     )
 
-    """
-    # our v-trace stuff
-    add_job(
-        "V_Trace_exp_test",
-        run_name="test",
-        env_name="Pong",
-        algo="pbl",
-        pbl_use_experience="/home/matthew/Dropbox/Experiments/ppo/Off_Policy/Experience_Set [b5450abf6e6d9a2e]",
-        epochs=10,
-        agents=64,
-        priority=10
-    )
-    """
-
-
     for refresh_every in [0]:
         for batch_epochs in [1, 2, 3, 4, 5, 6, 7, 8]:
             add_job(
@@ -261,8 +246,8 @@ def setup_jobs_V7():
             )
 
     # this one has advantages on
-    for refresh_every in [2, 4]:
-        for batch_epochs in [8]:
+    for refresh_every in [1, 2, 4]:
+        for batch_epochs in [4, 8, 16]:
             add_job(
                 "Pong_Refresh_v3",
                 run_name="batch_epochs={} refresh_every={}".format(batch_epochs, refresh_every),
@@ -271,7 +256,36 @@ def setup_jobs_V7():
                 refresh_every=refresh_every,
                 epochs=20,
                 agents=64,
-                priority=7
+                priority=3
+            )
+
+    # this one has advantage but not policy updates
+    for refresh_every in [2]:
+        for batch_epochs in [8]:
+            add_job(
+                "Pong_Refresh_v4",
+                run_name="batch_epochs={} refresh_every={}".format(batch_epochs, refresh_every),
+                env_name="Pong",
+                batch_epochs=batch_epochs,
+                refresh_every=refresh_every,
+                epochs=20,
+                agents=64,
+                priority=3
+            )
+
+
+    # try on a more complex game
+    for refresh_every in [1, 2, 4]:
+        for batch_epochs in [8]:
+            add_job(
+                "Alien_Refresh_v4",
+                run_name="batch_epochs={} refresh_every={}".format(batch_epochs, refresh_every),
+                env_name="Alien",
+                batch_epochs=batch_epochs,
+                refresh_every=refresh_every,
+                epochs=50,
+                agents=64,
+                priority=6
             )
 
     # this is a test to see how well random auxilary rewards help hard exploration games

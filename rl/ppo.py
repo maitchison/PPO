@@ -410,6 +410,8 @@ class Runner():
 
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width = 0 if args.normalize_advantages else 10)
         self.log.watch_mean("adv_std", np.std(self.advantage), display_width = 0 if args.normalize_advantages else 10)
+        self.log.watch_mean("adv_max", np.max(self.advantage), display_width=10 if args.normalize_advantages else 0)
+        self.log.watch_mean("adv_min", np.min(self.advantage), display_width=10 if args.normalize_advantages else 0)
         self.log.watch_mean("batch_reward_ext", np.mean(self.ext_rewards), display_name="rew_ext", display_width=0)
         self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
         self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std", display_width=0)
@@ -681,6 +683,10 @@ class Runner():
             vs, pg_adv = importance_sampling_v_trace(behaviour_policy, target_policy, actions,
                                         rewards, target_value_estimates, target_value_final_estimate, args.gamma)
 
+            # normalize the advantages
+            if args.normalize_advantages:
+                pg_adv = (pg_adv - pg_adv.mean()) / (pg_adv.std() + 1e-8)
+
             batch_data["ext_returns"].append(vs.reshape(batch_size))
             batch_data["advantages"].append(pg_adv.reshape(batch_size))
 
@@ -750,13 +756,14 @@ class Runner():
 
                 # get value of final state.
                 model_out = self.model.forward(self.next_state[-1])
-                self.ext_final_value_estimate = model_out["ext_value"]
+                self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
 
                 # update the advantages
-                calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
+                self.advantage = calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
                               self.terminals, args.gamma, args.normalize_advantages)
 
-                batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
+                # don't update our policy, just advantages and ext_value
+                #batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
                 batch_data["advantages"] = self.advantage.reshape(batch_size)
                 batch_data["ext_value"] = self.ext_value.reshape(batch_size)
 
@@ -887,7 +894,7 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     target_policy = target_policy.take(actions)
     behaviour_policy = behaviour_policy.take(actions)
 
-    lam = 0.95 # they use 1.0, but O think 0.95 will be better
+    lam = 1.0 # they use 1.0, but O think 0.95 will be better, but keep things same for the moment.
 
     for i in reversed(range(N)):
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
@@ -1268,7 +1275,7 @@ def train(model: models.BaseModel, log:Logger):
         log.watch_mean("time_step", step_time*1000, display_postfix="ms", display_precision=2, display_width=10)
         log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_log", log_time*1000, display_postfix="ms", display_precision=2, display_width=0)
+        log.watch_mean("time_log", log_time*1000, type="float", display_postfix="ms", display_precision=2, display_width=0)
 
         log.record_step()
 
