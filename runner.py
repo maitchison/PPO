@@ -205,6 +205,20 @@ def setup_jobs_V7():
         priority=10
     )
 
+    # added epsilon to denominator of rho
+    # our v-trace stuff
+    add_job(
+        "V_Trace_v4",
+        run_name="test",
+        env_name="Pong",
+        pbl_use_experience="/home/matthew/Dropbox/Experiments/ppo/Off_Policy/Experience_Set [b5450abf6e6d9a2e]",
+        pbl_population_size=3,
+        algo="pbl",
+        epochs=10,
+        agents=64,
+        priority=10
+    )
+
     for refresh_every in [0]:
         for batch_epochs in [1, 2, 3, 4, 5, 6, 7, 8]:
             add_job(

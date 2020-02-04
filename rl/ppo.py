@@ -1014,7 +1014,9 @@ def train_population(ModelConstructor, master_log: Logger):
         runners[0].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-0")
         runners[1].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-1")
         # turn off logging for these 'fake' agents.
-        logs = [runners[2].log, runners[3].log]
+        logs = []
+        for i in range(2, args.pbl_population_size):
+            logs.append(runners[i].log)
 
     # train all models together
     for iteration in range(start_iteration, n_iterations+1):
@@ -1047,12 +1049,13 @@ def train_population(ModelConstructor, master_log: Logger):
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
         train_start_time = time.time()
-        assert len(runners) == 4, "Only population sizes of 4 are supported at the moment."
+        assert len(runners) in [3,4], "Only population sizes of 3 or 4 are supported at the moment."
 
         runners[0].train()
         runners[1].train()
         runners[2].train_from_off_policy_experience([runners[0], runners[1]])
-        runners[3].train_from_off_policy_experience([runners[3], runners[2]])
+        if len(runners) >= 4:
+            runners[3].train_from_off_policy_experience([runners[3], runners[2]])
 
         train_time = (time.time() - train_start_time) / batch_size / len(runners)
 
