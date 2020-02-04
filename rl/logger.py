@@ -270,6 +270,9 @@ class Logger():
 
         file_name = file_name or self.csv_path
 
+        if file_name is None:
+            return
+
         with open(file_name, "w") as f:
             field_names = self._history[-1].keys()
             writer = csv.DictWriter(f, fieldnames=field_names)
@@ -278,7 +281,12 @@ class Logger():
                 writer.writerow(row)
 
     def save_log(self, file_name=None):
+
         file_name = file_name or self.txt_path
+
+        if file_name is None:
+            return
+
         # note it would be better to simply append the new lines?
         with open(file_name, "w") as f:
             for level, time_code, line in self.output_log:

@@ -247,9 +247,6 @@ class Runner():
     def generate_rollout(self, is_warmup=False):
 
         if self.experience_path is not None:
-            # special code to disable runner
-            if self.experience_path == "!":
-                return
             # just load the experience from file.
             self.load_experience(self.experience_path, "iteration-{}".format(self.log["iteration"]))
             return
@@ -599,7 +596,6 @@ class Runner():
     def load_experience(self, folder, filename):
 
         input_file = os.path.join(folder, filename + ".bzip")
-        # just load the data and return
 
         with bz2.open(input_file, "rb") as f:
             load_dict = pickle.load(f)
@@ -614,7 +610,7 @@ class Runner():
         self.ext_final_value_estimate = load_dict["ext_final_value_estimate"]
 
         # we don't actually save the next_states, so I recreate it here.
-        self.next_state = np.concatenate([self.prev_state[1:], final_state])
+        self.next_state = np.concatenate([self.prev_state[1:], [final_state]])
 
     def save_experience(self, folder, filename):
         """ Saves all necessary experience for agent. """
@@ -749,14 +745,16 @@ class Runner():
                 # refresh out value estimate and policy
                 for t in range(self.N):
                     model_out = self.model.forward(self.prev_state[t])
-
-                    # update the advantages? should be advantage += (new_value-old_value)
-                    # this won't work because advantages are normalized, but it can be calculated by running GRE
-                    # again with new estimates
-                    # self.advantage[t] += (model_out["ext_value"].detach().cpu().numpy() - self.ext_value[t])
-
                     self.log_policy[t] = model_out["log_policy"].detach().cpu().numpy()
                     self.ext_value[t] = model_out["ext_value"].detach().cpu().numpy()
+
+                # get value of final state.
+                model_out = self.model.forward(self.next_state[-1])
+                self.ext_final_value_estimate = model_out["ext_value"]
+
+                # update the advantages
+                calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
+                              self.terminals, args.gamma, args.normalize_advantages)
 
                 batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
                 batch_data["advantages"] = self.advantage.reshape(batch_size)
@@ -889,20 +887,17 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     target_policy = target_policy.take(actions)
     behaviour_policy = behaviour_policy.take(actions)
 
-    lam = 1.0 # the use 1.0 for some reason? Should look into this..
+    lam = 0.95 # they use 1.0, but O think 0.95 will be better
 
     for i in reversed(range(N)):
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
-        rhos[i] = np.minimum(1, target_policy[i] / behaviour_policy[i])
+        # adding an epsilon to the denomiator introduce a small amount of bias, this probably would not be necessary
+        # if I use logs instead.
+        rhos[i] = np.minimum(1, target_policy[i] / (1e-6+behaviour_policy[i]))
         tdv = rhos[i] * (rewards[i] + gamma * next_target_value_estimate - target_value_estimates[i])
         cs = lam * rhos[i] # in the paper these seem to be different, but I have them the same here?
-        # note: this doesn't seem right to me, why are we initializing vs[i+1] to be 0,
-        # the github code (https://github.com/deepmind/scalable_agent/blob/master/vtrace.py) seems to do this
-        # by supplying a 0 initial value.
-        # a better method would be using the final_value estimate, which is what they do in the advantage estimate.
         next_vs = vs[i + 1] if i + 1 != N else 0
         vs[i] = tdv + gamma * cs * next_vs
-
 
     # add value estimates back in
     vs = vs + target_value_estimates
@@ -1011,9 +1006,8 @@ def train_population(ModelConstructor, master_log: Logger):
     if args.pbl_use_experience is not None:
         runners[0].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-0")
         runners[1].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-1")
-        # stub: disable runners 2 and 3 from training, makes training super fast.
-        runners[2].experience_path = "!"
-        runners[3].experience_path = "!"
+        # turn off logging for these 'fake' agents.
+        logs = [runners[2].log, runners[3].log]
 
     # train all models together
     for iteration in range(start_iteration, n_iterations+1):
@@ -1047,11 +1041,14 @@ def train_population(ModelConstructor, master_log: Logger):
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
         train_start_time = time.time()
         assert len(runners) == 4, "Only population sizes of 4 are supported at the moment."
-        train_time = (time.time() - train_start_time) / batch_size / len(runners)
+
         runners[0].train()
         runners[1].train()
         runners[2].train_from_off_policy_experience([runners[0], runners[1]])
         runners[3].train_from_off_policy_experience([runners[3], runners[2]])
+
+        train_time = (time.time() - train_start_time) / batch_size / len(runners)
+
         step_time = (time.time() - step_start_time) / batch_size / len(runners)
 
         log_start_time = time.time()
