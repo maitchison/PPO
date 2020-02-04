@@ -205,8 +205,6 @@ def setup_jobs_V7():
         priority=10
     )
 
-    # added epsilon to denominator of rho
-    # our v-trace stuff
     add_job(
         "V_Trace_v4",
         run_name="test",
@@ -215,6 +213,27 @@ def setup_jobs_V7():
         pbl_population_size=3,
         algo="pbl",
         epochs=10,
+        agents=32,
+        priority=10
+    )
+
+    add_job(
+        "V_Trace_v5",
+        run_name="test",
+        env_name="Pong",
+        algo="pbl",
+        epochs=20,
+        agents=32,
+        priority=20
+    )
+
+    add_job(
+        "Pong_Refresh_Baseline",
+        run_name="epsilon=0.2 epochs=8",
+        env_name="Pong",
+        batch_epochs=8,
+        ppo_epsilon=0.2,
+        epochs=20,
         agents=64,
         priority=10
     )
@@ -284,7 +303,7 @@ def setup_jobs_V7():
                 refresh_every=refresh_every,
                 epochs=20,
                 agents=64,
-                priority=3
+                priority=10
             )
 
 
@@ -299,8 +318,22 @@ def setup_jobs_V7():
                 refresh_every=refresh_every,
                 epochs=50,
                 agents=64,
-                priority=6
+                priority=4
             )
+
+    # baseline...
+    refresh_every = 0
+    batch_epochs = 4
+    add_job(
+        "Alien_Refresh_v4",
+        run_name="batch_epochs={} refresh_every={}".format(batch_epochs, refresh_every),
+        env_name="Alien",
+        batch_epochs=batch_epochs,
+        refresh_every=refresh_every,
+        epochs=50,
+        agents=64,
+        priority=4
+    )
 
     # this is a test to see how well random auxilary rewards help hard exploration games
     # this experiment failed as intrinsic reward head wasn't being trained
