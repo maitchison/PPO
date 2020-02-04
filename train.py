@@ -78,7 +78,10 @@ if __name__ == "__main__":
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-16:])
     log.info("Logging to folder " + args.log_folder)
 
-    log.csv_path = os.path.join(args.log_folder, "training_log.csv" if args.algo == "ppo" else "training_log_master.csv")
+    # population training gets a summary log, which we need to name differently as it can not be processed by
+    # the analysis scripts (due to missing varaibles). The training_log_0.csv, training_log_1.csv can be read
+    # just fine though.
+    log.csv_path = os.path.join(args.log_folder, "training_log.csv" if args.algo == "ppo" else "master_log.csv")
     log.txt_path = os.path.join(args.log_folder, "log.txt")
 
     os.makedirs(args.log_folder, exist_ok=True)
