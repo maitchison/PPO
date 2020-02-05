@@ -18,11 +18,12 @@ import torch.multiprocessing
 from . import utils, models, atari, hybridVecEnv, config, logger
 from .config import args
 
-
 class Runner():
 
-    def __init__(self, model, optimizer, log):
+    def __init__(self, model, optimizer, log, name="agent"):
         """ Setup our rollout runner. """
+
+        self.name = name
 
         self.model = model
         self.optimizer = optimizer
@@ -684,33 +685,54 @@ class Runner():
             actions = agent.actions
             rewards = agent.ext_rewards
 
-            print("-------------")
 
             # stub show policy
-            print("Behaviour", np.max(behaviour_policy), np.min(behaviour_policy))
-            print("Target", np.max(target_policy), np.min(target_policy))
-            print("Delta", np.max(target_policy-behaviour_policy), np.min(target_policy-behaviour_policy))
+            # print("-------------")
+            # print("Behaviour", np.max(behaviour_policy), np.min(behaviour_policy))
+            # print("Target", np.max(target_policy), np.min(target_policy))
+            # print("Delta", np.max(target_policy-behaviour_policy), np.min(target_policy-behaviour_policy))
 
-            vs, pg_adv = importance_sampling_v_trace(behaviour_policy, target_policy, actions,
+            vs, pg_adv, cs = importance_sampling_v_trace(behaviour_policy, target_policy, actions,
                                                      rewards, target_value_estimates, target_value_final_estimate,
                                                      args.gamma)
 
-            print("vs", np.max(vs), np.min(vs))
-            print("pg_adv", np.max(pg_adv), np.min(pg_adv))
+            # look for for terriable nans.
+            utils.check_for_exteme_or_nan(behaviour_policy, "bp-"+str(self.name))
+            utils.check_for_exteme_or_nan(target_policy, "tp"+str(self.name))
+            utils.check_for_exteme_or_nan(rewards, "rw"+str(self.name))
+            utils.check_for_exteme_or_nan(target_value_estimates, "tve"+str(self.name))
+            utils.check_for_exteme_or_nan(target_value_final_estimate, "tvfe"+str(self.name))
+            utils.check_for_exteme_or_nan(vs, "vs"+str(self.name))
+            utils.check_for_exteme_or_nan(pg_adv,"pg"+str(self.name))
+            utils.check_for_exteme_or_nan(cs, "cs"+str(self.name))
+
+            # stub monitor some values.
+            for x in vs.ravel():
+                self.log.watch_full("vs", x, history_length=10000)
+            for x in pg_adv.ravel():
+                self.log.watch_full("pg_adv", x, history_length=10000)
+            for x in cs.ravel():
+                self.log.watch_full("cs", x, history_length=10000)
+
+            # print("vs", np.max(vs), np.min(vs))
+            # print("pg_adv", np.max(pg_adv), np.min(pg_adv))
             # normalize the advantages
             if args.normalize_advantages:
                 pg_adv = (pg_adv - pg_adv.mean()) / (pg_adv.std() + 1e-8)
 
-            print("pg_adv_normed", np.max(pg_adv), np.min(pg_adv))
+            # print("pg_adv_normed", np.max(pg_adv), np.min(pg_adv))
 
             batch_data["ext_returns"].append(vs.reshape(batch_size))
             batch_data["advantages"].append(pg_adv.reshape(batch_size))
 
+        batch_size = self.N * self.A * len(other_agents)
+
         # make one large super-batch from each agent
         for k, v in batch_data.items():
             batch_data[k] = np.concatenate(v, axis=0)
-
-        batch_size = self.N * self.A * len(other_agents)
+            # stub: make sure batch size is correct
+            assert len(batch_data[k]) == batch_size, \
+                "Invalid batch size for {}, expected {} found {}".format(k, batch_size, batch_data[k].shape)
 
         for i in range(args.batch_epochs):
 
@@ -895,6 +917,7 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
                                         can be used as targets for policy gradient learning.
         weighted_advantages             np array [N, B], weighted (by rho) advantage estimates that can be used in
                                         policy graident updates.
+        cs                              the importance sampling correction adjustments
 
     """
 
@@ -906,6 +929,7 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     N, B, A = behaviour_policy.shape
 
     vs = np.zeros_like(target_value_estimates)
+    cs = np.zeros_like(target_value_estimates)
     rhos = np.zeros_like(target_value_estimates)
 
     # get just the part of the policy we need
@@ -918,11 +942,11 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
         # adding an epsilon to the denomiator introduce a small amount of bias, this probably would not be necessary
         # if I use logs instead.
-        rhos[i] = np.minimum(1, target_policy[i] / (1e-6 + behaviour_policy[i]))
+        rhos[i] = np.minimum(1, target_policy[i] / (behaviour_policy[i]))
         tdv = rhos[i] * (rewards[i] + gamma * next_target_value_estimate - target_value_estimates[i])
-        cs = lam * rhos[i]  # in the paper these seem to be different, but I have them the same here?
+        cs[i] = lam * rhos[i]  # in the paper these seem to be different, but I have them the same here?
         next_vs = vs[i + 1] if i + 1 != N else 0
-        vs[i] = tdv + gamma * cs * next_vs
+        vs[i] = tdv + gamma * cs[i] * next_vs
 
     # add value estimates back in
     vs = vs + target_value_estimates
@@ -931,7 +955,7 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     # calculate advantage estimates
     weighted_advantages = rhos * (rewards + gamma * vs_plus_one - target_value_estimates)
 
-    return vs, weighted_advantages
+    return vs, weighted_advantages, cs
 
 
 def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, normalize=False):
@@ -983,8 +1007,10 @@ def train_population(ModelConstructor, master_log: Logger):
     optimizers = [torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon) for model in
                   models]
 
+    names = ['agent-'+str(x) for x in range(args.pbl_population_size)]
+
     # create our runners
-    runners = [Runner(model, optimizer, log) for model, optimizer, log in zip(models, optimizers, logs)]
+    runners = [Runner(model, optimizer, log, name) for model, optimizer, log, name in zip(models, optimizers, logs, names)]
 
     # todo allow for restoration from checkpoint
     start_iteration = 0
@@ -1117,7 +1143,13 @@ def train_population(ModelConstructor, master_log: Logger):
         # periodically print and save progress
         if time.time() - last_print_time >= args.debug_print_freq:
             save_progress(master_log)
-            master_log.print_variables(include_header=print_counter % 10 == 0)
+
+            # stub: and print all agents
+            if args.algo=="pbl":
+                for i in range(args.pbl_population_size):
+                    runners[i].log.print_variables(include_header = i in [0,2])
+            else:
+                master_log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
             print_counter += 1
 

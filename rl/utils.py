@@ -31,6 +31,21 @@ class Color:
 # Utils
 # -------------------------------------------------------------
 
+def check_for_exteme_or_nan(X, name="array", extreme_limit=10000):
+    """ Makes sure elements in array are non NaN and are within reasonable limits. """
+
+    mean = np.mean(X)
+    std = np.std(X)
+    max = np.max(X)
+    min = np.min(X)
+
+    if np.any(np.isnan(X)):
+        print("!!! Found nan in "+name+" with stats:", mean, std, max, min)
+    if extreme_limit and max > extreme_limit:
+        print("!!! Max too high in "+name+" with stats:", mean, std, max, min)
+    if extreme_limit and min < -extreme_limit:
+        print("!!! Max too high in "+name+" with stats:", mean, std, max, min)
+
 def mse(a,b):
     """ returns the mean square error between a and b. """
     return (np.square(a - b, dtype=np.float32)).mean(dtype=np.float32)

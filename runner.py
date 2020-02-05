@@ -293,7 +293,7 @@ def setup_jobs_V7():
             )
 
     # this one has advantage but not policy updates
-    for refresh_every in [2]:
+    for refresh_every in [1, 2, 4]:
         for batch_epochs in [8]:
             add_job(
                 "Pong_Refresh_v4",
@@ -319,6 +319,19 @@ def setup_jobs_V7():
                 epochs=50,
                 agents=64,
                 priority=4
+            )
+
+    for ppo_epsilon in [0.05, 0.1, 0.2]:
+        for batch_epochs in [3, 4, 6, 8]:
+            add_job(
+                "Alien_Search",
+                run_name="ppo_epsilon={} batch_epochs={}".format(ppo_epsilon, batch_epochs),
+                env_name="Alien",
+                batch_epochs=batch_epochs,
+                ppo_epsilon=ppo_epsilon,
+                epochs=50,
+                agents=64,
+                priority=5
             )
 
     # baseline...
