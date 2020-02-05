@@ -679,9 +679,9 @@ class Runner():
             model_out = self.model.forward(agent.next_state[-1])
             target_value_final_estimate = model_out["ext_value"].detach().cpu().numpy()
 
+            behaviour_log_policy = agent.log_policy
+
             # apply off-policy correction (v-trace)
-            behaviour_policy = np.exp(agent.log_policy)
-            target_policy = np.exp(target_log_policy)
             actions = agent.actions
             rewards = agent.ext_rewards
 
@@ -692,13 +692,13 @@ class Runner():
             # print("Target", np.max(target_policy), np.min(target_policy))
             # print("Delta", np.max(target_policy-behaviour_policy), np.min(target_policy-behaviour_policy))
 
-            vs, pg_adv, cs = importance_sampling_v_trace(behaviour_policy, target_policy, actions,
+            vs, pg_adv, cs = importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions,
                                                      rewards, target_value_estimates, target_value_final_estimate,
                                                      args.gamma)
 
             # look for for terriable nans.
-            utils.check_for_exteme_or_nan(behaviour_policy, "bp-"+str(self.name))
-            utils.check_for_exteme_or_nan(target_policy, "tp"+str(self.name))
+            utils.check_for_exteme_or_nan(np.exp(behaviour_log_policy), "bp-"+str(self.name))
+            utils.check_for_exteme_or_nan(np.exp(target_log_policy), "tp"+str(self.name))
             utils.check_for_exteme_or_nan(rewards, "rw"+str(self.name))
             utils.check_for_exteme_or_nan(target_value_estimates, "tve"+str(self.name))
             utils.check_for_exteme_or_nan(target_value_final_estimate, "tvfe"+str(self.name))
@@ -893,7 +893,7 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
     return returns
 
 
-def importance_sampling_v_trace(behaviour_policy, target_policy, actions, rewards, target_value_estimates,
+def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, target_value_estimates,
                                 target_value_final_estimate, gamma):
     """
     Calculate importance weights, and value estimates from off-policy data.
@@ -902,8 +902,8 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
 
     Based on https://arxiv.org/pdf/1802.01561.pdf
 
-    :param behaviour_policy             np array [N, B, A], (i.e. the policy that generated the experience)
-    :param target_policy                np array [N, B, A], (i.e. the policy that we want to update)
+    :param behaviour_log_policy         np array [N, B, A], (i.e. the policy that generated the experience)
+    :param target_log_policy            np array [N, B, A], (i.e. the policy that we want to update)
     :param actions                      np array [N, B], action taken by behaviour policy at each step
     :param rewards                      np array [N, B], reward received at each step
 
@@ -926,23 +926,23 @@ def importance_sampling_v_trace(behaviour_policy, target_policy, actions, reward
     # create a test script to validate this function
     # maybe switch over to log_policy (it's safer and faster)
 
-    N, B, A = behaviour_policy.shape
+    N, B, A = behaviour_log_policy.shape
 
     vs = np.zeros_like(target_value_estimates)
     cs = np.zeros_like(target_value_estimates)
-    rhos = np.zeros_like(target_value_estimates)
 
     # get just the part of the policy we need
-    target_policy = target_policy.take(actions)
-    behaviour_policy = behaviour_policy.take(actions)
+    target_log_policy = target_log_policy.take(actions)
+    behaviour_log_policy = behaviour_log_policy.take(actions)
 
     lam = 1.0  # they use 1.0, but O think 0.95 will be better, but keep things same for the moment.
+
+    rhos = np.minimum(1, np.exp(target_log_policy - behaviour_log_policy))
 
     for i in reversed(range(N)):
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
         # adding an epsilon to the denomiator introduce a small amount of bias, this probably would not be necessary
         # if I use logs instead.
-        rhos[i] = np.minimum(1, target_policy[i] / (behaviour_policy[i]))
         tdv = rhos[i] * (rewards[i] + gamma * next_target_value_estimate - target_value_estimates[i])
         cs[i] = lam * rhos[i]  # in the paper these seem to be different, but I have them the same here?
         next_vs = vs[i + 1] if i + 1 != N else 0
