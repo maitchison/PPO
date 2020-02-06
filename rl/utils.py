@@ -184,6 +184,19 @@ def copy_source_files(source, destination, force=False):
 def comma(x):
     return "{:,.1f}".format(x) if x < 100 else "{:,.0f}".format(x)
 
+def dump_data(X, name):
+    """dumps a np / torch tensor to a file."""
+
+    if type(X) is torch.Tensor:
+        X = X.detach().cpu().numpy()
+
+    with open(name+".txt", "wt") as f:
+        f.write("min," + str(np.min(X))+"\n")
+        f.write("max," + str(np.max(X))+"\n")
+        f.write("mean," + str(np.mean(X))+"\n")
+        f.write("std," + str(np.std(X))+"\n")
+    np.savetxt(name+".csv", X, delimiter=",")
+
 # -------------------------------------------------------------
 # RMS
 # -------------------------------------------------------------

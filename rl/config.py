@@ -91,6 +91,7 @@ class Config:
         self.algo               = str()
 
         self.log_folder         = str()
+        self.checkpoint_every   = int()
 
         self.__dict__.update(kwargs)
 
@@ -114,8 +115,6 @@ LOCK_KEY = str(uuid.uuid4().hex)
 # debugging variables.
 PROFILE_INFO = False
 VERBOSE = True
-
-CHECKPOINT_EVERY_STEPS = int(5e6)
 
 args = Config()
 
@@ -218,6 +217,7 @@ def parse_args():
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
+    parser.add_argument("--checkpoint_every", type=int, default=5e6, help="Number of environment steps between checkpoints.")
 
     # model
     #parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
@@ -241,6 +241,10 @@ def parse_args():
     parser.add_argument("--pbl_use_experience", type=str, default=None,
                         help="Path to load prior experience from for population based learning.")
 
+    # these are really just for testing to get v-trace working
+    parser.add_argument("--pbl_policy_soften", type=str2bool, default=False)
+    parser.add_argument("--pbl_normalize_advantages", type=str, default="None")
+    parser.add_argument("--pbl_thinning", type=str, default="None")
 
 
     args.update(**parser.parse_args().__dict__)

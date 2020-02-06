@@ -8,6 +8,7 @@ import time
 import json
 import math
 import cv2
+import csv
 import pickle
 import gzip, bz2, lzma
 from collections import defaultdict
@@ -82,6 +83,9 @@ class Runner():
 
         # path to load experience from (disables rollouts and training)
         self.experience_path = None
+
+        # outputs tensors when clip loss is very high.
+        self.log_high_grad_norm = True
 
     def create_envs(self):
         """ Creates environments for runner"""
@@ -249,6 +253,8 @@ class Runner():
 
         if self.experience_path is not None:
             # just load the experience from file.
+            # stub:
+            print("loading exp...")
             self.load_experience(self.experience_path, "iteration-{}".format(self.log["iteration"]))
             return
 
@@ -276,6 +282,9 @@ class Runner():
             # it's a bit silly to have this here...
             if "returns_norm_state" in infos[0]:
                 atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
+                norm_mean, norm_var, norm_count = infos[0]["returns_norm_state"]
+                self.log.watch("returns_norm_mu", norm_mean)
+                self.log.watch("returns_norm_std", norm_var**0.5)
 
             # work out our intrinsic rewards
             if args.use_intrinsic_rewards:
@@ -363,8 +372,9 @@ class Runner():
 
         self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate,
                                              args.gamma)
+
         self.ext_advantage = calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
-                                           self.terminals, args.gamma, args.normalize_advantages)
+                                           self.terminals, args.gamma, args.gae_lambda, args.normalize_advantages)
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -469,10 +479,13 @@ class Runner():
         logps = model_out["log_policy"]
 
         ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
-        loss_clip = torch.mean(
-            torch.min(ratio * advantages, torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon) * advantages))
-        self.log.watch_mean("loss_pg", loss_clip)
-        loss += loss_clip
+        clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
+
+        loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
+        loss_clip_mean = loss_clip.mean()
+
+        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64)
+        loss += loss_clip_mean
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -483,6 +496,7 @@ class Runner():
         if args.use_intrinsic_rewards:
             value_heads.append("int")
 
+        loss_value = 0
         for value_head in value_heads:
             value_prediction = model_out["{}_value".format(value_head)]
             returns = data["{}_returns".format(value_head)]
@@ -500,7 +514,7 @@ class Runner():
                 vf_losses1 = (value_prediction - returns).pow(2)
                 loss_value = -0.5 * torch.mean(vf_losses1)
             loss_value *= args.vf_coef
-            self.log.watch_mean("loss_v_" + value_head, loss_value)
+            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss += loss_value
 
         # -------------------------------------------------------------------------
@@ -549,8 +563,31 @@ class Runner():
             grad_norm = grad_norm ** 0.5
 
         self.log.watch_mean("opt_grad", grad_norm)
-
         self.optimizer.step()
+
+        # -------------------------------------------------------------------------
+        # -------------------------------------------------------------------------
+
+        # stub force this...
+        if self.log_high_grad_norm and grad_norm > 100:
+            self.log.important("Extremely high grad norm ... outputting inputs.")
+            self.log.important("Loss clip was " + str(loss_clip_mean))
+            self.log.important("Loss value was " + str(loss_value))
+
+            f_name = lambda x: os.path.join(args.log_folder,self.name+"-"+x+"-"+str(self.log["env_step"]))
+
+            utils.dump_data(advantages, f_name("advantages"))
+            utils.dump_data(loss_clip, f_name("loss_clip"))
+            utils.dump_data(ratio, f_name("ratio"))
+            utils.dump_data(clipped_ratio, f_name("clipped_ratio"))
+            utils.dump_data(logps, f_name("logps"))
+            utils.dump_data(policy_logprobs, f_name("policy_logprobs"))
+            utils.dump_data(actions, f_name("actions"))
+            utils.dump_data(data["ext_value"], f_name("values"))
+            utils.dump_data(data["ext_returns"], f_name("returns"))
+            self.log_high_grad_norm = False
+
+
 
         # -------------------------------------------------------------------------
         # Calculate loss_emi
@@ -655,8 +692,11 @@ class Runner():
         # create a super-batch of data from all the agents.
 
         batch_data = defaultdict(list)
+        batch_size = self.N * self.A
+        mega_batch_size = self.N * self.A * len(other_agents)
+
         for agent in other_agents:
-            batch_size = agent.N * agent.A
+
             assert agent.N == self.N and agent.A == self.A, "all agents must share the same number of sub-agents, and rollout length."
 
             batch_data["prev_state"].append(agent.prev_state.reshape([batch_size, *agent.state_shape]))
@@ -672,6 +712,10 @@ class Runner():
                 target_log_policy[i] = model_out["log_policy"].detach().cpu().numpy()
                 target_value_estimates[i] = model_out["ext_value"].detach().cpu().numpy()
 
+                if args.pbl_policy_soften:
+                    # this will denormalize the policy, but I'm ok with that.
+                    target_log_policy[i] = np.clamp(target_log_policy[i], -350, 0)
+
             batch_data["ext_value"].append(target_value_estimates.reshape(batch_size))
             batch_data["log_policy"].append(target_log_policy.reshape([batch_size, *agent.policy_shape]))
 
@@ -680,11 +724,11 @@ class Runner():
             target_value_final_estimate = model_out["ext_value"].detach().cpu().numpy()
 
             behaviour_log_policy = agent.log_policy
+            dones = agent.terminals
 
             # apply off-policy correction (v-trace)
             actions = agent.actions
             rewards = agent.ext_rewards
-
 
             # stub show policy
             # print("-------------")
@@ -693,18 +737,8 @@ class Runner():
             # print("Delta", np.max(target_policy-behaviour_policy), np.min(target_policy-behaviour_policy))
 
             vs, pg_adv, cs = importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions,
-                                                     rewards, target_value_estimates, target_value_final_estimate,
+                                                     rewards, dones, target_value_estimates, target_value_final_estimate,
                                                      args.gamma)
-
-            # look for for terriable nans.
-            utils.check_for_exteme_or_nan(np.exp(behaviour_log_policy), "bp-"+str(self.name))
-            utils.check_for_exteme_or_nan(np.exp(target_log_policy), "tp"+str(self.name))
-            utils.check_for_exteme_or_nan(rewards, "rw"+str(self.name))
-            utils.check_for_exteme_or_nan(target_value_estimates, "tve"+str(self.name))
-            utils.check_for_exteme_or_nan(target_value_final_estimate, "tvfe"+str(self.name))
-            utils.check_for_exteme_or_nan(vs, "vs"+str(self.name))
-            utils.check_for_exteme_or_nan(pg_adv,"pg"+str(self.name))
-            utils.check_for_exteme_or_nan(cs, "cs"+str(self.name))
 
             # stub monitor some values.
             for x in vs.ravel():
@@ -714,32 +748,51 @@ class Runner():
             for x in cs.ravel():
                 self.log.watch_full("cs", x, history_length=10000)
 
-            # print("vs", np.max(vs), np.min(vs))
-            # print("pg_adv", np.max(pg_adv), np.min(pg_adv))
-            # normalize the advantages
-            if args.normalize_advantages:
-                pg_adv = (pg_adv - pg_adv.mean()) / (pg_adv.std() + 1e-8)
-
-            # print("pg_adv_normed", np.max(pg_adv), np.min(pg_adv))
-
             batch_data["ext_returns"].append(vs.reshape(batch_size))
             batch_data["advantages"].append(pg_adv.reshape(batch_size))
-
-        batch_size = self.N * self.A * len(other_agents)
 
         # make one large super-batch from each agent
         for k, v in batch_data.items():
             batch_data[k] = np.concatenate(v, axis=0)
-            # stub: make sure batch size is correct
-            assert len(batch_data[k]) == batch_size, \
-                "Invalid batch size for {}, expected {} found {}".format(k, batch_size, batch_data[k].shape)
+
+        # I think we probably don't want to normalize these as sometimes the advantages would be very small
+        # also, if we do normalize it should be the entire mega batch.
+        normalization_mode = args.pbl_normalize_advantages.lower()
+        if normalization_mode in ["none"]:
+            pass
+        elif normalization_mode in ["clipped", "full"]:
+            mu = batch_data["advantages"].mean()
+            sigma = batch_data["advantages"].std()
+            if normalization_mode == "clipped":
+                sigma = max(0.2, sigma) # make sure we don't inflate the advantages by too much.
+            batch_data["advantages"] = (batch_data["advantages"] - mu) / sigma
+        else:
+            raise Exception("Invalid pbl clipping parameter")
+
+
+        # thinning mode:
+        # hard thins out example early on, so we train multiple times on one reduced set
+        # soft thins out while training so all example are used, but less often
+        # none trains fully on all.
+        thinning_mode = args.pbl_thinning.lower()
+
+        master_set_ordering = list(range(mega_batch_size))
+        if thinning_mode == "hard":
+            # thin out examples early on
+            np.random.shuffle(master_set_ordering)
+            master_set_ordering = master_set_ordering[:batch_size]
 
         for i in range(args.batch_epochs):
 
-            ordering = list(range(batch_size))
-            np.random.shuffle(ordering)
+            np.random.shuffle(master_set_ordering)
 
-            n_batches = math.ceil(batch_size / args.mini_batch_size)
+            # thin the data, so we don't over-train
+            if thinning_mode == "soft":
+                ordering = master_set_ordering[:batch_size]
+            else:
+                ordering = master_set_ordering[:]
+
+            n_batches = math.ceil(len(ordering) / args.mini_batch_size)
 
             for j in range(n_batches):
 
@@ -870,6 +923,7 @@ def save_progress(log: Logger):
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
 
+# todo: make this td(\lambda) style...)
 
 def calculate_returns(rewards, dones, final_value_estimate, gamma):
     """
@@ -892,9 +946,8 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
 
     return returns
 
-
-def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, target_value_estimates,
-                                target_value_final_estimate, gamma):
+def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
+                                target_value_estimates, target_value_final_estimate, gamma, lamb=1.0):
     """
     Calculate importance weights, and value estimates from off-policy data.
 
@@ -906,11 +959,13 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
     :param target_log_policy            np array [N, B, A], (i.e. the policy that we want to update)
     :param actions                      np array [N, B], action taken by behaviour policy at each step
     :param rewards                      np array [N, B], reward received at each step
+    :param dones                        np array [N, B], boolean terminals
 
     :param target_value_estimates       np array [N, B], the value estimates for the target policy.
     :param target_value_final_estimate  np array [B], the value estimate for target policy at time N
 
     :param gamma                        float, discount rate
+    :param lamb                         float, lambda for generalized advantage function
 
     :return:
         vs                              np array [N, B], the value estimates for pi learned from off-policy data. These
@@ -921,52 +976,59 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
 
     """
 
-    # todo:
-    # check if I've got cs right
-    # create a test script to validate this function
-    # maybe switch over to log_policy (it's safer and faster)
-
     N, B, A = behaviour_log_policy.shape
 
     vs = np.zeros_like(target_value_estimates)
     cs = np.zeros_like(target_value_estimates)
 
+    not_terminal = np.asarray(1-dones, dtype=np.float32)
+
+    target_log_policy_actions = np.zeros_like(target_value_estimates)
+    behaviour_log_policy_actions = np.zeros_like(target_value_estimates)
+
     # get just the part of the policy we need
-    target_log_policy = target_log_policy.take(actions)
-    behaviour_log_policy = behaviour_log_policy.take(actions)
+    # stub: there will be a faster way of doing this with indexing..
+    for i in range(N):
+        for j in range(B):
+            target_log_policy_actions[i,j] = target_log_policy[i,j,actions[i, j]]
+            behaviour_log_policy_actions[i, j] = behaviour_log_policy[i, j, actions[i, j]]
 
-    lam = 1.0  # they use 1.0, but O think 0.95 will be better, but keep things same for the moment.
-
-    rhos = np.minimum(1, np.exp(target_log_policy - behaviour_log_policy))
+    rhos = np.minimum(1, np.exp(target_log_policy_actions - behaviour_log_policy_actions))
 
     for i in reversed(range(N)):
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
-        # adding an epsilon to the denomiator introduce a small amount of bias, this probably would not be necessary
+        # adding an epsilon to the denominator introduce a small amount of bias, this probably would not be necessary
         # if I use logs instead.
-        tdv = rhos[i] * (rewards[i] + gamma * next_target_value_estimate - target_value_estimates[i])
-        cs[i] = lam * rhos[i]  # in the paper these seem to be different, but I have them the same here?
+        tdv = rhos[i] * (rewards[i] + gamma * not_terminal[i] * next_target_value_estimate - target_value_estimates[i])
+        cs[i] = rhos[i]  # in the paper these seem to be different, but I have them the same here?
         next_vs = vs[i + 1] if i + 1 != N else 0
-        vs[i] = tdv + gamma * cs[i] * next_vs
+        vs[i] = tdv + gamma * not_terminal[i] * (lamb * cs[i]) * next_vs
 
     # add value estimates back in
     vs = vs + target_value_estimates
     vs_plus_one = np.concatenate((vs[1:], [target_value_final_estimate]))
 
     # calculate advantage estimates
-    weighted_advantages = rhos * (rewards + gamma * vs_plus_one - target_value_estimates)
+    weighted_advantages = rhos * (rewards + gamma * not_terminal * vs_plus_one - target_value_estimates)
+
+    # cast to float because for some reason goes to float64
+    weighted_advantages = weighted_advantages.astype(dtype=np.float32)
 
     return vs, weighted_advantages, cs
 
 
-def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, normalize=False):
-    batch_advantage = np.zeros([args.n_steps, args.agents], dtype=np.float32)
-    prev_adv = np.zeros([args.agents], dtype=np.float32)
-    for t in reversed(range(args.n_steps)):
+def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb=1.0, normalize=False):
+
+    N, A = batch_rewards.shape
+
+    batch_advantage = np.zeros_like(batch_rewards, dtype=np.float32)
+    prev_adv = np.zeros([A], dtype=np.float32)
+    for t in reversed(range(N)):
         is_next_terminal = batch_terminal[
             t] if batch_terminal is not None else False  # batch_terminal[t] records if t+1 is a terminal state)
-        value_next_t = batch_value[t + 1] if t != args.n_steps - 1 else final_value_estimate
+        value_next_t = batch_value[t + 1] if t != N - 1 else final_value_estimate
         delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
-        batch_advantage[t] = prev_adv = delta + gamma * args.gae_lambda * (
+        batch_advantage[t] = prev_adv = delta + gamma * lamb * (
                 1.0 - is_next_terminal) * prev_adv
     if normalize:
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
@@ -1047,7 +1109,7 @@ def train_population(ModelConstructor, master_log: Logger):
     last_log_time = -1
 
     # add a few checkpoints early on
-    checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, config.CHECKPOINT_EVERY_STEPS)]
+    checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, args.checkpoint_every)]
     checkpoints += [x // batch_size for x in [1e6]]  # add a checkpoint early on (1m steps)
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))
@@ -1056,6 +1118,7 @@ def train_population(ModelConstructor, master_log: Logger):
 
     # setup agents within the population
     if args.pbl_use_experience is not None:
+        master_log.important("Using prior experience")
         runners[0].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-0")
         runners[1].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-1")
         # turn off logging for these 'fake' agents.
@@ -1077,6 +1140,11 @@ def train_population(ModelConstructor, master_log: Logger):
         master_log.watch("walltime", walltime,
                          display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
 
+        # move some variables from master log to the individual logs
+        for log in logs:
+            for var_name in ["iteration", "env_step", "walltime"]:
+                log.watch(var_name, master_log[var_name])
+
         for optimizer in optimizers:
             adjust_learning_rate(optimizer, env_step / 1e6)
 
@@ -1095,13 +1163,13 @@ def train_population(ModelConstructor, master_log: Logger):
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
         train_start_time = time.time()
-        assert len(runners) in [3, 4], "Only population sizes of 3 or 4 are supported at the moment."
+        assert len(runners) in [4], "Only population sizes of 4 are supported at the moment."
 
-        runners[0].train()
-        runners[1].train()
+        # we train all these 'off-policy' just to make sure v-trace works on policy.
+        runners[0].train_from_off_policy_experience([runners[0]]) # this is just to make sure off policy works as expected.
+        runners[1].train_from_off_policy_experience([runners[1],runners[1]]) # this is just to make sure off policy works as expected with multiple agents
         runners[2].train_from_off_policy_experience([runners[0], runners[1]])
-        if len(runners) >= 4:
-            runners[3].train_from_off_policy_experience([runners[3], runners[2]])
+        runners[3].train_from_off_policy_experience([runners[0], runners[1], runners[3]])
 
         train_time = (time.time() - train_start_time) / batch_size / len(runners)
 
@@ -1135,19 +1203,16 @@ def train_population(ModelConstructor, master_log: Logger):
         master_log.record_step()
 
         for log in logs:
-            # move some variables from master log to the individual logs
-            for var_name in ["iteration", "env_step", "walltime"]:
-                log.watch(var_name, master_log[var_name])
             log.record_step()
 
         # periodically print and save progress
         if time.time() - last_print_time >= args.debug_print_freq:
             save_progress(master_log)
 
-            # stub: and print all agents
+            # stub: and print all agents except first one...
             if args.algo=="pbl":
                 for i in range(args.pbl_population_size):
-                    runners[i].log.print_variables(include_header = i in [0,2])
+                    runners[i].log.print_variables(include_header= i == 0)
             else:
                 master_log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
@@ -1176,8 +1241,10 @@ def train_population(ModelConstructor, master_log: Logger):
                 master_log.log("  -checkpoints saved")
 
             if args.export_video:
-                video_name = utils.get_checkpoint_path(env_step, args.environment + ".mp4")
-                runners[0].export_movie(video_name)
+
+                for i, runner in enumerate(runners):
+                    video_name = utils.get_checkpoint_path(env_step, "{}-{}.mp4".format(args.environment, i))
+                    runner.export_movie(video_name)
                 master_log.info("  -video exported")
 
             master_log.info()
@@ -1287,7 +1354,7 @@ def train(model: models.BaseModel, log: Logger):
     last_log_time = -1
 
     # add a few checkpoints early on
-    checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, config.CHECKPOINT_EVERY_STEPS)]
+    checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, args.checkpoint_every)]
     checkpoints += [x // batch_size for x in [1e6]]  # add a checkpoint early on (1m steps)
     checkpoints.append(n_iterations)
     checkpoints = sorted(set(checkpoints))

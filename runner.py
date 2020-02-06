@@ -193,6 +193,36 @@ def add_job(experiment_name, run_name, priority=0, **kwargs):
 
 def setup_jobs_V7():
 
+    # ------------------------------------------
+    # V-Trace
+    # ------------------------------------------
+
+    # try to get to the bottom of the policy colapse / nans.
+    for entropy_bonus in [0.003, 0.01, 0.03]:
+        for pbl_policy_soften in [True, False]:
+            for pbl_normalize_advantages in ["None", "Clipped", "Full"]:
+                for pbl_thinning in ["None", "Soft", "Hard"]:
+                    for use_clipped_value_loss in [True, False]:
+                        add_job(
+                            "V_Trace_v8",
+                            run_name="eb={} ps={} na={} th={} cv={}".format(entropy_bonus, pbl_policy_soften,
+                                                                            pbl_normalize_advantages,
+                                                                            pbl_thinning,
+                                                                            use_clipped_value_loss),
+
+                            entropy_bonus=entropy_bonus,
+                            pbl_policy_soften=pbl_policy_soften,
+                            pbl_normalize_advantages=pbl_normalize_advantages,
+                            pbl_thinning=pbl_thinning,
+                            use_clipped_value_loss=use_clipped_value_loss,
+
+                            env_name="Pong",
+                            algo="pbl",
+                            epochs=10,
+                            agents=32,
+                            priority=10
+                        )
+
     # added epsilon to denominator of rho
     # our v-trace stuff
     add_job(
@@ -226,6 +256,33 @@ def setup_jobs_V7():
         agents=32,
         priority=20
     )
+
+    # fixed v-trace terminal bug
+    add_job(
+        "V_Trace_v6",
+        run_name="test",
+        env_name="Pong",
+        algo="pbl",
+        epochs=20,
+        agents=64,
+        priority=20
+    )
+
+    # normalize again, and better mixed policy
+    add_job(
+        "V_Trace_v7",
+        run_name="normalize better mixed etc",
+        env_name="Pong",
+        algo="pbl",
+        epochs=20,
+        agents=64,
+        priority=20
+    )
+
+
+    # ------------------------------------------
+    # Refresh
+    # ------------------------------------------
 
     add_job(
         "Pong_Refresh_Baseline",
