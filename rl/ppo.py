@@ -712,10 +712,6 @@ class Runner():
                 target_log_policy[i] = model_out["log_policy"].detach().cpu().numpy()
                 target_value_estimates[i] = model_out["ext_value"].detach().cpu().numpy()
 
-                if args.pbl_policy_soften:
-                    # this will denormalize the policy, but I'm ok with that.
-                    target_log_policy[i] = np.clamp(target_log_policy[i], -350, 0)
-
             batch_data["ext_value"].append(target_value_estimates.reshape(batch_size))
             batch_data["log_policy"].append(target_log_policy.reshape([batch_size, *agent.policy_shape]))
 
@@ -754,6 +750,15 @@ class Runner():
         # make one large super-batch from each agent
         for k, v in batch_data.items():
             batch_data[k] = np.concatenate(v, axis=0)
+
+        # clip probabilities so that all actions have atleast 1e-6 probability (which close to what
+        # 32bit float precision will handle anyway.
+        # we're assuming here that the v-trace algorithm is more stable, it's the ppo training that seems
+        # to be causing the issues.
+        if args.pbl_policy_soften:
+            # this will denormalize the policy, but I'm ok with that.
+            batch_data["log_policy"] = np.clip(batch_data["log_policy"], -13, 0)
+
 
         # I think we probably don't want to normalize these as sometimes the advantages would be very small
         # also, if we do normalize it should be the entire mega batch.

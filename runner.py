@@ -216,6 +216,10 @@ def setup_jobs_V7():
                             pbl_thinning=pbl_thinning,
                             use_clipped_value_loss=use_clipped_value_loss,
 
+                            debug_log_freq = 0,
+                            debug_print_freq = 0,
+                            checkpoint_every = int(5e5),
+
                             env_name="Pong",
                             algo="pbl",
                             epochs=10,
@@ -244,7 +248,7 @@ def setup_jobs_V7():
         algo="pbl",
         epochs=10,
         agents=32,
-        priority=10
+        priority=0
     )
 
     add_job(
@@ -254,7 +258,7 @@ def setup_jobs_V7():
         algo="pbl",
         epochs=20,
         agents=32,
-        priority=20
+        priority=0
     )
 
     # fixed v-trace terminal bug
@@ -265,7 +269,7 @@ def setup_jobs_V7():
         algo="pbl",
         epochs=20,
         agents=64,
-        priority=20
+        priority=0
     )
 
     # normalize again, and better mixed policy
@@ -276,7 +280,7 @@ def setup_jobs_V7():
         algo="pbl",
         epochs=20,
         agents=64,
-        priority=20
+        priority=0
     )
 
 
