@@ -1061,7 +1061,7 @@ def train_population(ModelConstructor, master_log: Logger):
                                      display_width=16))  # these need to be added up-front as it might take some
         log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
 
-        log.add_variable(LogVariable("iteration", 0))
+        log.add_variable(LogVariable("iteration", 0, type="int"))
 
         logs.append(log)
 

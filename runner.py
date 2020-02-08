@@ -16,7 +16,8 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-CHUNK_SIZE = 10
+# stub larger chunking for a little while
+CHUNK_SIZE = 20
 
 OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
 
@@ -196,6 +197,33 @@ def setup_jobs_V7():
     # ------------------------------------------
     # V-Trace
     # ------------------------------------------
+
+    # could be as simple as learning rate...
+    for learning_rate in [3e-5, 1e-4, 3e-4]:
+        pbl_policy_soften = False
+        pbl_normalize_advantages = "None"
+        pbl_thinning = "Soft"
+        use_clipped_value_loss = True
+        add_job(
+            "V_Trace_v9",
+            run_name="lr={}".format(learning_rate),
+
+            learning_rate=learning_rate,
+            pbl_policy_soften=pbl_policy_soften,
+            pbl_normalize_advantages=pbl_normalize_advantages,
+            pbl_thinning=pbl_thinning,
+            use_clipped_value_loss=use_clipped_value_loss,
+
+            debug_log_freq = 0,
+            debug_print_freq = 0,
+            checkpoint_every = int(5e5),
+
+            env_name="Pong",
+            algo="pbl",
+            epochs=20,
+            agents=32,
+            priority=20
+        )
 
     # try to get to the bottom of the policy colapse / nans.
     for entropy_bonus in [0.003, 0.01, 0.03]:
