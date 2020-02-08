@@ -65,15 +65,54 @@ def trace(s):
 
 
 def entropy(p):
-    """ Returns the entropy of a distribution. """
-    return -torch.sum(p * p.log2())
-
+    """ Returns the entropy of a distribution (in nats). """
+    if isinstance(p, torch.Tensor):
+        return -(p * torch.log(p)).sum()
+    else:
+        p = np.asarray(p).astype(np.float32)
+        return -(p * np.log(p)).sum()
 
 def log_entropy(logp):
     """ Returns the entropy of a distribution where input are log probabilties and output is in NATS
         Note: this used to be in bits, but to standardize with openAI baselines we have switched to NATS.
     """
-    return -(logp.exp() * logp).sum()
+    if isinstance(logp, torch.Tensor):
+        return -(logp.exp() * logp).sum()
+    else:
+        logp = np.asarray(logp).astype(np.float32)
+        return -(np.exp(logp) * logp).sum()
+
+
+def kl(p, q):
+    """
+        Returns the KL(P||Q) w
+        Note: result is returned in nats (not bits)
+    """
+    if isinstance(p, torch.Tensor):
+        assert p.dtype == q.dtype
+        assert p.dtype in [torch.float32, torch.float64]
+        return (torch.log(p / q) * p).sum()
+    else:
+        p = np.asarray(p).astype(np.float32)
+        q = np.asarray(q).astype(np.float32)
+
+        return (np.log(p/q) * p).sum()
+
+
+
+def log_kl(logp, logq):
+    """
+        Returns the KL(P||Q) where p and q are log probabilities
+        Note: logs are assumed to be natural log, and result is returned in nats (not bits)
+    """
+    if isinstance(logp, torch.Tensor):
+        assert logp.dtype == logq.dtype
+        assert logp.dtype in [torch.float32, torch.float64]
+        return ((logp - logq) * logp.exp()).sum()
+    else:
+        logp = np.asarray(logp).astype(np.float32)
+        logq = np.asarray(logq).astype(np.float32)
+        return ((logp - logq) * np.exp(logp)).sum()
 
 
 def sample_action_from_logp(logp):

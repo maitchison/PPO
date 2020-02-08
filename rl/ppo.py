@@ -18,6 +18,7 @@ import torch.multiprocessing
 
 from . import utils, models, atari, hybridVecEnv, config, logger
 from .config import args
+from .vtrace import importance_sampling_v_trace, v_trace_trust_region
 
 class Runner():
 
@@ -459,6 +460,8 @@ class Runner():
 
     def train_minibatch(self, data):
 
+        # todo colapse down to mean only at end (and apply weights then)
+
         loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
         # -------------------------------------------------------------------------
@@ -469,6 +472,7 @@ class Runner():
         actions = data["actions"]
         policy_logprobs = data["log_policy"]
         advantages = data["advantages"]
+        weights = data["weights"] if "weights" in data else 1
 
         mini_batch_size = len(prev_states)
 
@@ -482,7 +486,7 @@ class Runner():
         clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
 
         loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
-        loss_clip_mean = loss_clip.mean()
+        loss_clip_mean = (weights*loss_clip).mean()
 
         self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64)
         loss += loss_clip_mean
@@ -508,11 +512,11 @@ class Runner():
                                                                          -args.ppo_epsilon, +args.ppo_epsilon)
                 vf_losses1 = (value_prediction - returns).pow(2)
                 vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
             else:
                 # simpler version, just use MSE.
                 vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = -0.5 * torch.mean(vf_losses1)
+                loss_value = -0.5 * torch.mean(vf_losses1 * weights)
             loss_value *= args.vf_coef
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss += loss_value
@@ -521,7 +525,9 @@ class Runner():
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
-        loss_entropy = args.entropy_bonus * (utils.log_entropy(logps)) / mini_batch_size
+        loss_entropy = -(logps.exp() * logps).sum(axis=1)
+        loss_entropy *= weights * args.entropy_bonus / mini_batch_size
+        loss_entropy = loss_entropy.mean()
         self.log.watch_mean("loss_ent", loss_entropy)
         loss += loss_entropy
 
@@ -735,6 +741,12 @@ class Runner():
             vs, pg_adv, cs = importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions,
                                                      rewards, dones, target_value_estimates, target_value_final_estimate,
                                                      args.gamma)
+
+            if args.pbl_trust_region:
+                weights = v_trace_trust_region(behaviour_log_policy, target_log_policy)
+                batch_data["weights"].append(weights.reshape(batch_size))
+                for w in weights.ravel():
+                    self.log.watch_full("kl_weights", w, history_length=4096)
 
             # stub monitor some values.
             for x in vs.ravel():
@@ -950,76 +962,6 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
         returns[i] = current_return = rewards[i] + current_return * gamma * (1.0 - dones[i])
 
     return returns
-
-def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
-                                target_value_estimates, target_value_final_estimate, gamma, lamb=1.0):
-    """
-    Calculate importance weights, and value estimates from off-policy data.
-
-    N is number of time steps, B the batch size, and A the number of actions.
-
-    Based on https://arxiv.org/pdf/1802.01561.pdf
-
-    :param behaviour_log_policy         np array [N, B, A], (i.e. the policy that generated the experience)
-    :param target_log_policy            np array [N, B, A], (i.e. the policy that we want to update)
-    :param actions                      np array [N, B], action taken by behaviour policy at each step
-    :param rewards                      np array [N, B], reward received at each step
-    :param dones                        np array [N, B], boolean terminals
-
-    :param target_value_estimates       np array [N, B], the value estimates for the target policy.
-    :param target_value_final_estimate  np array [B], the value estimate for target policy at time N
-
-    :param gamma                        float, discount rate
-    :param lamb                         float, lambda for generalized advantage function
-
-    :return:
-        vs                              np array [N, B], the value estimates for pi learned from off-policy data. These
-                                        can be used as targets for policy gradient learning.
-        weighted_advantages             np array [N, B], weighted (by rho) advantage estimates that can be used in
-                                        policy graident updates.
-        cs                              the importance sampling correction adjustments
-
-    """
-
-    N, B, A = behaviour_log_policy.shape
-
-    vs = np.zeros_like(target_value_estimates)
-    cs = np.zeros_like(target_value_estimates)
-
-    not_terminal = np.asarray(1-dones, dtype=np.float32)
-
-    target_log_policy_actions = np.zeros_like(target_value_estimates)
-    behaviour_log_policy_actions = np.zeros_like(target_value_estimates)
-
-    # get just the part of the policy we need
-    # stub: there will be a faster way of doing this with indexing..
-    for i in range(N):
-        for j in range(B):
-            target_log_policy_actions[i,j] = target_log_policy[i,j,actions[i, j]]
-            behaviour_log_policy_actions[i, j] = behaviour_log_policy[i, j, actions[i, j]]
-
-    rhos = np.minimum(1, np.exp(target_log_policy_actions - behaviour_log_policy_actions))
-
-    for i in reversed(range(N)):
-        next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
-        # adding an epsilon to the denominator introduce a small amount of bias, this probably would not be necessary
-        # if I use logs instead.
-        tdv = rhos[i] * (rewards[i] + gamma * not_terminal[i] * next_target_value_estimate - target_value_estimates[i])
-        cs[i] = rhos[i]  # in the paper these seem to be different, but I have them the same here?
-        next_vs = vs[i + 1] if i + 1 != N else 0
-        vs[i] = tdv + gamma * not_terminal[i] * (lamb * cs[i]) * next_vs
-
-    # add value estimates back in
-    vs = vs + target_value_estimates
-    vs_plus_one = np.concatenate((vs[1:], [target_value_final_estimate]))
-
-    # calculate advantage estimates
-    weighted_advantages = rhos * (rewards + gamma * not_terminal * vs_plus_one - target_value_estimates)
-
-    # cast to float because for some reason goes to float64
-    weighted_advantages = weighted_advantages.astype(dtype=np.float32)
-
-    return vs, weighted_advantages, cs
 
 
 def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb=1.0, normalize=False):

@@ -86,7 +86,8 @@ class Config:
         # population based learning
         self.pbl_population_size = int()
         self.pbl_save_experience = bool()
-        self.pbl_use_experience = str()
+        self.pbl_use_experience  = str()
+        self.pbl_trust_region    = bool()
 
         self.algo               = str()
 
@@ -245,7 +246,7 @@ def parse_args():
     parser.add_argument("--pbl_policy_soften", type=str2bool, default=False)
     parser.add_argument("--pbl_normalize_advantages", type=str, default="None")
     parser.add_argument("--pbl_thinning", type=str, default="None")
-    
+    parser.add_argument("--pbl_trust_region", type=str2bool, default=False)
 
 
     args.update(**parser.parse_args().__dict__)
