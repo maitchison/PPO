@@ -889,6 +889,7 @@ class Runner():
                 minibatch_data = {}
 
                 for k, v in batch_data.items():
+                    # todo: see if torch.from_numpy is faster?
                     minibatch_data[k] = torch.tensor(v[sample]).to(self.model.device)
 
                 self.train_minibatch(minibatch_data)
@@ -1099,13 +1100,13 @@ def train_population(ModelConstructor, master_log: Logger):
         rollout_start_time = time.time()
         for runner in runners:
             runner.generate_rollout()
-        rollout_time = (time.time() - rollout_start_time) / batch_size / len(runners)
+        rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
         returns_start_time = time.time()
         for runner in runners:
             runner.calculate_returns()
-        returns_time = (time.time() - returns_start_time) / batch_size / len(runners)
+        returns_time = (time.time() - returns_start_time) / batch_size
 
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
@@ -1118,9 +1119,9 @@ def train_population(ModelConstructor, master_log: Logger):
         runners[2].train_from_off_policy_experience([runners[0], runners[1]])
         runners[3].train_from_off_policy_experience([runners[0], runners[1], runners[3]])
 
-        train_time = (time.time() - train_start_time) / batch_size / len(runners)
+        train_time = (time.time() - train_start_time) / batch_size
 
-        step_time = (time.time() - step_start_time) / batch_size / len(runners)
+        step_time = (time.time() - step_start_time) / batch_size
 
         log_start_time = time.time()
 

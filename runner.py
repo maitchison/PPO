@@ -16,8 +16,7 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# stub larger chunking for a little while
-CHUNK_SIZE = 20
+CHUNK_SIZE = 10
 
 OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
 
@@ -226,7 +225,8 @@ def setup_jobs_V7():
         )
 
     # try to get to the bottom of the policy colapse / nans.
-    for entropy_bonus in [0.003, 0.01, 0.03]:
+    for entropy_bonus in [0.003]:   # todo, look into 0.01, 0.03 (it's just this will take 4 days... which I don't have...)
+                                    # actually run this on very low priority in a seperate folder...
         for pbl_policy_soften in [True, False]:
             for pbl_normalize_advantages in ["None", "Clipped", "Full"]:
                 for pbl_thinning in ["None", "Soft", "Hard"]:
