@@ -1064,16 +1064,6 @@ def train_population(ModelConstructor, master_log: Logger):
 
     log_time = 0
 
-    # setup agents within the population
-    if args.pbl_use_experience is not None:
-        master_log.important("Using prior experience")
-        runners[0].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-0")
-        runners[1].experience_path = os.path.join(args.pbl_use_experience, "agent_experience-1")
-        # turn off logging for these 'fake' agents.
-        logs = []
-        for i in range(2, args.pbl_population_size):
-            logs.append(runners[i].log)
-
     # train all models together
     for iteration in range(start_iteration, n_iterations + 1):
 
@@ -1114,11 +1104,12 @@ def train_population(ModelConstructor, master_log: Logger):
         assert len(runners) in [4], "Only population sizes of 4 are supported at the moment."
 
         # we train all these 'off-policy' just to make sure v-trace works on policy.
-        runners[0].train_from_off_policy_experience([runners[0]]) # this is just to make sure off policy works as expected.
-        runners[1].train_from_off_policy_experience([runners[1],runners[1]]) # this is just to make sure off policy works as expected with multiple agents
-        runners[2].train_from_off_policy_experience([runners[0], runners[1]])
-        runners[3].train_from_off_policy_experience([runners[0], runners[1], runners[3]])
-
+        runners[0].train() # this is just to make sure off policy works as expected.
+        for i in range(1,4):
+            runners[i].train_from_off_policy_experience(
+                [runners[1],runners[2], runners[3]]
+            )
+        
         train_time = (time.time() - train_start_time) / batch_size
 
         step_time = (time.time() - step_start_time) / batch_size

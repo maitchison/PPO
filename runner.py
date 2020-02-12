@@ -197,6 +197,32 @@ def setup_jobs_V7():
     # V-Trace
     # ------------------------------------------
 
+    # test algorithm on some games
+    for env in ["Alien", "MonetzumaRevenge", "Breakout", "Seaquest"]
+        pbl_policy_soften = True
+        pbl_normalize_advantages = "None"
+        pbl_thinning = "None" # a bit risky...
+        add_job(
+            "VT_"+env,
+            run_name="standard".format(learning_rate),
+
+            learning_rate=learning_rate,
+            pbl_policy_soften=pbl_policy_soften,
+            pbl_normalize_advantages=pbl_normalize_advantages,
+            pbl_thinning=pbl_thinning,
+            use_clipped_value_loss=use_clipped_value_loss,
+
+            debug_log_freq=0,
+            debug_print_freq=0,
+            checkpoint_every=int(5e5),
+
+            env_name="Pong",
+            algo="pbl",
+            epochs=20,
+            agents=32,
+            priority=20
+        )
+
     # could be as simple as learning rate...
     for learning_rate in [3e-5, 1e-4, 3e-4]:
         pbl_policy_soften = False
@@ -225,8 +251,8 @@ def setup_jobs_V7():
         )
 
     # try to get to the bottom of the policy colapse / nans.
-    for entropy_bonus in [0.003]:   # todo, look into 0.01, 0.03 (it's just this will take 4 days... which I don't have...)
-                                    # actually run this on very low priority in a seperate folder...
+    for entropy_bonus in [0.003]: # would be good to also do... 0.01, 0.03 (too much compute!, there are better ways to
+                                  # spend the time.)
         for pbl_policy_soften in [True, False]:
             for pbl_normalize_advantages in ["None", "Clipped", "Full"]:
                 for pbl_thinning in ["None", "Soft", "Hard"]:
@@ -244,15 +270,11 @@ def setup_jobs_V7():
                             pbl_thinning=pbl_thinning,
                             use_clipped_value_loss=use_clipped_value_loss,
 
-                            debug_log_freq = 0,
-                            debug_print_freq = 0,
-                            checkpoint_every = int(5e5),
-
                             env_name="Pong",
                             algo="pbl",
                             epochs=10,
                             agents=32,
-                            priority=10
+                            priority=5
                         )
 
     # added epsilon to denominator of rho
