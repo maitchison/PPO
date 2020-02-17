@@ -142,7 +142,7 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
     parser.add_argument("--agents", type=int, default=32)
-    parser.add_argument("--algo", type=str, default="ppo", help="Algorithm to use [ppo|pbl]")
+    parser.add_argument("--algo", type=str, default="ppo", help="Algorithm to use [ppo|pbl|arl]")
 
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
@@ -217,7 +217,7 @@ def parse_args():
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
-    parser.add_argument("--checkpoint_every", type=int, default=5e6, help="Number of environment steps between checkpoints.")
+    parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
 
     # model
     #parser.add_argument("--model", type=str, default="cnn", help="['cnn']")

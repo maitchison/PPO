@@ -3,7 +3,8 @@ import torch
 import uuid
 import multiprocessing
 
-from rl import utils, models, ppo, atari, config, logger
+from rl import utils, models, atari, config, logger
+from rl import ppo, arl, pbl
 from rl.config import args
 
 resolution_map = {
@@ -108,12 +109,19 @@ if __name__ == "__main__":
     else:
         ACModel = models.ActorCriticModel
 
-
     try:
 
         utils.lock_job()
 
-        if args.algo.lower() == "ppo":
+        if args.algo.lower() == "arl":
+            actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions*2,
+                                         device=args.device, dtype=torch.float32, **model_args)
+
+            arl_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions+1,
+                                         device=args.device, dtype=torch.float32, **model_args)
+
+            arl.train_arl(actor_critic_model, arl_model, log)
+        elif args.algo.lower() == "ppo":
             actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
                                          device=args.device, dtype=torch.float32, **model_args)
             ppo.train(actor_critic_model, log)
@@ -121,7 +129,9 @@ if __name__ == "__main__":
 
             model_constructor = lambda : ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
                                          device=args.device, dtype=torch.float32, **model_args)
-            ppo.train_population(model_constructor, log)
+            pbl.train_population(model_constructor, log)
+        else:
+            raise Exception("Invalid algorithm", args.algo)
 
         utils.release_lock()
 

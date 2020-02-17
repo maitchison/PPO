@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import time
 
-from rl import utils
+from . import utils
 
 class bcolors:
     HEADER = '\033[95m'
@@ -46,12 +46,13 @@ class Job:
     # class variable to keep track of insertion order.
     id = 0
 
-    def __init__(self, experiment_name, run_name, priority, params):
+    def __init__(self, experiment_name, run_name, priority, chunked, params):
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.priority = priority
         self.params = params
         self.id = Job.id
+        self.chunked = chunked
         Job.id += 1
 
     def __lt__(self, other):
@@ -187,40 +188,52 @@ class Job:
             raise Exception("Error {}.".format(return_code))
 
 
-def add_job(experiment_name, run_name, priority=0, **kwargs):
-    job_list.append(Job(experiment_name, run_name, priority, kwargs))
+def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
+    job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
 
 
 def setup_jobs_V7():
+    # ------------------------------------------
+    # Test gamma
+    # ------------------------------------------
+
+    for gamma in [0.9, 0.99, 0.999, 0.9999, 0.99999, 1]:
+        add_job(
+            "Test_Gamma",
+            run_name="gamma={}".format(gamma),
+            env_name="SpaceInvaders",
+            epochs=200,
+            agents=32,
+            priority=2
+        )
 
     # ------------------------------------------
     # V-Trace
     # ------------------------------------------
 
     # test algorithm on some games
-    for env in ["Alien", "MonetzumaRevenge", "Breakout", "Seaquest"]
+    for env in ["Alien", "MontezumaRevenge", "Breakout", "Seaquest"]:
         pbl_policy_soften = True
         pbl_normalize_advantages = "None"
         pbl_thinning = "None" # a bit risky...
+        use_clipped_value_loss = True
+
         add_job(
             "VT_"+env,
-            run_name="standard".format(learning_rate),
+            run_name="standard",
 
-            learning_rate=learning_rate,
+            learning_rate=3e-4,
             pbl_policy_soften=pbl_policy_soften,
             pbl_normalize_advantages=pbl_normalize_advantages,
             pbl_thinning=pbl_thinning,
             use_clipped_value_loss=use_clipped_value_loss,
 
-            debug_log_freq=0,
-            debug_print_freq=0,
-            checkpoint_every=int(5e5),
-
-            env_name="Pong",
+            env_name=env,
             algo="pbl",
-            epochs=20,
+            epochs=200,
             agents=32,
-            priority=20
+            priority=0,
+            chunked=False
         )
 
     # could be as simple as learning rate...
@@ -1235,8 +1248,12 @@ def run_next_experiment(filter_jobs=None):
         if filter_jobs is not None and not filter_jobs(job):
             continue
         status = job.get_status()
+
         if status in ["pending", "waiting"]:
-            job.run(chunked=True)
+
+            job.get_params()
+
+            job.run(chunked=job.chunked)
             return
 
 def comma(x):

@@ -1,28 +1,110 @@
-import os
-import numpy as np
-import gym
+# todo make a PBL script, and also generalize the training so we don't have so much duplicated code.
+# the way to do this is have a function for rollout, train, and returns?
 import torch
-import torchvision
-import torch.nn as nn
-import time
-import json
+import os
 import math
-import cv2
-import csv
-import pickle
-import gzip, bz2, lzma
-from collections import defaultdict
+import json
+import time
+import torchvision
 
-from .logger import Logger, LogVariable
-from .rollout import Runner
+import numpy as np
 
-import torch.multiprocessing
-
-from . import utils, models, atari, hybridVecEnv, config, logger
+from . import models, utils, atari
 from .config import args
-from .vtrace import importance_sampling_v_trace, v_trace_trust_region
+from .rollout import Runner, save_progress, adjust_learning_rate
+from .logger import Logger, LogVariable
 
-def train(model: models.BaseModel, log: Logger):
+
+def generate_adversarial_rollout(main_agent, other_agent):
+    """
+    Generates a rollout where another agent is able to interfer with the actions (at a price)
+    :param other_agent:
+    :return:
+    """
+
+    assert not args.use_intrinsic_rewards, "not supported with arl."
+
+    for t in range(main_agent.N):
+
+        prev_states = main_agent.states.copy()
+
+        # forward state through both models, then detach the result and convert to numpy.
+        model_out = main_agent.forward()
+        log_policy = model_out["log_policy"].detach().cpu().numpy()
+        ext_value = model_out["ext_value"].detach().cpu().numpy()
+
+        model_out = other_agent.forward()
+        arl_log_policy = model_out["log_policy"].detach().cpu().numpy()
+        arl_ext_value = model_out["ext_value"].detach().cpu().numpy()
+
+        # sample actions and run through environment.
+
+        # the rules are, if max agent 'concentrates' we pick their action with cost
+        # otherwise if min agent performs anything other than no-op we pick their action
+        actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
+        arl_actions = np.asarray([utils.sample_action_from_logp(prob) for prob in arl_log_policy], dtype=np.int32)
+
+        # decode the actions
+        concentrations = np.asarray(actions % 2, dtype=np.bool)
+        noops = np.asarray(arl_actions == 0, dtype=np.bool)
+
+        true_actions = [action // 2 if concentration or noop else arl_action - 1
+                        for action, arl_action, concentration, noop in zip(actions, arl_actions, concentrations, noops)]
+
+        # stub
+        #print(actions, arl_actions, true_actions)
+
+        main_agent.states, ext_rewards, dones, infos = main_agent.vec_env.step(true_actions)
+
+        # modify ext rewards based on cost
+        reward_modifier = [0.01 if concentrate else -0.01 if not noop else 0 for concentrate, noop in zip(concentrations, noops)]
+        ext_rewards += reward_modifier
+
+        # it's a bit silly to have this here...
+        if "returns_norm_state" in infos[0]:
+            atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
+            norm_mean, norm_var, norm_count = infos[0]["returns_norm_state"]
+            main_agent.log.watch("returns_norm_mu", norm_mean)
+            main_agent.log.watch("returns_norm_std", norm_var ** 0.5)
+
+        # save raw rewards for monitoring the agents progress
+        raw_rewards = np.asarray([info.get("raw_reward", ext_rewards) for reward, info in zip(ext_rewards, infos)],
+                                 dtype=np.float32)
+
+        main_agent.episode_score += raw_rewards
+        main_agent.episode_len += 1
+
+        for i, done in enumerate(dones):
+            if done:
+                # reset is handled automatically by vectorized environments
+                # so just need to keep track of book-keeping
+                main_agent.log.watch_full("ep_score", main_agent.episode_score[i])
+                main_agent.log.watch_full("ep_length", main_agent.episode_len[i])
+                main_agent.episode_score[i] = 0
+                main_agent.episode_len[i] = 0
+
+        for agent in [main_agent, other_agent]:
+            agent.prev_state[t] = prev_states
+            agent.next_state[t] = main_agent.states
+            agent.terminals[t] = dones
+
+        main_agent.actions[t] = actions
+        main_agent.ext_rewards[t] = ext_rewards
+        main_agent.log_policy[t] = log_policy
+        main_agent.ext_value[t] = ext_value
+
+        other_agent.actions[t] = arl_actions
+        other_agent.ext_rewards[t] = -ext_rewards
+        other_agent.log_policy[t] = arl_log_policy
+        other_agent.ext_value[t] = arl_ext_value
+
+    # get value estimates for final state.
+    model_out = main_agent.forward()
+
+    main_agent.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
+
+
+def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger):
     """
     Default parameters from stable baselines
 
@@ -54,7 +136,9 @@ def train(model: models.BaseModel, log: Logger):
     n_iterations = math.ceil((final_epoch * 1e6) / batch_size)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
+    arl_optimizer = torch.optim.Adam(arl_model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
     runner = Runner(model, optimizer, log)
+    arl_runner = Runner(arl_model, arl_optimizer, log)
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
@@ -128,16 +212,18 @@ def train(model: models.BaseModel, log: Logger):
 
         # generate the rollout
         rollout_start_time = time.time()
-        runner.generate_rollout(runner)
+        generate_adversarial_rollout(runner, arl_runner)
         rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
         returns_start_time = time.time()
         runner.calculate_returns()
+        arl_runner.calculate_returns()
         returns_time = (time.time() - returns_start_time) / batch_size
 
         train_start_time = time.time()
         runner.train()
+        arl_runner.train()
         train_time = (time.time() - train_start_time) / batch_size
 
         step_time = (time.time() - step_start_time) / batch_size
