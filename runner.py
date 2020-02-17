@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import time
 
-from . import utils
+from rl import utils
 
 class bcolors:
     HEADER = '\033[95m'
