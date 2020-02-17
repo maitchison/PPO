@@ -289,15 +289,22 @@ class Runner():
                 model_out = self.model.forward(state[np.newaxis], self.model.make_tokens([rar_visited]))
             else:
                 model_out = self.model.forward(state[np.newaxis])
+
             logprobs = model_out["log_policy"][0].detach().cpu().numpy()
+            action = utils.sample_action_from_logp(logprobs)
 
-            actions = utils.sample_action_from_logp(logprobs)
-
-            # stub... do this properly
             if args.algo == "arl":
-                actions = actions // 2
+                arl_model_out = self.model.forward(state[np.newaxis])
+                arl_logprobs = arl_model_out["log_policy"][0].detach().cpu().numpy()
+                arl_action = utils.sample_action_from_logp(arl_logprobs)
 
-            state, reward, done, info = env.step(actions)
+                # decode the actions
+                concentration = bool(action % 2)
+                noop = (arl_action == 0)
+
+                action = action // 2 if concentration or noop else arl_action - 1
+
+            state, reward, done, info = env.step(action)
 
             channels = info.get("channels", None)
             rendered_frame = info.get("monitor_obs", state)

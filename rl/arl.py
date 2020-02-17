@@ -11,11 +11,11 @@ import numpy as np
 
 from . import models, utils, atari
 from .config import args
-from .rollout import Runner, save_progress, adjust_learning_rate
+from .rollout import Runner, save_progress, adjust_learning_rate, logger
 from .logger import Logger, LogVariable
 
 
-def generate_adversarial_rollout(main_agent, other_agent):
+def generate_adversarial_rollout(main_agent, other_agent, warm_up = False):
     """
     Generates a rollout where another agent is able to interfer with the actions (at a price)
     :param other_agent:
@@ -48,16 +48,13 @@ def generate_adversarial_rollout(main_agent, other_agent):
         concentrations = np.asarray(actions % 2, dtype=np.bool)
         noops = np.asarray(arl_actions == 0, dtype=np.bool)
 
-        true_actions = [action // 2 if concentration or noop else arl_action - 1
+        true_actions = [action // 2 if (concentration or warm_up) or noop else arl_action - 1
                         for action, arl_action, concentration, noop in zip(actions, arl_actions, concentrations, noops)]
-
-        # stub
-        #print(actions, arl_actions, true_actions)
 
         main_agent.states, ext_rewards, dones, infos = main_agent.vec_env.step(true_actions)
 
         # modify ext rewards based on cost
-        reward_modifier = [0.01 if concentrate else -0.01 if not noop else 0 for concentrate, noop in zip(concentrations, noops)]
+        reward_modifier = [-0.01 if concentrate else +0.01 if not noop else 0 for concentrate, noop in zip(concentrations, noops)]
         ext_rewards += reward_modifier
 
         # it's a bit silly to have this here...
@@ -126,9 +123,22 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
     """
 
     # setup logging
+    log = logger.Logger()
+    log.csv_path = os.path.join(args.log_folder, "training_log.csv")
+    log.txt_path = os.path.join(args.log_folder, "log.txt")
     log.add_variable(LogVariable("ep_score", 100, "stats",
                                  display_width=16))  # these need to be added up-front as it might take some
     log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
+    log.add_variable(LogVariable("iteration", 0, type="int"))
+
+    arl_log = logger.Logger()
+    arl_log.csv_path = os.path.join(args.log_folder, "training_log_arl.csv")
+    arl_log.txt_path = os.path.join(args.log_folder, "log_arl.txt")
+    arl_log.add_variable(LogVariable("ep_score", 100, "stats",
+                                 display_width=16))  # these need to be added up-front as it might take some
+    arl_log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
+    arl_log.add_variable(LogVariable("iteration", 0, type="int"))
+
 
     # calculate some variables
     batch_size = (args.n_steps * args.agents)
@@ -138,7 +148,7 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
     arl_optimizer = torch.optim.Adam(arl_model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
     runner = Runner(model, optimizer, log)
-    arl_runner = Runner(arl_model, arl_optimizer, log)
+    arl_runner = Runner(arl_model, arl_optimizer, arl_log)
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
@@ -202,6 +212,10 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
 
         env_step = iteration * batch_size
 
+        # alternate between conflict and not... (note, this will kill the value estimate...)
+        # also, could work if we alternate at 5m or 10m steps...
+        enable_conflict = bool(int(env_step // 1e-6) % 2)
+
         log.watch("iteration", iteration, display_priority=5)
         log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
                   display_precision=2)
@@ -212,20 +226,25 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
 
         # generate the rollout
         rollout_start_time = time.time()
-        generate_adversarial_rollout(runner, arl_runner)
+        generate_adversarial_rollout(runner, arl_runner, warm_up = not enable_conflict)
         rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
         returns_start_time = time.time()
-        runner.calculate_returns()
-        arl_runner.calculate_returns()
+        if enable_conflict:
+            runner.calculate_returns()
+            arl_runner.calculate_returns()
+        else:
+            runner.calculate_returns()
         returns_time = (time.time() - returns_start_time) / batch_size
 
         train_start_time = time.time()
-        runner.train()
-        arl_runner.train()
+        if enable_conflict:
+            runner.train()
+            arl_runner.train()
+        else:
+            runner.train()
         train_time = (time.time() - train_start_time) / batch_size
-
         step_time = (time.time() - step_start_time) / batch_size
 
         log_start_time = time.time()
