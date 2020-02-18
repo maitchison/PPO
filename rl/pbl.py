@@ -131,13 +131,11 @@ def train_population(ModelConstructor, master_log: Logger):
         # train our population...
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
         train_start_time = time.time()
-        assert len(runners) in [4], "Only population sizes of 4 are supported at the moment."
 
         # we train all these 'off-policy' just to make sure v-trace works on policy.
-        runners[0].train() # this is just to make sure off policy works as expected.
-        for i in range(1,4):
-            runners[i].train_from_off_policy_experience(
-                [runners[1],runners[2], runners[3]]
+        for runner in runners:
+            runner.train_from_off_policy_experience(
+                runners
             )
 
         train_time = (time.time() - train_start_time) / batch_size
@@ -147,14 +145,6 @@ def train_population(ModelConstructor, master_log: Logger):
         log_start_time = time.time()
 
         fps = 1.0 / (step_time)
-
-        # save experience
-        if args.pbl_save_experience:
-            for i in range(2):
-                runners[i].save_experience(
-                    os.path.join(args.log_folder, "agent_experience-{}".format(i)),
-                    "iteration-{}".format(iteration)
-                )
 
         # record some training stats
         master_log.watch_mean("fps", int(fps))
@@ -178,7 +168,6 @@ def train_population(ModelConstructor, master_log: Logger):
         if time.time() - last_print_time >= args.debug_print_freq:
             save_progress(master_log)
 
-            # stub: and print all agents except first one...
             if args.algo=="pbl":
                 for i in range(args.pbl_population_size):
                     runners[i].log.print_variables(include_header= i == 0)

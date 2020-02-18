@@ -294,15 +294,15 @@ class Runner():
             action = utils.sample_action_from_logp(logprobs)
 
             if args.algo == "arl":
-                arl_model_out = self.model.forward(state[np.newaxis])
+                arl_model_out = self.arl_model.forward(state[np.newaxis])
                 arl_logprobs = arl_model_out["log_policy"][0].detach().cpu().numpy()
                 arl_action = utils.sample_action_from_logp(arl_logprobs)
 
                 # decode the actions
-                concentration = bool(action % 2)
+                concentrate = bool(action % 2)
                 noop = (arl_action == 0)
 
-                action = action // 2 if concentration or noop else arl_action - 1
+                action = action // 2 if (concentrate or noop) else arl_action - 1
 
             state, reward, done, info = env.step(action)
 
@@ -312,6 +312,18 @@ class Runner():
             frame = utils.compose_frame(state, rendered_frame, channels)
             if frame.shape[0] != width or frame.shape[1] != height:
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
+
+            if args.algo == "arl":
+                # show control
+                col = None
+                if concentrate:
+                    col = [0, 0, 255]
+                if not noop:
+                    col = [255, 0, 0]
+                if (not noop) and concentrate:
+                    col = [255, 255, 0]
+                if col is not None:
+                    utils.draw_pixel(frame, 10, 10, col, sx=10, sy=10)
 
             if args.use_rar:
                 mapped_state = self.model.get_mapped_states(state[np.newaxis])[0]

@@ -85,13 +85,15 @@ class Config:
 
         # population based learning
         self.pbl_population_size = int()
-        self.pbl_save_experience = bool()
         self.pbl_trust_region    = bool()
 
         self.algo               = str()
 
         self.log_folder         = str()
         self.checkpoint_every   = int()
+
+        self.arl_c_cost         = float()
+        self.arl_i_cost         = float()
 
         self.__dict__.update(kwargs)
 
@@ -214,6 +216,10 @@ def parse_args():
                         help="allows intrinsic returns to propagate through end of episode."
     )
 
+    parser.add_argument("--arl_c_cost", type=float, default=0.01, help="The cost of the concentration action for agent.")
+    parser.add_argument("--arl_i_cost", type=float, default=0.01,
+                        help="The cost of the interferance action for anti-agent.")
+
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
@@ -237,7 +243,6 @@ def parse_args():
 
     # population stuff
     parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
-    parser.add_argument("--pbl_save_experience", type=str2bool, default=False, help="Saves experience of all members in population. Can take a lot of disk space.")
 
     # these are really just for testing to get v-trace working
     parser.add_argument("--pbl_policy_soften", type=str2bool, default=False)

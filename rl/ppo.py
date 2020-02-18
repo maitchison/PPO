@@ -14,7 +14,7 @@ import gzip, bz2, lzma
 from collections import defaultdict
 
 from .logger import Logger, LogVariable
-from .rollout import Runner
+from .rollout import Runner, adjust_learning_rate
 
 import torch.multiprocessing
 

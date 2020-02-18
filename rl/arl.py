@@ -33,9 +33,9 @@ def generate_adversarial_rollout(main_agent, other_agent, warm_up = False):
         log_policy = model_out["log_policy"].detach().cpu().numpy()
         ext_value = model_out["ext_value"].detach().cpu().numpy()
 
-        model_out = other_agent.forward()
-        arl_log_policy = model_out["log_policy"].detach().cpu().numpy()
-        arl_ext_value = model_out["ext_value"].detach().cpu().numpy()
+        arl_model_out = other_agent.forward()
+        arl_log_policy = arl_model_out["log_policy"].detach().cpu().numpy()
+        arl_ext_value = arl_model_out["ext_value"].detach().cpu().numpy()
 
         # sample actions and run through environment.
 
@@ -46,16 +46,12 @@ def generate_adversarial_rollout(main_agent, other_agent, warm_up = False):
 
         # decode the actions
         concentrations = np.asarray(actions % 2, dtype=np.bool)
-        noops = np.asarray(arl_actions == 0, dtype=np.bool)
+        distractions = np.asarray(arl_actions != 0, dtype=np.bool)
 
-        true_actions = [action // 2 if (concentration or warm_up) or noop else arl_action - 1
-                        for action, arl_action, concentration, noop in zip(actions, arl_actions, concentrations, noops)]
+        true_actions = [action // 2 if (concentration or warm_up) or (not distraction) else arl_action - 1
+                        for action, arl_action, concentration, distraction in zip(actions, arl_actions, concentrations, distractions)]
 
         main_agent.states, ext_rewards, dones, infos = main_agent.vec_env.step(true_actions)
-
-        # modify ext rewards based on cost
-        reward_modifier = [-0.01 if concentrate else +0.01 if not noop else 0 for concentrate, noop in zip(concentrations, noops)]
-        ext_rewards += reward_modifier
 
         # it's a bit silly to have this here...
         if "returns_norm_state" in infos[0]:
@@ -86,19 +82,21 @@ def generate_adversarial_rollout(main_agent, other_agent, warm_up = False):
             agent.terminals[t] = dones
 
         main_agent.actions[t] = actions
-        main_agent.ext_rewards[t] = ext_rewards
+        main_agent.ext_rewards[t] = ext_rewards - (args.arl_c_cost * np.asarray(concentrations, dtype=np.int))
         main_agent.log_policy[t] = log_policy
         main_agent.ext_value[t] = ext_value
 
         other_agent.actions[t] = arl_actions
-        other_agent.ext_rewards[t] = -ext_rewards
+        other_agent.ext_rewards[t] = (-ext_rewards) - (args.arl_c_cost * np.asarray(distractions, dtype=np.int))
         other_agent.log_policy[t] = arl_log_policy
         other_agent.ext_value[t] = arl_ext_value
 
     # get value estimates for final state.
     model_out = main_agent.forward()
-
     main_agent.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
+
+    arl_model_out = other_agent.forward()
+    other_agent.ext_final_value_estimate = arl_model_out["ext_value"].detach().cpu().numpy()
 
 
 def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger):
@@ -139,7 +137,6 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
     arl_log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
     arl_log.add_variable(LogVariable("iteration", 0, type="int"))
 
-
     # calculate some variables
     batch_size = (args.n_steps * args.agents)
     final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
@@ -149,6 +146,7 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
     arl_optimizer = torch.optim.Adam(arl_model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
     runner = Runner(model, optimizer, log)
     arl_runner = Runner(arl_model, arl_optimizer, arl_log)
+    runner.arl_model = arl_model
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
@@ -214,13 +212,17 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
 
         # alternate between conflict and not... (note, this will kill the value estimate...)
         # also, could work if we alternate at 5m or 10m steps...
-        enable_conflict = bool(int(env_step // 1e-6) % 2)
+        enable_conflict = not bool(int(env_step // 1e6) % 2)
 
         log.watch("iteration", iteration, display_priority=5)
         log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
                   display_precision=2)
         log.watch("walltime", walltime,
                   display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
+
+        # move some variables from master log to the individual logs
+        for var_name in ["iteration", "env_step", "walltime"]:
+            arl_log.watch(var_name, log[var_name])
 
         adjust_learning_rate(optimizer, env_step / 1e6)
 

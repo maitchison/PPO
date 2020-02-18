@@ -188,10 +188,6 @@ class Job:
             raise Exception("Error {}.".format(return_code))
 
 
-def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
-    job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
-
-
 def setup_jobs_V7():
     # ------------------------------------------
     # Test gamma
@@ -208,18 +204,59 @@ def setup_jobs_V7():
         )
 
     # ------------------------------------------
+    # ARL
+    # ------------------------------------------
+
+    for c_cost in [0.001, 0.01, 0.1]:
+        for i_cost in [0.001, 0.01, 0.1]:
+            add_job(
+                "ARL_Alien",
+                run_name="c_cost={} i_cost={}".format(c_cost, i_cost),
+                arl_c_cost=c_cost,
+                arl_i_cost=i_cost,
+                algo="arl",
+                epochs=50,
+                priority=2
+
+            )
+
+    # ------------------------------------------
     # V-Trace
     # ------------------------------------------
+
+    # test algorithm on some games
+    for env in ["Alien"]:
+        pbl_policy_soften = True
+        pbl_normalize_advantages = "None"
+        pbl_thinning = "None"  # a bit risky...
+        use_clipped_value_loss = True
+
+        add_job(
+            "VT_" + env,
+            run_name="population=8",
+            learning_rate=1e-4, # slower is more stable...
+            pbl_policy_soften=pbl_policy_soften,
+            pbl_normalize_advantages=pbl_normalize_advantages,
+            pbl_thinning=pbl_thinning,
+            pbl_population_size=8,
+            use_clipped_value_loss=use_clipped_value_loss,
+            env_name=env,
+            algo="pbl",
+            epochs=200,
+            agents=32,
+            priority=0,
+            chunked=False
+        )
 
     # test algorithm on some games
     for env in ["Alien", "MontezumaRevenge", "Breakout", "Seaquest"]:
         pbl_policy_soften = True
         pbl_normalize_advantages = "None"
-        pbl_thinning = "None" # a bit risky...
+        pbl_thinning = "None"  # a bit risky...
         use_clipped_value_loss = True
 
         add_job(
-            "VT_"+env,
+            "VT_" + env,
             run_name="standard",
 
             learning_rate=3e-4,
@@ -235,6 +272,12 @@ def setup_jobs_V7():
             priority=0,
             chunked=False
         )
+
+
+def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
+    job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
+
+def setup_jobs_V7_old():
 
     # could be as simple as learning rate...
     for learning_rate in [3e-5, 1e-4, 3e-4]:
