@@ -302,7 +302,7 @@ def train_arl(model: models.BaseModel, arl_model: models.BaseModel, log: Logger)
                 log.log("  -checkpoint saved")
 
             if args.export_video:
-                video_name = utils.get_checkpoint_path(env_step, args.environment + ".mp4")
+                video_name = utils.get_checkpoint_path(env_step, args.environment)
                 runner.export_movie(video_name)
                 log.info("  -video exported")
 

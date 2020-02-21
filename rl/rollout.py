@@ -16,7 +16,6 @@ from collections import defaultdict
 from .logger import Logger, LogVariable
 from . import utils, models, atari, hybridVecEnv, config, logger
 from .config import args
-from .vtrace import importance_sampling_v_trace, v_trace_trust_region
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
@@ -151,9 +150,6 @@ class Runner():
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
         self.ems_norm = np.zeros([args.agents])
 
-        # path to load experience from (disables rollouts and training)
-        self.experience_path = None
-
         # outputs tensors when clip loss is very high.
         self.log_high_grad_norm = True
 
@@ -258,9 +254,9 @@ class Runner():
         else:
             return self.model.forward(self.states if states is None else states)
 
-    def export_movie(self, filename):
+    def export_movie(self, filename, include_rollout=False, max_frames = 30*60*15):
         """ Exports a movie of agent playing game.
-            which_frames: model, real, or both
+            include_rollout: save a copy of the rollout (may as well include policy, actions, value etc)
         """
 
         scale = 2
@@ -277,11 +273,15 @@ class Runner():
         height = (height * scale) // 4 * 4
 
         # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-        video_out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+        video_out = cv2.VideoWriter(filename+".mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
 
         state = env.reset()
 
         rar_visited = set()
+
+        frame_count = 0
+
+        history = defaultdict(list)
 
         # play the game...
         while not done:
@@ -292,6 +292,11 @@ class Runner():
 
             logprobs = model_out["log_policy"][0].detach().cpu().numpy()
             action = utils.sample_action_from_logp(logprobs)
+
+            if include_rollout:
+                history["logprobs"].append(logprobs)
+                history["actions"].append(action)
+                history["states"].append(state)
 
             if args.algo == "arl":
                 arl_model_out = self.arl_model.forward(state[np.newaxis])
@@ -341,16 +346,20 @@ class Runner():
 
             video_out.write(frame)
 
+            frame_count += 1
+
+            if frame_count >= max_frames:
+                break
+
         video_out.release()
 
-    def generate_rollout(self, is_warmup=False):
+        if include_rollout:
+            for k, v in history.items():
+                history[k] = np.asarray(v)
+            pickle.dump(history, gzip.open(filename+".hst.gz", "wb", compresslevel=5))
 
-        if self.experience_path is not None:
-            # just load the experience from file.
-            # stub:
-            print("loading exp...")
-            self.load_experience(self.experience_path, "iteration-{}".format(self.log["iteration"]))
-            return
+
+    def generate_rollout(self, is_warmup=False):
 
         assert self.vec_env is not None, "Please call create_envs first."
 
@@ -460,9 +469,6 @@ class Runner():
             self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
 
     def calculate_returns(self):
-
-        if self.experience_path is not None:
-            return
 
         self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate,
                                              args.gamma)
@@ -737,192 +743,8 @@ class Runner():
 
                 model_performance = new_model_performance
 
-    def load_experience(self, folder, filename):
-
-        input_file = os.path.join(folder, filename + ".bzip")
-
-        with bz2.open(input_file, "rb") as f:
-            load_dict = pickle.load(f)
-
-        self.prev_state = load_dict["prev_state"]
-        final_state = load_dict["final_state"]
-        self.actions = load_dict["actions"]
-        self.rewards = load_dict["rewards"]
-        self.ext_returns = load_dict["ext_returns"]
-        self.log_policy = load_dict["log_policy"]
-        self.ext_value = load_dict["ext_value"]
-        self.ext_final_value_estimate = load_dict["ext_final_value_estimate"]
-
-        # we don't actually save the next_states, so I recreate it here.
-        self.next_state = np.concatenate([self.prev_state[1:], [final_state]])
-
-    def save_experience(self, folder, filename):
-        """ Saves all necessary experience for agent. """
-
-        # only saves extrinsic rewards at the moment.
-
-        save_dict = {}
-        save_dict["prev_state"] = self.prev_state
-        save_dict["final_state"] = self.next_state[-1]
-        save_dict["actions"] = self.actions
-        save_dict["rewards"] = self.ext_rewards
-        save_dict["ext_returns"] = self.ext_returns
-        save_dict["log_policy"] = self.log_policy
-        save_dict["ext_value"] = self.ext_value
-        save_dict["ext_final_value_estimate"] = self.ext_final_value_estimate
-
-        output_file = os.path.join(folder, filename + ".bzip")
-
-        os.makedirs(folder, exist_ok=True)
-
-        # Atari is about 250Mb per iteration, which for 3,000 iterations would be 750GB, which is far too much
-        # the video frames do compress very well though, so we apply compression.
-        # using bzip gets to < 0.25 Mb, which is 0.75GB per agent trained.
-
-        # I tried gzip, bzip, and lzma, and bzip gave the best compression.
-        with bz2.open(output_file, "wb", compresslevel=5) as f:
-            pickle.dump(save_dict, f)
-
-    def train_from_off_policy_experience(self, other_agents):
-        """ trains agents using experience from given other agents. """
-
-        assert not args.use_intrinsic_rewards, "PBL does not work with intrisic rewards yet."
-
-        # create a super-batch of data from all the agents.
-
-        batch_data = defaultdict(list)
-        batch_size = self.N * self.A
-        mega_batch_size = self.N * self.A * len(other_agents)
-
-        for agent in other_agents:
-
-            assert agent.N == self.N and agent.A == self.A, "all agents must share the same number of sub-agents, and rollout length."
-
-            batch_data["prev_state"].append(agent.prev_state.reshape([batch_size, *agent.state_shape]))
-            batch_data["next_state"].append(agent.next_state.reshape([batch_size, *agent.state_shape]))
-            batch_data["actions"].append(agent.actions.reshape(batch_size).astype(np.long))
-
-            # generate our policy probabilities, and value estimates
-            target_log_policy = np.zeros_like(agent.log_policy)
-            target_value_estimates = np.zeros_like(agent.ext_value)
-            for i in range(agent.N):
-                # note, this could be mini-batched to make it a bit faster...
-                model_out = self.model.forward(agent.prev_state[i])
-                target_log_policy[i] = model_out["log_policy"].detach().cpu().numpy()
-                target_value_estimates[i] = model_out["ext_value"].detach().cpu().numpy()
-
-            batch_data["ext_value"].append(target_value_estimates.reshape(batch_size))
-            batch_data["log_policy"].append(target_log_policy.reshape([batch_size, *agent.policy_shape]))
-
-            # get estimate for last state.
-            model_out = self.model.forward(agent.next_state[-1])
-            target_value_final_estimate = model_out["ext_value"].detach().cpu().numpy()
-
-            behaviour_log_policy = agent.log_policy
-            dones = agent.terminals
-
-            # apply off-policy correction (v-trace)
-            actions = agent.actions
-            rewards = agent.ext_rewards
-
-            # stub show policy
-            # print("-------------")
-            # print("Behaviour", np.max(behaviour_policy), np.min(behaviour_policy))
-            # print("Target", np.max(target_policy), np.min(target_policy))
-            # print("Delta", np.max(target_policy-behaviour_policy), np.min(target_policy-behaviour_policy))
-
-            vs, pg_adv, cs = importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions,
-                                                     rewards, dones, target_value_estimates, target_value_final_estimate,
-                                                     args.gamma)
-
-            if args.pbl_trust_region:
-                weights = v_trace_trust_region(behaviour_log_policy, target_log_policy)
-                batch_data["weights"].append(weights.reshape(batch_size))
-                for w in weights.ravel():
-                    self.log.watch_full("kl_weights", w, history_length=4096)
-
-            # stub monitor some values.
-            for x in vs.ravel():
-                self.log.watch_full("vs", x, history_length=10000)
-            for x in pg_adv.ravel():
-                self.log.watch_full("pg_adv", x, history_length=10000)
-            for x in cs.ravel():
-                self.log.watch_full("cs", x, history_length=10000)
-
-            batch_data["ext_returns"].append(vs.reshape(batch_size))
-            batch_data["advantages"].append(pg_adv.reshape(batch_size))
-
-        # make one large super-batch from each agent
-        for k, v in batch_data.items():
-            batch_data[k] = np.concatenate(v, axis=0)
-
-        # clip probabilities so that all actions have atleast 1e-6 probability (which close to what
-        # 32bit float precision will handle anyway.
-        # we're assuming here that the v-trace algorithm is more stable, it's the ppo training that seems
-        # to be causing the issues.
-        if args.pbl_policy_soften:
-            # this will denormalize the policy, but I'm ok with that.
-            batch_data["log_policy"] = np.clip(batch_data["log_policy"], -13, 0)
-
-
-        # I think we probably don't want to normalize these as sometimes the advantages would be very small
-        # also, if we do normalize it should be the entire mega batch.
-        normalization_mode = args.pbl_normalize_advantages.lower()
-        if normalization_mode in ["none"]:
-            pass
-        elif normalization_mode in ["clipped", "full"]:
-            mu = batch_data["advantages"].mean()
-            sigma = batch_data["advantages"].std()
-            if normalization_mode == "clipped":
-                sigma = max(0.2, sigma) # make sure we don't inflate the advantages by too much.
-            batch_data["advantages"] = (batch_data["advantages"] - mu) / sigma
-        else:
-            raise Exception("Invalid pbl clipping parameter")
-
-
-        # thinning mode:
-        # hard thins out example early on, so we train multiple times on one reduced set
-        # soft thins out while training so all example are used, but less often
-        # none trains fully on all.
-        thinning_mode = args.pbl_thinning.lower()
-
-        master_set_ordering = list(range(mega_batch_size))
-        if thinning_mode == "hard":
-            # thin out examples early on
-            np.random.shuffle(master_set_ordering)
-            master_set_ordering = master_set_ordering[:batch_size]
-
-        for i in range(args.batch_epochs):
-
-            np.random.shuffle(master_set_ordering)
-
-            # thin the data, so we don't over-train
-            if thinning_mode == "soft":
-                ordering = master_set_ordering[:batch_size]
-            else:
-                ordering = master_set_ordering[:]
-
-            n_batches = math.ceil(len(ordering) / args.mini_batch_size)
-
-            for j in range(n_batches):
-
-                # put together a minibatch.
-                batch_start = j * args.mini_batch_size
-                batch_end = (j + 1) * args.mini_batch_size
-                sample = ordering[batch_start:batch_end]
-
-                minibatch_data = {}
-
-                for k, v in batch_data.items():
-                    minibatch_data[k] = torch.tensor(v[sample]).to(self.model.device)
-
-                self.train_minibatch(minibatch_data)
-
     def train(self):
         """ trains agent on it's own experience """
-
-        if self.experience_path is not None:
-            return
 
         # organise our data...
         batch_data = {}
@@ -982,8 +804,7 @@ class Runner():
                 minibatch_data = {}
 
                 for k, v in batch_data.items():
-                    # todo: see if torch.from_numpy is faster?
-                    minibatch_data[k] = torch.tensor(v[sample]).to(self.model.device)
+                    minibatch_data[k] = torch.from_numpy(v[sample]).to(self.model.device)
 
                 self.train_minibatch(minibatch_data)
 

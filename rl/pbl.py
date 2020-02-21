@@ -3,7 +3,7 @@ import os
 import math
 import json
 import time
-import torchvision
+from collections import defaultdict
 
 import numpy as np
 
@@ -12,6 +12,143 @@ from .config import args
 from .rollout import Runner, save_progress, adjust_learning_rate
 from .logger import Logger, LogVariable
 from .rollout import Runner
+from .vtrace import importance_sampling_v_trace, v_trace_trust_region
+
+def train_from_off_policy_experience(self, other_agents):
+    """ trains agents using experience from given other agents. """
+
+    assert not args.use_intrinsic_rewards, "PBL does not work with intrisic rewards yet."
+
+    # create a super-batch of data from all the agents.
+
+    batch_data = defaultdict(list)
+    batch_size = self.N * self.A
+    mega_batch_size = self.N * self.A * len(other_agents)
+
+    for agent in other_agents:
+
+        assert agent.N == self.N and agent.A == self.A, "all agents must share the same number of sub-agents, and rollout length."
+
+        batch_data["prev_state"].append(agent.prev_state.reshape([batch_size, *agent.state_shape]))
+        batch_data["actions"].append(agent.actions.reshape(batch_size).astype(np.long))
+
+        # generate our policy probabilities, and value estimates
+        # we use the GPU version here for performance reasons.
+        prev_state = agent.prev_state if agent.prev_state_gpu is None else agent.prev_state_gpu
+        model_out = self.model.forward(prev_state.reshape([batch_size, *agent.state_shape]))
+        target_log_policy = model_out["log_policy"].detach().cpu().numpy()
+        target_value_estimates = model_out["ext_value"].detach().cpu().numpy()
+
+        batch_data["ext_value"].append(target_value_estimates)
+        batch_data["log_policy"].append(target_log_policy)
+
+        # reshape these into N A for further processing
+        target_log_policy = target_log_policy.reshape([self.N, self.A, *agent.policy_shape])
+        target_value_estimates = target_value_estimates.reshape([self.N, self.A])
+
+        # get estimate for last state.
+        model_out = self.model.forward(agent.next_state[-1])
+        target_value_final_estimate = model_out["ext_value"].detach().cpu().numpy()
+
+        behaviour_log_policy = agent.log_policy
+        dones = agent.terminals
+
+        # apply off-policy correction (v-trace)
+        actions = agent.actions
+        rewards = agent.ext_rewards
+
+        # stub show policy
+        # print("-------------")
+        # print("Behaviour", np.max(behaviour_policy), np.min(behaviour_policy))
+        # print("Target", np.max(target_policy), np.min(target_policy))
+        # print("Delta", np.max(target_policy-behaviour_policy), np.min(target_policy-behaviour_policy))
+
+        vs, pg_adv, cs = importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions,
+                                                     rewards, dones, target_value_estimates,
+                                                     target_value_final_estimate,
+                                                     args.gamma)
+
+        if args.pbl_trust_region:
+            weights = v_trace_trust_region(behaviour_log_policy, target_log_policy)
+            batch_data["weights"].append(weights.reshape(batch_size))
+            for w in weights.ravel():
+                self.log.watch_full("kl_weights", w, history_length=4096)
+
+        # stub monitor some values.
+        for x in vs.ravel():
+            self.log.watch_full("vs", x, history_length=10000)
+        for x in pg_adv.ravel():
+            self.log.watch_full("pg_adv", x, history_length=10000)
+        for x in cs.ravel():
+            self.log.watch_full("cs", x, history_length=10000)
+
+        batch_data["ext_returns"].append(vs.reshape(batch_size))
+        batch_data["advantages"].append(pg_adv.reshape(batch_size))
+
+    # make one large super-batch from each agent
+    for k, v in batch_data.items():
+        batch_data[k] = np.concatenate(v, axis=0)
+
+    # clip probabilities so that all actions have atleast 1e-6 probability (which close to what
+    # 32bit float precision will handle anyway.
+    # we're assuming here that the v-trace algorithm is more stable, it's the ppo training that seems
+    # to be causing the issues.
+    if args.pbl_policy_soften:
+        # this will denormalize the policy, but I'm ok with that.
+        batch_data["log_policy"] = np.clip(batch_data["log_policy"], -13, 0)
+
+    # I think we probably don't want to normalize these as sometimes the advantages would be very small
+    # also, if we do normalize it should be the entire mega batch.
+    normalization_mode = args.pbl_normalize_advantages.lower()
+    if normalization_mode in ["none"]:
+        pass
+    elif normalization_mode in ["clipped", "full"]:
+        mu = batch_data["advantages"].mean()
+        sigma = batch_data["advantages"].std()
+        if normalization_mode == "clipped":
+            sigma = max(0.2, sigma)  # make sure we don't inflate the advantages by too much.
+        batch_data["advantages"] = (batch_data["advantages"] - mu) / sigma
+    else:
+        raise Exception("Invalid pbl clipping parameter")
+
+    # thinning mode:
+    # hard thins out example early on, so we train multiple times on one reduced set
+    # soft thins out while training so all example are used, but less often
+    # none trains fully on all.
+    thinning_mode = args.pbl_thinning.lower()
+
+    master_set_ordering = list(range(mega_batch_size))
+    if thinning_mode == "hard":
+        # thin out examples early on
+        np.random.shuffle(master_set_ordering)
+        master_set_ordering = master_set_ordering[:batch_size]
+
+    for i in range(args.batch_epochs):
+
+        np.random.shuffle(master_set_ordering)
+
+        # thin the data, so we don't over-train
+        if thinning_mode == "soft":
+            ordering = master_set_ordering[:batch_size]
+        else:
+            ordering = master_set_ordering[:]
+
+        n_batches = math.ceil(len(ordering) / args.mini_batch_size)
+
+        for j in range(n_batches):
+
+            # put together a minibatch.
+            batch_start = j * args.mini_batch_size
+            batch_end = (j + 1) * args.mini_batch_size
+            sample = ordering[batch_start:batch_end]
+
+            minibatch_data = {}
+
+            for k, v in batch_data.items():
+                minibatch_data[k] = torch.from_numpy(v[sample]).to(self.model.device)
+
+            self.train_minibatch(minibatch_data)
+
 
 def train_population(ModelConstructor, master_log: Logger):
     """
@@ -132,11 +269,19 @@ def train_population(ModelConstructor, master_log: Logger):
         # for the moment agent 0, and 1 is on-policy and all others are mixed off-policy.
         train_start_time = time.time()
 
-        # we train all these 'off-policy' just to make sure v-trace works on policy.
+        # upload agents experience to GPU now, so it doesn't have to be done multiple times later on
+        # note: this will take a bit of GPU memory...
         for runner in runners:
-            runner.train_from_off_policy_experience(
-                runners
-            )
+             #runner.prev_state_gpu = torch.from_numpy(runner.prev_state).to(runner.model.device)
+             runner.prev_state_gpu = None
+
+             # we train all these 'off-policy' just to make sure v-trace works on policy.
+        for runner in runners:
+            train_from_off_policy_experience(runner, runners)
+
+        # clear the memory again...
+        for runner in runners:
+            runner.prev_state_gpu = None
 
         train_time = (time.time() - train_start_time) / batch_size
 
@@ -145,6 +290,9 @@ def train_population(ModelConstructor, master_log: Logger):
         log_start_time = time.time()
 
         fps = 1.0 / (step_time)
+
+        # stub print stats
+        print("FPS:",fps, "Train", train_time*1000)
 
         # record some training stats
         master_log.watch_mean("fps", int(fps))

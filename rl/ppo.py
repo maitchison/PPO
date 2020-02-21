@@ -14,13 +14,21 @@ import gzip, bz2, lzma
 from collections import defaultdict
 
 from .logger import Logger, LogVariable
-from .rollout import Runner, adjust_learning_rate
+from .rollout import Runner, adjust_learning_rate, save_progress
 
 import torch.multiprocessing
 
 from . import utils, models, atari, hybridVecEnv, config, logger
 from .config import args
-from .vtrace import importance_sampling_v_trace, v_trace_trust_region
+
+
+def generate_rollout(self):
+    """
+    Generates an evaluation rollout for the agent.
+    :return:
+    """
+
+
 
 def train(model: models.BaseModel, log: Logger):
     """
@@ -128,7 +136,7 @@ def train(model: models.BaseModel, log: Logger):
 
         # generate the rollout
         rollout_start_time = time.time()
-        runner.generate_rollout(runner)
+        runner.generate_rollout()
         rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
@@ -195,9 +203,16 @@ def train(model: models.BaseModel, log: Logger):
                 log.log("  -checkpoint saved")
 
             if args.export_video:
-                video_name = utils.get_checkpoint_path(env_step, args.environment + ".mp4")
+                video_name = utils.get_checkpoint_path(env_step, args.environment)
                 runner.export_movie(video_name)
                 log.info("  -video exported")
+
+            if args.export_trajectories:
+                video_name = utils.get_trajectory_path(env_step, args.environment)
+                os.makedirs(os.path.split(video_name)[0], exist_ok=True)
+                for i in range(16):
+                    runner.export_movie(video_name+"-{:02}".format(i), include_rollout=True)
+                log.info("  -trajectories exported")
 
             log.info()
 

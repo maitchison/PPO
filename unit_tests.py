@@ -2,7 +2,7 @@
 
 import torch
 import numpy as np
-from rl import ppo
+from rl import ppo, rollout
 from rl.vtrace import importance_sampling_v_trace, v_trace_trust_region
 from rl.utils import entropy, log_entropy, log_kl, kl
 
@@ -114,9 +114,9 @@ def test_vtrace():
     lamb = 1.0 # doesn't work with lamb != 1, not sure who's correct though, might be V-Trace?
 
     # first calculate the returns
-    returns = ppo.calculate_returns(rewards, dones, final_value_estimate, gamma)
+    returns = rollout.calculate_returns(rewards, dones, final_value_estimate, gamma)
 
-    gae = ppo.calculate_gae(rewards, value_estimates, final_value_estimate, dones, gamma, lamb=lamb, normalize=False)
+    gae = rollout.calculate_gae(rewards, value_estimates, final_value_estimate, dones, gamma, lamb=lamb, normalize=False)
 
     behaviour_log_policy = np.zeros([5,2,1], dtype=np.float)
     target_log_policy = np.zeros([5,2,1], dtype=np.float)

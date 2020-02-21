@@ -83,10 +83,13 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
 
     # get just the part of the policy we need
     # stub: there will be a faster way of doing this with indexing..
-    for i in range(N):
-        for j in range(B):
-            target_log_policy_actions[i,j] = target_log_policy[i,j,actions[i, j]]
-            behaviour_log_policy_actions[i, j] = behaviour_log_policy[i, j, actions[i, j]]
+    # for i in range(N):
+    #     for j in range(B):
+    #         target_log_policy_actions[i,j] = target_log_policy[i,j,actions[i, j]]
+    #         behaviour_log_policy_actions[i, j] = behaviour_log_policy[i, j, actions[i, j]]
+    for b in range(B):
+      target_log_policy_actions[:, b] = target_log_policy[range(N), b, actions[:, b]]
+      behaviour_log_policy_actions[:, b] = behaviour_log_policy[range(N), b, actions[:, b]]
 
     rhos = np.minimum(1, np.exp(target_log_policy_actions - behaviour_log_policy_actions))
 

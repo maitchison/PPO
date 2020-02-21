@@ -550,6 +550,10 @@ def get_checkpoint_path(step, postfix):
     """ Returns the full path to a checkpoint file with given step count and postfix. """
     return os.path.join(args.log_folder, "checkpoint-{}-{}".format(zero_format_number(step), postfix))
 
+def get_trajectory_path(step, postfix):
+    """ Returns the full path to a checkpoint file with given step count and postfix. """
+    return os.path.join(args.log_folder, "trajectories", "rollout-{}-{}".format(zero_format_number(step), postfix))
+
 def generate_hash_image(key, hash_size, obs_size):
 
     rng =  np.random.RandomState(key % (2 ** 32))  # rng requires 32bit number...

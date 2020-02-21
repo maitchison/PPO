@@ -20,6 +20,8 @@ CHUNK_SIZE = 10
 
 OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
 
+def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
+    job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
 
 def get_run_folder(experiment_name, run_name):
     """ Returns the path for given experiment and run, or none if not found. """
@@ -189,6 +191,24 @@ class Job:
 
 
 def setup_jobs_V7():
+
+    # ------------------------------------------
+    # Diversity
+    # ------------------------------------------
+
+    for env in ["Pong", "Alien"]:
+        for run in [1,2,3,4]:
+            add_job(
+                "DIV_{}".format(env),
+                run_name="run={}".format(run),
+                env_name=env,
+                export_trajectories=True,
+                checkpoint_every=500000,
+                epochs=200,
+                agents=32,
+                priority=10
+            )
+
     # ------------------------------------------
     # Test gamma
     # ------------------------------------------
@@ -210,14 +230,15 @@ def setup_jobs_V7():
     for c_cost in [0.001, 0.01, 0.1]:
         for i_cost in [0.001, 0.01, 0.1]:
             add_job(
-                "ARL_Alien",
+                "ARL_Breakout",
+                env_name="Breakout",
                 run_name="c_cost={} i_cost={}".format(c_cost, i_cost),
                 arl_c_cost=c_cost,
                 arl_i_cost=i_cost,
                 algo="arl",
-                epochs=50,
-                priority=2
-
+                epochs=100,
+                priority=2,
+                chunked=False
             )
 
     # ------------------------------------------
@@ -225,30 +246,45 @@ def setup_jobs_V7():
     # ------------------------------------------
 
     # test algorithm on some games
-    for env in ["Alien"]:
-        pbl_policy_soften = True
-        pbl_normalize_advantages = "None"
-        pbl_thinning = "None"  # a bit risky...
-        use_clipped_value_loss = True
-
+    for env in ["Alien", "Breakout"]:
         add_job(
             "VT_" + env,
-            run_name="population=8",
-            learning_rate=1e-4, # slower is more stable...
-            pbl_policy_soften=pbl_policy_soften,
-            pbl_normalize_advantages=pbl_normalize_advantages,
-            pbl_thinning=pbl_thinning,
+            run_name="population=8 learning_rate=0.0003",
+            learning_rate=3e-4, # slower is more stable...
+            pbl_policy_soften=True,
+            pbl_normalize_advantages="None",
+            pbl_thinning="None",
             pbl_population_size=8,
-            use_clipped_value_loss=use_clipped_value_loss,
             env_name=env,
+            batch_epochs=2, # make sure we don't overtrain on the data. This also speeds up the training process.
             algo="pbl",
             epochs=200,
             agents=32,
-            priority=0,
+            priority=10,
             chunked=False
         )
 
     # test algorithm on some games
+    add_job(
+        "VT_Alien",
+        run_name="population=8",
+        learning_rate=1e-4,  # slower is more stable...
+        pbl_policy_soften=True,
+        pbl_normalize_advantages="None",
+        pbl_thinning="None",
+        pbl_population_size=8,
+        env_name=env,
+        batch_epochs=2,  # make sure we don't overtrain on the data. This also speeds up the training process.
+        algo="pbl",
+        epochs=200,
+        agents=32,
+        priority=10,
+        chunked=False
+    )
+
+def setup_jobs_V7_old():
+    # test algorithm on some games
+
     for env in ["Alien", "MontezumaRevenge", "Breakout", "Seaquest"]:
         pbl_policy_soften = True
         pbl_normalize_advantages = "None"
@@ -272,12 +308,6 @@ def setup_jobs_V7():
             priority=0,
             chunked=False
         )
-
-
-def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
-    job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
-
-def setup_jobs_V7_old():
 
     # could be as simple as learning rate...
     for learning_rate in [3e-5, 1e-4, 3e-4]:
