@@ -7,11 +7,6 @@ import torch.nn as nn
 import time
 import json
 import math
-import cv2
-import csv
-import pickle
-import gzip, bz2, lzma
-from collections import defaultdict
 
 from .logger import Logger, LogVariable
 from .rollout import Runner, adjust_learning_rate, save_progress
@@ -20,15 +15,6 @@ import torch.multiprocessing
 
 from . import utils, models, atari, hybridVecEnv, config, logger
 from .config import args
-
-
-def generate_rollout(self):
-    """
-    Generates an evaluation rollout for the agent.
-    :return:
-    """
-
-
 
 def train(model: models.BaseModel, log: Logger):
     """

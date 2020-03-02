@@ -6,6 +6,7 @@ import cv2
 import pickle
 import json
 import time
+import platform
 
 import torchvision
 
@@ -213,8 +214,14 @@ def copy_source_files(source, destination, force=False):
             return destination_train_script
         # we need to copy across train.py and then all the files under rl...
         os.makedirs(os.path.join(destination, "rl"), exist_ok=True)
-        os.system("cp '{}train.py' '{}/train.py'".format(source, destination))
-        os.system("cp '{}/'*.py '{}'".format(os.path.join(source, "rl"), os.path.join(destination, "rl")))
+        if platform.system() == "Windows":
+            copy_command = "copy"
+        else:
+            copy_command = "cp"
+
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "train.py"), os.path.join(destination, "train.py")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "rl", "*.py"), os.path.join(destination, "rl")))
+
         return destination_train_script
     except Exception as e:
         print("Failed to copy training file to log folder.", e)

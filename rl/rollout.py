@@ -103,12 +103,16 @@ class Runner():
         self.A = A = args.agents
 
         self.state_shape = model.input_dims
+        self.rnn_state_shape = [512]
         self.policy_shape = [model.actions]
 
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.states = np.zeros([A, *self.state_shape], dtype=np.uint8)
+        if args.use_rnn:
+            self.rnn_states = np.zeros([A, *self.rnn_state_shape], dtype=np.uint8)
+            self.prev_rnn_state = np.zeros([N, A, *self.rnn_state_shape], dtype=np.uint8)
 
         self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
@@ -117,18 +121,6 @@ class Runner():
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.terminals = np.zeros([N, A], dtype=np.bool)
         self.ext_value = np.zeros([N, A], dtype=np.float32)
-
-        # rar
-        rar_state_space = 2 ** 16
-        self.token_shape = (32, 16)  # 32 tokens, of length 16
-        self.rar_visited = [set() for _ in range(A)]
-
-        rnd_state = np.random.get_state()
-        np.random.seed(args.rar_seed)
-        self.rar_reward_states = set(np.random.choice(rar_state_space, int(rar_state_space * args.rar_frequency)))
-        np.random.set_state(rnd_state)
-
-        self.rar_reward_tokens = np.zeros([N, A, *self.token_shape], dtype=np.uint8)
 
         # emi
         self.emi_prev_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
@@ -155,11 +147,12 @@ class Runner():
 
     def create_envs(self):
         """ Creates environments for runner"""
-        env_fns = [atari.make for _ in range(args.agents)]
+        env_fns = [lambda : atari.make() for _ in range(args.agents)]
 
-        self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers,
-                                                         verbose=True) if not args.sync_envs else gym.vector.SyncVectorEnv(
-            env_fns)
+        if args.sync_envs:
+            self.vec_env = gym.vector.SyncVectorEnv(env_fns)
+        else:
+            self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True)
         self.log.important("Generated {} agents ({}) using {} ({}) model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
                                   self.model.dtype))
@@ -224,8 +217,6 @@ class Runner():
         self.episode_score *= 0
         self.episode_len *= 0
 
-        self.rar_visited = [set() for _ in range(len(self.rar_visited))]
-
     def run_random_agent(self, iterations):
         """
         Runs agent through environment
@@ -242,14 +233,14 @@ class Runner():
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
-    def forward(self, states=None, tokens=None):
-        """ Forward states through model, resturns output, which is a dictionary containing
+    def forward(self, states=None, rnn_states=None):
+        """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
         """
-        if args.use_rar and args.rar_use_tokens:
+        if args.use_rnn:
             return self.model.forward(
                 self.states if states is None else states,
-                self.model.make_tokens(self.rar_visited) if tokens is None else tokens
+                self.rnn_states if rnn_states is None else rnn_states
             )
         else:
             return self.model.forward(self.states if states is None else states)
@@ -277,18 +268,18 @@ class Runner():
 
         state = env.reset()
 
-        rar_visited = set()
-
         frame_count = 0
 
         history = defaultdict(list)
 
+        # todo: support rnn
+        if args.use_rnn:
+            print("Warning! RNN not supported for video export yet, results may not be correct.")
+
         # play the game...
         while not done:
-            if args.use_rar:
-                model_out = self.model.forward(state[np.newaxis], self.model.make_tokens([rar_visited]))
-            else:
-                model_out = self.model.forward(state[np.newaxis])
+
+            model_out = self.model.forward(state[np.newaxis])
 
             logprobs = model_out["log_policy"][0].detach().cpu().numpy()
             action = utils.sample_action_from_logp(logprobs)
@@ -329,16 +320,6 @@ class Runner():
                     col = [255, 255, 0]
                 if col is not None:
                     utils.draw_pixel(frame, 10, 10, col, sx=10, sy=10)
-
-            if args.use_rar:
-                mapped_state = self.model.get_mapped_states(state[np.newaxis])[0]
-                state_token = self.model.make_tokens([{mapped_state}])[0][0:1, :]
-                utils.draw_image(frame, state_token, 0, 0, scale=4)
-                if mapped_state in self.rar_reward_states and mapped_state not in rar_visited:
-                    utils.draw_pixel(frame, 10, 10, [255, 0, 0], sx=10, sy=10)
-                    rar_visited.add(mapped_state)
-                visited_tokens = self.model.make_tokens([rar_visited])[0]
-                utils.draw_image(frame, visited_tokens[:len(rar_visited), :], 150, 0, scale=4)
 
             # show current state
             assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format(
@@ -395,17 +376,6 @@ class Runner():
 
                 int_rewards = np.zeros_like(ext_rewards)
 
-                if args.use_rar:
-                    # convert pixels to a smaller state space
-                    states = self.model.get_mapped_states(self.states)
-
-                    # check if these states have aux rewards in them
-                    for i, state in enumerate(states):
-                        # give reward for being in a reward state.
-                        if state in self.rar_reward_states and state not in self.rar_visited[i]:
-                            int_rewards[i] += args.rar_scale
-                            self.rar_visited[i].add(state)
-
                 if args.use_emi:
                     # relu makes sure that only positive rewards are counted.
                     # otherwise intrinsic reward may become negative causing agent to terminate the episode as quickly
@@ -442,15 +412,9 @@ class Runner():
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
 
-                    if args.use_rar:
-                        # random reward  visited needs to be reset to 0 on environment reset
-                        self.rar_visited[i] = set()
-
             self.prev_state[t] = prev_states
             self.next_state[t] = self.states
             self.actions[t] = actions
-            if args.use_rar:
-                self.rar_reward_tokens[t] = self.model.make_tokens(self.rar_visited)
 
             self.ext_rewards[t] = ext_rewards
             self.log_policy[t] = log_policy
@@ -575,10 +539,7 @@ class Runner():
 
         mini_batch_size = len(prev_states)
 
-        if args.use_rar:
-            model_out = self.forward(prev_states, data["rar_reward_tokens"])
-        else:
-            model_out = self.forward(prev_states)
+        model_out = self.forward(prev_states)
         logps = model_out["log_policy"]
 
         ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
@@ -762,9 +723,6 @@ class Runner():
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(batch_size)
             batch_data["int_value"] = self.int_value.reshape(batch_size)
-
-        if args.use_rar:
-            batch_data["rar_reward_tokens"] = self.rar_reward_tokens.reshape(batch_size, *self.token_shape)
 
         for i in range(args.batch_epochs):
 

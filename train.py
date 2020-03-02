@@ -26,7 +26,6 @@ def get_previous_experiment_guid(experiment_path, run_name):
 def get_environment_name(environment, sticky_actions=False):
     return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
 
-
 if __name__ == "__main__":
 
     log = logger.Logger()
@@ -93,9 +92,9 @@ if __name__ == "__main__":
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
-    if (args.use_rnd + args.use_emi + args.use_rar) > 1:
+    if (args.use_rnd + args.use_emi) > 1:
         # todo: this should be a setting, not a set of bools
-        raise Exception("EMI, RND, and RAR are not compatible.")
+        raise Exception("EMI, RND, are not compatible.")
 
     model_args = {}
 
@@ -103,9 +102,6 @@ if __name__ == "__main__":
         ACModel = models.RNDModel
     elif args.use_emi:
         ACModel = models.EMIModel
-    elif args.use_rar:
-        ACModel = models.RARModel
-        model_args["super_state_size"] = args.rar_super_state_size
     else:
         ACModel = models.ActorCriticModel
 
@@ -113,22 +109,38 @@ if __name__ == "__main__":
 
         utils.lock_job()
 
+        if args.model == "cnn":
+            head_name = "Nature"
+        else:
+            raise Exception("invalid model name {}.".format(args.model))
+
         if args.algo.lower() == "arl":
-            actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions*2,
+            assert not args.use_rnn
+            actor_critic_model = ACModel(head=head_name, input_dims=obs_space, actions=n_actions*2,
                                          device=args.device, dtype=torch.float32, **model_args)
 
-            arl_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions+1,
+            arl_model = ACModel(head=head_name, input_dims=obs_space, actions=n_actions+1,
                                          device=args.device, dtype=torch.float32, **model_args)
 
             arl.train_arl(actor_critic_model, arl_model, log)
         elif args.algo.lower() == "ppo":
-            actor_critic_model = ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
-                                         device=args.device, dtype=torch.float32, **model_args)
+            if args.use_rnn and 'hidden_units' not in model_args:
+                model_args['hidden_units'] = 0 # disable final hidden layer in network head as we will replace with is LSTM.
+
+            actor_critic_model = ACModel(
+                head=head_name,
+                input_dims=obs_space,
+                actions=n_actions,
+                device=args.device,
+                dtype=torch.float32,
+                use_rnn=args.use_rnn,
+                **model_args
+            )
             ppo.train(actor_critic_model, log)
         elif args.algo.lower() == "pbl":
-
-            model_constructor = lambda : ACModel(head="Nature", input_dims=obs_space, actions=n_actions,
-                                         device=args.device, dtype=torch.float32, **model_args)
+            assert not args.use_rnn
+            model_constructor = lambda : ACModel(head=head_name, input_dims=obs_space, actions=n_actions,
+                                         device=args.device, use_rnn=args.use_rnn, dtype=torch.float32, **model_args)
             pbl.train_population(model_constructor, log)
         else:
             raise Exception("Invalid algorithm", args.algo)

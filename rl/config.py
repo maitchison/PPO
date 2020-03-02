@@ -60,11 +60,6 @@ class Config:
         self.use_icm            = bool()
         self.icm_eta            = str()
 
-        self.use_rnd            = bool()
-
-        self.memorize_cards     = int()
-        self.memorize_actions   = int()
-
         self.debug_print_freq   = int()
         self.debug_log_freq     = int()
         self.noop_start         = bool()
@@ -76,17 +71,12 @@ class Config:
         # emi
         self.use_emi            = bool()
 
-        # random auxiliary rewards.
-        self.use_rar            = bool()
-        self.rar_scale          = float()
-        self.rar_seed           = int()
-        self.rar_frequency      = int()
-        self.rar_use_tokens     = bool()
-        self.rar_super_state_size = int()
-
         # population based learning
         self.pbl_population_size = int()
         self.pbl_trust_region    = bool()
+
+        # tdb (trajectory divergece bonus)
+        self.use_tdb            = bool()
 
         self.algo               = str()
 
@@ -95,6 +85,9 @@ class Config:
 
         self.arl_c_cost         = float()
         self.arl_i_cost         = float()
+
+
+        self.mdoel              = str()
 
         self.__dict__.update(kwargs)
 
@@ -107,7 +100,7 @@ class Config:
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_emi or self.use_rar
+        return self.use_rnd or self.use_emi or self.use_tdb
 
     @property
     def normalize_intrinsic_rewards(self):
@@ -177,7 +170,7 @@ def parse_args():
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
-    parser.add_argument("--reward_clip", type=float, default=5.0)
+    parser.add_argument("--reward_clip", type =float, default=5.0)
 
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
@@ -228,23 +221,16 @@ def parse_args():
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
 
     # model
-    #parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
+    parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
+    parser.add_argument("--use_rnn", type=str2bool, default=False)
+
     #parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
-
-    # memorize game
-    parser.add_argument("--memorize_cards", type=int, default=100, help="Memorize environment: Number of cards in the game.")
-    parser.add_argument("--memorize_actions", type=int, default=2,
-                        help="Memorize environment: Number of actions to pick from.")
-
-    parser.add_argument("--use_rar", type=str2bool, default=False, help="Enable random auxiliary rewards.")
-    parser.add_argument("--rar_scale", type=float, default=10, help="Scale of random auxiliary rewards.")
-    parser.add_argument("--rar_seed", type=int, default=0, help="Seed for random auxiliary rewards.")
-    parser.add_argument("--rar_frequency", type=float, default=(1/10), help="Frequency of random auxiliary rewards.")
-    parser.add_argument("--rar_use_tokens", type=str2bool, default=True, help="Gives model information about which rewards have been seen.")
-    parser.add_argument("--rar_super_state_size", type=int, default=32, help="Larger values increase how often states change.")
 
     # population stuff
     parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
+
+    # divergence stuff
+    parser.add_argument("--use_tdb", type=str2bool, default=False, help="Trajectory divergence bonus.")
 
     # these are really just for testing to get v-trace working
     parser.add_argument("--pbl_policy_soften", type=str2bool, default=False)
@@ -258,4 +244,8 @@ def parse_args():
     # set defaults
     if args.intrinsic_reward_propagation is None:
         args.intrinsic_reward_propagation = args.use_rnd or args.use_emi
+
+    # check...
+    if args.use_tdb:
+        raise Exception("TDB is not implemented yet.")
 

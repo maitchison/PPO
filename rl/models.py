@@ -38,7 +38,9 @@ class NatureCNN_Net(Base_Net):
 
         self.out_shape = (c, w, h)
         self.d = utils.prod(self.out_shape)
-        self.fc = nn.Linear(self.d, hidden_units)
+        self.hidden_units = hidden_units
+        if self.hidden_units > 0:
+            self.fc = nn.Linear(self.d, hidden_units)
 
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
@@ -48,7 +50,8 @@ class NatureCNN_Net(Base_Net):
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
         x = torch.reshape(x, [N,D])
-        x = self.fc(x)
+        if self.hidden_units > 0:
+            x = self.fc(x)
         return x
 
 class FDMEncoder_Net(Base_Net):
@@ -245,30 +248,42 @@ class BaseModel(nn.Module):
             pass
         else:
             raise Exception("Invalid dtype {}".format(x.dtype))
-
         return x
 
 class ActorCriticModel(BaseModel):
     """ Actor critic model, outputs policy, and value estimate."""
 
-    def __init__(self, head: str, input_dims, actions, device, dtype, **kwargs):
+    def __init__(self, head: str, input_dims, actions, device, dtype, use_rnn=False, **kwargs):
         super().__init__(input_dims, actions)
-        self.name = "AC-"+head
+        self.name = "AC_RNN-"+head if use_rnn else "AC-"+head
         self.net = constructNet(head, input_dims, **kwargs)
+        self.use_rnn = use_rnn
+        if self.use_rnn:
+            self.lstm = nn.LSTM(self.d, 512, 1)
         self.fc_policy = nn.Linear(self.net.hidden_units, actions)
         self.fc_value = nn.Linear(self.net.hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
 
-    def forward(self, x):
+    def forward(self, x, state=None):
+        if self.use_rnn and state is None:
+            raise Exception("RNN Model requires LSTM state input.")
         x = self.prep_for_model(x)
-        x = F.relu(self.net.forward(x))
+        if self.use_rnn:
+            x = F.relu(self.net.forward(x))
+            x, state = self.lstm(x, state)
+            x = F.relu(x)
+        else:
+            x = F.relu(self.net.forward(x))
+
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
-        return {
-            'log_policy': log_policy,
-            'ext_value': value
-        }
 
+        result = {}
+        result['log_policy'] = log_policy
+        result['ext_value'] = value
+        if self.use_rnn:
+            result['state'] = state
+        return result
 
 class AttentionModel(BaseModel):
     """ Has extra value and policy heads for fovea attention."""
@@ -584,6 +599,8 @@ class RARModel(BaseModel):
             'ext_value': ext_value,
             'int_value': int_value
         }
+
+
 
 # ----------------------------------------------------------------------------------------------------------------
 # Utilities
