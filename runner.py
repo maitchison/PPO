@@ -37,7 +37,6 @@ def get_run_folder(experiment_name, run_name):
             return os.path.join(path, name)
     return None
 
-
 class Job:
 
     """
@@ -189,8 +188,93 @@ class Job:
         if return_code != 0:
             raise Exception("Error {}.".format(return_code))
 
+def run_next_experiment(filter_jobs=None):
+
+    job_list.sort()
+
+    for job in job_list:
+        if filter_jobs is not None and not filter_jobs(job):
+            continue
+        status = job.get_status()
+
+        if status in ["pending", "waiting"]:
+
+            job.get_params()
+
+            job.run(chunked=job.chunked)
+            return
+
+def comma(x):
+    if type(x) is int or (type(x) is float and int(x) == x):
+        return "{:,}".format(x)
+    else:
+        return x
+
+def show_experiments(filter_jobs=None, all=False):
+    job_list.sort()
+    print("-" * 151)
+    print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "fps", "score", "host"))
+    print("-" * 151)
+    for job in job_list:
+
+        if filter_jobs is not None and not filter_jobs(job):
+                continue
+
+        status = job.get_status()
+
+        if status == "completed" and not all:
+            continue
+
+        details = job.get_details()
+
+        if details is not None:
+            percent_complete = "{:.1f}%".format(details["fraction_complete"]*100)
+            eta_hours = "{:.1f}h".format(details["eta"] / 60 / 60)
+            score = details["score"]
+            if score is None: score = 0
+            score = "{:.1f}".format(score)
+            host = details["host"][:8]
+            fps = details["fps"]
+        else:
+            percent_complete = ""
+            eta_hours = ""
+            score = ""
+            host = ""
+            fps = ""
+
+        status_transform = {
+            "pending": "",
+            "stale": "stale",
+            "completed": "done",
+            "working": "running",
+            "waiting": "pending"
+        }
+
+        print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
+            job.priority, job.experiment_name[:19], job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
+
 
 def setup_jobs_V7():
+
+    # ------------------------------------------
+    # RNN
+    # ------------------------------------------
+
+    for agents in [64]: # 32, 64, 128
+        for n_step in [128]: # 64, 128, 256
+            for rnn_learning in ['none', 'end_of_block', 'every_step']:
+                for rnn_block_length in [0] if rnn_learning == "none" else [32, 64, 128]:
+                    add_job(
+                        "RNN_Alien",
+                        run_name="agents={} n_step={} block_length={} learning={}".format(agents, n_step, rnn_block_length, rnn_learning),
+                        env_name="Alien",
+                        epochs=200,
+                        agents=agents,
+                        n_step=n_step,
+                        rnn_learning=rnn_learning,
+                        rnn_block_length=rnn_block_length,
+                        use_rnn = (rnn_learning != 'none')
+                    )
 
     # ------------------------------------------
     # Diversity

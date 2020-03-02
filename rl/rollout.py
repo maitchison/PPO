@@ -103,16 +103,15 @@ class Runner():
         self.A = A = args.agents
 
         self.state_shape = model.input_dims
-        self.rnn_state_shape = [512]
+        self.rnn_state_shape = [2, 512] #records h and c for LSTM units.
         self.policy_shape = [model.actions]
-
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.states = np.zeros([A, *self.state_shape], dtype=np.uint8)
         if args.use_rnn:
-            self.rnn_states = np.zeros([A, *self.rnn_state_shape], dtype=np.uint8)
-            self.prev_rnn_state = np.zeros([N, A, *self.rnn_state_shape], dtype=np.uint8)
+            self.rnn_states = np.zeros([A, *self.rnn_state_shape], dtype=np.float32)
+            self.prev_rnn_state = np.zeros([N, A, *self.rnn_state_shape], dtype=np.float32)
 
         self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.next_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
@@ -272,14 +271,17 @@ class Runner():
 
         history = defaultdict(list)
 
-        # todo: support rnn
         if args.use_rnn:
-            print("Warning! RNN not supported for video export yet, results may not be correct.")
+            rnn_state = np.zeros([1, *self.rnn_state_shape], dtype=np.float32)
 
         # play the game...
         while not done:
 
-            model_out = self.model.forward(state[np.newaxis])
+            if args.use_rnn:
+                model_out = self.model.forward(state[np.newaxis], rnn_state)
+                rnn_state = model_out["state"]
+            else:
+                model_out = self.model.forward(state[np.newaxis])
 
             logprobs = model_out["log_policy"][0].detach().cpu().numpy()
             action = utils.sample_action_from_logp(logprobs)
@@ -347,12 +349,17 @@ class Runner():
         for t in range(self.N):
 
             prev_states = self.states.copy()
+            if args.use_rnn:
+                prev_rnn_states = self.rnn_states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
             model_out = self.forward()
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
             ext_value = model_out["ext_value"].detach().cpu().numpy()
+
+            if args.use_rnn:
+                self.rnn_states = model_out["state"].detach().cpu().numpy()
 
             # during warm-up we simply collect experience through a uniform random policy.
             if is_warmup:
@@ -404,6 +411,9 @@ class Runner():
 
             for i, done in enumerate(dones):
                 if done:
+                    # reset the internal state
+                    if args.use_rnn:
+                        self.rnn_states[i] *= 0
                     # reset is handled automatically by vectorized environments
                     # so just need to keep track of book-keeping
                     if not is_warmup:
@@ -412,6 +422,8 @@ class Runner():
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
 
+            if args.use_rnn:
+                self.prev_rnn_state[t] = prev_rnn_states
             self.prev_state[t] = prev_states
             self.next_state[t] = self.states
             self.actions[t] = actions
@@ -521,11 +533,14 @@ class Runner():
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
-    def train_minibatch(self, data):
+    def train_minibatch(self, data, zero_grad=True, apply_update=True, states=None, initial_loss=None,
+                        loss_scale=1.0, retain_graph=False):
 
         # todo colapse down to mean only at end (and apply weights then)
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        result = {}
+
+        loss = initial_loss or torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
         # -------------------------------------------------------------------------
         # Calculate loss_pg
@@ -539,7 +554,11 @@ class Runner():
 
         mini_batch_size = len(prev_states)
 
-        model_out = self.forward(prev_states)
+        if states is not None:
+            model_out = self.forward(prev_states, states)
+            result["states"] = model_out["state"]
+        else:
+            model_out = self.forward(prev_states)
         logps = model_out["log_policy"]
 
         ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
@@ -613,47 +632,50 @@ class Runner():
 
         self.log.watch_mean("loss", loss)
 
-        self.optimizer.zero_grad()
-        (-loss).backward()
+        if zero_grad:
+            self.optimizer.zero_grad()
 
-        if args.max_grad_norm is not None and args.max_grad_norm != 0:
-            grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), args.max_grad_norm)
-        else:
-            # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
-            # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
-            grad_norm = 0
-            parameters = list(filter(lambda p: p.grad is not None, self.model.parameters()))
-            for p in parameters:
-                param_norm = p.grad.data.norm(2)
-                grad_norm += param_norm.item() ** 2
-            grad_norm = grad_norm ** 0.5
+        result["loss"] = loss
 
-        self.log.watch_mean("opt_grad", grad_norm)
-        self.optimizer.step()
+        if apply_update:
+            (-loss * loss_scale).backward(retain_graph=retain_graph)
 
-        # -------------------------------------------------------------------------
-        # -------------------------------------------------------------------------
+            if args.max_grad_norm is not None and args.max_grad_norm != 0:
+                grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), args.max_grad_norm)
+            else:
+                # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
+                # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
+                grad_norm = 0
+                parameters = list(filter(lambda p: p.grad is not None, self.model.parameters()))
+                for p in parameters:
+                    param_norm = p.grad.data.norm(2)
+                    grad_norm += param_norm.item() ** 2
+                grad_norm = grad_norm ** 0.5
 
-        # stub force this...
-        if self.log_high_grad_norm and grad_norm > 100:
-            self.log.important("Extremely high grad norm ... outputting inputs.")
-            self.log.important("Loss clip was " + str(loss_clip_mean))
-            self.log.important("Loss value was " + str(loss_value))
+            self.log.watch_mean("opt_grad", grad_norm)
+            self.optimizer.step()
 
-            f_name = lambda x: os.path.join(args.log_folder,self.name+"-"+x+"-"+str(self.log["env_step"]))
+            # -------------------------------------------------------------------------
+            # -------------------------------------------------------------------------
 
-            utils.dump_data(advantages, f_name("advantages"))
-            utils.dump_data(loss_clip, f_name("loss_clip"))
-            utils.dump_data(ratio, f_name("ratio"))
-            utils.dump_data(clipped_ratio, f_name("clipped_ratio"))
-            utils.dump_data(logps, f_name("logps"))
-            utils.dump_data(policy_logprobs, f_name("policy_logprobs"))
-            utils.dump_data(actions, f_name("actions"))
-            utils.dump_data(data["ext_value"], f_name("values"))
-            utils.dump_data(data["ext_returns"], f_name("returns"))
-            self.log_high_grad_norm = False
+            # stub force this...
+            if self.log_high_grad_norm and grad_norm > 100:
+                self.log.important("Extremely high grad norm ... outputting inputs.")
+                self.log.important("Loss clip was " + str(loss_clip_mean))
+                self.log.important("Loss value was " + str(loss_value))
 
+                f_name = lambda x: os.path.join(args.log_folder,self.name+"-"+x+"-"+str(self.log["env_step"]))
 
+                utils.dump_data(advantages, f_name("advantages"))
+                utils.dump_data(loss_clip, f_name("loss_clip"))
+                utils.dump_data(ratio, f_name("ratio"))
+                utils.dump_data(clipped_ratio, f_name("clipped_ratio"))
+                utils.dump_data(logps, f_name("logps"))
+                utils.dump_data(policy_logprobs, f_name("policy_logprobs"))
+                utils.dump_data(actions, f_name("actions"))
+                utils.dump_data(data["ext_value"], f_name("values"))
+                utils.dump_data(data["ext_returns"], f_name("returns"))
+                self.log_high_grad_norm = False
 
         # -------------------------------------------------------------------------
         # Calculate loss_emi
@@ -704,8 +726,85 @@ class Runner():
 
                 model_performance = new_model_performance
 
+        return result
+
+
+    def _train_rnn(self):
+        """ trains agent on it's own experience, using the rnn training loop """
+
+        assert not args.use_intrinsic_rewards
+        assert not args.use_emi
+
+
+        # todo: this could just be a flag on train, but write the code in a generic way (i.e. the reshaping...)
+
+        # put the required data into a dictionary
+        batch_data = {}
+
+        batch_data["prev_rnn_state"] = self.prev_rnn_state
+        batch_data["prev_state"] = self.prev_state
+        batch_data["next_state"] = self.next_state
+        batch_data["actions"] = self.actions.astype(np.long)
+        batch_data["ext_returns"] = self.ext_returns
+
+        batch_data["log_policy"] = self.log_policy
+        batch_data["advantages"] = self.advantage
+        batch_data["ext_value"] = self.ext_value
+
+        for i in range(args.batch_epochs):
+
+            # the order probably doesn't matter here, as the n_steps is only 128,
+            # it might be worth trying later on if shuffling order helps... ? but with 64 agents this probably
+            # works ok.
+
+            loss = None
+
+            rnn_states = torch.from_numpy(batch_data["prev_rnn_state"][0]).to(self.model.device)
+
+            for n in range(self.N):
+
+                # put together a minibatch from all agents at this timestep...
+                minibatch_data = {}
+                for k, v in batch_data.items():
+                    minibatch_data[k] = torch.from_numpy(v[n]).to(self.model.device)
+
+                BLOCK_LENGTH = args.rnn_block_length
+
+                # backwards only once every 40 steps...
+                start_of_block = n % BLOCK_LENGTH == 0
+                end_of_block = (n % BLOCK_LENGTH == BLOCK_LENGTH-1) or (n == (self.N-1))
+
+                if args.rnn_learning=="end_of_block":
+                    result = self.train_minibatch(
+                        minibatch_data,
+                        states=rnn_states.detach() if start_of_block else rnn_states,
+                        zero_grad=start_of_block,
+                        apply_update=end_of_block,
+                        initial_loss=loss if not start_of_block else None,
+                        loss_scale = 1/BLOCK_LENGTH
+                    )
+                elif args.rnn_learning=="every_step":
+                    result = self.train_minibatch(
+                        minibatch_data,
+                        states=rnn_states,
+                        zero_grad=False,
+                        apply_update=True,
+                        initial_loss=None,
+                        retain_graph=(n != self.N-1),
+                        loss_scale=1
+                    )
+                else:
+                    raise Exception("Invalid RNN mode")
+                loss = result["loss"]
+                rnn_states = result["states"]
+
     def train(self):
         """ trains agent on it's own experience """
+
+        # stub, this should be done in this function, just make it more generic..
+        if args.use_rnn:
+            self._train_rnn()
+            return
 
         # organise our data...
         batch_data = {}
@@ -725,27 +824,6 @@ class Runner():
             batch_data["int_value"] = self.int_value.reshape(batch_size)
 
         for i in range(args.batch_epochs):
-
-            if args.refresh_every and i != 0 and i % args.refresh_every == 0:
-                assert not args.use_intrinsic_rewards, "Refresh not supported with intrinsic rewards yet."
-                # refresh out value estimate and policy
-                for t in range(self.N):
-                    model_out = self.model.forward(self.prev_state[t])
-                    self.log_policy[t] = model_out["log_policy"].detach().cpu().numpy()
-                    self.ext_value[t] = model_out["ext_value"].detach().cpu().numpy()
-
-                # get value of final state.
-                model_out = self.model.forward(self.next_state[-1])
-                self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
-
-                # update the advantages
-                self.advantage = calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
-                                               self.terminals, args.gamma, args.normalize_advantages)
-
-                # don't update our policy, just advantages and ext_value
-                # batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
-                batch_data["advantages"] = self.advantage.reshape(batch_size)
-                batch_data["ext_value"] = self.ext_value.reshape(batch_size)
 
             ordering = list(range(batch_size))
             np.random.shuffle(ordering)

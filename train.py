@@ -124,8 +124,12 @@ if __name__ == "__main__":
 
             arl.train_arl(actor_critic_model, arl_model, log)
         elif args.algo.lower() == "ppo":
-            if args.use_rnn and 'hidden_units' not in model_args:
-                model_args['hidden_units'] = 0 # disable final hidden layer in network head as we will replace with is LSTM.
+
+            # reduce default hidden units from 512 to 64
+            # otherwise we have a 512x512 array, which will be 0.25M parameters
+            # actually... this is probably ok...
+            # if args.use_rnn and "hidden_units" not in model_args:
+            #     model_args["hidden_units"] = 64
 
             actor_critic_model = ACModel(
                 head=head_name,

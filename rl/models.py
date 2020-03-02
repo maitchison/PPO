@@ -259,7 +259,7 @@ class ActorCriticModel(BaseModel):
         self.net = constructNet(head, input_dims, **kwargs)
         self.use_rnn = use_rnn
         if self.use_rnn:
-            self.lstm = nn.LSTM(self.d, 512, 1)
+            self.lstm = nn.LSTM(self.net.hidden_units, 512, 1)
         self.fc_policy = nn.Linear(self.net.hidden_units, actions)
         self.fc_value = nn.Linear(self.net.hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
@@ -269,9 +269,16 @@ class ActorCriticModel(BaseModel):
             raise Exception("RNN Model requires LSTM state input.")
         x = self.prep_for_model(x)
         if self.use_rnn:
+            if type(state) is np.ndarray:
+                state = torch.from_numpy(state)
+            state = state.to(self.device)
             x = F.relu(self.net.forward(x))
-            x, state = self.lstm(x, state)
-            x = F.relu(x)
+            h = state[:, 0, :].contiguous()
+            c = state[:, 1, :].contiguous() # required for LSTM for some reason...
+            x, (h,c) = self.lstm(x[np.newaxis], (h[np.newaxis],c[np.newaxis]))
+            x = F.relu(x[0])
+            state[:, 0, :] = h[0]
+            state[:, 1, :] = c[0]
         else:
             x = F.relu(self.net.forward(x))
 

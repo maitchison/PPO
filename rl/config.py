@@ -33,7 +33,6 @@ class Config:
         self.epochs             = int()
         self.limit_epochs       = int()
         self.batch_epochs       = int()
-        self.refresh_every      = int()
 
         self.observation_normalization = bool()
         self.intrinsic_reward_scale = float()
@@ -87,7 +86,12 @@ class Config:
         self.arl_i_cost         = float()
 
 
-        self.mdoel              = str()
+        self.model              = str()
+
+        # RNN
+
+        self.rnn_learning       = str()
+        self.rnn_block_length   = int()
 
         self.__dict__.update(kwargs)
 
@@ -163,7 +167,6 @@ def parse_args():
                         help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
-    parser.add_argument("--refresh_every", type=int, default=0, help="How often to refresh policy and value estimates during training.")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
@@ -188,6 +191,10 @@ def parse_args():
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
+
+    # RNN
+    parser.add_argument("--rnn_learning", type=str, default="end_of_block", help="[end_of_block, every_step]")
+    parser.add_argument("--rnn_block_length", type=int, default=40)
 
     # EMI
     parser.add_argument("--use_emi", type=str2bool, default=False)
