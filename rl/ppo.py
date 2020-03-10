@@ -197,7 +197,7 @@ def train(model: models.BaseModel, log: Logger):
                 video_name = utils.get_trajectory_path(env_step, args.environment)
                 os.makedirs(os.path.split(video_name)[0], exist_ok=True)
                 for i in range(16):
-                    runner.export_movie(video_name+"-{:02}".format(i), include_rollout=True)
+                    runner.export_movie(video_name+"-{:02}".format(i), include_rollout=True, include_video=False)
                 log.info("  -trajectories exported")
 
             log.info()

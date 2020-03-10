@@ -289,22 +289,46 @@ def setup_jobs_V7():
     # the idea is to show statistical significance for both the non-determanism, and later on for predicting sucessful
     # outcomes. (actually that's pong only...)
 
-    for env in ["Pong", "Alien", "CrazyClimber", "Seaquest"]:
-        for run in [1, 2, 3, 4]:
-            for stochasticity in ["none", "noop", "sticky"]:
-                add_job(
-                    "DIV_{}".format(env),
-                    run_name="run={} stochasticity={}".format(run, stochasticity),
-                    env_name=env,
-                    export_trajectories=True,
-                    export_video=False ,         # this will take up too much space, and we can create them from the states anyway...
-                    checkpoint_every=int(1e6),   # every 1M is as frequent as possible (using current naming system)
-                    sticky_actions = stochasticity == "sticky",
-                    noop_start = stochasticity != "none",
-                    epochs=100 if run == 1 else 50,
-                    agents=32,
-                    priority=10 if run == 1 else 0
-                )
+
+    # the old DIV_ experiments got cancelled due to noop start being inconsistant with Rainbow DQN. Also,
+    # NONE trains on 0 noops but NOOP start never saw that, so it was difficult to compair them.
+    # I'll keep the results around just in case I need them.
+
+    # single runs of 4 games, with all 3 non-determanism
+    for env in ["Pong", "Alien", "Seaquest", "MsPacman"]:
+        run = 1
+        for stochasticity in ["none", "noop", "sticky"]:
+            add_job(
+                "DIV2_{}".format(env),
+                run_name="run={} stochasticity={}".format(run, stochasticity),
+                env_name=env,
+                export_trajectories=True,
+                export_video=False ,         # this will take up too much space, and we can create them from the states anyway...
+                checkpoint_every=int(1e6),   # every 1M is as frequent as possible (using current naming system)
+                sticky_actions = stochasticity == "sticky",
+                noop_start = stochasticity != "none",
+                epochs=50, # maybe make this 200, or 100 or something later on?
+                agents=32,
+                priority=10
+            )
+
+    # 16 runs of alien, but only for 50M, and noop
+    for env in ["Alien"]:
+        stochasticity = "noop"
+        for run in range(2,16+1):
+            add_job(
+                "DIV2_{}".format(env),
+                run_name="run={} stochasticity={}".format(run, stochasticity),
+                env_name=env,
+                export_trajectories=True,
+                export_video=False ,         # this will take up too much space, and we can create them from the states anyway...
+                checkpoint_every=int(1e6),   # every 1M is as frequent as possible (using current naming system)
+                sticky_actions = stochasticity == "sticky",
+                noop_start = stochasticity != "none",
+                epochs=50,
+                agents=32,
+                priority=0
+            )
 
     # ------------------------------------------
     # Test gamma

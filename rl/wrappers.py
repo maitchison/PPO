@@ -460,7 +460,8 @@ class NoopResetWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         """ Do no-op action for up to noop_max steps.
-            Note: this differs from openAI's implementation that would perform at least one noop.
+            Note: this differs from openAI's implementation in that theirs  would perform at least one noop, but
+            this one may sometimes perform 0. This means a noop trained agent will do well if tested on no noop.
         """
         obs = self.env.reset(**kwargs)
         if self.override_num_noops is not None:

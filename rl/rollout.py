@@ -255,7 +255,7 @@ class Runner():
         else:
             return self.model.forward(self.states if states is None else states)
 
-    def export_movie(self, filename, include_rollout=False, max_frames = 30*60*15):
+    def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 30*60*15):
         """ Exports a movie of agent playing game.
             include_rollout: save a copy of the rollout (may as well include policy, actions, value etc)
         """
@@ -274,7 +274,10 @@ class Runner():
         height = (height * scale) // 4 * 4
 
         # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-        video_out = cv2.VideoWriter(filename+".mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+        if include_video:
+            video_out = cv2.VideoWriter(filename+".mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+        else:
+            video_out = None
 
         state = env.reset()
 
@@ -341,14 +344,16 @@ class Runner():
             assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format(
                 (width, height, 3), frame.shape)
 
-            video_out.write(frame)
+            if video_out is not None:
+                video_out.write(frame)
 
             frame_count += 1
 
             if frame_count >= max_frames:
                 break
 
-        video_out.release()
+        if video_out is not None:
+            video_out.release()
 
         if include_rollout:
             for k, v in history.items():

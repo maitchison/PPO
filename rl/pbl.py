@@ -347,7 +347,6 @@ def train_population(ModelConstructor, master_log: Logger):
                 master_log.log("  -checkpoints saved")
 
             if args.export_video:
-
                 for i, runner in enumerate(runners):
                     video_name = utils.get_checkpoint_path(env_step, "{}-{}.mp4".format(args.environment, i))
                     runner.export_movie(video_name)
