@@ -256,40 +256,50 @@ class ActorCriticModel(BaseModel):
     def __init__(self, head: str, input_dims, actions, device, dtype, use_rnn=False, **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC_RNN-"+head if use_rnn else "AC-"+head
+
+        # disable last linear layer of CNN
+        if use_rnn and "hidden_units" not in kwargs:
+            kwargs["hidden_units"] = 0
+
         self.net = constructNet(head, input_dims, **kwargs)
         self.use_rnn = use_rnn
         if self.use_rnn:
-            self.lstm = nn.LSTM(self.net.hidden_units, 512, 1)
-        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
-        self.fc_value = nn.Linear(self.net.hidden_units, 1)
+            self.lstm = nn.LSTM(input_size=self.net.d, hidden_size=512, num_layers=1)
+
+        final_hidden_units = 512 if use_rnn else self.net.hidden_units
+
+        self.fc_policy = nn.Linear(final_hidden_units, actions)
+        self.fc_value = nn.Linear(final_hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
 
     def forward(self, x, state=None):
+        # state, if given, should be a tuple (h,c)
+
         if self.use_rnn and state is None:
             raise Exception("RNN Model requires LSTM state input.")
+
         x = self.prep_for_model(x)
+        x = F.relu(self.net.forward(x))
+
+        result = {}
+
         if self.use_rnn:
-            if type(state) is np.ndarray:
-                state = torch.from_numpy(state)
-            state = state.to(self.device)
-            x = F.relu(self.net.forward(x))
-            h = state[:, 0, :].contiguous()
-            c = state[:, 1, :].contiguous() # required for LSTM for some reason...
-            x, (h,c) = self.lstm(x[np.newaxis], (h[np.newaxis],c[np.newaxis]))
+
+            (h, c) = state
+
+            # input should be sequence, batch, features, we use a sequence length of 1 here.
+            x, (h, c) = self.lstm(x[np.newaxis], (h[np.newaxis],c[np.newaxis]))
+
             x = F.relu(x[0])
-            state[:, 0, :] = h[0]
-            state[:, 1, :] = c[0]
-        else:
-            x = F.relu(self.net.forward(x))
+
+            result['state'] = (h[0], c[0])
 
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=1)
 
-        result = {}
         result['log_policy'] = log_policy
         result['ext_value'] = value
-        if self.use_rnn:
-            result['state'] = state
+
         return result
 
 class AttentionModel(BaseModel):

@@ -74,7 +74,7 @@ def make(non_determinism=None):
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
         env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
-        env = wrappers.FrameStack(env)
+        env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
 
         if args.reward_normalization:
             env = wrappers.NormalizeRewardWrapper(env,

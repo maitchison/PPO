@@ -236,10 +236,21 @@ class Runner():
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
         """
+
+        if states is None:
+            states = self.states
+
         if args.use_rnn:
+
+            if rnn_states is None:
+                rnn_states = (
+                    torch.from_numpy(self.rnn_states[:, 0, :]).contiguous().to(self.model.device),
+                    torch.from_numpy(self.rnn_states[:, 1, :]).contiguous().to(self.model.device)
+                )
+
             return self.model.forward(
-                self.states if states is None else states,
-                self.rnn_states if rnn_states is None else rnn_states
+                states,
+                rnn_states
             )
         else:
             return self.model.forward(self.states if states is None else states)
@@ -272,7 +283,10 @@ class Runner():
         history = defaultdict(list)
 
         if args.use_rnn:
-            rnn_state = np.zeros([1, *self.rnn_state_shape], dtype=np.float32)
+            rnn_state = np.zeros([*self.rnn_state_shape], dtype=np.float32)
+            h = torch.from_numpy(rnn_state[np.newaxis, 0, :]).to(self.model.device)
+            c = torch.from_numpy(rnn_state[np.newaxis, 1, :]).to(self.model.device)
+            rnn_state = (h, c)
 
         # play the game...
         while not done:
@@ -339,7 +353,7 @@ class Runner():
         if include_rollout:
             for k, v in history.items():
                 history[k] = np.asarray(v)
-            pickle.dump(history, gzip.open(filename+".hst.gz", "wb", compresslevel=5))
+            pickle.dump(history, gzip.open(filename+".hst.gz", "wb", compresslevel=9))
 
 
     def generate_rollout(self, is_warmup=False):
@@ -359,7 +373,11 @@ class Runner():
             ext_value = model_out["ext_value"].detach().cpu().numpy()
 
             if args.use_rnn:
-                self.rnn_states = model_out["state"].detach().cpu().numpy()
+                # states out will be a tuple... convert into numpy form.
+                h, c = model_out["state"]
+
+                self.rnn_states[:, 0, :] = h.detach().cpu().numpy()
+                self.rnn_states[:, 1, :] = c.detach().cpu().numpy()
 
             # during warm-up we simply collect experience through a uniform random policy.
             if is_warmup:
@@ -534,7 +552,7 @@ class Runner():
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
 
     def train_minibatch(self, data, zero_grad=True, apply_update=True, states=None, initial_loss=None,
-                        loss_scale=1.0, retain_graph=False):
+                        loss_scale=1.0):
 
         # todo colapse down to mean only at end (and apply weights then)
 
@@ -630,15 +648,17 @@ class Runner():
         # Run optimizer
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("loss", loss)
-
-        if zero_grad:
-            self.optimizer.zero_grad()
+        self.log.watch_mean("loss", loss * loss_scale)
 
         result["loss"] = loss
 
+        # todo, seperate this into another function (useful for RNN)
         if apply_update:
-            (-loss * loss_scale).backward(retain_graph=retain_graph)
+
+            if zero_grad:
+                self.optimizer.zero_grad()
+
+            (-loss * loss_scale).backward()
 
             if args.max_grad_norm is not None and args.max_grad_norm != 0:
                 grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), args.max_grad_norm)
@@ -658,7 +678,6 @@ class Runner():
             # -------------------------------------------------------------------------
             # -------------------------------------------------------------------------
 
-            # stub force this...
             if self.log_high_grad_norm and grad_norm > 100:
                 self.log.important("Extremely high grad norm ... outputting inputs.")
                 self.log.important("Loss clip was " + str(loss_clip_mean))
@@ -759,49 +778,69 @@ class Runner():
 
             loss = None
 
-            rnn_states = torch.from_numpy(batch_data["prev_rnn_state"][0]).to(self.model.device)
+            assert self.N % args.rnn_block_length == 0, "n_steps must be multiple of block length."
+            assert args.mini_batch_size % args.rnn_block_length == 0, "mini batch size must be multiple of block length."
 
-            for n in range(self.N):
+            # pick random segments..., balanced between agents.
+            # segments will be [A, segment_count] containing tuple of agent_id, and time index.
+            segment_count = self.N // args.rnn_block_length
+            segments = []
+            for segment_indx in range(segment_count):
+                for a in range(self.A):
+                    segments.append((np.random.randint(1+self.N-args.rnn_block_length), a))
 
-                # put together a minibatch from all agents at this timestep...
-                minibatch_data = {}
-                for k, v in batch_data.items():
-                    minibatch_data[k] = torch.from_numpy(v[n]).to(self.model.device)
+            np.random.shuffle(segments)
 
-                BLOCK_LENGTH = args.rnn_block_length
+            # figure out how many agents to run in parallel so that minibatch size is right
+            # this will be num_segments * rnn_block_length
+            # so we want
+            segments_per_mini_batch = args.mini_batch_size // args.rnn_block_length
 
-                # backwards only once every 40 steps...
-                start_of_block = n % BLOCK_LENGTH == 0
-                end_of_block = (n % BLOCK_LENGTH == BLOCK_LENGTH-1) or (n == (self.N-1))
+            n_batches = len(segments) // segments_per_mini_batch
+            for j in range(n_batches):
+                batch_start = j * segments_per_mini_batch
+                batch_end = (j + 1) * segments_per_mini_batch
+                sample = segments[batch_start:batch_end]
 
-                if args.rnn_learning=="end_of_block":
-                    result = self.train_minibatch(
-                        minibatch_data,
-                        states=rnn_states.detach() if start_of_block else rnn_states,
-                        zero_grad=start_of_block,
-                        apply_update=end_of_block,
-                        initial_loss=loss if not start_of_block else None,
-                        loss_scale = 1/BLOCK_LENGTH
-                    )
-                elif args.rnn_learning=="every_step":
+                # initialize states from state taken during rollout
+                rnn_states = []
+                for (n, a) in sample:
+                    rnn_states.append(batch_data["prev_rnn_state"][n, a])
+                rnn_states = np.asarray(rnn_states)
+
+                # split into h,c
+                h = torch.from_numpy(rnn_states[:, 0, :]).to(self.model.device)
+                c = torch.from_numpy(rnn_states[:, 1, :]).to(self.model.device)
+                rnn_states = (h,c)
+
+                # run over the length of the segments (this could be done in one training call, which would be much faster...
+                for k in range(args.rnn_block_length):
+
+                    # put together a minibatch from all agents at this timestep...
+                    minibatch_data = {}
+                    for key, value in batch_data.items():
+                        minibatch_data[key] = torch.from_numpy(
+                            np.asarray([value[n+k, a] for (n, a) in sample])
+                        ).to(self.model.device)
+
+                    start_of_block = (k == 0)
+                    end_of_block = (k == args.rnn_block_length-1)
+
                     result = self.train_minibatch(
                         minibatch_data,
                         states=rnn_states,
-                        zero_grad=False,
-                        apply_update=True,
-                        initial_loss=None,
-                        retain_graph=(n != self.N-1),
-                        loss_scale=1
+                        apply_update=end_of_block,
+                        initial_loss=loss if not start_of_block else None,
+                        loss_scale = 1/args.rnn_block_length
                     )
-                else:
-                    raise Exception("Invalid RNN mode")
-                loss = result["loss"]
-                rnn_states = result["states"]
+
+                    loss = result["loss"]
+                    rnn_states = result["states"]
 
     def train(self):
         """ trains agent on it's own experience """
 
-        # stub, this should be done in this function, just make it more generic..
+        # todo, this should be done in this function, just make it more generic..
         if args.use_rnn:
             self._train_rnn()
             return

@@ -459,14 +459,15 @@ class NoopResetWrapper(gym.Wrapper):
         assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
 
     def reset(self, **kwargs):
-        """ Do no-op action for a number of steps in [1, noop_max]."""
-        self.env.reset(**kwargs)
+        """ Do no-op action for up to noop_max steps.
+            Note: this differs from openAI's implementation that would perform at least one noop.
+        """
+        obs = self.env.reset(**kwargs)
         if self.override_num_noops is not None:
             noops = self.override_num_noops
         else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
-        assert noops > 0
-        obs = None
+            noops = self.unwrapped.np_random.randint(0, self.noop_max)
+        assert noops >= 0
         for _ in range(noops):
             obs, _, done, _ = self.env.step(self.noop_action)
             if done:

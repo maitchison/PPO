@@ -63,6 +63,8 @@ class Config:
         self.debug_log_freq     = int()
         self.noop_start         = bool()
 
+        self.frame_stack        = int()
+
         self.normalize_advantages = bool()
 
         self.use_clipped_value_loss = bool()
@@ -89,8 +91,6 @@ class Config:
         self.model              = str()
 
         # RNN
-
-        self.rnn_learning       = str()
         self.rnn_block_length   = int()
 
         self.__dict__.update(kwargs)
@@ -192,9 +192,10 @@ def parse_args():
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
 
+    parser.add_argument("--frame_stack", type=int, default=4)
+
     # RNN
-    parser.add_argument("--rnn_learning", type=str, default="end_of_block", help="[end_of_block, every_step]")
-    parser.add_argument("--rnn_block_length", type=int, default=40)
+    parser.add_argument("--rnn_block_length", type=int, default=32)
 
     # EMI
     parser.add_argument("--use_emi", type=str2bool, default=False)

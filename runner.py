@@ -260,27 +260,36 @@ def setup_jobs_V7():
     # RNN
     # ------------------------------------------
 
-    for agents in [64]: # 32, 64, 128
-        for n_step in [128]: # 64, 128, 256
-            for rnn_learning in ['none', 'end_of_block', 'every_step']:
-                for rnn_block_length in [0] if rnn_learning == "none" else [32, 64, 128]:
-                    add_job(
-                        "RNN_Alien",
-                        run_name="agents={} n_step={} block_length={} learning={}".format(agents, n_step, rnn_block_length, rnn_learning),
-                        env_name="Alien",
-                        epochs=200,
-                        agents=agents,
-                        n_step=n_step,
-                        rnn_learning=rnn_learning,
-                        rnn_block_length=rnn_block_length,
-                        use_rnn = (rnn_learning != 'none')
-                    )
+    # would be good to check mini-batch size, for performance I really want this up near 4k, instead of the 1k default.
+    # for agents in [32]: # 32, 64, 128
+    #     for n_step in [64, 128]: # 64, 128, 256
+    #         for rnn_block_length in [0, 16, 32, 64]:
+    #             use_rnn = (rnn_block_length != 0)
+    #             add_job(
+    #                 "RNN_Alien",
+    #                 run_name="agents={} n_step={} block_length={}".format(agents, n_step, rnn_block_length),
+    #                 env_name="Alien",
+    #                 epochs=100,
+    #                 agents=agents,
+    #                 n_step=n_step,
+    #                 rnn_block_length=rnn_block_length,
+    #                 use_rnn = use_rnn,
+    #                 frame_stack = 1 if use_rnn else 4 # frame stacking isn't needed with RNN
+    #             )
 
     # ------------------------------------------
     # Diversity
     # ------------------------------------------
 
-    for env in ["Pong", "Alien"]:
+    # ok so computation is exploding here... here's what we're going to do.
+
+    # primary run goes to 200M and we can do most of our analysis on that
+    # to check for consistancy do 16 runs, but only up to 50M. Unfortunately I'll need this on pong and alien,
+    # and I'll need it for all 3 modes. (I'll run 4 first, and do the others later on).
+    # the idea is to show statistical significance for both the non-determanism, and later on for predicting sucessful
+    # outcomes. (actually that's pong only...)
+
+    for env in ["Pong", "Alien", "CrazyClimber", "Seaquest"]:
         for run in [1, 2, 3, 4]:
             for stochasticity in ["none", "noop", "sticky"]:
                 add_job(
@@ -288,45 +297,46 @@ def setup_jobs_V7():
                     run_name="run={} stochasticity={}".format(run, stochasticity),
                     env_name=env,
                     export_trajectories=True,
+                    export_video=False ,         # this will take up too much space, and we can create them from the states anyway...
                     checkpoint_every=int(1e6),   # every 1M is as frequent as possible (using current naming system)
                     sticky_actions = stochasticity == "sticky",
                     noop_start = stochasticity != "none",
-                    epochs=50,
+                    epochs=100 if run == 1 else 50,
                     agents=32,
-                    priority=2
+                    priority=10 if run == 1 else 0
                 )
 
     # ------------------------------------------
     # Test gamma
     # ------------------------------------------
 
-    for gamma in [0.9, 0.99, 0.999, 0.9999, 0.99999, 1]:
-        add_job(
-            "Test_Gamma",
-            run_name="gamma={}".format(gamma),
-            env_name="SpaceInvaders",
-            epochs=200,
-            agents=32,
-            priority=0
-        )
+    # for gamma in [0.9, 0.99, 0.999, 0.9999, 0.99999, 1]:
+    #     add_job(
+    #         "Test_Gamma",
+    #         run_name="gamma={}".format(gamma),
+    #         env_name="SpaceInvaders",
+    #         epochs=200,
+    #         agents=32,
+    #         priority=0
+    #     )
 
     # ------------------------------------------
     # ARL
     # ------------------------------------------
 
-    for c_cost in [0.001, 0.01, 0.1]:
-        for i_cost in [0.001, 0.01, 0.1]:
-            add_job(
-                "ARL_Breakout",
-                env_name="Breakout",
-                run_name="c_cost={} i_cost={}".format(c_cost, i_cost),
-                arl_c_cost=c_cost,
-                arl_i_cost=i_cost,
-                algo="arl",
-                epochs=100,
-                priority=0,
-                chunked=False
-            )
+    # for c_cost in [0.001, 0.01, 0.1]:
+    #     for i_cost in [0.001, 0.01, 0.1]:
+    #         add_job(
+    #             "ARL_Breakout",
+    #             env_name="Breakout",
+    #             run_name="c_cost={} i_cost={}".format(c_cost, i_cost),
+    #             arl_c_cost=c_cost,
+    #             arl_i_cost=i_cost,
+    #             algo="arl",
+    #             epochs=100,
+    #             priority=0,
+    #             chunked=False
+    #         )
 
     # ------------------------------------------
     # V-Trace
