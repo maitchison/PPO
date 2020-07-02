@@ -327,7 +327,7 @@ def setup_jobs_V7():
                 noop_start = stochasticity != "none",
                 epochs=50,
                 agents=32,
-                priority=0
+                priority=8
             )
 
     # ------------------------------------------

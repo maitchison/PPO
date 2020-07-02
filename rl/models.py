@@ -271,6 +271,10 @@ class ActorCriticModel(BaseModel):
         self.fc_policy = nn.Linear(final_hidden_units, actions)
         self.fc_value = nn.Linear(final_hidden_units, 1)
         self.set_device_and_dtype(device, dtype)
+        
+    def log_policy(self, x, state=None):
+        """ Returns detached log_policy for given input. """
+        return self.forward(x, state)["log_policy"].detach().cpu().numpy()
 
     def forward(self, x, state=None):
         # state, if given, should be a tuple (h,c)

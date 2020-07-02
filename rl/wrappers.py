@@ -83,6 +83,7 @@ class FrameSkipWrapper(gym.Wrapper):
         done = None
         info = None
         skip = np.random.randint(self._min_skip, self._max_skip+1)
+
         for i in range(skip):
             obs, reward, done, info = self.env.step(action)
             if i == skip - 2: self._obs_buffer[0] = obs
@@ -391,7 +392,7 @@ class AtariWrapper(gym.Wrapper):
 
     """
 
-    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84):
+    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84, interpolation=cv2.INTER_AREA):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
@@ -410,6 +411,7 @@ class AtariWrapper(gym.Wrapper):
 
         self.grayscale = grayscale
         self.n_channels = 1 if self.grayscale else 3
+        self.interpolation = interpolation
 
         self.observation_space = gym.spaces.Box(
             low=0,
@@ -427,7 +429,7 @@ class AtariWrapper(gym.Wrapper):
         width, height, channels = obs.shape
 
         if (width, height) != (self._width, self._height):
-            obs = cv2.resize(obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
+            obs = cv2.resize(obs, (self._height, self._width), interpolation=self.interpolation)
 
         if len(obs.shape) == 2:
             obs = obs[:, :, np.newaxis]
@@ -465,7 +467,9 @@ class NoopResetWrapper(gym.Wrapper):
         """
         obs = self.env.reset(**kwargs)
         if self.override_num_noops is not None:
+            # stub:
             noops = self.override_num_noops
+            print(f"Forcing {noops} NOOPs.")
         else:
             noops = self.unwrapped.np_random.randint(0, self.noop_max)
         assert noops >= 0
@@ -481,9 +485,12 @@ class NoopResetWrapper(gym.Wrapper):
 class FrameStack(gym.Wrapper):
     """ This is the original frame stacker that works by making duplicates of the frames,
         For large numbers of frames this can be quite slow.
+
+        Note: due to a big the stack order for this function is n-1, 0, 1, 2, ... n-2
+            to enable the ordering 0, 1, 2, 3 set ordering = "ascending".
     """
 
-    def __init__(self, env, n_stacks=4):
+    def __init__(self, env, n_stacks=4, ordering="default"):
 
         super().__init__(env)
 
@@ -500,6 +507,10 @@ class FrameStack(gym.Wrapper):
 
         self.stack = np.zeros((self.n_channels, w, h), dtype=np.uint8)
 
+        self.ordering = ordering
+
+        self.counter = 0
+
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
@@ -509,16 +520,31 @@ class FrameStack(gym.Wrapper):
 
     def _push_obs(self, obs):
 
-        self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
+        # stub, label frames
+        # obs = obs * 0 + self.counter
+        self.counter += 1
 
-        if self.original_channels == 1:
-            self.stack[0:1, :, :] = obs[:, :, 0]
-        elif self.original_channels == 3:
-            obs = np.swapaxes(obs, 0, 2)
-            obs = np.swapaxes(obs, 1, 2)
-            self.stack[0:3, :, :] = obs
+        if self.ordering == "default":
+            # most recent is in slot 0, then ascending from there... strange ordering, but it's what I used
+            # previously so I keep it for compatability.
+            self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
+
+            if self.original_channels == 1:
+                self.stack[0:1, :, :] = obs[:, :, 0]
+            elif self.original_channels == 3:
+                obs = np.swapaxes(obs, 0, 2)
+                obs = np.swapaxes(obs, 1, 2)
+                self.stack[0:3, :, :] = obs
+            else:
+                raise Exception("Invalid number of channels.")
+        elif self.ordering == "ascending":
+            # note, in this case slot 0 is the oldest observation, not the newest.
+            assert self.original_channels == 1, "Ascending order does not support color at the moment."
+            self.stack = np.roll(self.stack, shift=-1, axis=0)
+            self.stack[-1:, :, :] = obs[:, :, 0]
         else:
-            raise Exception("Invalid number of channels.")
+            raise Exception(f"Invalid ordering {self.ordering}.")
+
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
