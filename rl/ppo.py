@@ -8,12 +8,13 @@ import time
 import json
 import math
 
+
 from .logger import Logger, LogVariable
 from .rollout import Runner, adjust_learning_rate, save_progress
 
 import torch.multiprocessing
 
-from . import utils, models, atari, hybridVecEnv, config, logger
+from . import utils, models, atari, hybridVecEnv, config, logger, keyboard
 from .config import args
 
 def train(model: models.BaseModel, log: Logger):
@@ -39,8 +40,8 @@ def train(model: models.BaseModel, log: Logger):
 
     # setup logging
     log.add_variable(LogVariable("ep_score", 100, "stats",
-                                 display_width=16))  # these need to be added up-front as it might take some
-    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=16))  # time get get first score / length.
+                                 display_width=12))  # these need to be added up-front as it might take some
+    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=12))  # time get get first score / length.
 
     # calculate some variables
     batch_size = (args.n_steps * args.agents)
@@ -68,7 +69,7 @@ def train(model: models.BaseModel, log: Logger):
 
     runner.create_envs()
 
-    if not did_restore and args.use_rnd:
+    if not did_restore and args.normalize_observations:
         # this will get an initial estimate for the normalization constants.
         runner.run_random_agent(20)
 
@@ -176,6 +177,15 @@ def train(model: models.BaseModel, log: Logger):
             log.export_to_csv()
             log.save_log()
             last_log_time = time.time()
+
+        # hotkeys
+        if keyboard.kb.kbhit():
+            c = keyboard.kb.getch()
+            if c == "v":
+                print("Exporting video...")
+                video_name = utils.get_checkpoint_path(env_step, args.environment)
+                runner.export_movie(video_name)
+                log.info("  -video exported")
 
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):

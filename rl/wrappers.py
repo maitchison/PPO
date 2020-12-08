@@ -486,7 +486,7 @@ class FrameStack(gym.Wrapper):
     """ This is the original frame stacker that works by making duplicates of the frames,
         For large numbers of frames this can be quite slow.
 
-        Note: due to a big the stack order for this function is n-1, 0, 1, 2, ... n-2
+        Note: due to a bug the stack order for this function is n-1, 0, 1, 2, ... n-2
             to enable the ordering 0, 1, 2, 3 set ordering = "ascending".
     """
 

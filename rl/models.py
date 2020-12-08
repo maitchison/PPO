@@ -81,7 +81,7 @@ class FDMEncoder_Net(Base_Net):
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
         x = torch.reshape(x, [len(x), self.d])
-        x = F.relu(self.fc(x))
+        x = self.fc(x)
         return x
 
 class FDMDecoder_Net(nn.Module):
@@ -108,8 +108,8 @@ class FDMDecoder_Net(nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = torch.sigmoid(self.conv4(x))
-        x = x[:, :, 4:4+84, 4:4+84]
+        x = self.conv4(x) #used to be a sigmoid here... but might need to output values outside of 0..1
+        x = x[:, :, 4:4+84, 4:4+84] # we clip off the edges as these can cause problems.
         return x
 
 
@@ -392,8 +392,6 @@ class EMIModel(BaseModel):
         return x
 
     def fdm_error(self, prev_states, actions, next_states):
-
-        # stub this is modified to just be an auto-encoder...
         prev_states = self.prep_for_model(prev_states)
         next_states = self.prep_for_model(next_states)
         predicted_next_states = self.fdm(prev_states, actions)
@@ -424,10 +422,12 @@ class RNDModel(BaseModel):
     Random network distillation model
     """
 
-    def __init__(self, head:str, input_dims, actions, device, dtype, **kwargs):
+    def __init__(self, head:str, input_dims, actions, device, dtype, use_rnn=False, **kwargs):
         super().__init__(input_dims, actions)
 
         self.name = "RND-" + head
+
+        assert not use_rnn, "RNN not supported with RND"
 
         single_channel_input_dims = (1, *input_dims[1:])
 
@@ -462,7 +462,7 @@ class RNDModel(BaseModel):
 
         # normalize x
         x = torch.tensor(x).to(self.device)
-        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5) 
+        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5)
 
         # note: clipping reduces the std down to 0.3 so we multiply the output so that it is roughly
         # unit normal.
@@ -503,6 +503,181 @@ class RNDModel(BaseModel):
             'ext_value': ext_value,
             'int_value': int_value
         }
+
+class MPPEModel(BaseModel):
+    """
+    Model Prediction Prediction Error.
+    """
+
+    def __init__(self, head:str, input_dims, actions, device, dtype, use_rnn=False, **kwargs):
+        super().__init__(input_dims, actions)
+
+        assert not use_rnn, "RNN not supported with MPPE"
+
+        single_channel_input_dims = (1, *input_dims[1:])
+
+        self.name = "MPPE-" + head
+
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.fdm_encoder = FDMEncoder_Net(input_dims, hidden_units=1024)
+        self.fdm_decoder = FDMDecoder_Net(input_units=1024+actions, in_shape=self.fdm_encoder.out_shape)
+
+        self.pred_encoder = FDMEncoder_Net(input_dims, hidden_units=1024)
+        self.pred_decoder = FDMDecoder_Net(input_units=1024 + actions, in_shape=self.fdm_encoder.out_shape)
+
+        self.fc_policy = nn.Linear(self.net.hidden_units, actions)
+        self.fc_ext_value = nn.Linear(self.net.hidden_units, 1)
+        self.fc_int_value = nn.Linear(self.net.hidden_units, 1)
+
+        self.obs_rms = utils.RunningMeanStd(shape=(single_channel_input_dims))
+
+        self.features_mean = 0
+        self.features_std = 0
+
+        self.set_device_and_dtype(device, dtype)
+        self.counter = 0
+
+    def perform_denormalization(self, x):
+        """ Applies denormalization transform
+            input is float32 normalized, output is uint8 unnormalized numpy
+        """
+
+        # update normalization constants
+        if type(x) is torch.Tensor:
+            x = x.cpu().numpy()
+
+        assert x.dtype == np.float32
+
+        mu = self.obs_rms.mean.astype(np.float32)
+        sigma = self.obs_rms.var.astype(np.float32) ** 0.5
+
+        # stub, no normalization
+        mu = 0
+        sigma = 256
+
+        # denormalize x
+        x = ((x/3) * (sigma + 1e-5)) + mu
+
+        return x
+
+
+    def perform_normalization(self, x, apply_update=False):
+        """ Applies normalization transform, and updates running mean / std.
+            input is [B,C,H,W] uint8 (torch or numpy)
+            output is [B,C,H,W] float normalized (torch, uploaded to device)
+        """
+
+        # update normalization constants
+        if type(x) is torch.Tensor:
+            x = x.cpu().numpy()
+
+        assert x.dtype == np.uint8
+
+        x = np.asarray(x, np.float32)
+        if apply_update:
+            self.obs_rms.update(x[:, 0:1]) #only normalize on one channel
+
+        mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device)
+        sigma = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device)
+
+        # stub, no normalization
+        mu = 0
+        sigma = 256
+
+        # normalize x
+        x = torch.tensor(x).to(self.device)
+        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5)
+
+        # note: clipping reduces the std down to 0.3 so we multiply the output so that it is roughly
+        # unit normal.
+        x *= 3.0
+
+        return x
+
+    def forward(self, x):
+        x = self.prep_for_model(x)
+        x = F.relu(self.net(x))
+        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
+        ext_value = self.fc_ext_value(x).squeeze(dim=1)
+        int_value = self.fc_int_value(x).squeeze(dim=1)
+        return {
+            'log_policy': log_policy,
+            'ext_value': ext_value,
+            'int_value': int_value
+        }
+
+    def fdm(self, prev_states, actions):
+        """
+        Predicts the next state given the previous
+
+        @prev_states the raw previous states in uint8 format
+
+        """
+
+        prev_states = self.perform_normalization(prev_states)
+        if type(actions) is np.ndarray:
+            actions = torch.from_numpy(actions)
+        actions = actions.to(dtype=torch.int64, device=self.device)
+        state_embeddings = self.fdm_encoder(prev_states)
+        action_embeddings = F.one_hot(actions, self.actions).float()
+        x = torch.cat((state_embeddings, action_embeddings), dim=1)
+        x = self.fdm_decoder(x)
+        return x
+
+    def pred(self, prev_states, actions):
+        """
+        Predicts the output of the FDM given previous states and actions.
+
+        @prev_states the unnormalized previous states in uint8 format
+
+        """
+        prev_states = self.perform_normalization(prev_states)
+        if type(actions) is np.ndarray:
+            actions = torch.from_numpy(actions)
+        actions = actions.to(dtype=torch.int64, device=self.device)
+        state_embeddings = self.pred_encoder(prev_states)
+        action_embeddings = F.one_hot(actions, self.actions).float()
+        x = torch.cat((state_embeddings, action_embeddings), dim=1)
+        x = self.pred_decoder(x)
+        return x
+
+    def fdm_error(self, prev_states, actions, next_states):
+
+        predicted_next_states = self.fdm(prev_states, actions)
+        next_states = self.perform_normalization(next_states)
+
+        # only look at error on first frame as others are trivial to reconstruct from input.
+        error = ((predicted_next_states[:, 0] - next_states[:, 0])**2).mean()
+
+        return error
+
+    def fdm_prediction_error(self, prev_states, actions):
+
+        # get FDM prediction
+        fdm_output = self.fdm(prev_states, actions).detach() # don't let gradient go through FDM
+        pred_output = self.pred(prev_states, actions)
+
+        # only look at error on first frame as others are trivial to reconstruct from input.
+        error = ((fdm_output[:, 0] - pred_output[:, 0])**2).mean()
+
+        return error
+
+
+    def generate_debug_image(self, prev_states, actions, next_states):
+        predicted_next_states = self.fdm(prev_states[0:1], actions[0:1])
+        prev_img = prev_states[0, 0]
+        next_img = next_states[0, 0]
+        pred_img = predicted_next_states[0, 0]
+        delt_img = torch.abs(predicted_next_states[0, 0] - next_states[0, 0])
+
+        tst1_img = self.fdm(prev_states * 0, actions * 0)[0, 0]
+        tst2_img = self.fdm(prev_states, actions * 0)[0, 0]
+
+        images = [x[np.newaxis] for x in [prev_img, next_img, pred_img, delt_img, tst1_img, tst2_img]]
+        debug_image = torchvision.utils.make_grid(images, nrow=3)
+        debug_image = F.interpolate(debug_image[np.newaxis], scale_factor=(4, 4))[0]
+        return debug_image
+
 
 class TokenNet(nn.Module):
 

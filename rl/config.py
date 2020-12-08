@@ -87,8 +87,9 @@ class Config:
         self.arl_c_cost         = float()
         self.arl_i_cost         = float()
 
-
         self.model              = str()
+
+        self.use_mppe           = bool()
 
         # RNN
         self.rnn_block_length   = int()
@@ -100,15 +101,19 @@ class Config:
 
     @property
     def propagate_intrinsic_rewards(self):
-        return not self.use_rnd
+        return not self.use_rnd or self.use_mppe
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_emi or self.use_tdb
+        return self.use_rnd or self.use_emi or self.use_tdb or self.use_mppe
 
     @property
     def normalize_intrinsic_rewards(self):
-        return self.use_rnd or self.use_emi
+        return self.use_rnd or self.use_emi or self.use_mppe
+
+    @property
+    def normalize_observations(self):
+        return self.use_rnd or self.use_mppe
 
 LOCK_KEY = str(uuid.uuid4().hex)
 
@@ -173,7 +178,7 @@ def parse_args():
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
-    parser.add_argument("--reward_clip", type =float, default=5.0)
+    parser.add_argument("--reward_clip", type=float, default=5.0)
 
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
@@ -246,12 +251,13 @@ def parse_args():
     parser.add_argument("--pbl_thinning", type=str, default="None")
     parser.add_argument("--pbl_trust_region", type=str2bool, default=False)
 
+    parser.add_argument("--use_mppe", type=str2bool, default=False, help="Model Prediction Prediction Error")
 
     args.update(**parser.parse_args().__dict__)
 
     # set defaults
     if args.intrinsic_reward_propagation is None:
-        args.intrinsic_reward_propagation = args.use_rnd or args.use_emi
+        args.intrinsic_reward_propagation = args.use_rnd or args.use_emi or args.use_mppe
 
     # check...
     if args.use_tdb:

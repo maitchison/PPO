@@ -170,7 +170,7 @@ class Runner():
             data['ems_norm'] = self.ems_norm
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms
 
-        if args.use_rnd:
+        if args.normalize_observations:
             data["observation_norm_state"] = self.model.obs_rms.save_state()
 
         torch.save(data, filename)
@@ -202,7 +202,7 @@ class Runner():
 
         atari.ENV_STATE = checkpoint['env_state']
 
-        if args.use_rnd:
+        if args.normalize_observations:
             self.model.obs_rms.restore_state(checkpoint["observation_norm_state"])
 
         return step
@@ -264,6 +264,7 @@ class Runner():
 
         env = atari.make()
         _ = env.reset()
+        action = 0
         state, reward, done, info = env.step(0)
         rendered_frame = info.get("monitor_obs", state)
 
@@ -293,6 +294,9 @@ class Runner():
 
         # play the game...
         while not done:
+
+            prev_state = state.copy()
+            prev_action = action
 
             if args.use_rnn:
                 model_out = self.model.forward(state[np.newaxis], rnn_state)
@@ -324,7 +328,31 @@ class Runner():
             channels = info.get("channels", None)
             rendered_frame = info.get("monitor_obs", state)
 
-            frame = utils.compose_frame(state, rendered_frame, channels)
+            agent_layers = state.copy()
+
+            if args.use_mppe:
+                actions = np.asarray([prev_action])
+                # display some debug info...
+                # save some data for debugging
+                obs_norm_mean = self.model.obs_rms.mean
+                obs_norm_var = self.model.obs_rms.var
+                # fdm_pred_pred = self.model.pred(prev_state[np.newaxis], actions)
+                # fdm_pred_pred_err = (self.model.fdm(prev_state[np.newaxis], actions) - self.model.pred(state[np.newaxis],
+                #                                                                                     actions)) ** 2
+
+                input = self.model.perform_normalization(prev_state[np.newaxis])[:,0]
+                target = self.model.perform_normalization(state[np.newaxis])[:,0]
+                fdm_pred = self.model.fdm(prev_state[np.newaxis], actions)
+                fdm_pred_pred = self.model.pred(prev_state[np.newaxis], actions)
+                fdm_pred_err = (self.model.fdm(prev_state[np.newaxis], actions) - target) ** 2
+                fdm_pred_pred_err = (self.model.pred(prev_state[np.newaxis], actions) - self.model.fdm(prev_state[np.newaxis], actions)) ** 2
+
+                agent_layers[0] = fdm_pred.detach().cpu() * 64 + 128
+                agent_layers[1] = fdm_pred_pred.detach().cpu() * 64 + 128
+                agent_layers[2] = fdm_pred_err.detach().cpu() * 64
+                agent_layers[3] = fdm_pred_pred_err.detach().cpu() * 64
+
+            frame = utils.compose_frame(agent_layers, rendered_frame, channels)
             if frame.shape[0] != width or frame.shape[1] != height:
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
@@ -397,8 +425,8 @@ class Runner():
             if "returns_norm_state" in infos[0]:
                 atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
                 norm_mean, norm_var, norm_count = infos[0]["returns_norm_state"]
-                self.log.watch("returns_norm_mu", norm_mean)
-                self.log.watch("returns_norm_std", norm_var**0.5)
+                self.log.watch("returns_norm_mu", norm_mean, display_width=0)
+                self.log.watch("returns_norm_std", norm_var**0.5, display_width=0)
 
             # work out our intrinsic rewards
             if args.use_intrinsic_rewards:
@@ -412,8 +440,7 @@ class Runner():
                     # as possible.
                     int_rewards = torch.nn.functional.relu(
                         self.model.predict_model_improvement(self.states)).detach().cpu().numpy()
-
-                if args.use_rnd:
+                elif args.use_rnd:
                     if is_warmup:
                         # in random mode just update the normalization constants
                         self.model.perform_normalization(self.states)
@@ -421,6 +448,18 @@ class Runner():
                         # reward is prediction error on state we land inn.
                         loss_rnd = self.model.prediction_error(self.states).detach().cpu().numpy()
                         int_rewards += loss_rnd
+                elif args.use_mppe:
+                    # would be better to have a input normalization wrapper to do this, not implement each time...
+                    if is_warmup:
+                        self.model.perform_normalization(self.states, apply_update=True)
+                    else:
+                        loss_mppe = self.model.fdm_prediction_error(self.states, actions).detach().cpu().numpy() ** 0.5
+                        loss_mppe = np.clip(loss_mppe, 0, 10) # make sure intrinsic reward doesn't get too high.
+                        int_rewards += loss_mppe
+                        # update normalization parameters afterwards
+                        self.model.perform_normalization(self.states, apply_update=True)
+                else:
+                    assert False, "No intrinsic rewards set."
 
                 self.int_rewards[t] = int_rewards
                 self.int_value[t] = value_int
@@ -457,7 +496,7 @@ class Runner():
             self.ext_value[t] = ext_value
 
         #  save a copy of the normalization statistics.
-        if args.use_rnd:
+        if args.normalize_observations:
             atari.ENV_STATE["observation_norm_state"] = self.model.obs_rms.save_state()
 
         # get value estimates for final state.
@@ -495,10 +534,9 @@ class Runner():
                 # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
                 # which is approximately where normalized returns will sit.
                 self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-                self.batch_int_rewards = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
+                self.int_rewards = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
             else:
                 self.intrinsic_reward_norm_scale = 1
-                self.batch_int_rewards = self.int_rewards
 
             self.int_returns = calculate_returns(
                 self.int_rewards,
@@ -514,19 +552,19 @@ class Runner():
         if args.use_intrinsic_rewards:
             self.advantage += args.intrinsic_reward_scale * self.int_advantage
 
-        if args.use_rnd:
+        if args.normalize_observations:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
-        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0 if args.normalize_advantages else 10)
-        self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0 if args.normalize_advantages else 10)
-        self.log.watch_mean("adv_max", np.max(self.advantage), display_width=10 if args.normalize_advantages else 0)
-        self.log.watch_mean("adv_min", np.min(self.advantage), display_width=10 if args.normalize_advantages else 0)
+        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0)
+        self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0)
+        self.log.watch_mean("adv_max", np.max(self.advantage), display_width=0)
+        self.log.watch_mean("adv_min", np.min(self.advantage), display_width=0)
         self.log.watch_mean("batch_reward_ext", np.mean(self.ext_rewards), display_name="rew_ext", display_width=0)
         self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
         self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std",
                             display_width=0)
-        self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext")
+        self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
         self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
 
@@ -535,7 +573,7 @@ class Runner():
             self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
                                 display_width=0)
             self.log.watch_mean("batch_return_int", np.mean(self.int_returns), display_name="ret_int")
-            self.log.watch_mean("batch_return_int_std", np.std(self.int_returns), display_name="ret_int_std")
+            self.log.watch_mean("batch_return_int_std", np.std(self.int_returns), display_name="ret_int_std", display_width=0)
             self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
                                 display_name="ret_int_raw_mu",
                                 display_width=0)
@@ -543,18 +581,18 @@ class Runner():
                                 display_name="ret_int_raw_std",
                                 display_width=0)
 
-            self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int")
-            self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std")
+            self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int", display_width=0)
+            self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std", display_width=0)
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.int_returns.ravel()))
             if args.use_rnd:
                 self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
-                                    display_width=10, display_priority=-2)
+                                    display_width=0, display_priority=-2)
                 self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards),
                                     display_name="rew_int_unnorm_std",
                                     display_width=0)
 
         if args.normalize_intrinsic_rewards:
-            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=12)
+            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
 
     def train_minibatch(self, data, zero_grad=True, apply_update=True, states=None, initial_loss=None,
                         loss_scale=1.0):
@@ -634,10 +672,26 @@ class Runner():
         loss += loss_entropy
 
         # -------------------------------------------------------------------------
+        # Calculate loss_mppe
+        # -------------------------------------------------------------------------
+        if args.use_mppe:
+            # learn prediction slowly by only using some of the samples... otherwise it learns too quickly.
+            next_states = data["next_state"]
+            predictor_proportion = 0.25
+            n = int(len(prev_states) * predictor_proportion)
+            loss_fdm = -self.model.fdm_error(prev_states, actions, next_states).mean()
+            loss_mppe = -self.model.fdm_prediction_error(prev_states[:n], actions[:n]).mean()
+            loss += loss_mppe + loss_fdm
+
+            self.log.watch_mean("loss_mppe", loss_mppe)
+            self.log.watch_mean("loss_fdm", loss_fdm)
+
+        # -------------------------------------------------------------------------
         # Calculate loss_rnd
         # -------------------------------------------------------------------------
 
         if args.use_rnd:
+            # learn prediction slowly by only using some of the samples... otherwise it learns too quickly.
             predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
             n = int(len(prev_states) * predictor_proportion)
             loss_rnd = -self.model.prediction_error(prev_states[:n]).mean()
@@ -736,8 +790,7 @@ class Runner():
                     new_model_performance = self.model.fdm_error(self.emi_prev_state, self.emi_actions,
                                                                  self.emi_next_state)
 
-                fdm_improvement = (
-                                              model_performance - new_model_performance) * 4 * 4 * micro_batches  # epochs*minibatches*microbatches
+                fdm_improvement = (model_performance - new_model_performance) * 4 * 4 * micro_batches  # epochs*minibatches*microbatches
                 self.log.watch_mean("emi_aft", new_model_performance)
                 self.log.watch_mean("emi_imp", fdm_improvement)
 

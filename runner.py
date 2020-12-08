@@ -1,3 +1,4 @@
+import numpy
 import os
 import sys
 import pandas as pd
@@ -254,6 +255,50 @@ def show_experiments(filter_jobs=None, all=False):
             job.priority, job.experiment_name[:19], job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
 
 
+def setup_jobs_V8():
+
+    for algo in ["MPPE"]:
+        for env in ["MontezumaRevenge"]:
+            add_job(
+                f"MPPE_{env}",
+                run_name=f"algo={algo} (v2)",
+                env_name=env,
+                use_mppe=algo == "MPPE",
+                use_rnd=algo == "RND",
+                epochs=200,
+                agents=32,
+                priority=2
+            )
+
+    for algo in ["MPPE"]:
+        for env in ["MontezumaRevenge"]:
+            add_job(
+                f"MPPE_{env}",
+                run_name=f"algo={algo} (v3)",
+                env_name=env,
+                use_mppe=algo == "MPPE",
+                use_rnd=algo == "RND",
+                epochs=200,
+                agents=32,
+                priority=2
+            )
+
+
+    # MPPE experiments
+    for algo in ["PPO", "MPPE", "RND"]:
+        for env in ["MontezumaRevenge", "Pong"]:
+            add_job(
+                f"MPPE_{env}",
+                run_name=f"algo={algo}",
+                env_name=env,
+                use_mppe=algo == "MPPE",
+                use_rnd=algo == "RND",
+                epochs=200,
+                agents=32,
+                priority=2
+            )
+
+
 def setup_jobs_V7():
 
     # ------------------------------------------
@@ -404,9 +449,13 @@ def setup_jobs_V7():
     # )
 
 if __name__ == "__main__":
+
+    # see https://github.com/pytorch/pytorch/issues/37377 :(
+    os.environ["MKL_THREADING_LAYER"] = "GNU"
+
     id = 0
     job_list = []
-    setup_jobs_V7()
+    setup_jobs_V8()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

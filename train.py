@@ -100,6 +100,8 @@ if __name__ == "__main__":
 
     if args.use_rnd:
         ACModel = models.RNDModel
+    elif args.use_mppe:
+        ACModel = models.MPPEModel
     elif args.use_emi:
         ACModel = models.EMIModel
     else:
