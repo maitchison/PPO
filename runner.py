@@ -19,7 +19,7 @@ class bcolors:
 
 CHUNK_SIZE = 10
 
-OUTPUT_FOLDER = "/home/matthew/Dropbox/Experiments/ppo"
+OUTPUT_FOLDER = "./Run"
 
 def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
     job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
@@ -33,7 +33,7 @@ def get_run_folder(experiment_name, run_name):
 
     for file in os.listdir(path):
         name = os.path.split(file)[-1]
-        this_run_name = name[:-19]  # crop off the id code.
+        this_run_name = name[:-(8+3)]  # crop off the id code.
         if this_run_name == run_name:
             return os.path.join(path, name)
     return None
@@ -176,8 +176,8 @@ class Job:
 
         python_part = "python {} {}".format(train_script_path, self.params["env_name"])
 
-        params_part = " ".join(["--{}='{}'".format(k, v) for k, v in self.params.items() if k not in ["env_name"]])
-        params_part_lined = "\n".join(["--{}='{}'".format(k, v) for k, v in self.params.items() if k not in ["env_name"]])
+        params_part = " ".join([f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"]])
+        params_part_lined = "\n".join([f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"]])
 
         print()
         print("=" * 120)
@@ -235,7 +235,7 @@ def show_experiments(filter_jobs=None, all=False):
             if score is None: score = 0
             score = "{:.1f}".format(score)
             host = details["host"][:8]
-            fps = details["fps"]
+            fps = int(details["fps"])
         else:
             percent_complete = ""
             eta_hours = ""
@@ -254,199 +254,72 @@ def show_experiments(filter_jobs=None, all=False):
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
             job.priority, job.experiment_name[:19], job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
 
+def setup_mvh():
 
-def setup_jobs_V8():
+    # experiment 1
+    for env in ["Breakout"]:
+        for heads in [1, 3, 5, 10]:
+            for prior in [False]:
+                if prior and heads == 0:
+                    continue
+                add_job(
+                    "mvh_{}".format(env),
+                    run_name=f"run={env} prior={prior} heads={heads}",
+                    env_name=env,
+                    checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
+                    epochs=100,
+                    agents=256,
+                    workers=8,
+                    use_mvh=heads > 0,
+                    mvh_heads=heads,
+                    mvh_prior=prior,
+                    ignore_device="[0]", # stub
+                )
 
-    for algo in ["MPPE"]:
-        for env in ["MontezumaRevenge"]:
+
+    # experiment 2
+    for env in ["Breakout"]:
+        for heads in [1, 3, 5, 10]:
+            for prior in [False, True]:
+                add_job(
+                    "MVH2".format(env),
+                    run_name=f"run={env} prior={prior} heads={heads}",
+                    env_name=env,
+                    checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
+                    epochs=50,
+                    agents=256,
+                    workers=8,
+                    use_mvh=True,
+                    mvh_heads=heads,
+                    mvh_prior=prior,
+                    ignore_device="[0]", # stub
+                )
+
+    # gamma test
+    for env in ["Breakout"]:
+        for gamma in [0.9, 0.99, 0.999, 0.9999, 0.99999, 1.0]:
             add_job(
-                f"MPPE_{env}",
-                run_name=f"algo={algo} (v2)",
+                "GAMMA".format(env),
+                run_name=f"gamma={gamma}",
                 env_name=env,
-                use_mppe=algo == "MPPE",
-                use_rnd=algo == "RND",
-                epochs=200,
-                agents=32,
-                priority=2
+                checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
+                epochs=100,
+                agents=256,
+                workers=8,
+                use_mvh=False,
+                gamma=gamma,
+                ignore_device="[0]", # stub
             )
 
-    for algo in ["MPPE"]:
-        for env in ["MontezumaRevenge"]:
-            add_job(
-                f"MPPE_{env}",
-                run_name=f"algo={algo} (v3)",
-                env_name=env,
-                use_mppe=algo == "MPPE",
-                use_rnd=algo == "RND",
-                epochs=200,
-                agents=32,
-                priority=2
-            )
 
+def nice_format(x):
+    if type(x) is str:
+        return f'"{x}"'
+    if type(x) in [int, float, bool]:
+        return str(x)
+    else:
+        return f'"{x}"'
 
-    # MPPE experiments
-    for algo in ["PPO", "MPPE", "RND"]:
-        for env in ["MontezumaRevenge", "Pong"]:
-            add_job(
-                f"MPPE_{env}",
-                run_name=f"algo={algo}",
-                env_name=env,
-                use_mppe=algo == "MPPE",
-                use_rnd=algo == "RND",
-                epochs=200,
-                agents=32,
-                priority=2
-            )
-
-
-def setup_jobs_V7():
-
-    # ------------------------------------------
-    # RNN
-    # ------------------------------------------
-
-    # would be good to check mini-batch size, for performance I really want this up near 4k, instead of the 1k default.
-    # for agents in [32]: # 32, 64, 128
-    #     for n_step in [64, 128]: # 64, 128, 256
-    #         for rnn_block_length in [0, 16, 32, 64]:
-    #             use_rnn = (rnn_block_length != 0)
-    #             add_job(
-    #                 "RNN_Alien",
-    #                 run_name="agents={} n_step={} block_length={}".format(agents, n_step, rnn_block_length),
-    #                 env_name="Alien",
-    #                 epochs=100,
-    #                 agents=agents,
-    #                 n_step=n_step,
-    #                 rnn_block_length=rnn_block_length,
-    #                 use_rnn = use_rnn,
-    #                 frame_stack = 1 if use_rnn else 4 # frame stacking isn't needed with RNN
-    #             )
-
-    # ------------------------------------------
-    # Diversity
-    # ------------------------------------------
-
-    # ok so computation is exploding here... here's what we're going to do.
-
-    # primary run goes to 200M and we can do most of our analysis on that
-    # to check for consistancy do 16 runs, but only up to 50M. Unfortunately I'll need this on pong and alien,
-    # and I'll need it for all 3 modes. (I'll run 4 first, and do the others later on).
-    # the idea is to show statistical significance for both the non-determanism, and later on for predicting sucessful
-    # outcomes. (actually that's pong only...)
-
-
-    # the old DIV_ experiments got cancelled due to noop start being inconsistant with Rainbow DQN. Also,
-    # NONE trains on 0 noops but NOOP start never saw that, so it was difficult to compair them.
-    # I'll keep the results around just in case I need them.
-
-    # single runs of 4 games, with all 3 non-determanism
-    for env in ["Pong", "Alien", "Seaquest", "MsPacman"]:
-        run = 1
-        for stochasticity in ["none", "noop", "sticky"]:
-            add_job(
-                "DIV2_{}".format(env),
-                run_name="run={} stochasticity={}".format(run, stochasticity),
-                env_name=env,
-                export_trajectories=True,
-                export_video=False ,         # this will take up too much space, and we can create them from the states anyway...
-                checkpoint_every=int(1e6),   # every 1M is as frequent as possible (using current naming system)
-                sticky_actions = stochasticity == "sticky",
-                noop_start = stochasticity != "none",
-                epochs=50, # maybe make this 200, or 100 or something later on?
-                agents=32,
-                priority=10
-            )
-
-    # 16 runs of alien, but only for 50M, and noop
-    for env in ["Alien"]:
-        stochasticity = "noop"
-        for run in range(2,16+1):
-            add_job(
-                "DIV2_{}".format(env),
-                run_name="run={} stochasticity={}".format(run, stochasticity),
-                env_name=env,
-                export_trajectories=True,
-                export_video=False ,         # this will take up too much space, and we can create them from the states anyway...
-                checkpoint_every=int(1e6),   # every 1M is as frequent as possible (using current naming system)
-                sticky_actions = stochasticity == "sticky",
-                noop_start = stochasticity != "none",
-                epochs=50,
-                agents=32,
-                priority=8
-            )
-
-    # ------------------------------------------
-    # Test gamma
-    # ------------------------------------------
-
-    # for gamma in [0.9, 0.99, 0.999, 0.9999, 0.99999, 1]:
-    #     add_job(
-    #         "Test_Gamma",
-    #         run_name="gamma={}".format(gamma),
-    #         env_name="SpaceInvaders",
-    #         epochs=200,
-    #         agents=32,
-    #         priority=0
-    #     )
-
-    # ------------------------------------------
-    # ARL
-    # ------------------------------------------
-
-    # for c_cost in [0.001, 0.01, 0.1]:
-    #     for i_cost in [0.001, 0.01, 0.1]:
-    #         add_job(
-    #             "ARL_Breakout",
-    #             env_name="Breakout",
-    #             run_name="c_cost={} i_cost={}".format(c_cost, i_cost),
-    #             arl_c_cost=c_cost,
-    #             arl_i_cost=i_cost,
-    #             algo="arl",
-    #             epochs=100,
-    #             priority=0,
-    #             chunked=False
-    #         )
-
-    # ------------------------------------------
-    # V-Trace
-    # ------------------------------------------
-
-    # # test algorithm on some games
-    # for env in ["Alien", "Breakout"]:
-    #     add_job(
-    #         "VT_" + env,
-    #         run_name="population=8 learning_rate=0.0003",
-    #         learning_rate=3e-4, # slower is more stable...
-    #         pbl_policy_soften=True,
-    #         pbl_normalize_advantages="None",
-    #         pbl_thinning="None",
-    #         pbl_population_size=8,
-    #         env_name=env,
-    #         batch_epochs=2, # make sure we don't overtrain on the data. This also speeds up the training process.
-    #         algo="pbl",
-    #         epochs=200,
-    #         agents=32,
-    #         priority=10,
-    #         chunked=False
-    #     )
-    #
-    # # test algorithm on some games
-    # add_job(
-    #     "VT_Alien",
-    #     run_name="population=8",
-    #     learning_rate=1e-4,  # slower is more stable...
-    #     pbl_policy_soften=True,
-    #     pbl_normalize_advantages="None",
-    #     pbl_thinning="None",
-    #     pbl_population_size=8,
-    #     env_name=env,
-    #     batch_epochs=2,  # make sure we don't overtrain on the data. This also speeds up the training process.
-    #     algo="pbl",
-    #     epochs=200,
-    #     agents=32,
-    #     priority=10,
-    #     chunked=False
-    # )
 
 if __name__ == "__main__":
 
@@ -455,7 +328,7 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    setup_jobs_V8()
+    setup_mvh()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

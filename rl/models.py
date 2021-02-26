@@ -306,6 +306,67 @@ class ActorCriticModel(BaseModel):
 
         return result
 
+
+class MVHModel(BaseModel):
+    """ Actor critic model, outputs policy, and value estimate.
+        Outputs values at multiple horizons
+    """
+
+    def __init__(self, head: str, input_dims, actions, device, dtype, use_rnn=False, value_heads=10, **kwargs):
+        super().__init__(input_dims, actions)
+        self.name = "MHAC_RNN-" + head if use_rnn else "MHAC-" + head
+
+        # disable last linear layer of CNN
+        if use_rnn and "hidden_units" not in kwargs:
+            kwargs["hidden_units"] = 0
+
+        self.net = constructNet(head, input_dims, **kwargs)
+        self.use_rnn = use_rnn
+        if self.use_rnn:
+            self.lstm = nn.LSTM(input_size=self.net.d, hidden_size=512, num_layers=1)
+
+        final_hidden_units = 512 if use_rnn else self.net.hidden_units
+
+        self.value_heads = value_heads
+        self.fc_policy = nn.Linear(final_hidden_units, actions)
+        self.fc_mvh_values = nn.Linear(final_hidden_units, value_heads)
+        self.set_device_and_dtype(device, dtype)
+
+    def log_policy(self, x, state=None):
+        """ Returns detached log_policy for given input. """
+        return self.forward(x, state)["log_policy"].detach().cpu().numpy()
+
+    def forward(self, x, state=None):
+        # state, if given, should be a tuple (h,c)
+
+        if self.use_rnn and state is None:
+            raise Exception("RNN Model requires LSTM state input.")
+
+        x = self.prep_for_model(x)
+        x = F.relu(self.net.forward(x))
+
+        result = {}
+
+        if self.use_rnn:
+            (h, c) = state
+
+            # input should be sequence, batch, features, we use a sequence length of 1 here.
+            x, (h, c) = self.lstm(x[np.newaxis], (h[np.newaxis], c[np.newaxis]))
+
+            x = F.relu(x[0])
+
+            result['state'] = (h[0], c[0])
+
+        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
+        mvh_values = self.fc_mvh_values(x)
+
+        result['log_policy'] = log_policy
+        result['ext_value'] = mvh_values[..., -1]
+        result['mvh_value'] = mvh_values
+
+        return result
+
+
 class AttentionModel(BaseModel):
     """ Has extra value and policy heads for fovea attention."""
 

@@ -102,6 +102,7 @@ class Runner():
         self.N = N = args.n_steps
         self.A = A = args.agents
 
+
         self.state_shape = model.input_dims
         self.rnn_state_shape = [2, 512] #records h and c for LSTM units.
         self.policy_shape = [model.actions]
@@ -121,10 +122,17 @@ class Runner():
         self.terminals = np.zeros([N, A], dtype=np.bool)
         self.ext_value = np.zeros([N, A], dtype=np.float32)
 
+        if args.use_mvh:
+            self.mvh_value = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
+            self.mvh_baselines = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
+            self.mvh_returns = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
+            self.mvh_final_value_estimate = np.zeros([A, args.mvh_heads], dtype=np.float32)
+
         # emi
-        self.emi_prev_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
-        self.emi_next_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
-        self.emi_actions = np.zeros([args.emi_test_size], dtype=np.int64)
+        if args.use_emi:
+            self.emi_prev_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
+            self.emi_next_state = np.zeros([args.emi_test_size, *self.state_shape], dtype=np.uint8)
+            self.emi_actions = np.zeros([args.emi_test_size], dtype=np.int64)
 
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
@@ -405,6 +413,9 @@ class Runner():
             log_policy = model_out["log_policy"].detach().cpu().numpy()
             ext_value = model_out["ext_value"].detach().cpu().numpy()
 
+            if args.use_mvh:
+                self.mvh_value[t] = model_out["mvh_value"].detach().cpu().numpy()
+
             if args.use_rnn:
                 # states out will be a tuple... convert into numpy form.
                 h, c = model_out["state"]
@@ -505,14 +516,60 @@ class Runner():
         self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
         if "int_value" in model_out:
             self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
+        if "mvh_value" in model_out:
+            self.mvh_final_value_estimate = model_out["mvh_value"].detach().cpu().numpy()
 
     def calculate_returns(self):
 
         self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate,
                                              args.gamma)
 
-        self.ext_advantage = calculate_gae(self.ext_rewards, self.ext_value, self.ext_final_value_estimate,
-                                           self.terminals, args.gamma, args.gae_lambda, args.normalize_advantages)
+        if args.use_mvh:
+
+            baselines = np.zeros_like(self.mvh_returns)
+            final_value_baselines = np.zeros_like(self.mvh_final_value_estimate)
+            final_value_baselines[..., 1:] = self.mvh_final_value_estimate[..., :-1]
+
+            for i, gamma in zip(range(args.mvh_heads), args.mvh_gammas):
+
+                # return targets are modified by the baseline, so we predict V^{gamma=0.99}-V^{gamma=0.90}
+
+                self.mvh_returns[..., i] = calculate_returns(
+                    self.ext_rewards,
+                    self.terminals,
+                    self.mvh_final_value_estimate[..., i] + final_value_baselines[..., i],
+                    gamma
+                ) - baselines[..., i]
+
+                # ok, here's the deal
+                # baselines are the baselines for each function and are the true value predictions for each head
+                # the returns are the targets for each head, and are offset by the baseline
+                # so the heads will learn to predict the offset values.
+                # the ext_final_value_estimate will also be wrong, unless we correct for baselines
+
+                if args.mvh_prior:
+                    # use this value function as a baseline for the next value function
+                    # because returns are now offset, we need to add the baseline back in to get the correct
+                    # value.
+                    if i < len(args.mvh_gammas)-1:
+                        baselines[..., i+1] = self.mvh_returns[..., i] + baselines[..., i]
+
+            # use last value function if MVH is enabled
+            ext_value = self.mvh_value[..., -1] + baselines[..., -1]
+            ext_final_value_estimate = self.ext_final_value_estimate + final_value_baselines[..., -1]
+        else:
+            ext_value = self.ext_value
+            ext_final_value_estimate = self.ext_final_value_estimate
+
+        self.ext_advantage = calculate_gae(
+            self.ext_rewards,
+            ext_value,
+            ext_final_value_estimate,
+            self.terminals,
+            args.gamma,
+            args.gae_lambda,
+            args.normalize_advantages
+        )
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -639,6 +696,10 @@ class Runner():
 
         if args.use_intrinsic_rewards:
             value_heads.append("int")
+
+        if args.use_mvh:
+            value_heads.append("mvh")
+            value_heads.remove("ext") # no need to train this when using multi value heads...
 
         loss_value = 0
         for value_head in value_heads:
@@ -828,6 +889,10 @@ class Runner():
         batch_data["advantages"] = self.advantage
         batch_data["ext_value"] = self.ext_value
 
+        if args.use_mvh:
+            batch_data["mvh_value"] = self.mvh_value
+            batch_data["mvh_returns"] = self.mvh_returns
+
         for i in range(args.batch_epochs):
 
             # the order probably doesn't matter here, as the n_steps is only 128,
@@ -915,6 +980,10 @@ class Runner():
         batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.ext_value.reshape(batch_size)
+
+        if args.use_mvh:
+            batch_data["mvh_value"] = self.mvh_value.reshape([batch_size, -1])
+            batch_data["mvh_returns"] = self.mvh_returns.reshape([batch_size, -1])
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(batch_size)

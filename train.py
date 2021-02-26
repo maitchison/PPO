@@ -3,6 +3,8 @@ import torch
 import uuid
 import multiprocessing
 
+import ast
+
 from rl import utils, models, atari, config, logger
 from rl import ppo, arl, pbl
 from rl.config import args
@@ -18,8 +20,8 @@ def get_previous_experiment_guid(experiment_path, run_name):
     if not os.path.exists(experiment_path):
         return None
     for f in os.listdir(experiment_path):
-        if f[:-19] == run_name:
-            guid = f[-17:-1]
+        if f[:-(8+3)] == run_name:
+            guid = f[-(8+1):-1]
             return guid
     return None
 
@@ -37,7 +39,7 @@ if __name__ == "__main__":
 
     # work out device to use
     if args.device.lower() == "auto":
-        args.device = utils.get_auto_device()
+        args.device = utils.get_auto_device(ast.literal_eval(args.ignore_device))
     log.info("Using device: <white>{}<end>".format(args.device))
 
     # calculate number of workers to use.
@@ -75,7 +77,7 @@ if __name__ == "__main__":
         args.guid = str(uuid.uuid4().hex)
 
     # work out the logging folder...
-    args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-16:])
+    args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
     log.info("Logging to folder " + args.log_folder)
 
     # population training gets a summary log, which we need to name differently as it can not be processed by
@@ -104,6 +106,9 @@ if __name__ == "__main__":
         ACModel = models.MPPEModel
     elif args.use_emi:
         ACModel = models.EMIModel
+    elif args.use_mvh:
+        ACModel = models.MVHModel
+        model_args["value_heads"] = args.mvh_heads
     else:
         ACModel = models.ActorCriticModel
 

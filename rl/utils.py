@@ -13,6 +13,8 @@ import torchvision
 from . import hybridVecEnv, atari, config
 from .config import args
 
+from typing import List
+
 NATS_TO_BITS = 1.0/math.log(2)
 
 class Color:
@@ -664,7 +666,7 @@ def dtw(obs1, obs2):
 # CUDA
 # -------------------------------------------------------------
 
-def get_auto_device():
+def get_auto_device(ignore_devices: List[int]):
     """
     Returns the best device to use for training,
     Will be the GPU with most free memory if CUDA is available, otherwise CPU.
@@ -679,6 +681,9 @@ def get_auto_device():
         try:
             os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
             memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+            if ignore_devices is not None:
+                for x in ignore_devices:
+                    memory_available[x] = -1
             return "cuda:"+str(np.argmax(memory_available))
         except:
             print("Warning: Failed to auto detect best GPU.")

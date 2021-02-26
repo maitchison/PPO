@@ -1,8 +1,11 @@
 import uuid
 import socket
 import argparse
+import math
 import torch
 from . import utils
+import numpy as np
+from typing import List
 
 class Config:
 
@@ -69,6 +72,12 @@ class Config:
 
         self.use_clipped_value_loss = bool()
 
+        # MVH
+        self.use_mvh: bool = bool()
+        self.mvh_heads: int = int()
+        self.mvh_gammas: List[float] = []
+        self.mvh_prior: bool = bool()
+
         # emi
         self.use_emi            = bool()
 
@@ -98,6 +107,14 @@ class Config:
 
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
+        if self.use_mvh and (len(self.mvh_gammas) != self.mvh_heads):
+            if self.mvh_heads == 1:
+                self.mvh_gammas = [self.gamma]
+            else:
+                start_base = math.log10(1-0.9)
+                end_base = math.log10(1-self.gamma)
+                self.mvh_gammas = [1 - (10 ** x) for x in np.linspace(start_base, end_base, self.mvh_heads)]
+            print(f"Set head gammas to {self.mvh_gammas}")
 
     @property
     def propagate_intrinsic_rewards(self):
@@ -190,6 +207,7 @@ def parse_args():
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--export_trajectories", type=str2bool, default=False)
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--ignore_device", type=str, default="[]", help="Devices to ignore when using auto")
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)
     parser.add_argument("--output_folder", type=str, default="./")
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
@@ -201,6 +219,11 @@ def parse_args():
 
     # RNN
     parser.add_argument("--rnn_block_length", type=int, default=32)
+
+    # MVH
+    parser.add_argument("--use_mvh", type=str2bool, default=False)
+    parser.add_argument("--mvh_heads", type=int, default=10)
+    parser.add_argument("--mvh_prior", type=str2bool, default=False)
 
     # EMI
     parser.add_argument("--use_emi", type=str2bool, default=False)
