@@ -64,8 +64,11 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
     returns = np.zeros([N, A], dtype=np.float32)
     current_return = final_value_estimate
 
+    if type(gamma) is float:
+        gamma = np.ones([N, A], dtype=np.float32) * gamma
+
     for i in reversed(range(N)):
-        returns[i] = current_return = rewards[i] + current_return * gamma * (1.0 - dones[i])
+        returns[i] = current_return = rewards[i] + current_return * gamma[i] * (1.0 - dones[i])
 
     return returns
 
@@ -74,14 +77,17 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
 
     N, A = batch_rewards.shape
 
+    if type(gamma) is float:
+        gamma = np.ones([N, A], dtype=np.float32) * gamma
+
     batch_advantage = np.zeros_like(batch_rewards, dtype=np.float32)
     prev_adv = np.zeros([A], dtype=np.float32)
     for t in reversed(range(N)):
         is_next_terminal = batch_terminal[
             t] if batch_terminal is not None else False  # batch_terminal[t] records if t+1 is a terminal state)
         value_next_t = batch_value[t + 1] if t != N - 1 else final_value_estimate
-        delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
-        batch_advantage[t] = prev_adv = delta + gamma * lamb * (
+        delta = batch_rewards[t] + gamma[t] * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
+        batch_advantage[t] = prev_adv = delta + gamma[t] * lamb * (
                 1.0 - is_next_terminal) * prev_adv
     if normalize:
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
@@ -121,6 +127,8 @@ class Runner():
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.terminals = np.zeros([N, A], dtype=np.bool)
         self.ext_value = np.zeros([N, A], dtype=np.float32)
+
+        self.td_error = np.zeros([N, A], dtype=np.float32)
 
         if args.use_mvh:
             self.mvh_value = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
@@ -521,8 +529,18 @@ class Runner():
 
     def calculate_returns(self):
 
+        for n in range(self.N):
+            next_value = self.ext_value[n+1] if n != (self.N - 1) else self.ext_final_value_estimate
+            self.td_error[n] = self.ext_value[n] - (self.ext_rewards[n] + next_value)
+
+        if args.td_gamma:
+            gammas = np.exp(args.td_gamma * (self.td_error) / (abs(self.ext_value)+1e-6))
+            gammas = np.clip(gammas, 0.9, 0.9999)
+        else:
+            gammas = args.gamma
+
         self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate,
-                                             args.gamma)
+                                             gammas)
 
         if args.use_mvh:
 
@@ -566,7 +584,7 @@ class Runner():
             ext_value,
             ext_final_value_estimate,
             self.terminals,
-            args.gamma,
+            gammas,
             args.gae_lambda,
             args.normalize_advantages
         )
@@ -624,6 +642,10 @@ class Runner():
         self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
         self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
+        if args.td_gamma:
+            sample = np.random.choice(gammas.ravel(), 100)
+            for value in sample:
+                self.log.watch_full("gamma", value, history_length=1000)
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)

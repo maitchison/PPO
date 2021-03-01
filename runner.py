@@ -311,6 +311,57 @@ def setup_mvh():
                 ignore_device="[0]", # stub
             )
 
+    # td_gamma test
+    # abs error
+    for env in ["Breakout"]:
+        for td_gamma in [0.01, 0.03, 0.1, 0.3, 1, 3, 10]:
+            add_job(
+                "TD_GAMMA".format(env),
+                run_name=f"td_gamma={td_gamma}",
+                env_name=env,
+                checkpoint_every=int(10e6),
+                epochs=100,
+                agents=256,
+                workers=8,
+                use_mvh=False,
+                td_gamma=td_gamma,
+                ignore_device="[0]",  # stub
+            )
+
+    # td_gamma test
+    # squared error
+    for env in ["Breakout"]:
+        for td_gamma in [0.01, 0.03, 0.1, 0.3, 1, 3, 10]:
+            add_job(
+                "TD_GAMMA2".format(env),
+                run_name=f"td_gamma={td_gamma}",
+                env_name=env,
+                checkpoint_every=int(10e6),
+                epochs=100,
+                agents=256,
+                workers=8,
+                use_mvh=False,
+                td_gamma=td_gamma,
+                ignore_device="[0]",  # stub
+            )
+
+    # td_gamma test
+    # just error
+    for env in ["Breakout"]:
+        for td_gamma in [-1, -0.1, -0.3, 0, 0.1, 0.3, 1]:
+            add_job(
+                "TD_GAMMA3".format(env),
+                run_name=f"td_gamma={td_gamma}",
+                env_name=env,
+                checkpoint_every=int(10e6),
+                epochs=100,
+                agents=256,
+                workers=8,
+                use_mvh=False,
+                td_gamma=td_gamma,
+                ignore_device="[0]",  # stub
+            )
+
 
 def nice_format(x):
     if type(x) is str:

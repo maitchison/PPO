@@ -71,6 +71,7 @@ class Config:
         self.normalize_advantages = bool()
 
         self.use_clipped_value_loss = bool()
+        self.td_gamma = float()
 
         # MVH
         self.use_mvh: bool = bool()
@@ -216,6 +217,7 @@ def parse_args():
     parser.add_argument("--noop_start", type=str2bool, default=True)
 
     parser.add_argument("--frame_stack", type=int, default=4)
+    parser.add_argument("--td_gamma", type=float, default=0)
 
     # RNN
     parser.add_argument("--rnn_block_length", type=int, default=32)
