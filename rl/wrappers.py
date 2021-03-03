@@ -7,6 +7,71 @@ import collections
 from . import utils
 
 
+
+class EpisodicDiscounting(gym.Wrapper):
+    """
+    Applies discounting at the episode level
+    """
+
+    def __init__(self, env: gym.Env, discount_type, discount_gamma):
+        super().__init__(env)
+        self.env = env
+        self.t = 0
+        self.discount_type = discount_type
+        self.discount_gamma = discount_gamma
+
+    def reset(self):
+        self.t = 0
+        return self.env.reset()
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+
+        if self.discount_type == "geometric":
+            reward = reward * self.discount_gamma**self.t
+        if self.discount_type == "hyperbolic":
+            reward = reward * 1/(1-math.log(self.discount_gamma)*self.t)
+
+        return obs, reward, done, info
+
+
+class TimeAwareWrapper(gym.Wrapper):
+    """
+    Includes time at bottom of observation
+    Observational spaces should be 2d image.
+    """
+
+    def __init__(self, env: gym.Env, max_time):
+        super().__init__(env)
+        self.env = env
+        self.t = 0
+        self.max_time = max_time
+
+    def reset(self):
+        self.t = 0
+        return self.env.reset()
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+
+        time_code = self.t / self.max_time
+
+        if obs.dtype == np.float32:
+            obs[..., -3, :, :] = (time_code * 100) % 1
+            obs[..., -2, :, :] = (time_code * 10) % 1
+            obs[..., -1, :, :] = (time_code * 1) % 1
+        elif obs.dtype == np.uint8:
+            obs[..., -3, :, :] = int(np.clip((time_code * 100) % 1 * 255, 0, 255))
+            obs[..., -2, :, :] = int(np.clip((time_code * 10) % 1 * 255, 0, 255))
+            obs[..., -1, :, :] = int(np.clip((time_code * 1) * 255, 0, 255))
+        else:
+            raise ValueError("Invalid observation dtype, expected uint8 or float32.")
+
+        self.t = self.t + 1
+
+        return obs, reward, done, info
+
+
 class HashWrapper(gym.Wrapper):
     """
     Maps observation onto a random sequence of pixels.

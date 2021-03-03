@@ -59,6 +59,10 @@ class Config:
         self.sticky_actions     = bool()
         self.guid               = str()
 
+        self.time_aware = bool()
+        self.ed_type = str()
+        self.ed_gamma = float()
+
         self.use_icm            = bool()
         self.icm_eta            = str()
 
@@ -215,6 +219,11 @@ def parse_args():
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
+
+    # episodic discounting
+    parser.add_argument("--time_aware", type=str2bool, default=False)
+    parser.add_argument("--ed_type", type=str, default="none", help="[none|geometric|hyperbolic]")
+    parser.add_argument("--ed_gamma", type=float, default=1.0)
 
     parser.add_argument("--frame_stack", type=int, default=4)
     parser.add_argument("--td_gamma", type=float, default=0)

@@ -362,6 +362,30 @@ def setup_mvh():
                 ignore_device="[0]",  # stub
             )
 
+    # episodic discounting
+    for env in ["Breakout"]:
+        for gamma in [1.0, 0.999, 0.99]:
+            for ed_gamma in [1.0, 0.999, 0.99]:
+                for ed_type in ["geometric", "hyperbolic"]:
+
+                    add_job(
+                        "ED1".format(env),
+                        run_name=f"ed_gamma={ed_gamma} ed_type={ed_type} gamma={gamma}",
+                        env_name=env,
+                        checkpoint_every=int(10e6),
+                        epochs=100,
+                        agents=256,
+                        workers=8,
+
+                        time_aware=True,
+                        ed_type=ed_type,
+                        ed_gamma=ed_gamma,
+                        gamma=gamma,
+
+                        use_mvh=False,
+                        ignore_device="[0]",  # stub
+                    )
+
 
 def nice_format(x):
     if type(x) is str:

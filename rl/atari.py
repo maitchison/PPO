@@ -74,6 +74,13 @@ def make(non_determinism=None):
             raise Exception("Invalid observation filter {}.".format(args.filter))
 
         env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
+
+        if args.time_aware:
+            env = wrappers.TimeAwareWrapper(env, max_time=60 * 60 * 30)
+
+        if args.ed_type != "none":
+            env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
+
         env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
 
         if args.reward_normalization:
