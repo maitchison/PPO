@@ -22,6 +22,8 @@ CHUNK_SIZE = 10
 OUTPUT_FOLDER = "./Run"
 
 def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
+    if 'ignore_device' not in kwargs:
+        kwargs['ignore_device'] = "[0]" # stub
     job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
 
 def get_run_folder(experiment_name, run_name):
@@ -273,7 +275,6 @@ def setup_mvh():
                     use_mvh=heads > 0,
                     mvh_heads=heads,
                     mvh_prior=prior,
-                    ignore_device="[0]", # stub
                 )
 
 
@@ -292,7 +293,6 @@ def setup_mvh():
                     use_mvh=True,
                     mvh_heads=heads,
                     mvh_prior=prior,
-                    ignore_device="[0]", # stub
                 )
 
     # gamma test
@@ -308,7 +308,6 @@ def setup_mvh():
                 workers=8,
                 use_mvh=False,
                 gamma=gamma,
-                ignore_device="[0]", # stub
             )
 
     # td_gamma test
@@ -325,7 +324,6 @@ def setup_mvh():
                 workers=8,
                 use_mvh=False,
                 td_gamma=td_gamma,
-                ignore_device="[0]",  # stub
             )
 
     # td_gamma test
@@ -342,7 +340,6 @@ def setup_mvh():
                 workers=8,
                 use_mvh=False,
                 td_gamma=td_gamma,
-                ignore_device="[0]",  # stub
             )
 
     # td_gamma test
@@ -359,7 +356,6 @@ def setup_mvh():
                 workers=8,
                 use_mvh=False,
                 td_gamma=td_gamma,
-                ignore_device="[0]",  # stub
             )
 
     # episodic discounting
@@ -383,7 +379,6 @@ def setup_mvh():
                         gamma=gamma,
 
                         use_mvh=False,
-                        ignore_device="[0]",  # stub
                     )
 
     # gamma test with new updated GAE returns calculation
@@ -398,7 +393,6 @@ def setup_mvh():
                 agents=256,
                 workers=8,
                 gamma=gamma,
-                ignore_device="[0]",  # stub
             )
 
     # gamma test with new updated GAE returns calculation and time aware
@@ -414,7 +408,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=True,
-                ignore_device="[0]",  # stub
             )
 
     # truncated value function as aux task
@@ -430,7 +423,6 @@ def setup_mvh():
                 use_vfh=True,
                 workers=8,
                 gamma=gamma,
-                ignore_device="[0]",  # stub
             )
 
     # truncated value function as aux task (reduced coef)
@@ -448,7 +440,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=True,
-                ignore_device="[0]",  # stub
             )
 
 
@@ -467,7 +458,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=False,
-                ignore_device="[0]",  # stub
             )
 
     # truncated value function as aux task longer horizon, higher gamma
@@ -489,7 +479,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=False,
-                #ignore_device="[0]",  # stub
                 priority=10,
             )
 
@@ -521,9 +510,7 @@ def setup_mvh():
                                 workers=8,
                                 gamma=gamma,
                                 time_aware=False,
-                                ignore_device="[0]",  # stub
                             )
-
 
 
     # truncated value function as aux task longer horizon, higher gamma
@@ -546,7 +533,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=False,
-                ignore_device="[0]",  # stub
                 priority=10,
             )
 
@@ -572,7 +558,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=False,
-                ignore_device="[0]",  # stub
                 priority=20,
             )
 
@@ -598,7 +583,6 @@ def setup_mvh():
                 workers=8,
                 gamma=gamma,
                 time_aware=False,
-                ignore_device="[0]",  # stub
                 priority=20,
             )
 
@@ -631,16 +615,41 @@ def setup_mvh():
             priority=5,
         )
 
-    for n_steps in [64, 128, 256]:
-        make_TVF_3B_job(f"n_steps={n_steps}", n_steps=n_steps)
-    for tvf_coef in [0.1, 0.01, 0.001]:
-        make_TVF_3B_job(f"tvf_coef={tvf_coef}", tvf_coef=tvf_coef)
-    for tvf_epsilon in [0.1, 0.01, 0.001]:
-        make_TVF_3B_job(f"tvf_epsilon={tvf_epsilon}", tvf_epsilon=tvf_epsilon)
-    for tvf_max_horizon in [100, 300, 1000]:
-        make_TVF_3B_job(f"tvf_max_horizon={tvf_max_horizon}", tvf_max_horizon=tvf_max_horizon)
-    for tvf_n_horizons in [10, 30, 100]:
-        make_TVF_3B_job(f"tvf_n_horizons={tvf_n_horizons}", tvf_n_horizons=tvf_n_horizons)
+    # for n_steps in [64, 128, 256]:
+    #     make_TVF_3B_job(f"n_steps={n_steps}", n_steps=n_steps)
+    # for tvf_coef in [0.1, 0.01, 0.001]:
+    #     make_TVF_3B_job(f"tvf_coef={tvf_coef}", tvf_coef=tvf_coef)
+    # for tvf_epsilon in [0.1, 0.01, 0.001]:
+    #     make_TVF_3B_job(f"tvf_epsilon={tvf_epsilon}", tvf_epsilon=tvf_epsilon)
+    # for tvf_max_horizon in [100, 300, 1000]:
+    #     make_TVF_3B_job(f"tvf_max_horizon={tvf_max_horizon}", tvf_max_horizon=tvf_max_horizon)
+    # for tvf_n_horizons in [10, 30, 100]:
+    #     make_TVF_3B_job(f"tvf_n_horizons={tvf_n_horizons}", tvf_n_horizons=tvf_n_horizons)
+
+    # switched to a TD(\lambda) style estimates, might be less noisy...
+    for env in ["Breakout"]:
+        for gamma in [0.99, 0.997, 0.999]:
+            add_job(
+                "TVF_3C".format(env),
+                run_name=f"gamma={gamma}",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=0.1,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=0.99,
+                tvf_advantage=True,
+
+                workers=8,
+                gamma=gamma,
+                time_aware=False,
+                priority=20,
+            )
+
 
 def nice_format(x):
     if type(x) is str:

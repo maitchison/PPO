@@ -365,7 +365,8 @@ if __name__ == "__main__":
     model = make_model(env)
 
     #run_eval("./Run/TVF_2G/gamma=0.99 [1c6f2ca7]/")
-    run_eval("./Run/TVF_3A/gamma=0.99 [7e79a9c9]")
+    #run_eval("./Run/TVF_3A/gamma=0.99 [7e79a9c9]")
+    run_eval("./Run/TVF_3B/gamma=0.99 [a1d631aa]")
 
 
 

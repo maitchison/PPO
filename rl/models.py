@@ -343,8 +343,8 @@ class TVFModel(BaseModel):
         """
         x: Tensor of dims [B, *obs_shape]
         state: (optional) If given, should be a tuple (h,c)
-        horizons: (optional) tensor of dims [B, K]
-        gammas: (optional) tensor of dims [B, K]
+        horizons: (optional) tensor of dims [B, H]
+        gammas: (optional) tensor of dims [B, H]
         """
 
         if self.use_rnn and state is None:
@@ -379,7 +379,7 @@ class TVFModel(BaseModel):
             horizons = horizons.to(device=x.device, dtype=torch.float32)
             gammas = gammas.to(device=x.device, dtype=torch.float32)
 
-            _, K = horizons.shape
+            _, H = horizons.shape
             transformed_gammas = 1/(1-gammas)
 
             tvf_values = []
@@ -387,18 +387,33 @@ class TVFModel(BaseModel):
 
             # work out value for each k provided
             # note: can we do this in parallel?
-            for k in range(K):
-                x_with_side_channel_info = torch.cat([
-                    x,
-                    horizons[:, k:k+1],
-                    transformed_gammas[:, k:k+1]
-                ], dim=1)
-                tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_channel_info))
-                tvf_values.append(self.fc_tvf_value(tvf_h).squeeze(dim=-1))
-                tvf_errors.append(self.fc_tvf_error(tvf_h).squeeze(dim=-1))
+            # for h in range(H):
+            #     x_with_side_channel_info = torch.cat([
+            #         x,
+            #         horizons[:, h:h+1],
+            #         transformed_gammas[:, h:h+1]
+            #     ], dim=1)
+            #     tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_channel_info))
+            #     tvf_values.append(self.fc_tvf_value(tvf_h).squeeze(dim=-1))
+            #     tvf_errors.append(self.fc_tvf_error(tvf_h).squeeze(dim=-1))
+            # result['tvf_value'] = torch.stack(tvf_values, dim=1)
+            # result['tvf_std'] = self.epsilon + torch.exp(torch.stack(tvf_errors, dim=1))
 
-            result['tvf_value'] = torch.stack(tvf_values, dim=1)
-            result['tvf_std'] = self.epsilon + torch.exp(torch.stack(tvf_errors, dim=1))
+
+            # parallel version... might be very slow
+            # x is [B, 512], make it [B, H,  512]
+            x_duplicated = x[:, None, :].repeat(1, H, 1)
+            x_with_side_info = torch.cat([
+                x_duplicated,
+                horizons[:, :, None],
+                transformed_gammas[:, :, None],
+            ], dim=-1)
+            tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_info))
+            tvf_values = self.fc_tvf_value(tvf_h).squeeze(dim=-1)
+            tvf_errors = self.fc_tvf_error(tvf_h).squeeze(dim=-1)
+
+            result['tvf_value'] = tvf_values
+            result['tvf_std'] = self.epsilon + torch.exp(tvf_errors)
 
         result['log_policy'] = log_policy
         result['ext_value'] = value

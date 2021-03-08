@@ -159,8 +159,33 @@ def test_trust_region():
     """ Tests for trust region calculations. """
     pass
 
-print("V-trace: ", end='')
-print("Pass" if test_vtrace() else "Fail!")
+def test_calculate_tvf():
+    # This was a complex function to write so I'm testing it here...
+    # mostly it's about getting the dones right
+    rewards =            [1, 0, 2, 4, 6]
+    dones =              [0, 0, 1, 0, 0]
+    value_estimates =    [[0, 0, 0, 0], [0, 1, 2, 3], [0, 2, 4, 6], [0, 3, 6, 9], [0, 4, 8, 12]]
+    final_value_estimates = [0, 5, 10, 15]
+    gamma = 0.5
+    result = rollout.calculate_tvf(
+        np.asarray(rewards)[:, None],
+        np.asarray(dones)[:, None],
+        np.asarray(value_estimates)[:, None, :],
+        np.asarray(final_value_estimates)[None, :],
+        gamma=gamma,
+        lamb=1.0,
+    )[0]
 
-print("Information Theory Functions: ", end='')
-print("Pass" if test_information_theory_functions() else "Fail!")
+    # I calculated the first ones by hand, but am not checking the rest yet...
+    assert_is_similar(result[0,0], [0, 1, 1.25, 5/3], "Truncated Value Function estimates do not match.")
+    return True
+
+
+# print("V-trace: ", end='')
+# print("Pass" if test_vtrace() else "Fail!")
+#
+# print("Information Theory Functions: ", end='')
+# print("Pass" if test_information_theory_functions() else "Fail!")
+
+print("TVF: ", end='')
+print("Pass" if test_calculate_tvf() else "Fail!")
