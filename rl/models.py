@@ -307,14 +307,14 @@ class ActorCriticModel(BaseModel):
         return result
 
 
-class MVHModel(BaseModel):
+class TVFModel(BaseModel):
     """ Actor critic model, outputs policy, and value estimate.
-        Outputs values at multiple horizons
+        Uses generic value function V(s,k) where k is the horizon
     """
 
-    def __init__(self, head: str, input_dims, actions, device, dtype, use_rnn=False, value_heads=10, **kwargs):
+    def __init__(self, head: str, input_dims, actions, device, dtype, use_rnn=False, epsilon=0.01, **kwargs):
         super().__init__(input_dims, actions)
-        self.name = "MHAC_RNN-" + head if use_rnn else "MHAC-" + head
+        self.name = "AC_RNN-" + head if use_rnn else "AC-" + head
 
         # disable last linear layer of CNN
         if use_rnn and "hidden_units" not in kwargs:
@@ -327,17 +327,25 @@ class MVHModel(BaseModel):
 
         final_hidden_units = 512 if use_rnn else self.net.hidden_units
 
-        self.value_heads = value_heads
         self.fc_policy = nn.Linear(final_hidden_units, actions)
-        self.fc_mvh_values = nn.Linear(final_hidden_units, value_heads)
+        self.fc_value = nn.Linear(final_hidden_units, 1)
+        self.fc_tvf_hidden = nn.Linear(final_hidden_units + 2, 512)
+        self.fc_tvf_value = nn.Linear(512, 1)
+        self.fc_tvf_error = nn.Linear(512, 1)
+        self.epsilon = epsilon
         self.set_device_and_dtype(device, dtype)
 
     def log_policy(self, x, state=None):
         """ Returns detached log_policy for given input. """
         return self.forward(x, state)["log_policy"].detach().cpu().numpy()
 
-    def forward(self, x, state=None):
-        # state, if given, should be a tuple (h,c)
+    def forward(self, x, state=None, horizons=None, gammas=None):
+        """
+        x: Tensor of dims [B, *obs_shape]
+        state: (optional) If given, should be a tuple (h,c)
+        horizons: (optional) tensor of dims [B, K]
+        gammas: (optional) tensor of dims [B, K]
+        """
 
         if self.use_rnn and state is None:
             raise Exception("RNN Model requires LSTM state input.")
@@ -358,11 +366,42 @@ class MVHModel(BaseModel):
             result['state'] = (h[0], c[0])
 
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
-        mvh_values = self.fc_mvh_values(x)
+        value = self.fc_value(x).squeeze(dim=-1)
+
+        if gammas is not None and horizons is not None:
+
+            # upload to GPU
+            if type(horizons) is np.ndarray:
+                horizons = torch.from_numpy(horizons)
+            if type(gammas) is np.ndarray:
+                gammas = torch.from_numpy(gammas)
+
+            horizons = horizons.to(device=x.device, dtype=torch.float32)
+            gammas = gammas.to(device=x.device, dtype=torch.float32)
+
+            _, K = horizons.shape
+            transformed_gammas = 1/(1-gammas)
+
+            tvf_values = []
+            tvf_errors = []
+
+            # work out value for each k provided
+            # note: can we do this in parallel?
+            for k in range(K):
+                x_with_side_channel_info = torch.cat([
+                    x,
+                    horizons[:, k:k+1],
+                    transformed_gammas[:, k:k+1]
+                ], dim=1)
+                tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_channel_info))
+                tvf_values.append(self.fc_tvf_value(tvf_h).squeeze(dim=-1))
+                tvf_errors.append(self.fc_tvf_error(tvf_h).squeeze(dim=-1))
+
+            result['tvf_value'] = torch.stack(tvf_values, dim=1)
+            result['tvf_std'] = self.epsilon + torch.exp(torch.stack(tvf_errors, dim=1))
 
         result['log_policy'] = log_policy
-        result['ext_value'] = mvh_values[..., -1]
-        result['mvh_value'] = mvh_values
+        result['ext_value'] = value
 
         return result
 

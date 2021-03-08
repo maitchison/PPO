@@ -2,15 +2,13 @@ import os
 import numpy as np
 import gym
 import torch
-import torchvision
 import torch.nn as nn
 import time
 import json
 import math
 import cv2
-import csv
 import pickle
-import gzip, bz2, lzma
+import gzip
 from collections import defaultdict
 
 from .logger import Logger, LogVariable
@@ -47,7 +45,6 @@ def save_progress(log: Logger):
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
 
-# todo: make this td(\lambda) style...)
 def calculate_returns(rewards, dones, final_value_estimate, gamma):
     """
     Calculates returns given a batch of rewards, dones, and a final value estimate.
@@ -93,13 +90,66 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
 
+
+def calculate_tvf(rewards, dones, final_value_estimates, gamma:float):
+    """
+    Calculate return targets using value function horizons.
+    This involves finding targets for each horizon being learned
+
+    final_value_estimates: np array of shape [A, K+1]
+    rewards: np array of shape [N, A]
+
+    returns: returns for each time step and horizon, np array of shape [N, A, K]
+
+    """
+
+    N, A = rewards.shape
+    K = final_value_estimates.shape[1]
+
+    returns = np.zeros([N, A, K], dtype=np.float32)
+
+    # I think we have a bug if we terminate on final step
+
+    for t in range(N):
+        reward_sum = 0
+        counter = 0
+        for k in range(K):
+            if (t+k) >= N:
+                # bootstrap when we go off the end
+                bootstrap_estimate = final_value_estimates[:, k - counter] if (k-counter) > 0 else 0
+                returns[t, :, k] = reward_sum + (gamma ** counter) * bootstrap_estimate
+            else:
+                this_reward = (gamma ** k) * rewards[t+k, :] if (t+k) < len(rewards) else 0
+                # note: dones might be off by one time step?
+                reward_sum = reward_sum * (1-dones[t, :]) + this_reward
+                returns[t, :, k] = reward_sum
+                counter += 1
+
+        # for k in range(K):
+        #     returns[i, :, k] = 0
+        #     discount = np.asarray([gamma]*A) * (1-dones[i])
+        #     counter = 0
+        #     for j in range(k):
+        #         this_reward = rewards[i+j]*discount if (i+j) < len(rewards) else 0
+        #         returns[i, :, k] += this_reward
+        #         discount *= gamma * (1-dones[i+j])
+        #
+        #     returns[i, :, k] += final_value_estimates[:, k-counter]*discount if (k-counter) > 0 else 0
+
+    horizons = np.arange(K)[None, None, :]
+    horizons = np.repeat(horizons, N, axis=0)
+    horizons = np.repeat(horizons, A, axis=1)
+    gammas = np.ones_like(horizons) * gamma
+
+    return returns, horizons, gammas,
+
+
 class Runner():
 
     def __init__(self, model, optimizer, log, name="agent"):
         """ Setup our rollout runner. """
 
         self.name = name
-
         self.model = model
         self.optimizer = optimizer
         self.vec_env = None
@@ -128,13 +178,15 @@ class Runner():
         self.terminals = np.zeros([N, A], dtype=np.bool)
         self.ext_value = np.zeros([N, A], dtype=np.float32)
 
-        self.td_error = np.zeros([N, A], dtype=np.float32)
-
-        if args.use_mvh:
-            self.mvh_value = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
-            self.mvh_baselines = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
-            self.mvh_returns = np.zeros([N, A, args.mvh_heads], dtype=np.float32)
-            self.mvh_final_value_estimate = np.zeros([A, args.mvh_heads], dtype=np.float32)
+        # value function horizons
+        if args.use_tvf:
+            # we include 0, so a horizon of 100 needs 101 values
+            # also, for the moment max_horizon and n_horizons are the same...
+            self.tvf_returns = np.zeros([N, A, args.tvf_n_horizons], dtype=np.float32)
+            self.tvf_gammas = np.zeros([N, A, args.tvf_n_horizons], dtype=np.float32)
+            self.tvf_horizons = np.zeros([N, A, args.tvf_n_horizons], dtype=np.float32)
+            # we need to have a final value estimate for each horizon, as we don't know which ones will be used.
+            self.tvf_final_value_estimate = np.zeros([A, args.tvf_max_horizon], dtype=np.float32)
 
         # emi
         if args.use_emi:
@@ -248,7 +300,7 @@ class Runner():
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
-    def forward(self, states=None, rnn_states=None):
+    def forward(self, states=None, rnn_states=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
         """
@@ -266,10 +318,11 @@ class Runner():
 
             return self.model.forward(
                 states,
-                rnn_states
+                rnn_states,
+                **kwargs
             )
         else:
-            return self.model.forward(self.states if states is None else states)
+            return self.model.forward(self.states if states is None else states, **kwargs)
 
     def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 30*60*15):
         """ Exports a movie of agent playing game.
@@ -314,17 +367,19 @@ class Runner():
             prev_state = state.copy()
             prev_action = action
 
+            additional_params = {}
+
             if args.use_rnn:
-                model_out = self.model.forward(state[np.newaxis], rnn_state)
+                model_out = self.model.forward(state[np.newaxis], rnn_state, **additional_params)
                 rnn_state = model_out["state"]
             else:
-                model_out = self.model.forward(state[np.newaxis])
+                model_out = self.model.forward(state[np.newaxis], **additional_params)
 
-            logprobs = model_out["log_policy"][0].detach().cpu().numpy()
-            action = utils.sample_action_from_logp(logprobs)
+            log_probs = model_out["log_policy"][0].detach().cpu().numpy()
+            action = utils.sample_action_from_logp(log_probs)
 
             if include_rollout:
-                history["logprobs"].append(logprobs)
+                history["logprobs"].append(log_probs)
                 history["actions"].append(action)
                 history["states"].append(state)
 
@@ -369,6 +424,7 @@ class Runner():
                 agent_layers[3] = fdm_pred_pred_err.detach().cpu() * 64
 
             frame = utils.compose_frame(agent_layers, rendered_frame, channels)
+
             if frame.shape[0] != width or frame.shape[1] != height:
                 frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
@@ -419,10 +475,15 @@ class Runner():
             model_out = self.forward()
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
-            ext_value = model_out["ext_value"].detach().cpu().numpy()
 
-            if args.use_mvh:
-                self.mvh_value[t] = model_out["mvh_value"].detach().cpu().numpy()
+            if args.tvf_advantage:
+                # overwrite value estimates
+                # note: we could save time by generating these with the forward... I'll do that later on.
+                ext_value = self.get_rediscounted_truncated_value_estimate(
+                    torch.from_numpy(self.states).to(device=self.model.device), args.tvf_max_horizon, args.gamma
+                ).detach().cpu().numpy()
+            else:
+                ext_value = model_out["ext_value"].detach().cpu().numpy()
 
             if args.use_rnn:
                 # states out will be a tuple... convert into numpy form.
@@ -519,75 +580,69 @@ class Runner():
             atari.ENV_STATE["observation_norm_state"] = self.model.obs_rms.save_state()
 
         # get value estimates for final state.
-        model_out = self.forward()
+        if args.use_tvf:
+            horizons = np.repeat(np.arange(args.tvf_max_horizon)[None, :], repeats=self.A, axis=0)
+            gammas = np.ones_like(horizons) * args.tvf_gamma
+            model_out = self.forward(self.states, horizons=horizons, gammas=gammas)
+            self.tvf_final_value_estimate[:] = model_out["tvf_value"].detach().cpu().numpy()
+        else:
+            model_out = self.forward()
 
-        self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
+        if args.tvf_advantage:
+            # again this is duplicated a bit from above, we really want to
+            # rediscount from values not from states.
+            self.ext_final_value_estimate = self.get_rediscounted_truncated_value_estimate(
+                torch.from_numpy(self.states).to(self.model.device), args.tvf_max_horizon, args.gamma
+            ).detach().cpu().numpy()
+        else:
+            self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
+
         if "int_value" in model_out:
             self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
-        if "mvh_value" in model_out:
-            self.mvh_final_value_estimate = model_out["mvh_value"].detach().cpu().numpy()
 
     def calculate_returns(self):
 
-        for n in range(self.N):
-            next_value = self.ext_value[n+1] if n != (self.N - 1) else self.ext_final_value_estimate
-            self.td_error[n] = self.ext_value[n] - (self.ext_rewards[n] + next_value)
+        if args.use_tvf:
+            _returns, _horizons, _gammas = calculate_tvf(
+                self.ext_rewards,
+                self.terminals,
+                self.tvf_final_value_estimate,
+                gamma=args.tvf_gamma
+            )
 
-        if args.td_gamma:
-            gammas = np.exp(args.td_gamma * (self.td_error) / (abs(self.ext_value)+1e-6))
-            gammas = np.clip(gammas, 0.9, 0.9999)
-        else:
-            gammas = args.gamma
+            # down sample for long horizons
+            # note: this could give duplicates, maybe it would be better to shuffle?
+            N, A, K = _returns.shape
+            if K > args.tvf_n_horizons:
+                # sample with replacement... not efficient as we may reuse samples
+                # sample = np.random.randint(low=0, high=K, size=(N, A, args.tvf_n_horizons))
 
-        self.ext_returns = calculate_returns(self.ext_rewards, self.terminals, self.ext_final_value_estimate,
-                                             gammas)
+                # sample without replacement
+                # this is slow, but I don't know how to do it any other way (shuffle doesn't help)
+                # we form this as KAN then transpose to NAK
+                sample = np.zeros([N, A, args.tvf_n_horizons], dtype=np.int32)
+                for n in range(N):
+                    for a in range(A):
+                        sample[n,a] = np.random.choice(K, args.tvf_n_horizons, replace=False)
 
-        if args.use_mvh:
-
-            baselines = np.zeros_like(self.mvh_returns)
-            final_value_baselines = np.zeros_like(self.mvh_final_value_estimate)
-            final_value_baselines[..., 1:] = self.mvh_final_value_estimate[..., :-1]
-
-            for i, gamma in zip(range(args.mvh_heads), args.mvh_gammas):
-
-                # return targets are modified by the baseline, so we predict V^{gamma=0.99}-V^{gamma=0.90}
-
-                self.mvh_returns[..., i] = calculate_returns(
-                    self.ext_rewards,
-                    self.terminals,
-                    self.mvh_final_value_estimate[..., i] + final_value_baselines[..., i],
-                    gamma
-                ) - baselines[..., i]
-
-                # ok, here's the deal
-                # baselines are the baselines for each function and are the true value predictions for each head
-                # the returns are the targets for each head, and are offset by the baseline
-                # so the heads will learn to predict the offset values.
-                # the ext_final_value_estimate will also be wrong, unless we correct for baselines
-
-                if args.mvh_prior:
-                    # use this value function as a baseline for the next value function
-                    # because returns are now offset, we need to add the baseline back in to get the correct
-                    # value.
-                    if i < len(args.mvh_gammas)-1:
-                        baselines[..., i+1] = self.mvh_returns[..., i] + baselines[..., i]
-
-            # use last value function if MVH is enabled
-            ext_value = self.mvh_value[..., -1] + baselines[..., -1]
-            ext_final_value_estimate = self.ext_final_value_estimate + final_value_baselines[..., -1]
-        else:
-            ext_value = self.ext_value
-            ext_final_value_estimate = self.ext_final_value_estimate
+                self.tvf_returns[:] = np.take_along_axis(_returns, sample, axis=2)
+                self.tvf_horizons[:] = np.take_along_axis(_horizons, sample, axis=2)
+                self.tvf_gammas[:] = np.take_along_axis(_gammas, sample, axis=2)
+            else:
+                self.tvf_returns[:] = _returns
+                self.tvf_horizons[:] = _horizons
+                self.tvf_gammas[:] = _gammas
 
         self.ext_advantage = calculate_gae(
             self.ext_rewards,
-            ext_value,
-            ext_final_value_estimate,
+            self.ext_value,
+            self.ext_final_value_estimate,
             self.terminals,
-            gammas,
-            args.gae_lambda,
-            args.normalize_advantages
+            args.gamma,
+            args.gae_lambda
         )
+
+        self.ext_returns = self.ext_advantage + self.ext_value
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -626,6 +681,9 @@ class Runner():
         self.advantage = args.extrinsic_reward_scale * self.ext_advantage
         if args.use_intrinsic_rewards:
             self.advantage += args.intrinsic_reward_scale * self.int_advantage
+        if args.normalize_advantages:
+            self.advantage = (self.advantage - self.advantage.mean()) / (
+                        self.advantage.std() + 1e-8)
 
         if args.normalize_observations:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
@@ -642,10 +700,6 @@ class Runner():
         self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
         self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
         self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
-        if args.td_gamma:
-            sample = np.random.choice(gammas.ravel(), 100)
-            for value in sample:
-                self.log.watch_full("gamma", value, history_length=1000)
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
@@ -673,6 +727,42 @@ class Runner():
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
 
+    def get_rediscounted_truncated_value_estimate(self, states, horizon, gamma):
+        """
+        Uses truncated value function to estimate value for given states.
+        Rewards will be undiscounted, then rediscounted to the correct gamma.
+        An alternative to this is to learn multiple discounts at once and get the MLP to generalize
+
+        states: tensor of shape [B, *state_shape]
+
+        returns: tensor of shape [B]
+
+        """
+
+        B, *_state_shape = states.shape
+        device = states.device
+
+        # step 1: get value estimates
+        K = horizon
+        horizons = np.repeat(np.arange(K)[None, :], repeats=B, axis=0)
+        gammas = np.ones_like(horizons) * args.tvf_gamma
+        with torch.no_grad():
+            model_out = self.forward(states, horizons=horizons, gammas=gammas)
+        values = model_out["tvf_value"].reshape(B, K)
+        # step 2: convert to rewards and rediscount
+        prev = torch.zeros([B], dtype=torch.float32, device=device)
+        discounted_reward_sum = torch.zeros([B], dtype=torch.float32, device=device)
+        old_discount = 1
+        discount = 1
+        for k in range(K):
+            reward = (values[:, k] - prev) / old_discount
+            prev = values[:, k]
+            discounted_reward_sum += reward * discount
+            old_discount *= args.tvf_gamma
+            discount *= gamma
+        return discounted_reward_sum
+
+
     def train_minibatch(self, data, zero_grad=True, apply_update=True, states=None, initial_loss=None,
                         loss_scale=1.0):
 
@@ -687,18 +777,24 @@ class Runner():
         # -------------------------------------------------------------------------
 
         prev_states = data["prev_state"]
-        actions = data["actions"]
+        actions = data["actions"].to(torch.long)
         policy_logprobs = data["log_policy"]
         advantages = data["advantages"]
         weights = data["weights"] if "weights" in data else 1
 
         mini_batch_size = len(prev_states)
 
+        # create additional args if needed
+        kwargs = {}
+        if args.use_tvf:
+            kwargs['horizons'] = data["tvf_horizons"]
+            kwargs['gammas'] = data["tvf_gammas"]
+
         if states is not None:
-            model_out = self.forward(prev_states, states)
+            model_out = self.forward(prev_states, states, **kwargs)
             result["states"] = model_out["state"]
         else:
-            model_out = self.forward(prev_states)
+            model_out = self.forward(prev_states, **kwargs)
         logps = model_out["log_policy"]
 
         ratio = torch.exp(logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
@@ -711,6 +807,40 @@ class Runner():
         loss += loss_clip_mean
 
         # -------------------------------------------------------------------------
+        # Calculate loss_value_function_horizons
+        # -------------------------------------------------------------------------
+
+        if args.use_tvf:
+            # targets "tvf_returns" are [N, A, K]
+            # predictions "tvf_value" are [N, A, K]
+            # predictions need to be generated... this could take a lot of time so just sample a few..
+            targets = data["tvf_returns"]
+            mu = model_out["tvf_value"]
+            std = model_out["tvf_std"]
+
+            # log prob loss on gaussian distribution
+            # I think this is dodgy, as log_prob is really log_pdf, and therefore we will get log_probs > 0.
+            # not sure how to solve this though? Maybe scale the prob of each individual sample based on the
+            # std of the gaussian?? In the end it seems to work though
+            dist = torch.distributions.Normal(mu, std)
+            tvf_loss_nlp = args.tvf_coef * dist.log_prob(targets).mean() # a real guess about loss scale here...
+
+            # MSE loss (calculate for reference but do not use...)
+            tvf_loss_mse = -0.5 * args.tvf_coef * torch.mean((targets - mu).pow(2))
+
+            self.log.watch_mean("tvf_loss_nlp", -tvf_loss_nlp, history_length=64)
+            self.log.watch_mean("tvf_loss_mse", -tvf_loss_mse, history_length=64)
+            loss += tvf_loss_nlp
+
+        # every now and then see how well the value functions match
+        if "err_model" not in self.log._vars or np.random.randint(0, 10) == 0:
+            tvf_estimate = self.get_rediscounted_truncated_value_estimate(prev_states.to(self.model.device), args.tvf_max_horizon, args.gamma)
+            model_estimate = model_out["ext_value"]
+            true_returns = data["ext_returns"]
+            self.log.watch_mean("err_model", torch.mean((model_estimate - true_returns).pow(2)), history_length=64)
+            self.log.watch_mean("err_trunc", torch.mean((tvf_estimate - true_returns).pow(2)), history_length=64)
+
+        # -------------------------------------------------------------------------
         # Calculate loss_value
         # -------------------------------------------------------------------------
 
@@ -718,10 +848,6 @@ class Runner():
 
         if args.use_intrinsic_rewards:
             value_heads.append("int")
-
-        if args.use_mvh:
-            value_heads.append("mvh")
-            value_heads.remove("ext") # no need to train this when using multi value heads...
 
         loss_value = 0
         for value_head in value_heads:
@@ -895,7 +1021,6 @@ class Runner():
         assert not args.use_intrinsic_rewards
         assert not args.use_emi
 
-
         # todo: this could just be a flag on train, but write the code in a generic way (i.e. the reshaping...)
 
         # put the required data into a dictionary
@@ -910,10 +1035,6 @@ class Runner():
         batch_data["log_policy"] = self.log_policy
         batch_data["advantages"] = self.advantage
         batch_data["ext_value"] = self.ext_value
-
-        if args.use_mvh:
-            batch_data["mvh_value"] = self.mvh_value
-            batch_data["mvh_returns"] = self.mvh_returns
 
         for i in range(args.batch_epochs):
 
@@ -991,6 +1112,10 @@ class Runner():
             return
 
         # organise our data...
+
+        N = self.N
+        A = self.A
+
         batch_data = {}
         batch_size = self.N * self.A
 
@@ -1003,9 +1128,10 @@ class Runner():
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.ext_value.reshape(batch_size)
 
-        if args.use_mvh:
-            batch_data["mvh_value"] = self.mvh_value.reshape([batch_size, -1])
-            batch_data["mvh_returns"] = self.mvh_returns.reshape([batch_size, -1])
+        if args.use_tvf:
+            batch_data["tvf_horizons"] = self.tvf_horizons.reshape([batch_size, -1])
+            batch_data["tvf_returns"] = self.tvf_returns.reshape([batch_size, -1])
+            batch_data["tvf_gammas"] = self.tvf_gammas.reshape([batch_size, -1])
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(batch_size)

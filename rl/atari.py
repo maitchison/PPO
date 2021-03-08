@@ -1,14 +1,9 @@
 import gym
 import numpy as np
-import random
-import math
 from collections import defaultdict
 
 from . import wrappers
 from .config import args
-from .models import NatureCNN_Net
-
-import torch
 
 ENV_STATE = {}
 

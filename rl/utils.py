@@ -34,6 +34,9 @@ class Color:
 # Utils
 # -------------------------------------------------------------
 
+def get_environment_name(environment, sticky_actions=False):
+    return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
+
 def check_for_exteme_or_nan(X, name="array", extreme_limit=10000):
     """ Makes sure elements in array are non NaN and are within reasonable limits. """
 

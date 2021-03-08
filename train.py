@@ -25,9 +25,6 @@ def get_previous_experiment_guid(experiment_path, run_name):
             return guid
     return None
 
-def get_environment_name(environment, sticky_actions=False):
-    return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
-
 if __name__ == "__main__":
 
     log = logger.Logger()
@@ -60,7 +57,7 @@ if __name__ == "__main__":
         raise Exception("Can only use either ICM or RND, not both.")
 
     # get model
-    args.env_name = get_environment_name(args.environment, args.sticky_actions)
+    args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
 
     # check the output folder is valid...
     assert os.path.isdir(args.output_folder), "Can not find path " + args.output_folder
@@ -106,9 +103,9 @@ if __name__ == "__main__":
         ACModel = models.MPPEModel
     elif args.use_emi:
         ACModel = models.EMIModel
-    elif args.use_mvh:
-        ACModel = models.MVHModel
-        model_args["value_heads"] = args.mvh_heads
+    elif args.use_tvf:
+        ACModel = models.TVFModel
+        model_args["epsilon"] = args.tvf_epsilon
     else:
         ACModel = models.ActorCriticModel
 

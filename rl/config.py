@@ -59,6 +59,14 @@ class Config:
         self.sticky_actions     = bool()
         self.guid               = str()
 
+        self.use_tvf            = bool()
+        self.tvf_coef           = float()
+        self.tvf_max_horizon    = int()
+        self.tvf_n_horizons     = int()
+        self.tvf_gamma          = float()
+        self.tvf_advantage      = bool()
+        self.tvf_epsilon        = bool()
+
         self.time_aware = bool()
         self.ed_type = str()
         self.ed_gamma = float()
@@ -75,13 +83,6 @@ class Config:
         self.normalize_advantages = bool()
 
         self.use_clipped_value_loss = bool()
-        self.td_gamma = float()
-
-        # MVH
-        self.use_mvh: bool = bool()
-        self.mvh_heads: int = int()
-        self.mvh_gammas: List[float] = []
-        self.mvh_prior: bool = bool()
 
         # emi
         self.use_emi            = bool()
@@ -112,14 +113,6 @@ class Config:
 
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
-        if self.use_mvh and (len(self.mvh_gammas) != self.mvh_heads):
-            if self.mvh_heads == 1:
-                self.mvh_gammas = [self.gamma]
-            else:
-                start_base = math.log10(1-0.9)
-                end_base = math.log10(1-self.gamma)
-                self.mvh_gammas = [1 - (10 ** x) for x in np.linspace(start_base, end_base, self.mvh_heads)]
-            print(f"Set head gammas to {self.mvh_gammas}")
 
     @property
     def propagate_intrinsic_rewards(self):
@@ -195,6 +188,14 @@ def parse_args():
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--batch_epochs", type=int, default=4, help="Number of training epochs per training batch.")
 
+    parser.add_argument("--use_tvf", type=str2bool, default=False, help="Use truncated value function.")
+    parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
+    parser.add_argument("--tvf_gamma", type=float, default=0.99, help="Gamma for TVF.")
+    parser.add_argument("--tvf_max_horizon", type=int, default=100, help="Max horizon for TVF.")
+    parser.add_argument("--tvf_n_horizons", type=int, default=100, help="Number of horizons to sample during training.")
+    parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
+    parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
+
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
@@ -226,15 +227,9 @@ def parse_args():
     parser.add_argument("--ed_gamma", type=float, default=1.0)
 
     parser.add_argument("--frame_stack", type=int, default=4)
-    parser.add_argument("--td_gamma", type=float, default=0)
 
     # RNN
     parser.add_argument("--rnn_block_length", type=int, default=32)
-
-    # MVH
-    parser.add_argument("--use_mvh", type=str2bool, default=False)
-    parser.add_argument("--mvh_heads", type=int, default=10)
-    parser.add_argument("--mvh_prior", type=str2bool, default=False)
 
     # EMI
     parser.add_argument("--use_emi", type=str2bool, default=False)
@@ -296,4 +291,6 @@ def parse_args():
     # check...
     if args.use_tdb:
         raise Exception("TDB is not implemented yet.")
+
+    assert args.tvf_n_horizons <= args.tvf_max_horizon, "tvf_n_horizons must be <= tvf_max_horizon."
 
