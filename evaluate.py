@@ -46,7 +46,9 @@ def load_checkpoint(model, checkpoint_path, device=None):
     step = checkpoint['step']
     atari.ENV_STATE = checkpoint['env_state']
     global REWARD_SCALE
+    global MAX_HORIZON
     REWARD_SCALE = checkpoint['env_state']['returns_norm_state'][1] ** 0.5
+    MAX_HORIZON = args.tvf_max_horizon + 100
     return step
 
 def make_model(env):
@@ -366,7 +368,10 @@ if __name__ == "__main__":
 
     #run_eval("./Run/TVF_2G/gamma=0.99 [1c6f2ca7]/")
     #run_eval("./Run/TVF_3A/gamma=0.99 [7e79a9c9]")
-    run_eval("./Run/TVF_3B/gamma=0.99 [a1d631aa]")
+    #run_eval("./Run/TVF_3B/gamma=0.99 [a1d631aa]")
+    run_eval("./Run/TVF_3C/gamma=0.997 tvf_gamma=0.999 [b2b6687a]")
+    run_eval("./Run/TVF_3C/gamma=0.99 tvf_gamma=0.99 [4518f10e]")
+
 
 
 

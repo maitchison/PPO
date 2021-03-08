@@ -113,18 +113,12 @@ def calculate_tvf(
 
     """
 
-
     N, A, H = values.shape
 
     returns = np.zeros([N, A, H], dtype=np.float32)
 
-    # note we can probably to this in NK time rather than NNK time (assuming N<K), but it's simpler for me to
-    # think about it using this algorithm. I might update this later if it slows things down...
-
     # note: this webpage helped a lot with writing this...
     # https://amreis.github.io/ml/reinf-learn/2017/11/02/reinforcement-learning-eligibility-traces.html
-
-    # note: this looks quadratic, but is actually linear so long as n_steps is fixed.
 
     values = np.concatenate([values, final_value_estimates[None, :, :]], axis=0)
 
@@ -142,7 +136,9 @@ def calculate_tvf(
             discount = np.ones([A], dtype=np.float32)
             reward_sum = np.zeros([A], dtype=np.float32)
             weighted_estimate = np.zeros([A], dtype=np.float32)
-            for n in range(1, h+1):
+            # for the moment limit n_step to 10 for performance reasons (slow python, slow algorithm)
+            # I have a NH version coming (instead of this NNH version)
+            for n in range(1, min(h+1, 11)):
                 # here we calculate the n_step estimate for V(s_t, h) (i.e. G(n))
                 if t+n-1 >= N:
                     # we reached the end, so best we can do is stop here and use the estimates we have already

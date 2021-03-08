@@ -483,35 +483,34 @@ def setup_mvh():
             )
 
     # make sure random sampling is working
-    for env in ["Breakout"]:
-        for n_steps in [16, 64, 128]:
-            for gamma in [0.99]:
-                for tvf_gamma in [0.99]:
-                    for tvf_max_horizon in [30, 100, 300]:
-                        for tvf_n_horizons in [10, 30, 100]:
-                            if tvf_n_horizons > tvf_max_horizon:
-                                continue
-                            add_job(
-                                "TVF_2F".format(env),
-                                run_name=f"ns={n_steps} g={gamma} tg={tvf_gamma} tmh={tvf_max_horizon} tnh={tvf_n_horizons}",
-                                env_name=env,
-                                checkpoint_every=int(5e6),  # every 1M is as frequent as possible (using current naming system)
-                                epochs=50,
-                                agents=256,
-                                n_steps=n_steps,
-
-                                use_tvf=True,
-                                tvf_coef=0.1,
-                                tvf_max_horizon=tvf_max_horizon,
-                                tvf_n_horizons=tvf_n_horizons,
-                                tvf_gamma=tvf_gamma,
-
-                                priority=-10,
-                                workers=8,
-                                gamma=gamma,
-                                time_aware=False,
-                            )
-
+    # for env in ["Breakout"]:
+    #     for n_steps in [16, 64, 128]:
+    #         for gamma in [0.99]:
+    #             for tvf_gamma in [0.99]:
+    #                 for tvf_max_horizon in [30, 100, 300]:
+    #                     for tvf_n_horizons in [10, 30, 100]:
+    #                         if tvf_n_horizons > tvf_max_horizon:
+    #                             continue
+    #                         add_job(
+    #                             "TVF_2F".format(env),
+    #                             run_name=f"ns={n_steps} g={gamma} tg={tvf_gamma} tmh={tvf_max_horizon} tnh={tvf_n_horizons}",
+    #                             env_name=env,
+    #                             checkpoint_every=int(5e6),  # every 1M is as frequent as possible (using current naming system)
+    #                             epochs=50,
+    #                             agents=256,
+    #                             n_steps=n_steps,
+    #
+    #                             use_tvf=True,
+    #                             tvf_coef=0.1,
+    #                             tvf_max_horizon=tvf_max_horizon,
+    #                             tvf_n_horizons=tvf_n_horizons,
+    #                             tvf_gamma=tvf_gamma,
+    #
+    #                             priority=-10,
+    #                             workers=8,
+    #                             gamma=gamma,
+    #                             time_aware=False,
+    #                         )
 
     # truncated value function as aux task longer horizon, higher gamma
     for env in ["Breakout"]:
@@ -627,28 +626,31 @@ def setup_mvh():
     #     make_TVF_3B_job(f"tvf_n_horizons={tvf_n_horizons}", tvf_n_horizons=tvf_n_horizons)
 
     # switched to a TD(\lambda) style estimates, might be less noisy...
+    # I test here short/med/long acting horizon with short/long learning horizon
+
     for env in ["Breakout"]:
         for gamma in [0.99, 0.997, 0.999]:
-            add_job(
-                "TVF_3C".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(5e6),
-                epochs=50,
-                agents=256,
+            for tvf_gamma in [0.99, 0.999]:
+                add_job(
+                    "TVF_3C".format(env),
+                    run_name=f"gamma={gamma} tvf_gamma={tvf_gamma}",
+                    env_name=env,
+                    checkpoint_every=int(5e6),
+                    epochs=50,
+                    agents=256,
 
-                use_tvf=True,
-                tvf_coef=0.1,
-                tvf_max_horizon=300,
-                tvf_n_horizons=100,
-                tvf_gamma=0.99,
-                tvf_advantage=True,
+                    use_tvf=True,
+                    tvf_coef=0.1,
+                    tvf_max_horizon=100 if tvf_gamma == 0.99 else 1000,
+                    tvf_n_horizons=100,
+                    tvf_gamma=tvf_gamma,
+                    tvf_advantage=True,
 
-                workers=8,
-                gamma=gamma,
-                time_aware=False,
-                priority=20,
-            )
+                    workers=8,
+                    gamma=gamma,
+                    time_aware=False,
+                    priority=20,
+                )
 
 
 def nice_format(x):
