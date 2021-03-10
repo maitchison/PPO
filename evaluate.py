@@ -1,5 +1,6 @@
 from rl import models, atari, config, utils
 from rl.config import args
+from rl import hybridVecEnv
 
 import cv2
 import numpy as np
@@ -8,13 +9,18 @@ import os
 import matplotlib.pyplot as plt
 import json
 import pickle
+import time
+import math
+
+# my PC, 355 FPS on GPU, 281 on CPU
 
 from os import listdir
 from os.path import isfile, join
 
-DEVICE = "cpu"
+DEVICE = "cuda:1"
 REWARD_SCALE = float()
 MAX_HORIZON = 500
+SAMPLES = 64 # 16 is too few, might need 256...
 
 # run 100 evaluations
 # I want error(k) for... (and for different target gamma as well)
@@ -107,45 +113,48 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     true_returns = []
 
 
-    trunc_err_k = [[] for _ in range(MAX_HORIZON)]
+    trunc_err_k = []
 
     print("Evaluating:",end='')
 
-    for sample in range(samples):
-        buffer = generate_rollout(model, max_frames)
+    remaining_samples = samples
 
-        # get game score and length
-        raw_rewards = buffer["raw_rewards"]
-        episode_score = sum(raw_rewards)
-        episode_length = len(raw_rewards)
-        episode_scores.append(episode_score)
-        episode_lengths.append(episode_length)
+    while remaining_samples > 0:
 
-        for t in range(episode_length):
-            # evaluate MSE for max horizon value predictions under different algorithms
-            model_value = buffer["model_values"][t]
-            tvf_value = rediscount_TVF(buffer["values"][t][:args.tvf_max_horizon], 0.99)
-            true_value = discount_rewards(buffer["rewards"][t:], 0.99)
+        batch_samples = min(16, remaining_samples)
+        buffers = generate_rollouts(model, max_frames, num_rollouts=batch_samples)
 
-            trunc_err.append(tvf_value - true_value)
-            model_err.append(model_value - true_value)
-            true_returns.append(true_value)
+        for i, buffer in enumerate(buffers):
+            # get game score and length
+            raw_rewards = buffer["raw_rewards"]
+            episode_score = sum(raw_rewards)
+            episode_length = len(raw_rewards)
+            episode_scores.append(episode_score)
+            episode_lengths.append(episode_length)
 
-            # evaluate error over horizon
-            for k in range(MAX_HORIZON):
+            for t in range(episode_length):
+                # evaluate MSE for max horizon value predictions under different algorithms
+                model_value = buffer["model_values"][t]
+                tvf_value = rediscount_TVF(buffer["values"][t][:args.tvf_max_horizon], 0.99)
+                true_value = discount_rewards(buffer["rewards"][t:], 0.99)
 
-                if t+k >= len(buffer["rewards"]):
-                    continue
+                trunc_err.append(tvf_value - true_value)
+                model_err.append(model_value - true_value)
+                true_returns.append(true_value)
 
-                tvf_value = rediscount_TVF(buffer["values"][t][:k], 0.99)
-                true_value = discount_rewards(buffer["rewards"][t:t+k], 0.99)
+                # evaluate error over horizon
+                for k in [1, 10, 30, 100, 300, 500]:
+                    tvf_value = rediscount_TVF(buffer["values"][t][:k], 0.99)
+                    true_value = discount_rewards(buffer["rewards"][t:t+k], 0.99)
 
-                trunc_err_k[k].append((tvf_value, true_value, sample, t))
+                    trunc_err_k.append((k, tvf_value, true_value, i, t))
 
-        print(".", end='')
+            print(".", end='')
+
+        remaining_samples -= batch_samples
 
     def print_it(label, x):
-        print(f"{label:<20} {np.mean(x):.2f} +- {np.std(x)/(len(x)**0.5):.2f} [{np.min(x)} to {np.max(x)}]")
+        print(f"{label:<20} {np.mean(x):.2f} +- {np.std(x)/(len(x)**0.5):.2f} [{np.min(x):.1f} to {np.max(x):.1f}]")
 
     print()
     print()
@@ -156,16 +165,6 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
 
 
     print()
-
-    # show error over horizon
-    # for k in range(0, 500, 10):
-    #     if len(trunc_err_k[k]) < 10:
-    #         continue
-    #     av_err = np.mean([(x[0]-x[1])**2 for x in trunc_err_k[k]])
-    #     av_reward = np.mean([x[1] for x in trunc_err_k[k]])
-    #     print(f"{k:<6} {av_err:<6.2f} {av_reward:<6.24}")
-    #
-    # print()
 
     data = {
         'returns_99': true_returns,
@@ -179,78 +178,81 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     with open(filename+".dat", "wb") as f:
         pickle.dump(data, f)
 
-    # just for easy reading... maybe skip pickle?
-    with open(filename+".txt", "w") as f:
-        json.dump(data, f)
-
-
-
 def generate_rollout(model, max_frames = 30*60*15, include_video=False):
+    return generate_rollouts(model, max_frames, include_video, num_rollouts=1)[0]
+
+
+def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rollouts=1):
     """
     Generates a rollout
     todo: vectorize this so we can generate multiple rollouts at once (will take extra memory though)
     """
 
-
-    env = atari.make()
+    env = hybridVecEnv.HybridAsyncVectorEnv([atari.make for _ in range(num_rollouts)])
     _ = env.reset()
-    state, reward, done, info = env.step(0)
+    states = env.reset()
 
-    state = env.reset()
+    is_running = [True] * num_rollouts
 
     frame_count = 0
-    buffer = {
-        'values': [],   # values for each horizon of dims [K]
-        'errors': [],   # std error estimates for each horizon of dims [K]
-        'model_values': [], # models predicted value (float)
-        'rewards': [],   # normalized reward (which value predicts)
-        'raw_rewards': [], # raw unscaled reward from the atari environment
-    }
 
-    if include_video:
-        buffer['frames'] = []  # video frames
+    buffers = []
 
-    horizons = np.repeat(np.arange(MAX_HORIZON)[None, :], repeats=1, axis=0)
+    for i in range(num_rollouts):
+        buffers.append({
+            'values': [],   # values for each horizon of dims [K]
+            'errors': [],   # std error estimates for each horizon of dims [K]
+            'model_values': [], # models predicted value (float)
+            'rewards': [],   # normalized reward (which value predicts)
+            'raw_rewards': [], # raw unscaled reward from the atari environment
+        })
+
+        if include_video:
+            buffers[-1]['frames'] = []  # video frames
+
+    horizons = np.repeat(np.arange(MAX_HORIZON)[None, :], repeats=num_rollouts, axis=0)
     gammas = np.ones_like(horizons) * args.tvf_gamma
 
-    while not done:
+    while any(is_running) and frame_count < max_frames:
 
-        model_out = model.forward(state[np.newaxis], horizons=horizons, gammas=gammas)
+        model_out = model.forward(states, horizons=horizons, gammas=gammas)
+        log_probs = model_out["log_policy"].detach().cpu().numpy()
+        action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
-        log_probs = model_out["log_policy"][0].detach().cpu().numpy()
-        action = utils.sample_action_from_logp(log_probs)
+        states, rewards, dones, infos = env.step(action)
 
-        state, reward, done, info = env.step(action)
+        for i in range(len(states)):
+            if dones[i]:
+                is_running[i] = False
+            if not is_running[i]:
+                continue
 
-        channels = info.get("channels", None)
-        rendered_frame = info.get("monitor_obs", state)
+            channels = infos[i].get("channels", None)
+            rendered_frame = infos[i].get("monitor_obs", states[i])
+            agent_layers = states[i]
 
-        agent_layers = state.copy()
+            values = model_out["tvf_value"][i, :].detach().cpu().numpy()
+            errors = model_out["tvf_std"][i, :].detach().cpu().numpy() * 1.96
+            model_value = model_out["ext_value"][i].detach().cpu().numpy()
+            raw_reward = infos[i].get("raw_reward", rewards[i])
 
-        values = model_out["tvf_value"][0, :].detach().cpu().numpy() * REWARD_SCALE
-        errors = model_out["tvf_std"][0, :].detach().cpu().numpy() * REWARD_SCALE * 1.96
-        model_value = model_out["ext_value"][0].detach().cpu().numpy() * REWARD_SCALE
-        raw_reward = info.get("raw_reward", reward)
+            if 'frames' in buffers[i]:
+                frame = utils.compose_frame(agent_layers, rendered_frame, channels)
+                buffers[i]['frames'].append(frame)
 
-        if 'frames' in buffer:
-            frame = utils.compose_frame(agent_layers, rendered_frame, channels)
-            buffer['frames'].append(frame)
-
-        buffer['values'].append(values)
-        buffer['errors'].append(errors)
-        buffer['model_values'].append(model_value)
-        buffer['rewards'].append(reward)
-        buffer['raw_rewards'].append(raw_reward)
+            buffers[i]['values'].append(values)
+            buffers[i]['errors'].append(errors)
+            buffers[i]['model_values'].append(model_value)
+            buffers[i]['rewards'].append(rewards[i])
+            buffers[i]['raw_rewards'].append(raw_reward)
 
         frame_count += 1
 
-        if frame_count >= max_frames:
-            break
+    for buffer in buffers:
+        for k, v in buffer.items():
+            buffer[k] = np.asarray(v)
 
-    for k, v in buffer.items():
-        buffer[k] = np.asarray(v)
-
-    return buffer
+    return buffers
 
 
 def export_movie(model, filename, max_frames = 30*60*15):
@@ -276,15 +278,18 @@ def export_movie(model, filename, max_frames = 30*60*15):
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
     video_out = cv2.VideoWriter(filename+".mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
 
+    start_time = time.time()
     buffer = generate_rollout(model, max_frames, include_video=True)
     rewards = buffer["rewards"]
+    end_time = time.time()
+    print(f"Rollout generated at {len(rewards)/(end_time-start_time):.0f} FPS")
 
     for t in range(len(rewards)):
 
         frame = buffer["frames"][t]
-        values = buffer["values"][t]
-        errors = buffer["errors"][t]
-        model_value = buffer["model_values"][t]
+        values = buffer["values"][t] * REWARD_SCALE
+        errors = buffer["errors"][t] * REWARD_SCALE
+        model_value = buffer["model_values"][t] * REWARD_SCALE
 
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
@@ -343,13 +348,17 @@ def export_movie(model, filename, max_frames = 30*60*15):
 def run_eval(path):
     for epoch in range(200):
         checkpoint_name = os.path.join(path, f"checkpoint-{epoch:03d}M-params.pt")
-        if os.path.exists(checkpoint_name) and not os.path.exists(os.path.join(path, f"checkpoint-{epoch:03d}M.txt")):
+        if os.path.exists(checkpoint_name) and not os.path.exists(os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")):
             print()
             print(checkpoint_name)
-            print()
             load_checkpoint(model, checkpoint_name, device=DEVICE)
-            export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M"))
-            evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M"), samples=4)
+            export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"))
+            evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
+
+def monitor(path):
+    folders = [x[0] for x in os.walk(path)]
+    for folder in folders:
+        run_eval(folder)
 
 if __name__ == "__main__":
 
@@ -366,12 +375,7 @@ if __name__ == "__main__":
     env = atari.make()
     model = make_model(env)
 
-    #run_eval("./Run/TVF_2G/gamma=0.99 [1c6f2ca7]/")
-    #run_eval("./Run/TVF_3A/gamma=0.99 [7e79a9c9]")
-    #run_eval("./Run/TVF_3B/gamma=0.99 [a1d631aa]")
-    run_eval("./Run/TVF_3C/gamma=0.997 tvf_gamma=0.999 [b2b6687a]")
-    run_eval("./Run/TVF_3C/gamma=0.99 tvf_gamma=0.99 [4518f10e]")
-
-
-
-
+    monitor("./Run/TVF_3A")
+    monitor("./Run/TVF_3B")
+    monitor("./Run/TVF_3C")
+    monitor("./Run/TVF_3D")

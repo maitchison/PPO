@@ -652,6 +652,33 @@ def setup_mvh():
                     priority=20,
                 )
 
+    # using td(0) and no dist
+    for env in ["Breakout"]:
+        for gamma in [0.99, 0.999]:
+            for tvf_gamma in [0.99, 0.999]:
+                add_job(
+                    "TVF_3D".format(env),
+                    run_name=f"gamma={gamma} tvf_gamma={tvf_gamma}",
+                    env_name=env,
+                    checkpoint_every=int(5e6),
+                    epochs=50,
+                    agents=256,
+
+                    use_tvf=True,
+                    tvf_coef=0.1,
+                    tvf_max_horizon=100 if tvf_gamma == 0.99 else 500,
+                    tvf_n_horizons=100,
+                    tvf_gamma=tvf_gamma,
+                    tvf_advantage=True,
+                    tvf_distributional=False,
+                    tvf_lambda=0,
+
+                    workers=8,
+                    gamma=gamma,
+                    time_aware=False,
+                    priority=25,
+                )
+
 
 def nice_format(x):
     if type(x) is str:

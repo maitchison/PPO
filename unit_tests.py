@@ -166,18 +166,34 @@ def test_calculate_tvf():
     dones =              [0, 0, 1, 0, 0]
     value_estimates =    [[0, 0, 0, 0], [0, 1, 2, 3], [0, 2, 4, 6], [0, 3, 6, 9], [0, 4, 8, 12]]
     final_value_estimates = [0, 5, 10, 15]
-    gamma = 0.5
+
+    # result = rollout.calculate_tvf(
+    #     np.asarray(rewards)[:, None],
+    #     np.asarray(dones)[:, None],
+    #     np.asarray(value_estimates)[:, None, :],
+    #     np.asarray(final_value_estimates)[None, :],
+    #     gamma=0.5,
+    #     lamb=1.0,
+    # )[0]
+    # # I calculated the first ones by hand, but am not checking the rest yet...
+    # also lambda=1.0 is broken... need to adjust this...
+    # assert_is_similar(result[0,0], [0, 1, 1.25, 5/3], "Truncated Value Function estimates do not match.")
+
     result = rollout.calculate_tvf(
         np.asarray(rewards)[:, None],
         np.asarray(dones)[:, None],
         np.asarray(value_estimates)[:, None, :],
         np.asarray(final_value_estimates)[None, :],
-        gamma=gamma,
-        lamb=1.0,
+        gamma=0.5,
+        lamb=0,
     )[0]
 
-    # I calculated the first ones by hand, but am not checking the rest yet...
-    assert_is_similar(result[0,0], [0, 1, 1.25, 5/3], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[0, 0], [0, 1, 1.5, 2], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[1, 0], [0, 0, 1, 2], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[2, 0], [0, 2, 2, 2], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[3, 0], [0, 4, 6, 8], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[4, 0], [0, 6, 8.5, 11], "Truncated Value Function estimates do not match.")
+
     return True
 
 

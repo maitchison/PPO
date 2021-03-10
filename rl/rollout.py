@@ -138,11 +138,16 @@ def calculate_tvf(
             weighted_estimate = np.zeros([A], dtype=np.float32)
             # for the moment limit n_step to 10 for performance reasons (slow python, slow algorithm)
             # I have a NH version coming (instead of this NNH version)
-            for n in range(1, min(h+1, 11)):
+            # if lamb is 0 we just do TD(0), which is much faster.
+            max_n_steps = 1 if lamb == 0 else 10
+            for n in range(1, min(h+1, max_n_steps+1)):
                 # here we calculate the n_step estimate for V(s_t, h) (i.e. G(n))
                 if t+n-1 >= N:
                     # we reached the end, so best we can do is stop here and use the estimates we have already
                     # created
+
+                    # todo: make sure this doesn't break things on the last step
+
                     break
                 this_reward = rewards[t+n-1]
                 reward_sum += discount * this_reward
@@ -154,6 +159,7 @@ def calculate_tvf(
                 # note, I'm not sure if we should multiply by (1-dones[t+n]) here.
                 # I think it's best not to, otherwise short n_steps get more weight close to a terminal...
                 # actually maybe this is right?
+                # actually terminal should get all remaining weight.
                 current_weight *= lamb
 
             returns[t, :, h] = weighted_estimate / total_weight
@@ -495,6 +501,14 @@ class Runner():
 
         assert self.vec_env is not None, "Please call create_envs first."
 
+        additional_params = {}
+
+        if args.use_tvf:
+            horizons = np.repeat(np.arange(args.tvf_max_horizon)[None, :], repeats=self.A, axis=0)
+            gammas = np.ones_like(horizons) * args.tvf_gamma
+            additional_params["horizons"] = horizons
+            additional_params["gammas"] = gammas
+
         for t in range(self.N):
 
             prev_states = self.states.copy()
@@ -502,13 +516,6 @@ class Runner():
                 prev_rnn_states = self.rnn_states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            additional_params = {}
-            if args.use_tvf:
-                horizons = np.repeat(np.arange(args.tvf_max_horizon)[None, :], repeats=self.A, axis=0)
-                gammas = np.ones_like(horizons) * args.tvf_gamma
-                additional_params["horizons"] = horizons
-                additional_params["gammas"] = gammas
-
             model_out = self.forward(**additional_params)
 
             log_policy = model_out["log_policy"].detach().cpu().numpy()
@@ -616,9 +623,7 @@ class Runner():
 
         # get value estimates for final state.
         if args.use_tvf:
-            horizons = np.repeat(np.arange(args.tvf_max_horizon)[None, :], repeats=self.A, axis=0)
-            gammas = np.ones_like(horizons) * args.tvf_gamma
-            model_out = self.forward(self.states, horizons=horizons, gammas=gammas)
+            model_out = self.forward(horizons=horizons, gammas=gammas)
             self.tvf_final_value_estimate[:] = model_out["tvf_value"].detach().cpu().numpy()
         else:
             model_out = self.forward()
@@ -636,7 +641,8 @@ class Runner():
                 self.terminals,
                 self.tvf_value,
                 self.tvf_final_value_estimate,
-                gamma=args.tvf_gamma
+                gamma=args.tvf_gamma,
+                lamb=args.tvf_lambda
             )
 
             # down sample for long horizons
@@ -847,21 +853,23 @@ class Runner():
             # predictions need to be generated... this could take a lot of time so just sample a few..
             targets = data["tvf_returns"]
             mu = model_out["tvf_value"]
-            std = model_out["tvf_std"]
 
-            # log prob loss on gaussian distribution
-            # I think this is dodgy, as log_prob is really log_pdf, and therefore we will get log_probs > 0.
-            # not sure how to solve this though? Maybe scale the prob of each individual sample based on the
-            # std of the gaussian?? In the end it seems to work though
-            dist = torch.distributions.Normal(mu, std)
-            tvf_loss_nlp = args.tvf_coef * dist.log_prob(targets).mean()
-
-            # MSE loss (calculate for reference but do not use...)
+            # MSE loss (calculate for reference even when using distributional)
             tvf_loss_mse = -0.5 * args.tvf_coef * torch.mean((targets - mu).pow(2))
-
-            self.log.watch_mean("tvf_loss_nlp", -tvf_loss_nlp, history_length=64)
             self.log.watch_mean("tvf_loss_mse", -tvf_loss_mse, history_length=64)
-            loss += tvf_loss_nlp
+
+            if args.tvf_distributional:
+                std = model_out["tvf_std"]
+                # log prob loss on gaussian distribution
+                # I think this is dodgy, as log_prob is really log_pdf, and therefore we will get log_probs > 0.
+                # not sure how to solve this though? Maybe scale the prob of each individual sample based on the
+                # std of the gaussian?? In the end it seems to work though
+                dist = torch.distributions.Normal(mu, std)
+                tvf_loss_nlp = args.tvf_coef * dist.log_prob(targets).mean()
+                self.log.watch_mean("tvf_loss_nlp", -tvf_loss_nlp, history_length=64)
+                loss += tvf_loss_nlp
+            else:
+                loss += tvf_loss_mse
 
         # -------------------------------------------------------------------------
         # Calculate loss_value

@@ -64,8 +64,10 @@ class Config:
         self.tvf_max_horizon    = int()
         self.tvf_n_horizons     = int()
         self.tvf_gamma          = float()
+        self.tvf_lambda         = float()
         self.tvf_advantage      = bool()
         self.tvf_epsilon        = bool()
+        self.tvf_distributional = bool()
 
         self.time_aware = bool()
         self.ed_type = str()
@@ -191,10 +193,12 @@ def parse_args():
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Use truncated value function.")
     parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=0.99, help="Gamma for TVF.")
+    parser.add_argument("--tvf_lambda", type=float, default=0.95, help="Lambda for TVF(\lambda).")
     parser.add_argument("--tvf_max_horizon", type=int, default=100, help="Max horizon for TVF.")
     parser.add_argument("--tvf_n_horizons", type=int, default=100, help="Number of horizons to sample during training.")
     parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
     parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
+    parser.add_argument("--tvf_distributional", type=str2bool, default=False, help="Enables a gaussian model for returns.")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
