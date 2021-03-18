@@ -197,11 +197,48 @@ def test_calculate_tvf():
     return True
 
 
+def test_calculate_tvf_mc():
+    # This was a complex function to write so I'm testing it here...
+    # mostly it's about getting the dones right
+    rewards =            [1, 0, 2, 4, 6]
+    dones =              [0, 0, 1, 0, 0]
+    final_value_estimates = [0, 5, 10, 15, 20]
+
+    # result = rollout.calculate_tvf(
+    #     np.asarray(rewards)[:, None],
+    #     np.asarray(dones)[:, None],
+    #     np.asarray(value_estimates)[:, None, :],
+    #     np.asarray(final_value_estimates)[None, :],
+    #     gamma=0.5,
+    #     lamb=1.0,
+    # )[0]
+    # # I calculated the first ones by hand, but am not checking the rest yet...
+    # also lambda=1.0 is broken... need to adjust this...
+    # assert_is_similar(result[0,0], [0, 1, 1.25, 5/3], "Truncated Value Function estimates do not match.")
+
+    result = rollout.calculate_tvf_mc(
+        np.asarray(rewards)[:, None],
+        np.asarray(dones)[:, None],
+        np.asarray(final_value_estimates)[None, :],
+        gamma=0.5,
+    )[0]
+
+    print(result)
+
+    assert_is_similar(result[0, 0], [0, 1, 1,   1.5, 1.5], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[1, 0], [0, 0, 1,   1,   1], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[2, 0], [0, 2, 2,   2,   2], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[3, 0], [0, 4, 7,   8.25, 9.5], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[4, 0], [0, 6, 8.5, 11, 13.5], "Truncated Value Function estimates do not match.")
+
+    return True
+
+
 # print("V-trace: ", end='')
 # print("Pass" if test_vtrace() else "Fail!")
 #
 # print("Information Theory Functions: ", end='')
 # print("Pass" if test_information_theory_functions() else "Fail!")
 
-print("TVF: ", end='')
-print("Pass" if test_calculate_tvf() else "Fail!")
+print("TVF_MC: ", end='')
+print("Pass" if test_calculate_tvf_mc() else "Fail!")

@@ -75,6 +75,17 @@ def train(model: models.BaseModel, log: Logger):
 
     runner.reset()
 
+    # if we restored from a checkpoint the environments will all be in sync
+    # we generate a few rollouts but do not train on them, this way environments will be close to IID again
+    if did_restore:
+        print("Warming up environments:",end='')
+        # note: this is a lot, but it'll make sure we're good and IID.
+        rollouts_needed = math.ceil(5000 / runner.N)
+        for _ in range(rollouts_needed):
+            runner.generate_rollout()
+            print(".",end='')
+        print()
+
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"), "w") as f:
         params = {k: v for k, v in args.__dict__.items()}

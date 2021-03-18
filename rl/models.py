@@ -312,7 +312,11 @@ class TVFModel(BaseModel):
         Uses generic value function V(s,k) where k is the horizon
     """
 
-    def __init__(self, head: str, input_dims, actions, device, dtype, use_rnn=False, epsilon=0.01, **kwargs):
+    def __init__(self, head: str, input_dims, actions, device, dtype,
+                 use_rnn=False,
+                 epsilon=0.01,
+                 log_horizon=False,
+                 **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC_RNN-" + head if use_rnn else "AC-" + head
 
@@ -332,6 +336,7 @@ class TVFModel(BaseModel):
         self.fc_tvf_hidden = nn.Linear(final_hidden_units + 2, 512)
         self.fc_tvf_value = nn.Linear(512, 1)
         self.fc_tvf_error = nn.Linear(512, 1)
+        self.log_horizon = log_horizon
         self.epsilon = epsilon
         self.set_device_and_dtype(device, dtype)
 
@@ -380,13 +385,19 @@ class TVFModel(BaseModel):
             gammas = gammas.to(device=x.device, dtype=torch.float32)
 
             _, H = horizons.shape
-            transformed_gammas = 1/(1-gammas)
 
-            tvf_values = []
-            tvf_errors = []
+            # stub: don't transform gammas, won't work if gamma = 1.0...
+            #transformed_gammas = 1/(1-gammas) if gamma != 0 else 0
+            transformed_gammas = gammas * 0 # just ignore these for the moment...
+            if self.log_horizion:
+                transformed_horizons = torch.log2(horizons+1)
+            else:
+                transformed_horizons = horizons
 
             # work out value for each k provided
             # note: can we do this in parallel?
+            # tvf_values = []
+            # tvf_errors = []
             # for h in range(H):
             #     x_with_side_channel_info = torch.cat([
             #         x,
@@ -400,12 +411,12 @@ class TVFModel(BaseModel):
             # result['tvf_std'] = self.epsilon + torch.exp(torch.stack(tvf_errors, dim=1))
 
 
-            # parallel version... might be very slow
+            # faster version
             # x is [B, 512], make it [B, H,  512]
             x_duplicated = x[:, None, :].repeat(1, H, 1)
             x_with_side_info = torch.cat([
                 x_duplicated,
-                horizons[:, :, None],
+                transformed_horizons[:, :, None],
                 transformed_gammas[:, :, None],
             ], dim=-1)
             tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_info))

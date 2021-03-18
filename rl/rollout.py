@@ -71,12 +71,9 @@ def calculate_returns(rewards, dones, final_value_estimate, gamma):
     return returns
 
 
-def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb=1.0, normalize=False):
+def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma:float, lamb=1.0, normalize=False):
 
     N, A = batch_rewards.shape
-
-    if type(gamma) is float:
-        gamma = np.ones([N, A], dtype=np.float32) * gamma
 
     batch_advantage = np.zeros_like(batch_rewards, dtype=np.float32)
     prev_adv = np.zeros([A], dtype=np.float32)
@@ -84,14 +81,141 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
         is_next_terminal = batch_terminal[
             t] if batch_terminal is not None else False  # batch_terminal[t] records if t+1 is a terminal state)
         value_next_t = batch_value[t + 1] if t != N - 1 else final_value_estimate
-        delta = batch_rewards[t] + gamma[t] * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
-        batch_advantage[t] = prev_adv = delta + gamma[t] * lamb * (
+        delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_terminal) - batch_value[t]
+        batch_advantage[t] = prev_adv = delta + gamma * lamb * (
                 1.0 - is_next_terminal) * prev_adv
     if normalize:
         batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
 
-def calculate_tvf(
+def calculate_gae_tvf(
+        rewards:np.ndarray,
+        dones:np.ndarray,
+        values:np.ndarray,
+        final_value_estimates:np.ndarray,
+        gamma,
+        lamb:float=0.95):
+
+    N, A, H = values.shape
+
+    advantages = np.zeros([N, A], dtype=np.float32)
+
+    # note: this webpage helped a lot with writing this...
+    # https://amreis.github.io/ml/reinf-learn/2017/11/02/reinforcement-learning-eligibility-traces.html
+
+    values = np.concatenate([values, final_value_estimates[None, :, :]], axis=0)
+
+    # note, we could calculate advantage for all horizons if we want.
+
+    for t in range(N):
+        h = H-1
+        total_weight = np.zeros([A], dtype=np.float32)
+        current_weight = np.ones([A], dtype=np.float32) * (1-lamb)
+        discount = np.ones([A], dtype=np.float32)
+        advantage = np.zeros([A], dtype=np.float32)
+        weighted_estimate = np.zeros([A], dtype=np.float32)
+        # for the moment limit n_step to 10 for performance reasons (slow python, slow algorithm)
+        # I have a NH version coming (instead of this NNH version)
+        # if lamb is 0 we just do TD(0), which is much faster.
+        advantage -= values[t, :, h]
+        for n in range(1, 60): # 60 should be enough for lamb=0.95
+            # here we calculate the n_step estimate for V(s_t, h) (i.e. G(n))
+            if t + n - 1 >= N:
+                # we reached the end, so best we can do is stop here and use the estimates we have already
+                # created
+                weighted_estimate += current_weight * advantage
+                total_weight += current_weight
+                current_weight *= lamb
+                continue
+            this_reward = rewards[t + n - 1]
+            advantage += discount * this_reward
+
+            terminals = (1 - dones[t + n - 1])
+            discount *= terminals * gamma
+
+            bootstrap_estimate = discount * values[t + n, :, h - n] if (h - n) > 0 else 0
+            weighted_estimate += current_weight * (advantage + bootstrap_estimate)
+            total_weight += current_weight
+            # note, I'm not sure if we should multiply by (1-dones[t+n]) here.
+            # I think it's best not to, otherwise short n_steps get more weight close to a terminal...
+            # actually maybe this is right?
+            # actually terminal should get all remaining weight.
+            current_weight *= lamb
+
+        advantages[t, :] = weighted_estimate / total_weight
+
+    return advantages
+
+
+def calculate_tvf_mc(rewards, dones, final_value_estimates, gamma:float):
+    """
+    Calculate return targets using value function horizons.
+    This involves finding targets for each horizon being learned
+
+    final_value_estimates: np array of shape [A, K+1]
+    rewards: np array of shape [N, A]
+
+    returns: returns for each time step and horizon, np array of shape [N, A, K]
+
+    """
+
+    N, A = rewards.shape
+    K = final_value_estimates.shape[1]
+
+    returns = np.zeros([N, A, K], dtype=np.float32)
+
+    for t in range(N):
+        reward_sum = np.zeros([A], dtype=np.float32)
+        current_discount = np.ones([A], dtype=np.float32)
+        # calculate return for each horizon
+        for k in range(1, K):
+            # if we go off the end use bootstrap estimate with remaining horizon
+            if (t+k) > N:
+                remaining_horizon = k - (N-t)
+                bootstrap_estimate = final_value_estimates[:, remaining_horizon] if remaining_horizon > 0 else 0
+                returns[t, :, k] = reward_sum + current_discount * bootstrap_estimate
+            else:
+                reward_sum += current_discount * rewards[t+k-1, :]
+                returns[t, :, k] = reward_sum
+                current_discount *= (1-dones[t+k-1, :]) * gamma
+
+
+    # # I think we have a bug if we terminate on final step
+    # for t in range(N):
+    #     reward_sum = 0
+    #     counter = 0
+    #     for k in range(K):
+    #         if (t+k) >= N:
+    #             # bootstrap when we go off the end
+    #             bootstrap_estimate = final_value_estimates[:, k - counter] if (k-counter) > 0 else 0
+    #             returns[t, :, k] = reward_sum + (gamma ** counter) * bootstrap_estimate
+    #         else:
+    #             this_reward = (gamma ** k) * rewards[t+k, :] if (t+k) < len(rewards) else 0
+    #             # note: dones might be off by one time step?
+    #             reward_sum = reward_sum * (1-dones[t, :]) + this_reward
+    #             returns[t, :, k] = reward_sum
+    #             counter += 1
+    #
+    #     # for k in range(K):
+    #     #     returns[i, :, k] = 0
+    #     #     discount = np.asarray([gamma]*A) * (1-dones[i])
+    #     #     counter = 0
+    #     #     for j in range(k):
+    #     #         this_reward = rewards[i+j]*discount if (i+j) < len(rewards) else 0
+    #     #         returns[i, :, k] += this_reward
+    #     #         discount *= gamma * (1-dones[i+j])
+    #     #
+    #     #     returns[i, :, k] += final_value_estimates[:, k-counter]*discount if (k-counter) > 0 else 0
+
+    horizons = np.arange(K)[None, None, :]
+    horizons = np.repeat(horizons, N, axis=0)
+    horizons = np.repeat(horizons, A, axis=1)
+    gammas = np.ones_like(horizons) * gamma
+
+    return returns, horizons, gammas,
+
+
+def calculate_tvf_lambda(
         rewards:np.ndarray,
         dones:np.ndarray,
         values:np.ndarray,
@@ -163,6 +287,74 @@ def calculate_tvf(
                 current_weight *= lamb
 
             returns[t, :, h] = weighted_estimate / total_weight
+
+    horizons = np.arange(H)[None, None, :]
+    horizons = np.repeat(horizons, N, axis=0)
+    horizons = np.repeat(horizons, A, axis=1)
+    gammas = np.ones_like(horizons) * gamma
+
+    return returns, horizons, gammas,
+
+def calculate_tvf_td0(
+        rewards:np.ndarray,
+        dones:np.ndarray,
+        values:np.ndarray,
+        final_value_estimates:np.ndarray,
+        gamma:float,
+        lamb:float=0.95,
+        ):
+
+    """
+    Calculate return targets using value function horizons.
+    This involves finding targets for each horizon being learned
+
+    rewards: np float32 array of shape [N, A]
+    dones: np float32 array of shape [N, A]
+    values: np float32 array of shape [N, A, H]
+    final_value_estimates: np float32 array of shape [A, H]
+
+    returns: returns for each time step and horizon, np array of shape [N, A, H]
+
+    """
+
+    N, A, H = values.shape
+
+    returns = np.zeros([N, A, H], dtype=np.float32)
+
+    # note: this webpage helped a lot with writing this...
+    # https://amreis.github.io/ml/reinf-learn/2017/11/02/reinforcement-learning-eligibility-traces.html
+
+    values = np.concatenate([values, final_value_estimates[None, :, :]], axis=0)
+
+    for t in range(N):
+        for h in range(1, H):
+
+            # deal with dones
+            # deal with running off the edge of the update window.
+
+            # estimate discounted sum of returns with a weighted n-step estimate for...
+            # V(s_t, h)
+            # we calculate each n_step return iteratively, then average them together
+            total_weight = np.zeros([A], dtype=np.float32)
+            discount = np.ones([A], dtype=np.float32)
+            reward_sum = np.zeros([A], dtype=np.float32)
+            estimate = np.zeros([A], dtype=np.float32)
+            # for the moment limit n_step to 10 for performance reasons (slow python, slow algorithm)
+            # I have a NH version coming (instead of this NNH version)
+            # if lamb is 0 we just do TD(0), which is much faster.
+            n = 1
+            this_reward = rewards[t+n-1]
+            reward_sum += discount * this_reward
+
+            discount *= gamma * (1 - dones[t + n - 1])
+            bootstrap_estimate = discount * values[t+n, :, h-n] if (h-n) > 0 else 0
+            estimate += (reward_sum + bootstrap_estimate)
+            # note, I'm not sure if we should multiply by (1-dones[t+n]) here.
+            # I think it's best not to, otherwise short n_steps get more weight close to a terminal...
+            # actually maybe this is right?
+            # actually terminal should get all remaining weight.
+
+            returns[t, :, h] = estimate
 
     horizons = np.arange(H)[None, None, :]
     horizons = np.repeat(horizons, N, axis=0)
@@ -244,6 +436,7 @@ class Runner():
         # outputs tensors when clip loss is very high.
         self.log_high_grad_norm = True
 
+
     def create_envs(self):
         """ Creates environments for runner"""
         env_fns = [lambda : atari.make() for _ in range(args.agents)]
@@ -293,7 +486,7 @@ class Runner():
 
     def load_checkpoint(self, checkpoint_path):
         """ Restores model from checkpoint. Returns current env_step"""
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, map_location=args.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         if self.optimizer is not None:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -636,13 +829,11 @@ class Runner():
     def calculate_returns(self):
 
         if args.use_tvf:
-            _returns, _horizons, _gammas = calculate_tvf(
+            _returns, _horizons, _gammas = calculate_tvf_mc(
                 self.ext_rewards,
                 self.terminals,
-                self.tvf_value,
                 self.tvf_final_value_estimate,
-                gamma=args.tvf_gamma,
-                lamb=args.tvf_lambda
+                gamma=args.tvf_gamma
             )
 
             # down sample for long horizons
@@ -676,15 +867,25 @@ class Runner():
             _ext_value = self.ext_value
             _ext_final_value_estimate = self.ext_final_value_estimate
 
-        self.ext_advantage = calculate_gae(
-            self.ext_rewards,
-            _ext_value,
-            _ext_final_value_estimate,
-            self.terminals,
-            args.gamma,
-            args.gae_lambda
-        )
-        self.ext_returns = self.ext_advantage + _ext_value
+        if args.tvf_real_advantage:
+            self.ext_advantage = calculate_gae_tvf(
+                self.ext_rewards,
+                self.terminals,
+                self.tvf_value,
+                self.tvf_final_value_estimate,
+                args.gamma,
+            )
+            self.ext_returns *= 0 # no targets for ext_value
+        else:
+            self.ext_advantage = calculate_gae(
+                self.ext_rewards,
+                _ext_value,
+                _ext_final_value_estimate,
+                self.terminals,
+                args.gamma,
+                args.gae_lambda
+            )
+            self.ext_returns = self.ext_advantage + _ext_value
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -855,6 +1056,7 @@ class Runner():
             mu = model_out["tvf_value"]
 
             # MSE loss (calculate for reference even when using distributional)
+            # I wonder if huber loss is better here?
             tvf_loss_mse = -0.5 * args.tvf_coef * torch.mean((targets - mu).pow(2))
             self.log.watch_mean("tvf_loss_mse", -tvf_loss_mse, history_length=64)
 

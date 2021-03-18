@@ -17,9 +17,9 @@ import math
 from os import listdir
 from os.path import isfile, join
 
-DEVICE = "cuda:1"
+DEVICE = "cpu"
 REWARD_SCALE = float()
-MAX_HORIZON = 500
+MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
 
 # run 100 evaluations
@@ -35,10 +35,7 @@ SAMPLES = 64 # 16 is too few, might need 256...
 
 # then plot this in a notebook
 
-# load a model and evaluate performance
-def load_checkpoint(model, checkpoint_path, device=None):
-    """ Restores model from checkpoint. Returns current env_step"""
-
+def load_args(checkpoint_path):
     # get args
     args_path = os.path.join(os.path.split(checkpoint_path)[0], "params.txt")
     with open(args_path, 'r') as f:
@@ -47,6 +44,12 @@ def load_checkpoint(model, checkpoint_path, device=None):
             vars(args)[k] = v
         args.log_folder = ''
 
+# load a model and evaluate performance
+def load_checkpoint(checkpoint_path, device=None):
+    """ Restores model from checkpoint. Returns current env_step"""
+
+    load_args(checkpoint_path)
+    model = make_model(env)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     step = checkpoint['step']
@@ -54,8 +57,8 @@ def load_checkpoint(model, checkpoint_path, device=None):
     global REWARD_SCALE
     global MAX_HORIZON
     REWARD_SCALE = checkpoint['env_state']['returns_norm_state'][1] ** 0.5
-    MAX_HORIZON = args.tvf_max_horizon + 100
-    return step
+    MAX_HORIZON = min(args.tvf_max_horizon + 200, 1000)
+    return model
 
 def make_model(env):
     return models.TVFModel(
@@ -65,6 +68,8 @@ def make_model(env):
         device=DEVICE,
         dtype=torch.float32,
         use_rnn=False,
+        epsilon=args.tvf_epsilon,
+        log_horizon=args.tvf_log_horizon,
     )
 
 def discount_rewards(rewards, gamma):
@@ -99,6 +104,73 @@ def rediscount_TVF(values, new_gamma):
     return discounted_reward_sum
 
 
+def rediscount_TVF_minimize_error(value_mu, value_std, new_gamma):
+    """
+    Uses truncated value function to get the 'best' horizon in terms of estimated error.
+    Error is estimated as MSE error against cummulative rewards to an infinite horizon with the new_gamma
+
+    values: np array of shape [K]
+    returns: value estimate (float), horizon used
+    """
+    assert new_gamma < 1, "Finite sum requires gamma < 1"
+
+    # first we rediscount the returns, and get error estimates
+    K = len(value_mu)
+    prev = 0
+    discounted_reward_sum = 0
+    old_discount = 1
+    discount = 1
+    new_values = np.zeros_like(value_mu)
+    bias_error = np.zeros_like(value_mu)
+    var_error = np.zeros_like(value_mu)
+    for k in range(K):
+        reward = (value_mu[k] - prev) / old_discount
+        prev = value_mu[k]
+        discounted_reward_sum += reward * discount
+        old_discount *= args.tvf_gamma
+        discount *= new_gamma
+        new_values[k] = discounted_reward_sum
+
+        bias_error[k] = new_gamma ** k
+        var_error[k] = value_std[k] ** 2
+
+    return_estimate = new_values[-1] # not sure if this is the best way to get a return estimate...
+    new_error = (return_estimate*bias_error)**2 + var_error
+    best_k = np.argmin(new_error)
+    return new_values[best_k]
+
+def rediscount_TVF_dcyc(value_mu, value_std, new_gamma, alpha=10):
+    """
+    Uses truncated value function to get a "don't count your chickens" estimate.
+    This works by discounting rewards until the uncertanty associated with them is retired.
+
+    values: np array of shape [K]
+    returns: value estimates of shape [k], and best estimate
+    """
+
+    # the idea here is to discount rewards based on the minimum future uncertanty
+
+    # first we rediscount the returns, and get error estimates
+    K = len(value_mu)
+    prev = 0
+    discounted_reward_sum = 0
+    old_discount = 1
+    discount = 1
+    new_values = np.zeros_like(value_mu)
+    for k in range(K):
+        reward = (value_mu[k] - prev) / old_discount
+        future_risk = min(value_std[k:])
+        # note value_mu k probably isn't right here..
+        rho = (future_risk**2) / (0.0001+value_mu[k]**2)
+        discount_factor = np.exp(-0.5*alpha*rho)
+        prev = value_mu[k]
+        discounted_reward_sum += reward * discount * discount_factor
+        old_discount *= args.tvf_gamma
+        discount *= new_gamma
+        new_values[k] = discounted_reward_sum
+
+    return new_values[-1]
+
 def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
 
     # we play the games one at a time so as to not take up too much memory
@@ -108,21 +180,23 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     episode_scores = []
     episode_lengths = []
 
-    model_err = []
-    trunc_err = []
-    true_returns = []
-
-
-    trunc_err_k = []
-
     print("Evaluating:",end='')
 
     remaining_samples = samples
 
+    return_estimates = {}
+
     while remaining_samples > 0:
 
-        batch_samples = min(16, remaining_samples)
+        batch_samples = min(4, remaining_samples)
         buffers = generate_rollouts(model, max_frames, num_rollouts=batch_samples)
+
+        # always use these horizons, but add additional up to and including the final horizon
+        horizons_to_use = [1, 10, 30, 100, 300]
+        h = 500
+        while h <= args.tvf_max_horizon:
+            horizons_to_use.append(h)
+            h *= 2
 
         for i, buffer in enumerate(buffers):
             # get game score and length
@@ -132,24 +206,48 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
             episode_scores.append(episode_score)
             episode_lengths.append(episode_length)
 
-            for t in range(episode_length):
-                # evaluate MSE for max horizon value predictions under different algorithms
-                model_value = buffer["model_values"][t]
-                tvf_value = rediscount_TVF(buffer["values"][t][:args.tvf_max_horizon], 0.99)
-                true_value = discount_rewards(buffer["rewards"][t:], 0.99)
+            for discount in [0.99, 0.997, 0.999]:
 
-                trunc_err.append(tvf_value - true_value)
-                model_err.append(model_value - true_value)
-                true_returns.append(true_value)
+                if discount not in return_estimates:
+                    return_estimates[discount] = {
+                        "trunc_err": [],
+                        "model_err": [],
+                        #"bestk_err": [],
+                        #"count_err": [],
+                        "trunc_err_k": [],
+                        "true_return": [],
+                    }
 
-                # evaluate error over horizon
-                for k in [1, 10, 30, 100, 300, 500]:
-                    tvf_value = rediscount_TVF(buffer["values"][t][:k], 0.99)
-                    true_value = discount_rewards(buffer["rewards"][t:t+k], 0.99)
+                trunc_err = return_estimates[discount]["trunc_err"]
+                model_err = return_estimates[discount]["model_err"]
+                #bestk_err = return_estimates[discount]["bestk_err"]
+                #count_err = return_estimates[discount]["count_err"]
+                true_return = return_estimates[discount]["true_return"]
+                trunc_err_k = return_estimates[discount]["trunc_err_k"]
 
-                    trunc_err_k.append((k, tvf_value, true_value, i, t))
+                for t in range(episode_length):
+                    # evaluate value estimate using different methods
+                    model_value = buffer["model_values"][t]
+                    tvf_value = rediscount_TVF(buffer["values"][t][:args.tvf_max_horizon], discount)
+                    true_value = discount_rewards(buffer["rewards"][t:], discount)
 
-            print(".", end='')
+                    trunc_err.append(tvf_value - true_value)
+                    model_err.append(model_value - true_value)
+                    true_return.append(true_value)
+
+                    # evaluate error over horizon
+                    true_value_discount = discount_rewards(buffer["rewards"][t:], discount)
+                    true_value_no_discount = discount_rewards(buffer["rewards"][t:], 1)
+                    for k in horizons_to_use:
+                        if k > len(buffer["values"][t]):
+                            continue
+                        tvf_value = rediscount_TVF(buffer["values"][t][:k], discount)
+                        # true value of V(s,k) discounted
+                        true_value = discount_rewards(buffer["rewards"][t:t + k], discount)
+
+                        trunc_err_k.append((k, tvf_value, true_value, true_value_discount, true_value_no_discount, i, t))
+
+                print(".", end='')
 
         remaining_samples -= batch_samples
 
@@ -158,8 +256,6 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
 
     print()
     print()
-    print_it("Model MSE:", np.asarray(model_err) ** 2)
-    print_it("Trunc MSE:", np.asarray(trunc_err) ** 2)
     print_it("Ep Score:", episode_scores)
     print_it("Ep Length:", episode_lengths)
 
@@ -167,12 +263,9 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     print()
 
     data = {
-        'returns_99': true_returns,
-        'trunc_err': trunc_err,
-        'model_err': model_err,
         'episode_lengths': episode_lengths,
         'episode_scores': episode_scores,
-        'trunc_err_k': trunc_err_k
+        'return_estimates': return_estimates,
     }
 
     with open(filename+".dat", "wb") as f:
@@ -291,6 +384,12 @@ def export_movie(model, filename, max_frames = 30*60*15):
         errors = buffer["errors"][t] * REWARD_SCALE
         model_value = buffer["model_values"][t] * REWARD_SCALE
 
+        if not args.tvf_distributional:
+            errors *= 0
+
+        if args.vf_coef == 0:
+            model_value = 0
+
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
@@ -324,13 +423,18 @@ def export_movie(model, filename, max_frames = 30*60*15):
         plt.xlabel("k")
         plt.ylabel("Score")
 
-        limit = true_values + [model_value] + (values+errors)
+        limit = max(
+            100,
+            10+max(true_values),
+            10+model_value,
+            10+max(values+errors),
+        )
 
-        plt.ylim(0,20+ int(max(limit))//20 * 20)
+        plt.ylim(-10, (int(limit)//20) * 20)
 
         plt.grid(True)
 
-        plt.legend()
+        plt.legend(loc="upper left")
 
         # from https://stackoverflow.com/questions/7821518/matplotlib-save-plot-to-numpy-array
         fig.canvas.draw()
@@ -347,11 +451,17 @@ def export_movie(model, filename, max_frames = 30*60*15):
 
 def run_eval(path):
     for epoch in range(200):
+        checkpoint_eval_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")
         checkpoint_name = os.path.join(path, f"checkpoint-{epoch:03d}M-params.pt")
-        if os.path.exists(checkpoint_name) and not os.path.exists(os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")):
+        if os.path.exists(checkpoint_name) and not os.path.exists(checkpoint_eval_file):
             print()
             print(checkpoint_name)
-            load_checkpoint(model, checkpoint_name, device=DEVICE)
+
+            # create an empty file to mark that we are working on this...
+            with open(checkpoint_eval_file, "wb"):
+                pass
+
+            model = load_checkpoint(checkpoint_name, device=DEVICE)
             export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"))
             evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
 
@@ -373,9 +483,8 @@ if __name__ == "__main__":
     args.res_x, args.res_y = (84, 84)
 
     env = atari.make()
-    model = make_model(env)
 
-    monitor("./Run/TVF_3A")
-    monitor("./Run/TVF_3B")
-    monitor("./Run/TVF_3C")
-    monitor("./Run/TVF_3D")
+    for c in "ABCDEFGHIJKLMNOP":
+        monitor(f"./Run/TVF_4{c}")
+
+

@@ -7,6 +7,9 @@ import time
 
 from rl import utils
 
+import socket
+HOST_NAME = socket.gethostname()
+
 class bcolors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -18,12 +21,21 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 CHUNK_SIZE = 10
-
+DEVICE = "auto"
 OUTPUT_FOLDER = "./Run"
 
+if len(sys.argv) == 3:
+    DEVICE = sys.argv[2]
+
 def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
+
+    if "device" not in kwargs:
+        kwargs["device"] = DEVICE
+
     if 'ignore_device' not in kwargs:
-        kwargs['ignore_device'] = "[0]" # stub
+        if HOST_NAME != 'matthew-desktop':
+            kwargs['ignore_device'] = "[0, 1]"
+
     job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
 
 def get_run_folder(experiment_name, run_name):
@@ -73,7 +85,7 @@ class Job:
         if status == "working":
             priority += 1000
 
-        priority = priority - (self.get_completed_epochs() / 20)
+        priority = priority - self.get_completed_epochs()
 
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
@@ -152,7 +164,7 @@ class Job:
 
         # make the destination folder...
         if not os.path.exists(experiment_folder):
-            print("Making experiment folder " + experiment_folder)
+            print("Making new experiment folder {experiment_folder}")
             os.makedirs(experiment_folder, exist_ok=True)
 
         # copy script across if needed.
@@ -166,6 +178,9 @@ class Job:
         if details is not None and details["completed_epochs"] > 0:
             # restore if some work has already been done.
             self.params["restore"] = True
+            print(f"Found restore point {self.get_path()} at epoch {details['completed_epochs']}")
+        else:
+            print(f"No restore point found for path {self.get_path()}")
 
         if chunked:
             # work out the next block to do
@@ -257,283 +272,6 @@ def show_experiments(filter_jobs=None, all=False):
             job.priority, job.experiment_name[:19], job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
 
 def setup_mvh():
-
-    # experiment 1
-    for env in ["Breakout"]:
-        for heads in [1, 3, 5, 10]:
-            for prior in [False]:
-                if prior and heads == 0:
-                    continue
-                add_job(
-                    "mvh_{}".format(env),
-                    run_name=f"run={env} prior={prior} heads={heads}",
-                    env_name=env,
-                    checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                    epochs=100,
-                    agents=256,
-                    workers=8,
-                    use_mvh=heads > 0,
-                    mvh_heads=heads,
-                    mvh_prior=prior,
-                )
-
-
-    # experiment 2
-    for env in ["Breakout"]:
-        for heads in [1, 3, 5, 10]:
-            for prior in [False, True]:
-                add_job(
-                    "MVH2".format(env),
-                    run_name=f"run={env} prior={prior} heads={heads}",
-                    env_name=env,
-                    checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                    epochs=50,
-                    agents=256,
-                    workers=8,
-                    use_mvh=True,
-                    mvh_heads=heads,
-                    mvh_prior=prior,
-                )
-
-    # gamma test
-    for env in ["Breakout"]:
-        for gamma in [0.9, 0.99, 0.999, 0.9999, 0.99999, 1.0]:
-            add_job(
-                "GAMMA".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=100,
-                agents=256,
-                workers=8,
-                use_mvh=False,
-                gamma=gamma,
-            )
-
-    # td_gamma test
-    # abs error
-    for env in ["Breakout"]:
-        for td_gamma in [0.01, 0.03, 0.1, 0.3, 1, 3, 10]:
-            add_job(
-                "TD_GAMMA".format(env),
-                run_name=f"td_gamma={td_gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),
-                epochs=100,
-                agents=256,
-                workers=8,
-                use_mvh=False,
-                td_gamma=td_gamma,
-            )
-
-    # td_gamma test
-    # squared error
-    for env in ["Breakout"]:
-        for td_gamma in [0.01, 0.03, 0.1, 0.3, 1, 3, 10]:
-            add_job(
-                "TD_GAMMA2".format(env),
-                run_name=f"td_gamma={td_gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),
-                epochs=50,
-                agents=256,
-                workers=8,
-                use_mvh=False,
-                td_gamma=td_gamma,
-            )
-
-    # td_gamma test
-    # just error
-    for env in ["Breakout"]:
-        for td_gamma in [-1, -0.1, -0.3, 0, 0.1, 0.3, 1]:
-            add_job(
-                "TD_GAMMA3".format(env),
-                run_name=f"td_gamma={td_gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),
-                epochs=50,
-                agents=256,
-                workers=8,
-                use_mvh=False,
-                td_gamma=td_gamma,
-            )
-
-    # episodic discounting
-    for env in ["Breakout"]:
-        for gamma in [1.0, 0.999, 0.99]:
-            for ed_gamma in [1.0, 0.999, 0.99]:
-                for ed_type in ["geometric", "hyperbolic"]:
-
-                    add_job(
-                        "ED1".format(env),
-                        run_name=f"ed_gamma={ed_gamma} ed_type={ed_type} gamma={gamma}",
-                        env_name=env,
-                        checkpoint_every=int(10e6),
-                        epochs=50,
-                        agents=256,
-                        workers=8,
-
-                        time_aware=True,
-                        ed_type=ed_type,
-                        ed_gamma=ed_gamma,
-                        gamma=gamma,
-
-                        use_mvh=False,
-                    )
-
-    # gamma test with new updated GAE returns calculation
-    for env in ["Breakout"]:
-        for gamma in [0.9, 0.99, 0.999, 0.9999, 1.0]:
-            add_job(
-                "GAE_GAMMA".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=50,
-                agents=256,
-                workers=8,
-                gamma=gamma,
-            )
-
-    # gamma test with new updated GAE returns calculation and time aware
-    for env in ["Breakout"]:
-        for gamma in [0.9, 0.99, 0.999, 0.9999, 1.0]:
-            add_job(
-                "TVF_1C".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=50,
-                agents=256,
-                workers=8,
-                gamma=gamma,
-                time_aware=True,
-            )
-
-    # truncated value function as aux task
-    for env in ["Breakout"]:
-        for gamma in [0.99, 0.999, 0.9999]:
-            add_job(
-                "VFH_AUX_100".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=50,
-                agents=256,
-                use_vfh=True,
-                workers=8,
-                gamma=gamma,
-            )
-
-    # truncated value function as aux task (reduced coef)
-    for env in ["Breakout"]:
-        for gamma in [0.99, 0.999, 0.9999]:
-            add_job(
-                "TVF_100_AUX".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(10e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=50,
-                agents=256,
-                use_tvf=True,
-                tvf_coef=0.1,
-                workers=8,
-                gamma=gamma,
-                time_aware=True,
-            )
-
-
-    # truncated value function as aux task fixed (hopefuly) targets)
-    for env in ["Breakout"]:
-        for gamma in [0.99, 0.999, 0.9999]:
-            add_job(
-                "TVF_2D".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(5e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=50,
-                agents=256,
-                use_tvf=True,
-                tvf_coef=0.1,
-                workers=8,
-                gamma=gamma,
-                time_aware=False,
-            )
-
-    # truncated value function as aux task longer horizon, higher gamma
-    for env in ["Breakout"]:
-        for gamma in [0.99, 0.999, 0.9999]:
-            add_job(
-                "TVF_2E".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(5e6),  # every 1M is as frequent as possible (using current naming system)
-                epochs=50,
-                agents=256,
-
-                use_tvf=True,
-                tvf_coef=0.1,
-                tvf_horizon=1000,
-                tvf_gamma=0.999,
-
-                workers=8,
-                gamma=gamma,
-                time_aware=False,
-                priority=10,
-            )
-
-    # make sure random sampling is working
-    # for env in ["Breakout"]:
-    #     for n_steps in [16, 64, 128]:
-    #         for gamma in [0.99]:
-    #             for tvf_gamma in [0.99]:
-    #                 for tvf_max_horizon in [30, 100, 300]:
-    #                     for tvf_n_horizons in [10, 30, 100]:
-    #                         if tvf_n_horizons > tvf_max_horizon:
-    #                             continue
-    #                         add_job(
-    #                             "TVF_2F".format(env),
-    #                             run_name=f"ns={n_steps} g={gamma} tg={tvf_gamma} tmh={tvf_max_horizon} tnh={tvf_n_horizons}",
-    #                             env_name=env,
-    #                             checkpoint_every=int(5e6),  # every 1M is as frequent as possible (using current naming system)
-    #                             epochs=50,
-    #                             agents=256,
-    #                             n_steps=n_steps,
-    #
-    #                             use_tvf=True,
-    #                             tvf_coef=0.1,
-    #                             tvf_max_horizon=tvf_max_horizon,
-    #                             tvf_n_horizons=tvf_n_horizons,
-    #                             tvf_gamma=tvf_gamma,
-    #
-    #                             priority=-10,
-    #                             workers=8,
-    #                             gamma=gamma,
-    #                             time_aware=False,
-    #                         )
-
-    # truncated value function as aux task longer horizon, higher gamma
-    for env in ["Breakout"]:
-        for gamma in [0.99]:
-            add_job(
-                "TVF_2G".format(env),
-                run_name=f"gamma={gamma}",
-                env_name=env,
-                checkpoint_every=int(5e6),
-                epochs=100,
-                agents=256,
-
-                use_tvf=True,
-                tvf_coef=0.1,
-                tvf_max_horizon=300,
-                tvf_n_horizons=100,
-                tvf_gamma=0.99,
-
-                workers=8,
-                gamma=gamma,
-                time_aware=False,
-                priority=10,
-            )
 
     # just a quick test to see how truncated value does for actual policy learning
     # note: we learn 0.99 at 300 timesteps, but then rediscount these to see what happens.
@@ -679,6 +417,658 @@ def setup_mvh():
                     priority=25,
                 )
 
+    # going back to our MC update
+    for env in ["Breakout"]:
+        for coef in [1, 0.1, 0.01]:
+            add_job(
+                "TVF_3E".format(env),
+                run_name=f"coef={coef}",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=coef,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=0.99,
+                tvf_advantage=True,
+
+                workers=8,
+                gamma=0.99,
+                time_aware=False,
+                priority=20,
+            )
+
+            add_job(
+                "TVF_3E".format(env),
+                run_name=f"coef={coef} vf_coef=0",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=coef,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=0.99,
+                tvf_advantage=True,
+                vf_coef=0,
+
+                workers=8,
+                gamma=0.99,
+                time_aware=False,
+                priority=20,
+            )
+
+    # going back to our MC update, with distributional back in
+    # 3F turned into a bit a of a hp search. this is tvf_coef
+    for env in ["Breakout"]:
+        for tvf_coef in [1, 0.1, 0.03, 0.01]:
+            add_job(
+                "TVF_3F".format(env), # named incorrectly...
+                run_name=f"coef={tvf_coef}",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=tvf_coef,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=0.99,
+                tvf_advantage=True,
+                tvf_distributional=True,
+                vf_coef=0,
+
+                workers=8,
+                gamma=0.99,
+                time_aware=False,
+                priority=25,
+            )
+
+    # going back to our MC update, with distributional back in
+    # 3F turned into a bit a of a hp search. this is tvf_coef
+    for env in ["Breakout"]:
+        for tvf_coef in [1, 0.1, 0.03, 0.01]:
+            add_job(
+                "TVF_3F1".format(env),
+                run_name=f"tvf_coef={tvf_coef}",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=tvf_coef,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=0.99,
+                tvf_advantage=True,
+                tvf_distributional=True,
+                vf_coef=0,
+
+                workers=8,
+                gamma=0.99,
+                time_aware=False,
+                priority=15,
+            )
+
+    # going back to our MC update, with distributional back in
+    # 3F turned into a bit a of a hp search. this is value function learning
+    env = "Breakout"
+    for vf_coef in [1.0, 0.5, 0]:
+        add_job(
+            "TVF_3F2".format(env),
+            run_name=f"vf_coef={vf_coef}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=300,
+            tvf_n_horizons=100,
+            tvf_gamma=0.99,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=vf_coef,
+
+            workers=8,
+            gamma=0.99,
+            time_aware=False,
+            priority=15,
+        )
+
+    # going back to our MC update, with distributional back in
+    # 3F turned into a bit a of a hp search. this is distributional epsilon
+    env = "Breakout"
+    tvf_coef = 0.03
+    for tvf_epsilon in [0.003, 0.01, 0.03, 0.1, 0.3, 1.0]:
+            add_job(
+                "TVF_3F3".format(env),
+                run_name=f"tvf_epsilon={tvf_epsilon}",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=tvf_coef,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=0.99,
+                tvf_advantage=True,
+                tvf_distributional=True,
+                tvf_epsilon=tvf_epsilon,
+
+                workers=8,
+                gamma=0.99,
+                time_aware=False,
+                priority=15,
+            )
+
+    # going back to our MC update, with distributional back in
+    # this time we learn the ext_value as well
+    # higher epsilon to stablize training at end
+    env = "Breakout"
+    tvf_coef = 0.03
+    for vf_coef in [0, 0.5]:
+        for gamma in [1, 0.999, 0.997, 0.99]:
+            add_job(
+                "TVF_3H".format(env),
+                run_name=f"tvf_coef={tvf_coef} vf_coef={vf_coef} gamma={gamma}",
+                env_name=env,
+                checkpoint_every=int(5e6),
+                epochs=50,
+                agents=256,
+
+                use_tvf=True,
+                tvf_coef=tvf_coef,
+                tvf_max_horizon=300,
+                tvf_n_horizons=100,
+                tvf_gamma=1.0,
+                tvf_advantage=True,
+                tvf_distributional=True,
+                vf_coef=vf_coef,
+                tvf_epsilon=0.1,
+
+                workers=8,
+                gamma=gamma,
+                time_aware=False,
+                priority=20,
+            )
+
+
+def setup_mvh4():
+
+    # found a big in MC estimates, so going to try again clean
+    env = "Breakout"
+
+    # goals
+    # verify MC works
+    # find tvf_coef
+    # find tvf_episilon
+
+    # extra...
+    # check vf_coef matters
+    # try learning non-discounted returns
+    # try learning non-discounted returns and rediscounting
+
+    # first experiment just see how the new MC code is doing and look for a good tvf_coef
+    for tvf_coef in [1, 0.3, 0.1, 0.03, 0.01]:
+        add_job(
+            "TVF_4A".format(env),
+            run_name=f"tvf_coef={tvf_coef}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            use_tvf=True,
+            tvf_coef=tvf_coef,
+            tvf_max_horizon=300,
+            tvf_n_horizons=100,
+            tvf_gamma=0.99,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=0.99,
+            time_aware=False,
+            priority=30,
+        )
+
+    for tvf_coef in [1, 0.3, 0.1, 0.03, 0.01]:
+        add_job(
+            "TVF_4B".format(env),
+            run_name=f"tvf_coef={tvf_coef}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            use_tvf=True,
+            tvf_coef=tvf_coef,
+            tvf_max_horizon=300,
+            tvf_n_horizons=100,
+            tvf_gamma=0.99,
+            tvf_advantage=True,
+            tvf_distributional=False,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=0.99,
+            time_aware=False,
+            priority=30,
+        )
+
+    for tvf_epsilon in [1.0, 0.3, 0.1, 0.03, 0.01]:
+        add_job(
+            "TVF_4C".format(env),
+            run_name=f"tvf_epsilon={tvf_epsilon}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=300,
+            tvf_n_horizons=100,
+            tvf_gamma=0.99,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=tvf_epsilon,
+
+            workers=8,
+            gamma=0.99,
+            time_aware=False,
+            priority=20,
+        )
+
+    # 4D can we learn long undiscounted horizons then rediscount?
+    tvf_max_horizon = 1000
+    tvf_gamma = 1.0
+    for gamma in [0.99, 0.997, 0.999]:
+        add_job(
+            "TVF_4D".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon} tvf_gamma={tvf_gamma} gamma={gamma}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=100,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=10,
+        )
+
+    # 4D can we learn short undiscounted horizons then rediscount?
+    tvf_max_horizon = 300
+    tvf_gamma = 1.0
+    for gamma in [0.99, 0.997, 0.999]:
+        add_job(
+            "TVF_4E".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon} tvf_gamma={tvf_gamma} gamma={gamma}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=100,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=5,
+        )
+
+    # 4F another attempt at long horizon
+    tvf_gamma = 1.0
+    gamma = 0.997
+    for tvf_max_horizon in [100, 300, 500]: # 1000 is too much without sampling...
+        add_job(
+            "TVF_4F".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            max_grad_norm = 5.0,
+            entropy_bonus = 0.03,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=tvf_max_horizon,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=5,
+        )
+
+    # 4G another GAE estimator...
+    tvf_gamma = 0.997
+    gamma = 0.997 # see if this helps a bit...)
+    for tvf_max_horizon in [100, 300, 500]:
+        add_job(
+            "TVF_4G".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.03,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=tvf_max_horizon,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_real_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=25,
+        )
+
+    # 4H another attempt at long horizon
+    tvf_gamma = 1.0
+    gamma = 0.997
+    for tvf_max_horizon in [100, 300, 500, 1000, 2000]:
+        add_job(
+            "TVF_4H".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=128,
+            n_steps=256,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=10,
+        )
+
+    # 4H another attempt at long horizon
+    tvf_gamma = 0.997 # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [500, 1000, 2000, 4000]:
+        add_job(
+            "TVF_4I".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=10,
+        )
+
+    # 4J alien
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [500, 1000, 2000, 4000]:
+        add_job(
+            "TVF_4J",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="Alien",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=45 if tvf_max_horizon <= 2000 else 0,
+        )
+    for gamma in [0.99, 0.997, 0.999]:
+        add_job(
+            "TVF_4J",
+            run_name=f"baseline gamma={gamma}",
+            env_name="Alien",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=False,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=15,
+        )
+
+    # 4K montezuma
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [500, 1000, 2000, 4000]:
+        add_job(
+            "TVF_4K",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="MontezumaRevenge",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=45 if tvf_max_horizon <= 2000 else 0,
+        )
+    for gamma in [0.99, 0.997, 0.999]:
+        add_job(
+            "TVF_4K",
+            run_name=f"baseline gamma={gamma}",
+            env_name="MontezumaRevenge",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=False,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=15,
+        )
+
+
+    # 4L seaquest
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [500, 1000, 2000, 4000]:
+        add_job(
+            "TVF_4L",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="Seaquest",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+    for gamma in [0.99, 0.997, 0.999]:
+        add_job(
+            "TVF_4L",
+            run_name=f"baseline gamma={gamma}",
+            env_name="Seaquest",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=False,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=10,
+        )
+
+
+    # 4H another attempt at long horizon
+    tvf_gamma = 0.997 # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [1000, 2000, 4000]:
+        add_job(
+            "TVF_4M".format(env),
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name=env,
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            tvf_log_horizon=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=100,
+        )
+
 
 def nice_format(x):
     if type(x) is str:
@@ -696,7 +1086,7 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    setup_mvh()
+    setup_mvh4()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

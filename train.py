@@ -106,6 +106,7 @@ if __name__ == "__main__":
     elif args.use_tvf:
         ACModel = models.TVFModel
         model_args["epsilon"] = args.tvf_epsilon
+        model_args["log_horizon"] = args.tvf_log_horizon
     else:
         ACModel = models.ActorCriticModel
 
