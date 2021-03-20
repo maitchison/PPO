@@ -1036,14 +1036,50 @@ def setup_mvh4():
         )
 
 
-    # 4H another attempt at long horizon
-    tvf_gamma = 0.997 # this helps ensure that shorter horizons matter more in terms of loss.
+    # test tvf_log_horizon, and new sampling rule
+    # tvf_gamma = 0.997 # this helps ensure that shorter horizons matter more in terms of loss.
+    # gamma = 0.999
+    # for tvf_max_horizon in [1000, 2000, 4000]:
+    #     add_job(
+    #         "TVF_4M".format(env),
+    #         run_name=f"tvf_mh={tvf_max_horizon}",
+    #         env_name=env,
+    #         checkpoint_every=int(5e6),
+    #         epochs=50,
+    #         agents=64,
+    #         n_steps=512,
+    #
+    #         max_grad_norm=5.0,
+    #         entropy_bonus=0.01,
+    #
+    #         use_tvf=True,
+    #         tvf_coef=0.03,
+    #         tvf_max_horizon=tvf_max_horizon,
+    #         tvf_n_horizons=min(tvf_max_horizon, 250),
+    #         tvf_gamma=tvf_gamma,
+    #         tvf_advantage=True,
+    #         tvf_distributional=True,
+    #         tvf_log_horizon=True,
+    #         vf_coef=0.0,
+    #         tvf_epsilon=0.1,
+    #
+    #         workers=8,
+    #         gamma=gamma,
+    #         time_aware=False,
+    #         priority=100,
+    #     )
+
+
+def setup_experiments5():
+
+    # 5A Just to make sure we didn't break anything when we changed how sampling works etc
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
     gamma = 0.999
     for tvf_max_horizon in [1000, 2000, 4000]:
         add_job(
-            "TVF_4M".format(env),
+            "TVF_5A",
             run_name=f"tvf_mh={tvf_max_horizon}",
-            env_name=env,
+            env_name="Breakout",
             checkpoint_every=int(5e6),
             epochs=50,
             agents=64,
@@ -1055,7 +1091,205 @@ def setup_mvh4():
             use_tvf=True,
             tvf_coef=0.03,
             tvf_max_horizon=tvf_max_horizon,
-            tvf_n_horizons=min(tvf_max_horizon, 250),
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=20,
+        )
+
+    # 5B Horizon warmup
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [1000, 2000, 4000]:
+        add_job(
+            "TVF_5B",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            tvf_horizon_warmup=0.1,
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
+    for tvf_max_horizon in [4000]:
+        add_job(
+            "TVF_5B",
+            run_name=f"tvf_mh={tvf_max_horizon} tvf_coef=0.01",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.01,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            tvf_horizon_warmup=0.1,
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
+
+    for tvf_max_horizon in [4000]:
+        add_job(
+            "TVF_5B",
+            run_name=f"tvf_mh={tvf_max_horizon} tvf_hw=0.5",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            tvf_horizon_warmup=0.5,
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
+
+    for tvf_max_horizon in [4000]:
+        add_job(
+            "TVF_5B",
+            run_name=f"tvf_mh={tvf_max_horizon} tvf_hw=0.5 tvw_dist=linear",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+            tvf_horizon_warmup=0.5,
+            tvf_sample_dist="linear",
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
+
+    for tvf_max_horizon in [4000]:
+        add_job(
+            "TVF_5B",
+            run_name=f"tvf_mh={tvf_max_horizon} distributional=False",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=False,
+            tvf_horizon_warmup=0.1,
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
+
+
+    return
+
+    # 5B Log horizon
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [1000, 2000, 4000]:
+        add_job(
+            "TVF_5B",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
             tvf_gamma=tvf_gamma,
             tvf_advantage=True,
             tvf_distributional=True,
@@ -1066,8 +1300,79 @@ def setup_mvh4():
             workers=8,
             gamma=gamma,
             time_aware=False,
-            priority=100,
+            priority=0,
         )
+
+    # 5C Sample Dist
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [1000, 2000, 4000]:
+        add_job(
+            "TVF_5C",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+
+            tvf_sample_dist="linear",
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
+    # 5D TD Updates
+    tvf_gamma = 0.997  # this helps ensure that shorter horizons matter more in terms of loss.
+    gamma = 0.999
+    for tvf_max_horizon in [1000, 2000, 4000]:
+        add_job(
+            "TVF_5D",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=64,
+            n_steps=512,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_n_horizons=250,
+            tvf_gamma=tvf_gamma,
+            tvf_advantage=True,
+            tvf_distributional=True,
+
+            tvf_lambda=0,
+
+            vf_coef=0.0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            gamma=gamma,
+            time_aware=False,
+            priority=0,
+        )
+
 
 
 def nice_format(x):
@@ -1087,6 +1392,7 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_mvh4()
+    setup_experiments5()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

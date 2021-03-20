@@ -70,6 +70,8 @@ class Config:
         self.tvf_epsilon        = bool()
         self.tvf_distributional = bool()
         self.tvf_log_horizon    = bool()
+        self.tvf_sample_dist    = str()
+        self.tvf_horizon_warmup = float()
 
         self.time_aware = bool()
         self.ed_type = str()
@@ -88,30 +90,16 @@ class Config:
 
         self.use_clipped_value_loss = bool()
 
-        # emi
-        self.use_emi            = bool()
-
         # population based learning
         self.pbl_population_size = int()
         self.pbl_trust_region    = bool()
-
-        # tdb (trajectory divergece bonus)
-        self.use_tdb            = bool()
 
         self.algo               = str()
 
         self.log_folder         = str()
         self.checkpoint_every   = int()
 
-        self.arl_c_cost         = float()
-        self.arl_i_cost         = float()
-
         self.model              = str()
-
-        self.use_mppe           = bool()
-
-        # RNN
-        self.rnn_block_length   = int()
 
         self.__dict__.update(kwargs)
 
@@ -120,19 +108,19 @@ class Config:
 
     @property
     def propagate_intrinsic_rewards(self):
-        return not self.use_rnd or self.use_mppe
+        return not self.use_rnd
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_emi or self.use_tdb or self.use_mppe
+        return self.use_rnd
 
     @property
     def normalize_intrinsic_rewards(self):
-        return self.use_rnd or self.use_emi or self.use_mppe
+        return self.use_rnd
 
     @property
     def normalize_observations(self):
-        return self.use_rnd or self.use_mppe
+        return self.use_rnd
 
 LOCK_KEY = str(uuid.uuid4().hex)
 
@@ -195,7 +183,7 @@ def parse_args():
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Use truncated value function.")
     parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=0.99, help="Gamma for TVF.")
-    parser.add_argument("--tvf_lambda", type=float, default=0.95, help="Lambda for TVF(\lambda).")
+    parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
     parser.add_argument("--tvf_max_horizon", type=int, default=100, help="Max horizon for TVF.")
     parser.add_argument("--tvf_n_horizons", type=int, default=100, help="Number of horizons to sample during training.")
     parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
@@ -204,7 +192,9 @@ def parse_args():
     parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
     parser.add_argument("--tvf_distributional", type=str2bool, default=False, help="Enables a gaussian model for returns.")
     parser.add_argument("--tvf_log_horizon", type=str2bool, default=False, help="Log horizon on input.")
+    parser.add_argument("--tvf_sample_dist", type=str, default="uniform", help="[uniform|linear]")
 
+    parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
@@ -238,14 +228,6 @@ def parse_args():
 
     parser.add_argument("--frame_stack", type=int, default=4)
 
-    # RNN
-    parser.add_argument("--rnn_block_length", type=int, default=32)
-
-    # EMI
-    parser.add_argument("--use_emi", type=str2bool, default=False)
-    parser.add_argument("--emi_test_size", type=float, default=256)
-
-
     parser.add_argument("--log_folder", type=str, default=None)
 
     parser.add_argument("--use_clipped_value_loss", type=str2bool, default=True, help="Use the improved clipped value loss.")
@@ -263,10 +245,6 @@ def parse_args():
                         help="allows intrinsic returns to propagate through end of episode."
     )
 
-    parser.add_argument("--arl_c_cost", type=float, default=0.01, help="The cost of the concentration action for agent.")
-    parser.add_argument("--arl_i_cost", type=float, default=0.01,
-                        help="The cost of the interferance action for anti-agent.")
-
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
@@ -274,15 +252,11 @@ def parse_args():
 
     # model
     parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
-    parser.add_argument("--use_rnn", type=str2bool, default=False)
 
     #parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
 
     # population stuff
     parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
-
-    # divergence stuff
-    parser.add_argument("--use_tdb", type=str2bool, default=False, help="Trajectory divergence bonus.")
 
     # these are really just for testing to get v-trace working
     parser.add_argument("--pbl_policy_soften", type=str2bool, default=False)
@@ -290,17 +264,11 @@ def parse_args():
     parser.add_argument("--pbl_thinning", type=str, default="None")
     parser.add_argument("--pbl_trust_region", type=str2bool, default=False)
 
-    parser.add_argument("--use_mppe", type=str2bool, default=False, help="Model Prediction Prediction Error")
-
     args.update(**parser.parse_args().__dict__)
 
     # set defaults
     if args.intrinsic_reward_propagation is None:
-        args.intrinsic_reward_propagation = args.use_rnd or args.use_emi or args.use_mppe
-
-    # check...
-    if args.use_tdb:
-        raise Exception("TDB is not implemented yet.")
+        args.intrinsic_reward_propagation = args.use_rnd
 
     assert args.tvf_n_horizons <= args.tvf_max_horizon, "tvf_n_horizons must be <= tvf_max_horizon."
 

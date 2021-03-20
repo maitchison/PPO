@@ -11,9 +11,11 @@ def is_similar(a, b):
     return np.max(delta) < 1e-4
 
 def assert_is_similar(x, truth, message = "Failed test."):
-    if isinstance(x, torch.Tensor):
-        x = x.numpy()
-    assert is_similar(x, truth), message+" expected {} found {}".format(truth,x)
+    x = np.asarray(x)
+    truth = np.asarray(truth)
+    assert x.shape == truth.shape, f"Shapes must match, {x.shape}, {truth.shape}"
+
+    assert is_similar(x, truth), message+" expected \n{}\n found \n{}\n error \n{}\n".format(truth,x, truth-x)
 
 def select_from(a,b):
     N,B = b.shape
@@ -159,42 +161,68 @@ def test_trust_region():
     """ Tests for trust region calculations. """
     pass
 
-def test_calculate_tvf():
-    # This was a complex function to write so I'm testing it here...
-    # mostly it's about getting the dones right
-    rewards =            [1, 0, 2, 4, 6]
-    dones =              [0, 0, 1, 0, 0]
-    value_estimates =    [[0, 0, 0, 0], [0, 1, 2, 3], [0, 2, 4, 6], [0, 3, 6, 9], [0, 4, 8, 12]]
-    final_value_estimates = [0, 5, 10, 15]
-
-    # result = rollout.calculate_tvf(
-    #     np.asarray(rewards)[:, None],
-    #     np.asarray(dones)[:, None],
-    #     np.asarray(value_estimates)[:, None, :],
-    #     np.asarray(final_value_estimates)[None, :],
-    #     gamma=0.5,
-    #     lamb=1.0,
-    # )[0]
-    # # I calculated the first ones by hand, but am not checking the rest yet...
-    # also lambda=1.0 is broken... need to adjust this...
-    # assert_is_similar(result[0,0], [0, 1, 1.25, 5/3], "Truncated Value Function estimates do not match.")
-
-    result = rollout.calculate_tvf(
+def get_tvf_test_params():
+    """
+    Get the parameters for the truncated value function test data.
+    """
+    rewards = [1, 0, 2, 4, 6]
+    dones = [0, 0, 1, 0, 0]
+    final_value_estimates = [0, 5, 10, 15, 20]
+    value_estimates = [[0, 0, 0, 0, 0], [0, 1, 2, 3, 4], [0, 2, 4, 6, 8], [0, 3, 6, 9, 12], [0, 4, 8, 12, 16]]
+    return (
         np.asarray(rewards)[:, None],
         np.asarray(dones)[:, None],
         np.asarray(value_estimates)[:, None, :],
         np.asarray(final_value_estimates)[None, :],
-        gamma=0.5,
-        lamb=0,
-    )[0]
+        0.5,
+    )
 
-    assert_is_similar(result[0, 0], [0, 1, 1.5, 2], "Truncated Value Function estimates do not match.")
-    assert_is_similar(result[1, 0], [0, 0, 1, 2], "Truncated Value Function estimates do not match.")
-    assert_is_similar(result[2, 0], [0, 2, 2, 2], "Truncated Value Function estimates do not match.")
-    assert_is_similar(result[3, 0], [0, 4, 6, 8], "Truncated Value Function estimates do not match.")
-    assert_is_similar(result[4, 0], [0, 6, 8.5, 11], "Truncated Value Function estimates do not match.")
+def test_calculate_tvf_n_step():
+
+    params = get_tvf_test_params()
+
+    ref_result = rollout.calculate_tvf_td(*params)
+    n_step_result = rollout.calculate_tvf_n_step(*params, n_step=1)
+    assert_is_similar(n_step_result, ref_result)
+
+    # ref_result = rollout.calculate_tvf_td0(*params)
+    n_step_result = rollout.calculate_tvf_n_step(*params, n_step=2)
+    ref_result = np.asarray(
+        [
+            [0, 1, 1, 1.5, 2],
+            [0, 0, 1, 1,   1],
+            [0, 2, 2, 2,   2],
+            [0, 4, 7, 8.25, 9.5],
+            [0, 6, 8.5, 11, 13.5],
+        ]
+    )[:, None, :]
+    assert_is_similar(n_step_result, ref_result)
 
     return True
+
+
+# def test_calculate_tvf_lambda():
+#
+#     # just test against weighted n_step
+#
+#     params = get_tvf_test_params()
+#
+#     # calculate our n_step returns
+#     g = []
+#     for i in range(100):
+#         g.append(rollout.calculate_tvf_n_step(*params, n_step=i+1))
+#
+#     # compute weighted average
+#     for lamb in [0, 0.9, 0.95]:
+#         ref_result = g[0] * (1-lamb)
+#         for i in range(1, 100):
+#             ref_result += g[i] * (lamb**i) * (1-lamb)
+#
+#         lambda_result = rollout.calculate_tvf_lambda(*params, lamb=lamb)
+#         assert_is_similar(lambda_result, ref_result)
+#
+#
+#     return True
 
 
 def test_calculate_tvf_mc():
@@ -234,11 +262,42 @@ def test_calculate_tvf_mc():
     return True
 
 
+def test_calculate_tvf_td():
+    # This was a complex function to write so I'm testing it here...
+    # mostly it's about getting the dones right
+    rewards =            [1, 0, 2, 4, 6]
+    dones =              [0, 0, 1, 0, 0]
+    final_value_estimates = [0, 5, 10, 15, 20]
+    value_estimates = [[0, 0, 0, 0, 0], [0, 1, 2, 3, 4], [0, 2, 4, 6, 8], [0, 3, 6, 9, 12], [0, 4, 8, 12, 16]]
+
+    result = rollout.calculate_tvf_td(
+        rewards=np.asarray(rewards)[:, None],
+        dones=np.asarray(dones)[:, None],
+        values=np.asarray(value_estimates)[:, None, :],
+        final_value_estimates=np.asarray(final_value_estimates)[None, :],
+        gamma=0.5,
+    )
+
+    assert_is_similar(result[0, 0], [0, 1, 1.5, 2, 2.5], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[1, 0], [0, 0, 1,   2,   3], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[2, 0], [0, 2, 2,   2,   2], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[3, 0], [0, 4, 6,   8,  10], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[4, 0], [0, 6, 8.5, 11, 13.5], "Truncated Value Function estimates do not match.")
+
+    return True
+
+
 # print("V-trace: ", end='')
 # print("Pass" if test_vtrace() else "Fail!")
 #
 # print("Information Theory Functions: ", end='')
 # print("Pass" if test_information_theory_functions() else "Fail!")
 
-print("TVF_MC: ", end='')
-print("Pass" if test_calculate_tvf_mc() else "Fail!")
+#print("TVF_MC: ", end='')
+#print("Pass" if test_calculate_tvf_mc() else "Fail!")
+print("TVF_TD: ", end='')
+print("Pass" if test_calculate_tvf_td() else "Fail!")
+print("TVF_N_STEP: ", end='')
+print("Pass" if test_calculate_tvf_n_step() else "Fail!")
+#print("TVF_Lambda: ", end='')
+#print("Pass" if test_calculate_tvf_lambda() else "Fail!")

@@ -22,6 +22,9 @@ REWARD_SCALE = float()
 MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
 
+# required for V4 experiments
+FORCE_GAMMA_ON = True
+
 # run 100 evaluations
 # I want error(k) for... (and for different target gamma as well)
 #   * model estimate (k=max)
@@ -70,6 +73,7 @@ def make_model(env):
         use_rnn=False,
         epsilon=args.tvf_epsilon,
         log_horizon=args.tvf_log_horizon,
+        needs_gamma=FORCE_GAMMA_ON,
     )
 
 def discount_rewards(rewards, gamma):
@@ -188,7 +192,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
 
     while remaining_samples > 0:
 
-        batch_samples = min(4, remaining_samples)
+        batch_samples = min(1, remaining_samples) # 1 at a time is slower, but better on the memory for long runs...
         buffers = generate_rollouts(model, max_frames, num_rollouts=batch_samples)
 
         # always use these horizons, but add additional up to and including the final horizon
@@ -304,11 +308,10 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
             buffers[-1]['frames'] = []  # video frames
 
     horizons = np.repeat(np.arange(MAX_HORIZON)[None, :], repeats=num_rollouts, axis=0)
-    gammas = np.ones_like(horizons) * args.tvf_gamma
 
     while any(is_running) and frame_count < max_frames:
 
-        model_out = model.forward(states, horizons=horizons, gammas=gammas)
+        model_out = model.forward(states, horizons=horizons)
         log_probs = model_out["log_policy"].detach().cpu().numpy()
         action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
@@ -486,5 +489,8 @@ if __name__ == "__main__":
 
     for c in "ABCDEFGHIJKLMNOP":
         monitor(f"./Run/TVF_4{c}")
+
+    #for c in "ABCDEFGHIJKLMNOP":
+    #    monitor(f"./Run/TVF_5{c}")
 
 

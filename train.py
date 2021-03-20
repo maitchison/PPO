@@ -6,7 +6,7 @@ import multiprocessing
 import ast
 
 from rl import utils, models, atari, config, logger
-from rl import ppo, arl, pbl
+from rl import ppo, pbl
 from rl.config import args
 
 resolution_map = {
@@ -91,18 +91,10 @@ if __name__ == "__main__":
     obs_space = env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
-    if (args.use_rnd + args.use_emi) > 1:
-        # todo: this should be a setting, not a set of bools
-        raise Exception("EMI, RND, are not compatible.")
-
     model_args = {}
 
     if args.use_rnd:
         ACModel = models.RNDModel
-    elif args.use_mppe:
-        ACModel = models.MPPEModel
-    elif args.use_emi:
-        ACModel = models.EMIModel
     elif args.use_tvf:
         ACModel = models.TVFModel
         model_args["epsilon"] = args.tvf_epsilon
@@ -119,16 +111,7 @@ if __name__ == "__main__":
         else:
             raise Exception("invalid model name {}.".format(args.model))
 
-        if args.algo.lower() == "arl":
-            assert not args.use_rnn
-            actor_critic_model = ACModel(head=head_name, input_dims=obs_space, actions=n_actions*2,
-                                         device=args.device, dtype=torch.float32, **model_args)
-
-            arl_model = ACModel(head=head_name, input_dims=obs_space, actions=n_actions+1,
-                                         device=args.device, dtype=torch.float32, **model_args)
-
-            arl.train_arl(actor_critic_model, arl_model, log)
-        elif args.algo.lower() == "ppo":
+        if args.algo.lower() == "ppo":
 
             # reduce default hidden units from 512 to 64
             # otherwise we have a 512x512 array, which will be 0.25M parameters
@@ -142,7 +125,6 @@ if __name__ == "__main__":
                 actions=n_actions,
                 device=args.device,
                 dtype=torch.float32,
-                use_rnn=args.use_rnn,
                 **model_args
             )
             ppo.train(actor_critic_model, log)

@@ -143,7 +143,7 @@ def train(model: models.BaseModel, log: Logger):
         returns_time = (time.time() - returns_start_time) / batch_size
 
         train_start_time = time.time()
-        runner.train()
+        runner.train(env_step)
         train_time = (time.time() - train_start_time) / batch_size
 
         step_time = (time.time() - step_start_time) / batch_size
@@ -169,18 +169,6 @@ def train(model: models.BaseModel, log: Logger):
             log.print_variables(include_header=print_counter % 10 == 0)
             last_print_time = time.time()
             print_counter += 1
-
-            # export debug frames
-            if args.use_emi:
-                try:
-                    with torch.no_grad():
-                        img = model.generate_debug_image(runner.emi_prev_state, runner.emi_actions,
-                                                         runner.emi_next_state)
-                    os.makedirs(os.path.join(args.log_folder, "emi"), exist_ok=True)
-                    torchvision.utils.save_image(img, os.path.join(args.log_folder, "emi",
-                                                                   "fdm-{:04d}K.png".format(env_step // 1000)))
-                except Exception as e:
-                    log.warn(str(e))
 
         # save log and refresh lock
         if time.time() - last_log_time >= args.debug_log_freq:

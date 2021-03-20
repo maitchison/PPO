@@ -316,6 +316,7 @@ class TVFModel(BaseModel):
                  use_rnn=False,
                  epsilon=0.01,
                  log_horizon=False,
+                 needs_gamma=False, # only used for compatibility with older models
                  **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC_RNN-" + head if use_rnn else "AC-" + head
@@ -331,9 +332,13 @@ class TVFModel(BaseModel):
 
         final_hidden_units = 512 if use_rnn else self.net.hidden_units
 
+        self.needs_gamma = needs_gamma
+
+        extra_features = 2 if self.needs_gamma else 1
+
         self.fc_policy = nn.Linear(final_hidden_units, actions)
         self.fc_value = nn.Linear(final_hidden_units, 1)
-        self.fc_tvf_hidden = nn.Linear(final_hidden_units + 2, 512)
+        self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, 512)
         self.fc_tvf_value = nn.Linear(512, 1)
         self.fc_tvf_error = nn.Linear(512, 1)
         self.log_horizon = log_horizon
@@ -344,7 +349,7 @@ class TVFModel(BaseModel):
         """ Returns detached log_policy for given input. """
         return self.forward(x, state)["log_policy"].detach().cpu().numpy()
 
-    def forward(self, x, state=None, horizons=None, gammas=None):
+    def forward(self, x, state=None, horizons=None):
         """
         x: Tensor of dims [B, *obs_shape]
         state: (optional) If given, should be a tuple (h,c)
@@ -373,52 +378,37 @@ class TVFModel(BaseModel):
         log_policy = F.log_softmax(self.fc_policy(x), dim=1)
         value = self.fc_value(x).squeeze(dim=-1)
 
-        if gammas is not None and horizons is not None:
+        if horizons is not None:
 
             # upload to GPU
             if type(horizons) is np.ndarray:
                 horizons = torch.from_numpy(horizons)
-            if type(gammas) is np.ndarray:
-                gammas = torch.from_numpy(gammas)
 
             horizons = horizons.to(device=x.device, dtype=torch.float32)
-            gammas = gammas.to(device=x.device, dtype=torch.float32)
 
             _, H = horizons.shape
 
-            # stub: don't transform gammas, won't work if gamma = 1.0...
-            #transformed_gammas = 1/(1-gammas) if gamma != 0 else 0
-            transformed_gammas = gammas * 0 # just ignore these for the moment...
-            if self.log_horizion:
+            if self.log_horizon:
                 transformed_horizons = torch.log2(horizons+1)
             else:
                 transformed_horizons = horizons
 
-            # work out value for each k provided
-            # note: can we do this in parallel?
-            # tvf_values = []
-            # tvf_errors = []
-            # for h in range(H):
-            #     x_with_side_channel_info = torch.cat([
-            #         x,
-            #         horizons[:, h:h+1],
-            #         transformed_gammas[:, h:h+1]
-            #     ], dim=1)
-            #     tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_channel_info))
-            #     tvf_values.append(self.fc_tvf_value(tvf_h).squeeze(dim=-1))
-            #     tvf_errors.append(self.fc_tvf_error(tvf_h).squeeze(dim=-1))
-            # result['tvf_value'] = torch.stack(tvf_values, dim=1)
-            # result['tvf_std'] = self.epsilon + torch.exp(torch.stack(tvf_errors, dim=1))
-
-
             # faster version
             # x is [B, 512], make it [B, H,  512]
             x_duplicated = x[:, None, :].repeat(1, H, 1)
-            x_with_side_info = torch.cat([
-                x_duplicated,
-                transformed_horizons[:, :, None],
-                transformed_gammas[:, :, None],
-            ], dim=-1)
+
+            if self.needs_gamma:
+                # needed for older models, but isn't used
+                x_with_side_info = torch.cat([
+                    x_duplicated,
+                    transformed_horizons[:, :, None],
+                    transformed_horizons[:, :, None]*0
+                ], dim=-1)
+            else:
+                x_with_side_info = torch.cat([
+                    x_duplicated,
+                    transformed_horizons[:, :, None]
+                ], dim=-1)
             tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_info))
             tvf_values = self.fc_tvf_value(tvf_h).squeeze(dim=-1)
             tvf_errors = self.fc_tvf_error(tvf_h).squeeze(dim=-1)
