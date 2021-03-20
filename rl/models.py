@@ -339,8 +339,7 @@ class TVFModel(BaseModel):
         self.fc_policy = nn.Linear(final_hidden_units, actions)
         self.fc_value = nn.Linear(final_hidden_units, 1)
         self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, 512)
-        self.fc_tvf_value = nn.Linear(512, 1)
-        self.fc_tvf_error = nn.Linear(512, 1)
+        self.fc_tvf_value = nn.Linear(512, 2)
         self.log_horizon = log_horizon
         self.epsilon = epsilon
         self.set_device_and_dtype(device, dtype)
@@ -393,7 +392,7 @@ class TVFModel(BaseModel):
             else:
                 transformed_horizons = horizons
 
-            # faster version
+            # parallel version
             # x is [B, 512], make it [B, H,  512]
             x_duplicated = x[:, None, :].repeat(1, H, 1)
 
@@ -410,8 +409,9 @@ class TVFModel(BaseModel):
                     transformed_horizons[:, :, None]
                 ], dim=-1)
             tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_info))
-            tvf_values = self.fc_tvf_value(tvf_h).squeeze(dim=-1)
-            tvf_errors = self.fc_tvf_error(tvf_h).squeeze(dim=-1)
+            tvf_out = self.fc_tvf_value(tvf_h)
+            tvf_values = tvf_out[..., 0]
+            tvf_errors = tvf_out[..., 1]
 
             result['tvf_value'] = tvf_values
             result['tvf_std'] = self.epsilon + torch.exp(tvf_errors)

@@ -66,7 +66,6 @@ class Config:
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_advantage      = bool()
-        self.tvf_real_advantage = bool()
         self.tvf_epsilon        = bool()
         self.tvf_distributional = bool()
         self.tvf_log_horizon    = bool()
@@ -187,8 +186,6 @@ def parse_args():
     parser.add_argument("--tvf_max_horizon", type=int, default=100, help="Max horizon for TVF.")
     parser.add_argument("--tvf_n_horizons", type=int, default=100, help="Number of horizons to sample during training.")
     parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
-    parser.add_argument("--tvf_real_advantage", type=str2bool, default=False,
-                        help="Use my modified advantage function...")
     parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
     parser.add_argument("--tvf_distributional", type=str2bool, default=False, help="Enables a gaussian model for returns.")
     parser.add_argument("--tvf_log_horizon", type=str2bool, default=False, help="Log horizon on input.")

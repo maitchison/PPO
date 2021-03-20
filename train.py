@@ -27,6 +27,10 @@ def get_previous_experiment_guid(experiment_path, run_name):
 
 if __name__ == "__main__":
 
+    # stub
+    import numpy as np
+    np.seterr(all='raise')
+
     log = logger.Logger()
 
     config.parse_args()

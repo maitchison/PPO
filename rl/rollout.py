@@ -146,70 +146,6 @@ def calculate_gae_tvf(
 
     return advantages
 
-
-def calculate_tvf_mc(rewards, dones, final_value_estimates, gamma:float):
-    """
-    Calculate return targets using value function horizons.
-    This involves finding targets for each horizon being learned
-
-    final_value_estimates: np array of shape [A, K+1]
-    rewards: np array of shape [N, A]
-
-    returns: returns for each time step and horizon, np array of shape [N, A, K]
-
-    """
-
-    N, A = rewards.shape
-    H = final_value_estimates.shape[1]
-
-    returns = np.zeros([N, A, H], dtype=np.float32)
-
-    for t in range(N):
-        reward_sum = np.zeros([A], dtype=np.float32)
-        current_discount = np.ones([A], dtype=np.float32)
-        # calculate return for each horizon
-        for h in range(1, H):
-            # if we go off the end use bootstrap estimate with remaining horizon
-            if (t+h) > N:
-                remaining_horizon = h - (N-t)
-                bootstrap_estimate = final_value_estimates[:, remaining_horizon] if remaining_horizon > 0 else 0
-                returns[t, :, h] = reward_sum + current_discount * bootstrap_estimate
-            else:
-                reward_sum += current_discount * rewards[t+h-1, :]
-                returns[t, :, h] = reward_sum
-                current_discount *= (1-dones[t+h-1, :]) * gamma
-
-
-    # # I think we have a bug if we terminate on final step
-    # for t in range(N):
-    #     reward_sum = 0
-    #     counter = 0
-    #     for k in range(K):
-    #         if (t+k) >= N:
-    #             # bootstrap when we go off the end
-    #             bootstrap_estimate = final_value_estimates[:, k - counter] if (k-counter) > 0 else 0
-    #             returns[t, :, k] = reward_sum + (gamma ** counter) * bootstrap_estimate
-    #         else:
-    #             this_reward = (gamma ** k) * rewards[t+k, :] if (t+k) < len(rewards) else 0
-    #             # note: dones might be off by one time step?
-    #             reward_sum = reward_sum * (1-dones[t, :]) + this_reward
-    #             returns[t, :, k] = reward_sum
-    #             counter += 1
-    #
-    #     # for k in range(K):
-    #     #     returns[i, :, k] = 0
-    #     #     discount = np.asarray([gamma]*A) * (1-dones[i])
-    #     #     counter = 0
-    #     #     for j in range(k):
-    #     #         this_reward = rewards[i+j]*discount if (i+j) < len(rewards) else 0
-    #     #         returns[i, :, k] += this_reward
-    #     #         discount *= gamma * (1-dones[i+j])
-    #     #
-    #     #     returns[i, :, k] += final_value_estimates[:, k-counter]*discount if (k-counter) > 0 else 0
-
-    return returns
-
-
 def calculate_tvf_lambda(
         rewards:np.ndarray,
         dones:np.ndarray,
@@ -226,7 +162,7 @@ def calculate_tvf_lambda(
     if lamb == 0:
         return calculate_tvf_td(*params)
     if lamb == 1:
-        return calculate_tvf_n_step(*params, args.n_steps)
+        return calculate_tvf_mc(*params)
 
     # can be slow for high n_steps... so we cap it at 100, and use effective horizon as a cap too
     N = int(min(1/(1-lamb), args.n_steps, 100))
@@ -292,6 +228,55 @@ def calculate_tvf_n_step(
         #for h in range(steps_made+1, H):
         #    bootstrap_estimate = discount * values[t + steps_made, :, h - steps_made] if (h - steps_made) > 0 else 0
         #    returns[t, :, h] = reward_sum + bootstrap_estimate
+
+    return returns
+
+
+def calculate_tvf_mc(
+        rewards:np.ndarray,
+        dones:np.ndarray,
+        values:None, #note: values is ignored...
+        final_value_estimates:np.ndarray,
+        gamma:float
+        ):
+    """
+    This is really just the largest n_step that will work, but does not require values
+    """
+
+    N, A = rewards.shape
+    H = final_value_estimates.shape[-1]
+
+    returns = np.zeros([N, A, H], dtype=np.float32)
+
+    n_step = N-1
+
+    for t in range(N):
+
+        # first collect the rewards
+        discount = np.ones([A], dtype=np.float32)
+        reward_sum = np.zeros([A], dtype=np.float32)
+        steps_made = 0
+
+        for n in range(1, n_step + 1):
+            if (t + n - 1) >= N:
+                break
+            # n_step is longer that horizon required
+            if n >= H:
+                break
+            this_reward = rewards[t + n - 1]
+            reward_sum += discount * this_reward
+            discount *= gamma * (1 - dones[t + n - 1])
+            steps_made += 1
+
+            # the first n_step returns are just the discounted rewards, no bootstrap estimates...
+            returns[t, :, n] = reward_sum
+
+        # note: if we are near the end we might not be able to do a full n_steps, so just a shorter n_step for these
+
+        # next update the remaining horizons based on the bootstrap estimates
+        # we do all the horizons in one go, which quite fast for long horizons
+        discounted_bootstrap_estimates = discount[:, None] * final_value_estimates[:, 1:H-steps_made]
+        returns[t, :, steps_made+1:H] += reward_sum[:, None] + discounted_bootstrap_estimates
 
     return returns
 
@@ -367,7 +352,8 @@ class Runner():
         # value function horizons
         if args.use_tvf:
             self.tvf_returns = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
-            self.tvf_values = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
+            if self.tvf_requires_full_horizon_at_rollout:
+                self.tvf_values = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
             # we need to have a final value estimate for each horizon, as we don't know which ones will be used.
             self.tvf_final_value_estimates = np.zeros([A, args.tvf_max_horizon + 1], dtype=np.float32)
 
@@ -390,6 +376,10 @@ class Runner():
         self.log_high_grad_norm = True
 
         self.step=0
+
+        # create rediscounting ratio and debug horizon list (these are always generated)
+        self.tvf_rediscount_ratios = np.asarray([(args.gamma ** h) / (args.tvf_gamma ** h) for h in range(args.tvf_max_horizon)], dtype=np.float32)
+        self.tvf_debug_horizons = [h for h in [0, 1, 10, 30, 100, 300, 500, 1000, 2000, 4000] if h <= args.tvf_max_horizon]
 
 
     def create_envs(self):
@@ -566,30 +556,46 @@ class Runner():
                 history[k] = np.asarray(v)
             pickle.dump(history, gzip.open(filename+".hst.gz", "wb", compresslevel=9))
 
+    @property
+    def tvf_requires_full_horizon_at_rollout(self):
+        return args.tvf_gamma != args.gamma or args.tvf_lambda != 1
 
+    @torch.no_grad()
     def generate_rollout(self, is_warmup=False):
 
         assert self.vec_env is not None, "Please call create_envs first."
 
         additional_params = {}
 
-        if args.use_tvf:
-            horizons = np.repeat(np.arange(args.tvf_max_horizon+1)[None, :], repeats=self.A, axis=0)
-            additional_params["horizons"] = horizons
+        max_h = self.current_max_horizon
+        all_horizons = np.repeat(np.arange(args.tvf_max_horizon+1, dtype=np.int16)[None, :], repeats=self.A, axis=0)
+        # also include horizons for debugging
+        required_horizons = np.asarray(self.tvf_debug_horizons + [max_h], dtype=np.int16)
+        far_horizons = np.repeat(required_horizons[None, :], repeats=self.A, axis=0)
 
         for t in range(self.N):
 
             prev_states = self.states.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            model_out = self.forward(**additional_params)
-
-            log_policy = model_out["log_policy"].detach().cpu().numpy()
-            ext_value = model_out["ext_value"].detach().cpu().numpy()
-
             if args.use_tvf:
-                # these are needed for bootstrapping later on...
-                self.tvf_values[t] = model_out["tvf_value"].detach().cpu().numpy()
+                if self.tvf_requires_full_horizon_at_rollout:
+                    model_out = self.forward(horizons=all_horizons)
+                    tvf_values = model_out["tvf_value"].cpu().numpy()
+                    self.tvf_values[t] = tvf_values
+                    ext_value = self.get_rediscounted_value_estimate(tvf_values[:, :max_h], args.gamma)
+                else:
+                    model_out = self.forward(horizons=far_horizons)
+                    tvf_values = model_out["tvf_value"].cpu().numpy()
+                    # map across all the required horizons
+                    for h in required_horizons:
+                        self.tvf_values[t, :, h] = tvf_values[:, h]
+                    ext_value = tvf_values[..., -1]
+            else:
+                model_out = self.forward()
+                ext_value = model_out["ext_value"].cpu().numpy()
+
+            log_policy = model_out["log_policy"].cpu().numpy()
 
             # during warm-up we simply collect experience through a uniform random policy.
             if is_warmup:
@@ -658,15 +664,16 @@ class Runner():
 
         # get value estimates for final state.
         if args.use_tvf:
-            model_out = self.forward(**additional_params)
-            self.tvf_final_value_estimates[:] = model_out["tvf_value"].detach().cpu().numpy()
+            model_out = self.forward(horizons=all_horizons)
+            final_tvf_values = model_out["tvf_value"].cpu().numpy()
+            self.tvf_final_value_estimates[:] = final_tvf_values
+            self.ext_final_value_estimate = self.get_rediscounted_value_estimate(final_tvf_values[:, :max_h], args.gamma)
         else:
             model_out = self.forward()
-
-        self.ext_final_value_estimate = model_out["ext_value"].detach().cpu().numpy()
+            self.ext_final_value_estimate = model_out["ext_value"].cpu().numpy()
 
         if "int_value" in model_out:
-            self.int_final_value_estimate = model_out["int_value"].detach().cpu().numpy()
+            self.int_final_value_estimate = model_out["int_value"].cpu().numpy()
 
     def calculate_returns(self):
 
@@ -690,35 +697,17 @@ class Runner():
                 self.tvf_returns[:] = calculate_tvf_lambda(*params, lamb=args.tvf_lambda)
 
         if args.use_tvf:
-            # use rediscounted returns to calculate advantages, and return targets
-            N, A, H = self.tvf_values.shape
-            max_h = self.current_max_horizon
             self.log.watch("tvf_horizon", self.current_max_horizon)
-            _ext_value = self.get_rediscounted_value_estimate(self.tvf_values.reshape(N * A, H)[:, :max_h], args.gamma).reshape(N, A)
-            _ext_final_value_estimate = self.get_rediscounted_value_estimate(self.tvf_final_value_estimates[:max_h], args.gamma)
-        else:
-            _ext_value = self.ext_value
-            _ext_final_value_estimate = self.ext_final_value_estimate
 
-        if args.tvf_real_advantage:
-            self.ext_advantage = calculate_gae_tvf(
-                self.ext_rewards,
-                self.terminals,
-                self.tvf_values,
-                self.tvf_final_value_estimates,
-                args.gamma,
-            )
-            self.ext_returns *= 0 # no targets for ext_value
-        else:
-            self.ext_advantage = calculate_gae(
-                self.ext_rewards,
-                _ext_value,
-                _ext_final_value_estimate,
-                self.terminals,
-                args.gamma,
-                args.gae_lambda
-            )
-            self.ext_returns = self.ext_advantage + _ext_value
+        self.ext_advantage = calculate_gae(
+            self.ext_rewards,
+            self.ext_value,
+            self.ext_final_value_estimate,
+            self.terminals,
+            args.gamma,
+            args.gae_lambda
+        )
+        self.ext_returns = self.ext_advantage + self.ext_value
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -776,10 +765,9 @@ class Runner():
         self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
         self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
 
+
         if args.use_tvf:
-            for h in [0, 1, 10, 30, 100, 300, 500, 1000, 2000, 4000]:
-                if h > args.tvf_max_horizon:
-                    continue
+            for h in self.tvf_debug_horizons:
                 value = self.tvf_values[:, :, h].ravel().astype(np.float32)
                 target = self.tvf_returns[:, :, h].ravel().astype(np.float32)
                 self.log.watch_mean(f"ev_{h:04d}", utils.explained_variance(value, target), display_width=8)
@@ -822,15 +810,29 @@ class Runner():
         returns: float tensor of shape [B]
         """
 
+        # todo: please unit test this...
+
+        B, H = values.shape
+
+        if gamma == args.tvf_gamma:
+            return values[:, -1]
+
         if type(values) is np.ndarray:
             values = torch.from_numpy(values)
             is_numpy = True
         else:
             is_numpy = False
 
-        B, H = values.shape
-        device = values.device
+        if gamma == args.gamma and H <= len(self.tvf_rediscount_ratios):
+            # fast path for standard gamma conversion
+            values_copy = values[:] # make a copy (as we'll be editing values)
+            values_copy[:, 1:] -= values_copy[:, 0:-1]
+            values_copy *= torch.from_numpy(self.tvf_rediscount_ratios)[None, :H]
+            discounted_reward_sum = torch.sum(values_copy, dim=1)
+            return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
 
+        # general path
+        device = values.device
         prev = torch.zeros([B], dtype=torch.float32, device=device)
         discounted_reward_sum = torch.zeros([B], dtype=torch.float32, device=device)
         old_discount = 1
