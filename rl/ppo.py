@@ -218,6 +218,17 @@ def train(model: models.BaseModel, log: Logger):
         # any of the logging time.
         walltime += (step_time * batch_size)
 
+        # check to see if the device we are using has been disallowed
+        if args.device in utils.get_disallowed_devices():
+            # notify user, release lock and hard exit
+            # we could save a checkpoint but it's cleaner not do, otherwise graphs that generate datapoints at
+            # each checkpoint will get confused (unless we save it as most recent...? Actually that would work?
+            log.important("Training interrupted, as device was disallowed.")
+            utils.release_lock()
+
+            return
+
+
     # -------------------------------------
     # save final information
 

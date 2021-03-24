@@ -44,7 +44,7 @@ class Config:
         self.reward_clip        = float()
         self.reward_normalization = bool()
 
-        self.mini_batch_size    = int()
+        self.n_mini_batches       = int()
         self.sync_envs          = bool()
         self.resolution         = str()
         self.color              = bool()
@@ -58,6 +58,7 @@ class Config:
         self.hostname           = str()
         self.sticky_actions     = bool()
         self.guid               = str()
+        self.max_micro_batch_size = float()
 
         self.use_tvf            = bool()
         self.tvf_coef           = float()
@@ -67,8 +68,7 @@ class Config:
         self.tvf_lambda         = float()
         self.tvf_advantage      = bool()
         self.tvf_epsilon        = bool()
-        self.tvf_distributional = bool()
-        self.tvf_log_horizon    = bool()
+        self.tvf_loss_func      = bool()
         self.tvf_sample_dist    = str()
         self.tvf_horizon_warmup = float()
 
@@ -181,16 +181,14 @@ def parse_args():
 
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Use truncated value function.")
     parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
-    parser.add_argument("--tvf_gamma", type=float, default=0.99, help="Gamma for TVF.")
+    parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
     parser.add_argument("--tvf_max_horizon", type=int, default=100, help="Max horizon for TVF.")
     parser.add_argument("--tvf_n_horizons", type=int, default=100, help="Number of horizons to sample during training.")
     parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
     parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
-    parser.add_argument("--tvf_distributional", type=str2bool, default=False, help="Enables a gaussian model for returns.")
-    parser.add_argument("--tvf_log_horizon", type=str2bool, default=False, help="Log horizon on input.")
+    parser.add_argument("--tvf_loss_func", type=str, default="mse", help="[nlp|mse|huber]")
     parser.add_argument("--tvf_sample_dist", type=str, default="uniform", help="[uniform|linear]")
-
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
@@ -200,7 +198,8 @@ def parse_args():
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_clip", type=float, default=5.0)
 
-    parser.add_argument("--mini_batch_size", type=int, default=1024)
+    parser.add_argument("--n_mini_batches", type=int, default=8)
+    parser.add_argument("--max_micro_batch_size", type=int, default=512)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
@@ -266,6 +265,8 @@ def parse_args():
     # set defaults
     if args.intrinsic_reward_propagation is None:
         args.intrinsic_reward_propagation = args.use_rnd
+    if args.tvf_gamma is None:
+        args.tvf_gamma = args.gamma
 
     assert args.tvf_n_horizons <= args.tvf_max_horizon, "tvf_n_horizons must be <= tvf_max_horizon."
 

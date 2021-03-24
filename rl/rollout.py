@@ -171,6 +171,8 @@ def calculate_tvf_lambda(
     for i in range(N):
         g.append(calculate_tvf_n_step(*params, n_step=i+1))
 
+    # this is totally wrong... please fix.
+
     result = g[0] * (1-lamb)
     for i in range(1, N):
         result += g[i] * (lamb**i) * (1-lamb)
@@ -248,7 +250,7 @@ def calculate_tvf_mc(
 
     returns = np.zeros([N, A, H], dtype=np.float32)
 
-    n_step = N-1
+    n_step = N
 
     for t in range(N):
 
@@ -260,7 +262,7 @@ def calculate_tvf_mc(
         for n in range(1, n_step + 1):
             if (t + n - 1) >= N:
                 break
-            # n_step is longer that horizon required
+            # n_step is longer than horizon required
             if n >= H:
                 break
             this_reward = rewards[t + n - 1]
@@ -275,8 +277,8 @@ def calculate_tvf_mc(
 
         # next update the remaining horizons based on the bootstrap estimates
         # we do all the horizons in one go, which quite fast for long horizons
-        discounted_bootstrap_estimates = discount[:, None] * final_value_estimates[:, 1:H-steps_made]
-        returns[t, :, steps_made+1:H] += reward_sum[:, None] + discounted_bootstrap_estimates
+        discounted_bootstrap_estimates = discount[:, None] * final_value_estimates[:, 1:-steps_made]
+        returns[t, :, steps_made+1:] += reward_sum[:, None] + discounted_bootstrap_estimates
 
     return returns
 
@@ -352,8 +354,7 @@ class Runner():
         # value function horizons
         if args.use_tvf:
             self.tvf_returns = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
-            if self.tvf_requires_full_horizon_at_rollout:
-                self.tvf_values = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
+            self.tvf_values = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
             # we need to have a final value estimate for each horizon, as we don't know which ones will be used.
             self.tvf_final_value_estimates = np.zeros([A, args.tvf_max_horizon + 1], dtype=np.float32)
 
@@ -375,11 +376,14 @@ class Runner():
         # outputs tensors when clip loss is very high.
         self.log_high_grad_norm = True
 
-        self.step=0
+        self.step = 0
+        self.game_crashes = 0
 
         # create rediscounting ratio and debug horizon list (these are always generated)
         self.tvf_rediscount_ratios = np.asarray([(args.gamma ** h) / (args.tvf_gamma ** h) for h in range(args.tvf_max_horizon)], dtype=np.float32)
         self.tvf_debug_horizons = [h for h in [0, 1, 10, 30, 100, 300, 500, 1000, 2000, 4000] if h <= args.tvf_max_horizon]
+
+        assert self.mini_batch_size % self.micro_batch_size == 0
 
 
     def create_envs(self):
@@ -455,6 +459,7 @@ class Runner():
         self.episode_score *= 0
         self.episode_len *= 0
         self.step = 0
+        self.game_crashes = 0
 
     def run_random_agent(self, iterations):
         self.log.info("Warming up model with random agent...")
@@ -465,7 +470,7 @@ class Runner():
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
-    def forward(self, states=None, **kwargs):
+    def forward(self, states=None, max_batch_size=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
         """
@@ -473,7 +478,29 @@ class Runner():
         if states is None:
             states = self.states
 
-        return self.model.forward(self.states if states is None else states, **kwargs)
+        # break large forwards into batches
+        if max_batch_size is not None and len(states) > max_batch_size:
+
+            mid_point = len(states) // 2
+
+            # just for debugging
+            #if self.step == 0:
+            #    self.log.info(f"Using forward split from {len(states)} to {mid_point} on max_batch_size of {max_batch_size:.2f}")
+
+            if 'horizons' in kwargs:
+                horizons = kwargs["horizons"]
+                del kwargs["horizons"]
+                a = self.forward(states[:mid_point], horizons=horizons[:mid_point], max_batch_size=max_batch_size, **kwargs)
+                b = self.forward(states[mid_point:], horizons=horizons[mid_point:], max_batch_size=max_batch_size, **kwargs)
+            else:
+                a = self.forward(states[:mid_point], **kwargs)
+                b = self.forward(states[mid_point:], **kwargs)
+            result = {}
+            for k in a.keys():
+                result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
+            return result
+        else:
+            return self.model.forward(self.states if states is None else states, **kwargs)
 
     def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 30*60*15):
         """ Exports a movie of agent playing game.
@@ -565,13 +592,22 @@ class Runner():
 
         assert self.vec_env is not None, "Please call create_envs first."
 
-        additional_params = {}
-
         max_h = self.current_max_horizon
         all_horizons = np.repeat(np.arange(args.tvf_max_horizon+1, dtype=np.int16)[None, :], repeats=self.A, axis=0)
         # also include horizons for debugging
         required_horizons = np.asarray(self.tvf_debug_horizons + [max_h], dtype=np.int16)
         far_horizons = np.repeat(required_horizons[None, :], repeats=self.A, axis=0)
+
+        # calculate a good batch_size to use
+
+        max_rollout_batch_size = args.max_micro_batch_size
+        max_final_batch_size = args.max_micro_batch_size
+
+        if args.use_tvf:
+            horizon_factor = np.clip(int(args.tvf_max_horizon / 128), 1, args.max_micro_batch_size)
+            if self.tvf_requires_full_horizon_at_rollout:
+                max_rollout_batch_size /= horizon_factor
+            max_final_batch_size /= horizon_factor
 
         for t in range(self.N):
 
@@ -580,16 +616,16 @@ class Runner():
             # forward state through model, then detach the result and convert to numpy.
             if args.use_tvf:
                 if self.tvf_requires_full_horizon_at_rollout:
-                    model_out = self.forward(horizons=all_horizons)
+                    model_out = self.forward(horizons=all_horizons, max_batch_size=max_rollout_batch_size)
                     tvf_values = model_out["tvf_value"].cpu().numpy()
                     self.tvf_values[t] = tvf_values
                     ext_value = self.get_rediscounted_value_estimate(tvf_values[:, :max_h], args.gamma)
                 else:
-                    model_out = self.forward(horizons=far_horizons)
+                    model_out = self.forward(horizons=far_horizons, max_batch_size=max_rollout_batch_size)
                     tvf_values = model_out["tvf_value"].cpu().numpy()
                     # map across all the required horizons
-                    for h in required_horizons:
-                        self.tvf_values[t, :, h] = tvf_values[:, h]
+                    for index, h in enumerate(required_horizons):
+                        self.tvf_values[t, :, h] = tvf_values[:, index]
                     ext_value = tvf_values[..., -1]
             else:
                 model_out = self.forward()
@@ -647,6 +683,8 @@ class Runner():
                     if not is_warmup:
                         self.log.watch_full("ep_score", self.episode_score[i])
                         self.log.watch_full("ep_length", self.episode_len[i])
+                        if "game_freeze" in infos[i]:
+                            self.game_crashes += 1
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
 
@@ -664,12 +702,12 @@ class Runner():
 
         # get value estimates for final state.
         if args.use_tvf:
-            model_out = self.forward(horizons=all_horizons)
+            model_out = self.forward(horizons=all_horizons, max_batch_size=max_final_batch_size)
             final_tvf_values = model_out["tvf_value"].cpu().numpy()
             self.tvf_final_value_estimates[:] = final_tvf_values
             self.ext_final_value_estimate = self.get_rediscounted_value_estimate(final_tvf_values[:, :max_h], args.gamma)
         else:
-            model_out = self.forward()
+            model_out = self.forward(max_batch_size=max_final_batch_size)
             self.ext_final_value_estimate = model_out["ext_value"].cpu().numpy()
 
         if "int_value" in model_out:
@@ -765,6 +803,7 @@ class Runner():
         self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
         self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
 
+        self.log.watch("game_crashes", self.game_crashes, display_width=0 if self.game_crashes==0 else 8)
 
         if args.use_tvf:
             for h in self.tvf_debug_horizons:
@@ -849,7 +888,8 @@ class Runner():
     def train_minibatch(self, data, zero_grad=True, apply_update=True, initial_loss=None,
                         loss_scale=1.0):
 
-        result = {}
+
+        mini_batch_size = len(data["prev_state"])
 
         loss = initial_loss or torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
@@ -862,8 +902,6 @@ class Runner():
         policy_logprobs = data["log_policy"]
         advantages = data["advantages"]
         weights = data["weights"] if "weights" in data else 1
-
-        mini_batch_size = len(prev_states)
 
         # create additional args if needed
         kwargs = {}
@@ -894,11 +932,10 @@ class Runner():
             mu = model_out["tvf_value"]
 
             # MSE loss (calculate for reference even when using distributional)
-            # I wonder if huber loss is better here?
             tvf_loss_mse = -0.5 * args.tvf_coef * (targets - mu).pow(2)
             self.log.watch_mean("tvf_loss_mse", -tvf_loss_mse.mean(), history_length=64)
 
-            if args.tvf_distributional:
+            if args.tvf_loss_func == "nlp":
                 std = model_out["tvf_std"]
                 # log prob loss on gaussian distribution
                 # I think this is dodgy, as log_prob is really log_pdf, and therefore we will get log_probs > 0.
@@ -907,10 +944,15 @@ class Runner():
                 dist = torch.distributions.Normal(mu, std)
                 tvf_loss_nlp = args.tvf_coef * dist.log_prob(targets)
                 self.log.watch_mean("tvf_loss_nlp", -tvf_loss_nlp.mean(), history_length=64)
-                self.log.watch_mean("tvf_std_nlp", tvf_loss_nlp.std(), history_length=64)
                 loss += tvf_loss_nlp.mean()
-            else:
+                raise Exception("NLP has been disabled due to stability issues during training")
+            elif args.tvf_loss_func == "mse":
                 loss += tvf_loss_mse.mean()
+            elif args.tvf_loss_func == "huber":
+                tvf_loss_huber = -args.tvf_coef * torch.nn.functional.smooth_l1_loss(mu, targets)
+                loss += tvf_loss_huber.mean()
+            else:
+                raise ValueError(f"Invalid loss function {args.tvf_loss_func}")
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -947,7 +989,7 @@ class Runner():
         # -------------------------------------------------------------------------
 
         loss_entropy = -(logps.exp() * logps).sum(axis=1)
-        loss_entropy *= weights * args.entropy_bonus / mini_batch_size
+        loss_entropy *= weights * args.entropy_bonus
         loss_entropy = loss_entropy.mean()
         self.log.watch_mean("loss_ent", loss_entropy)
         loss += loss_entropy
@@ -975,16 +1017,14 @@ class Runner():
 
         self.log.watch_mean("loss", loss * loss_scale)
 
-        result["loss"] = loss
+        if zero_grad:
+            self.optimizer.zero_grad()
 
-        # todo, seperate this into another function (useful for RNN)
+        loss = -loss * loss_scale
+
+        loss.backward()
+
         if apply_update:
-
-            if zero_grad:
-                self.optimizer.zero_grad()
-
-            (-loss * loss_scale).backward()
-
             if args.max_grad_norm is not None and args.max_grad_norm != 0:
                 grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), args.max_grad_norm)
             else:
@@ -999,16 +1039,13 @@ class Runner():
 
             self.log.watch_mean("opt_grad", grad_norm)
             self.optimizer.step()
+            self.optimizer.zero_grad()
 
             # -------------------------------------------------------------------------
             # -------------------------------------------------------------------------
 
-            if self.log_high_grad_norm and grad_norm > 100:
-                self.log.important("Extremely high grad norm ... outputting inputs.")
-                self.log.important("Loss clip was " + str(loss_clip_mean))
-                self.log.important("Loss value was " + str(loss_value))
-
-                f_name = lambda x: os.path.join(args.log_folder,self.name+"-"+x+"-"+str(self.log["env_step"]))
+            def dump_data():
+                f_name = lambda x: os.path.join(args.log_folder, self.name + "-" + x + "-" + str(self.log["env_step"]))
 
                 utils.dump_data(advantages, f_name("advantages"))
                 utils.dump_data(loss_clip, f_name("loss_clip"))
@@ -1025,14 +1062,28 @@ class Runner():
                     mu = model_out["tvf_value"]
                     utils.dump_data(targets, f_name("tvf_targets"))
                     utils.dump_data(mu, f_name("tvf_values"))
-                    utils.dump_data(targets-mu, f_name("tvf_errors"))
+                    utils.dump_data(targets - mu, f_name("tvf_errors"))
                     utils.dump_data(tvf_loss_mse, f_name("tvf_loss_mse"))
-                    if args.tvf_distributional:
+                    if args.tvf_loss_func == "nlp":
                         utils.dump_data(tvf_loss_nlp, f_name("tvf_loss_nlp"))
 
-                self.log_high_grad_norm = False
+            tensors_to_check = [loss, logps, advantages]
+            if args.use_tvf:
+                tensors_to_check.append(data["tvf_returns"])
+                tensors_to_check.append(model_out["tvf_value"])
+            for tensor in tensors_to_check:
+                if torch.isnan(tensor if type(tensor) is torch.Tensor else torch.from_numpy(tensor)).any():
+                    print("NaN found, terminating")
+                    dump_data()
+                    raise Exception("Error, NaN found during training.")
 
-        return result
+            if self.log_high_grad_norm and grad_norm > 100:
+                self.log.important("Extremely high grad norm ... outputting inputs.")
+                self.log.important("Loss clip was " + str(loss_clip_mean))
+                self.log.important("Loss value was " + str(loss_value))
+                dump_data()
+
+                self.log_high_grad_norm = False
 
     @property
     def training_fraction(self):
@@ -1046,6 +1097,17 @@ class Runner():
         else:
             return int(args.tvf_max_horizon)
 
+    @property
+    def mini_batch_size(self):
+        return self.batch_size // args.n_mini_batches
+
+    @property
+    def batch_size(self):
+        return args.n_steps * args.agents
+
+    @property
+    def micro_batch_size(self):
+        return min(args.max_micro_batch_size, self.mini_batch_size)
 
     def train(self, step):
         """ trains agent on it's own experience """
@@ -1064,75 +1126,85 @@ class Runner():
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.ext_value.reshape(batch_size)
 
+        p = 0
+
+        # number of sample in micro_batch
+        B = self.micro_batch_size
+        # max horizon to train on
+        H = self.current_max_horizon
+        # number of sample to use
+        K = min(args.tvf_n_horizons, H)
+
         if args.use_tvf:
-            # number of sample in mini_batch
-            B = args.mini_batch_size
-            # max horizon to train on
-            H = self.current_max_horizon
-            # number of sample to use
-            K = min(args.tvf_n_horizons, H)
 
             batch_data["tvf_returns"] = self.tvf_returns.reshape([batch_size, -1])
 
             if args.tvf_sample_dist == "uniform":
                 p = [1 / H for _ in range(H)]
             elif args.tvf_sample_dist == "linear":
-                p = [1 - (i / H) for i in range(H)]
+                p = [0.01 + 1 - (i / H) for i in range(H)]
+            elif args.tvf_sample_dist == "first_and_last":
+                p = [1000.0 if i < 10 or i == H-1 else 1.0 for i in range(H)]
             else:
                 raise Exception("Invalid distribution.")
 
             p = np.asarray(p, dtype=np.float64)
             p /= p.sum()
-        else:
-            H,B,K = 0,0,0
-            p=0
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(batch_size)
             batch_data["int_value"] = self.int_value.reshape(batch_size)
 
+        micro_batches = self.mini_batch_size // B
+
+        # just for debugging
+        #if self.step == 0:
+        #    self.log.info(
+        #        f"Using {micro_batches} micro_batches of size {B} on batch of size {batch_size}")
 
         for i in range(args.batch_epochs):
 
             ordering = list(range(batch_size))
             np.random.shuffle(ordering)
 
-            n_batches = math.ceil(batch_size / args.mini_batch_size)
+            counter = 0
 
-            for j in range(n_batches):
+            for j in range(args.n_mini_batches):
 
-                # put together a minibatch.
-                batch_start = j * args.mini_batch_size
-                batch_end = (j + 1) * args.mini_batch_size
-                sample = ordering[batch_start:batch_end]
+                for k in range(micro_batches):
 
-                minibatch_data = {}
+                    # put together a micro_batch.
+                    batch_start = counter * B
+                    batch_end = (counter + 1) * B
+                    sample = ordering[batch_start:batch_end]
+                    counter += 1
 
-                for k, v in batch_data.items():
+                    minibatch_data = {}
 
-                    if k == "tvf_returns":
-                        # we want to down sample the horizons randomly each time
-                        # this is because we run out of GPU memory if we don't down sample, and also it is too slow.
+                    for var_name, var_value in batch_data.items():
+                        if var_name == "tvf_returns":
+                            # we want to down sample the horizons randomly each time
+                            # this is because we run out of GPU memory if we don't down sample, and also it is too slow.
 
-                        mb_returns = np.zeros([B, K], dtype=np.float32)
-                        mb_horizons = np.zeros_like(mb_returns)
-                        horizon_sample = np.zeros([B], dtype=np.int64)
+                            mb_returns = np.zeros([B, K], dtype=np.float32)
+                            mb_horizons = np.zeros_like(mb_returns)
+                            horizon_sample = np.zeros([B], dtype=np.int64)
 
-                        # apply horizon sampling
-                        for b in range(B):
+                            # apply horizon sampling
+                            for b in range(B):
 
-                            # sample with replacement is a little slow so we only update this every 16 values
-                            # this will still mix things up enough.
-                            if b % 16 == 0:
-                                horizon_sample = np.random.choice(H, size=[K], replace=False, p=p)
+                                # sample with replacement is a little slow so we only update this every 16 values
+                                # this will still mix things up enough.
+                                if b % 16 == 0:
+                                    horizon_sample = np.random.choice(H, size=[K], replace=False, p=p)
 
-                            mb_horizons[b, :] = horizon_sample
-                            mb_returns[b, :] = v[sample[b], horizon_sample]
+                                mb_horizons[b, :] = horizon_sample
+                                mb_returns[b, :] = var_value[sample[b], horizon_sample]
 
-                        minibatch_data["tvf_horizons"] = torch.from_numpy(mb_horizons).to(device=self.model.device, dtype=torch.int16)
-                        minibatch_data["tvf_returns"] = torch.from_numpy(mb_returns).to(device=self.model.device, dtype=torch.float32)
-
-                    else:
-                        minibatch_data[k] = torch.from_numpy(v[sample]).to(self.model.device)
-
-                self.train_minibatch(minibatch_data)
+                            minibatch_data["tvf_horizons"] = torch.from_numpy(mb_horizons).to(device=self.model.device, dtype=torch.int16)
+                            minibatch_data["tvf_returns"] = torch.from_numpy(mb_returns).to(device=self.model.device, dtype=torch.float32)
+                        else:
+                            minibatch_data[var_name] = torch.from_numpy(var_value[sample]).to(self.model.device)
+                    first_batch = k == 0
+                    last_batch = k == (micro_batches-1)
+                    self.train_minibatch(minibatch_data, zero_grad=first_batch, apply_update=last_batch, loss_scale=1/micro_batches)

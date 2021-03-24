@@ -9,11 +9,15 @@ from rl import utils, models, atari, config, logger
 from rl import ppo, pbl
 from rl.config import args
 
+import json
+import socket
+
 resolution_map = {
     "full": (210, 160),
     "standard": (84, 84),
     "half": (42, 42)
 }
+
 
 def get_previous_experiment_guid(experiment_path, run_name):
     """ Looks for previous experiment with same run_name. Returns the guid if found. """
@@ -27,21 +31,29 @@ def get_previous_experiment_guid(experiment_path, run_name):
 
 if __name__ == "__main__":
 
-    # stub
-    import numpy as np
-    np.seterr(all='raise')
-
     log = logger.Logger()
 
     config.parse_args()
 
+    # work out device to use
+    if args.device.lower() == "auto":
+        args.device = utils.get_auto_device(utils.get_disallowed_devices())
+
+    if args.device is None:
+        log.important("Training preempted, no device available.")
+        exit()
+
+    log.info("Using device: <white>{}<end>".format(args.device))
+
+    # check to see if the device we are using has been disallowed
+    if args.device in utils.get_disallowed_devices():
+        log.important("Training preempted, device is not allowed.")
+        exit()
+
+
     # set threading
     torch.set_num_threads(int(args.threads))
 
-    # work out device to use
-    if args.device.lower() == "auto":
-        args.device = utils.get_auto_device(ast.literal_eval(args.ignore_device))
-    log.info("Using device: <white>{}<end>".format(args.device))
 
     # calculate number of workers to use.
     if args.workers < 0:
@@ -102,7 +114,7 @@ if __name__ == "__main__":
     elif args.use_tvf:
         ACModel = models.TVFModel
         model_args["epsilon"] = args.tvf_epsilon
-        model_args["log_horizon"] = args.tvf_log_horizon
+        model_args["horizon_scale"] = args.tvf_max_horizon
     else:
         ACModel = models.ActorCriticModel
 

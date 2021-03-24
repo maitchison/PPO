@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import hashlib
 
+from typing import Union
+
 from . import utils
 from . import utils
 
@@ -315,8 +317,7 @@ class TVFModel(BaseModel):
     def __init__(self, head: str, input_dims, actions, device, dtype,
                  use_rnn=False,
                  epsilon=0.01,
-                 log_horizon=False,
-                 needs_gamma=False, # only used for compatibility with older models
+                 horizon_scale=1000,
                  **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC_RNN-" + head if use_rnn else "AC-" + head
@@ -332,15 +333,13 @@ class TVFModel(BaseModel):
 
         final_hidden_units = 512 if use_rnn else self.net.hidden_units
 
-        self.needs_gamma = needs_gamma
+        extra_features = 1
 
-        extra_features = 2 if self.needs_gamma else 1
-
+        self.horizon_scale = horizon_scale
         self.fc_policy = nn.Linear(final_hidden_units, actions)
         self.fc_value = nn.Linear(final_hidden_units, 1)
         self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, 512)
         self.fc_tvf_value = nn.Linear(512, 2)
-        self.log_horizon = log_horizon
         self.epsilon = epsilon
         self.set_device_and_dtype(device, dtype)
 
@@ -387,27 +386,16 @@ class TVFModel(BaseModel):
 
             _, H = horizons.shape
 
-            if self.log_horizon:
-                transformed_horizons = torch.log2(horizons+1)
-            else:
-                transformed_horizons = horizons
+            transformed_horizons = horizons / self.horizon_scale
 
             # parallel version
             # x is [B, 512], make it [B, H,  512]
             x_duplicated = x[:, None, :].repeat(1, H, 1)
 
-            if self.needs_gamma:
-                # needed for older models, but isn't used
-                x_with_side_info = torch.cat([
-                    x_duplicated,
-                    transformed_horizons[:, :, None],
-                    transformed_horizons[:, :, None]*0
-                ], dim=-1)
-            else:
-                x_with_side_info = torch.cat([
-                    x_duplicated,
-                    transformed_horizons[:, :, None]
-                ], dim=-1)
+            x_with_side_info = torch.cat([
+                x_duplicated,
+                transformed_horizons[:, :, None]
+            ], dim=-1)
             tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_info))
             tvf_out = self.fc_tvf_value(tvf_h)
             tvf_values = tvf_out[..., 0]

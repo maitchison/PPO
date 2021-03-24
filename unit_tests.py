@@ -161,7 +161,7 @@ def test_trust_region():
     """ Tests for trust region calculations. """
     pass
 
-def get_tvf_test_params():
+def get_tvf_test_params_one():
     """
     Get the parameters for the truncated value function test data.
     """
@@ -177,9 +177,47 @@ def get_tvf_test_params():
         0.5,
     )
 
+def get_tvf_test_params_two():
+    """
+    Get the parameters for the truncated value function test data.
+    This one has dones at begining and end
+    """
+    rewards = [1, 0, 2, 4, 6]
+    dones = [1, 0, 1, 0, 1]
+    final_value_estimates = [0, 5, 10, 15, 20]
+    value_estimates = [[0, 0, 0, 0, 0], [0, 1, 2, 3, 4], [0, 2, 4, 6, 8], [0, 3, 6, 9, 12], [0, 4, 8, 12, 16]]
+    return (
+        np.asarray(rewards)[:, None],
+        np.asarray(dones)[:, None],
+        np.asarray(value_estimates)[:, None, :],
+        np.asarray(final_value_estimates)[None, :],
+        0.5,
+    )
+
+def get_tvf_test_params_three():
+    """
+    Get the parameters for the truncated value function test data.
+    This one has dones at begining and end
+    """
+    rewards = [[1,0], [0,0], [2,0], [4,0], [6,0]]
+    dones = [[0, 1], [0, 1], [0, 1], [0, 1], [0, 1]]
+    final_value_estimates = [[0, 5, 10, 15, 20, 25], [0, 5, 10, 15, 20, 25]]
+    value_estimates = np.zeros([5,2,6])
+    for i in range(5):
+        for j in range(6):
+            for k in range(2):
+                value_estimates[i,k,j] = i*j
+    return (
+        np.asarray(rewards),
+        np.asarray(dones),
+        np.asarray(value_estimates),
+        np.asarray(final_value_estimates),
+        1.0,
+    )
+
 def test_calculate_tvf_n_step():
 
-    params = get_tvf_test_params()
+    params = get_tvf_test_params_one()
 
     ref_result = rollout.calculate_tvf_td(*params)
     n_step_result = rollout.calculate_tvf_n_step(*params, n_step=1)
@@ -227,37 +265,31 @@ def test_calculate_tvf_n_step():
 
 def test_calculate_tvf_mc():
 
-    params = get_tvf_test_params()
-
-    ref_result = rollout.calculate_tvf_n_step(*params, n_step=5)
-    mc_result = rollout.calculate_tvf_mc(*params)
-    assert_is_similar(mc_result, ref_result)
-
-
+    for params in [get_tvf_test_params_one(), get_tvf_test_params_two(), get_tvf_test_params_three()]:
+        h = params[3].shape[-1]
+        ref_result = rollout.calculate_tvf_n_step(*params, n_step=h-1)
+        mc_result = rollout.calculate_tvf_mc(*params)
+        assert_is_similar(mc_result, ref_result)
     return True
 
 
 def test_calculate_tvf_td():
-    # This was a complex function to write so I'm testing it here...
-    # mostly it's about getting the dones right
-    rewards =            [1, 0, 2, 4, 6]
-    dones =              [0, 0, 1, 0, 0]
-    final_value_estimates = [0, 5, 10, 15, 20]
-    value_estimates = [[0, 0, 0, 0, 0], [0, 1, 2, 3, 4], [0, 2, 4, 6, 8], [0, 3, 6, 9, 12], [0, 4, 8, 12, 16]]
 
-    result = rollout.calculate_tvf_td(
-        rewards=np.asarray(rewards)[:, None],
-        dones=np.asarray(dones)[:, None],
-        values=np.asarray(value_estimates)[:, None, :],
-        final_value_estimates=np.asarray(final_value_estimates)[None, :],
-        gamma=0.5,
-    )
+    result = rollout.calculate_tvf_td(*get_tvf_test_params_one())
 
     assert_is_similar(result[0, 0], [0, 1, 1.5, 2, 2.5], "Truncated Value Function estimates do not match.")
     assert_is_similar(result[1, 0], [0, 0, 1,   2,   3], "Truncated Value Function estimates do not match.")
     assert_is_similar(result[2, 0], [0, 2, 2,   2,   2], "Truncated Value Function estimates do not match.")
     assert_is_similar(result[3, 0], [0, 4, 6,   8,  10], "Truncated Value Function estimates do not match.")
     assert_is_similar(result[4, 0], [0, 6, 8.5, 11, 13.5], "Truncated Value Function estimates do not match.")
+
+    result = rollout.calculate_tvf_td(*get_tvf_test_params_two())
+
+    assert_is_similar(result[0, 0], [0, 1, 1,   1,   1], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[1, 0], [0, 0, 1,   2,   3], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[2, 0], [0, 2, 2,   2,   2], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[3, 0], [0, 4, 6,   8,  10], "Truncated Value Function estimates do not match.")
+    assert_is_similar(result[4, 0], [0, 6, 6,   6,   6], "Truncated Value Function estimates do not match.")
 
     return True
 

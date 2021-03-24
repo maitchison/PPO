@@ -17,13 +17,13 @@ import math
 from os import listdir
 from os.path import isfile, join
 
-DEVICE = "cpu"
+DEVICE = "cuda:0"
 REWARD_SCALE = float()
 MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
 
-# required for V4 experiments
-FORCE_GAMMA_ON = True
+GENERATE_EVAL = True
+GENERATE_MOVIES = True
 
 # run 100 evaluations
 # I want error(k) for... (and for different target gamma as well)
@@ -72,8 +72,7 @@ def make_model(env):
         dtype=torch.float32,
         use_rnn=False,
         epsilon=args.tvf_epsilon,
-        log_horizon=args.tvf_log_horizon,
-        needs_gamma=FORCE_GAMMA_ON,
+        horizon_scale=args.tvf_max_horizon
     )
 
 def discount_rewards(rewards, gamma):
@@ -302,6 +301,7 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
             'model_values': [], # models predicted value (float)
             'rewards': [],   # normalized reward (which value predicts)
             'raw_rewards': [], # raw unscaled reward from the atari environment
+            'game_was_reset': False,
         })
 
         if include_video:
@@ -313,6 +313,10 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
 
         model_out = model.forward(states, horizons=horizons)
         log_probs = model_out["log_policy"].detach().cpu().numpy()
+
+        if np.isnan(log_probs).any():
+            raise Exception("NaN found in policy.")
+
         action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
         states, rewards, dones, infos = env.step(action)
@@ -336,11 +340,14 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 buffers[i]['frames'].append(frame)
 
+            game_reset = "game_freeze" in infos[i]
+
             buffers[i]['values'].append(values)
             buffers[i]['errors'].append(errors)
             buffers[i]['model_values'].append(model_value)
             buffers[i]['rewards'].append(rewards[i])
             buffers[i]['raw_rewards'].append(raw_reward)
+            buffers[i]['game_was_reset'] = buffers[i]['game_was_reset'] or game_reset
 
         frame_count += 1
 
@@ -387,7 +394,7 @@ def export_movie(model, filename, max_frames = 30*60*15):
         errors = buffer["errors"][t] * REWARD_SCALE
         model_value = buffer["model_values"][t] * REWARD_SCALE
 
-        if not args.tvf_distributional:
+        if args.tvf_loss_func != "nlp":
             errors *= 0
 
         if args.vf_coef == 0:
@@ -465,13 +472,18 @@ def run_eval(path):
                 pass
 
             model = load_checkpoint(checkpoint_name, device=DEVICE)
-            export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"))
-            evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
+            if GENERATE_MOVIES:
+                export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"))
+            if GENERATE_EVAL:
+                evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
 
 def monitor(path):
     folders = [x[0] for x in os.walk(path)]
     for folder in folders:
-        run_eval(folder)
+        try:
+            run_eval(folder)
+        except Exception as e:
+            print("Error:"+str(e))
 
 if __name__ == "__main__":
 
@@ -480,17 +492,16 @@ if __name__ == "__main__":
 
     # get model
     args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
-    args.sync_envs = True
 
     # set resolution
     args.res_x, args.res_y = (84, 84)
 
     env = atari.make()
 
-    for c in "ABCDEFGHIJKLMNOP":
-        monitor(f"./Run/TVF_4{c}")
-
     #for c in "ABCDEFGHIJKLMNOP":
-    #    monitor(f"./Run/TVF_5{c}")
+    #    monitor(f"./Run/TVF_4{c}")
+
+    for c in "ABCDEFGHIJKLMNOP":
+        monitor(f"./Run/TVF_6{c}")
 
 

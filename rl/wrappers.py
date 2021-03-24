@@ -258,6 +258,42 @@ class MonitorWrapper(gym.Wrapper):
         info["raw_reward"] = reward
         return obs, reward, done, info
 
+
+class ResetOnCrash(gym.Wrapper):
+    """
+    Resets game if screen does not change for 150 frames (10 seconds with frame skip of 4)
+    """
+
+    def __init__(self, env: gym.Env, window_length=300):
+        super().__init__(env)
+        self.env = env
+        self.window_length = window_length
+        self.buffer = np.zeros([self.window_length], dtype=np.int64)
+        self.counter = 0
+
+    def step(self, action):
+
+        obs, reward, done, info = self.env.step(action)
+
+        # note, hash is 32 bit so we can add them up safely in a 64bit buffer
+        self.buffer[self.counter % self.window_length] = hash(obs.data.tobytes()) & 0xffffffff
+
+        if not done and self.counter >= self.window_length:
+            if np.sum(np.abs(self.buffer - self.buffer[0])) == 0:
+                print(f"Game crashed at frame {self.counter}")
+                info["game_freeze"] = True
+                obs = self.env.reset()
+                self.counter = 0
+                return obs, 0.0, True, info
+
+        self.counter += 1
+        return obs, reward, done, info
+
+    def reset(self):
+        self.counter = 0
+        return self.env.reset()
+
+
 class FrameCropWrapper(gym.Wrapper):
     """
     Crops input frame.
@@ -284,6 +320,8 @@ class TimeLimitWrapper(gym.Wrapper):
 
     def step(self, ac):
         observation, reward, done, info = self.env.step(ac)
+        # stub:
+        #print(self._elapsed_steps, hash(observation.data.tobytes()), reward, done)
         self._elapsed_steps += 1
         if self._elapsed_steps >= self._max_episode_steps:
             done = True
@@ -504,6 +542,8 @@ class AtariWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         info["channels"] = ["Gray"] if self.grayscale else ["ColorR", "ColorG", "ColorB"]
+        # stub
+        #print(hash(obs.data.tobytes()), reward, done)
         return self._process_frame(obs), reward, done, info
 
     def reset(self):

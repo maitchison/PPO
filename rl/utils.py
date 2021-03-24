@@ -7,6 +7,7 @@ import pickle
 import json
 import time
 import platform
+import socket
 
 import torchvision
 
@@ -33,6 +34,22 @@ class Color:
 # -------------------------------------------------------------
 # Utils
 # -------------------------------------------------------------
+
+
+def get_disallowed_devices():
+    """
+    Returns a list of disallowed devices to train on
+    """
+    try:
+        with open("disallowed_devices.txt", "r") as f:
+            data = json.load(f)
+            host_name = socket.gethostname()
+            if host_name in data:
+                return data[host_name]
+        return []
+    except:
+        return []
+
 
 def get_environment_name(environment, sticky_actions=False):
     return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
@@ -689,6 +706,6 @@ def get_auto_device(ignore_devices: List[int]):
                     memory_available[x] = -1
             return "cuda:"+str(np.argmax(memory_available))
         except:
-            print("Warning: Failed to auto detect best GPU.")
-            return "cuda"
+            print("Warning: No devices usable.")
+            return None
 
