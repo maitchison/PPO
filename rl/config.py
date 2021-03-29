@@ -84,6 +84,7 @@ class Config:
         self.noop_start         = bool()
 
         self.frame_stack        = int()
+        self.tvf_joint_weight   = float()
 
         self.normalize_advantages = bool()
 
@@ -99,6 +100,7 @@ class Config:
         self.checkpoint_every   = int()
 
         self.model              = str()
+        self.tvf_model          = str()
 
         self.__dict__.update(kwargs)
 
@@ -190,6 +192,8 @@ def parse_args():
     parser.add_argument("--tvf_loss_func", type=str, default="mse", help="[nlp|mse|huber]")
     parser.add_argument("--tvf_sample_dist", type=str, default="uniform", help="[uniform|linear]")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon")
+    parser.add_argument("--tvf_model", type=str, default="default", help="[default|split]")
+    parser.add_argument("--tvf_joint_weight", type=float, default=0.0, help="How constrained the two models are")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)

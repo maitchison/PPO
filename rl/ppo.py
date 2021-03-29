@@ -17,6 +17,36 @@ import torch.multiprocessing
 from . import utils, models, atari, hybridVecEnv, config, logger, keyboard
 from .config import args
 
+class DualOptimizer:
+
+    """
+    Two optimizers on one set of parameters
+    """
+
+
+    def __init__(self, **kwargs):
+        self.opt1 = torch.optim.Adam(**kwargs)
+        self.opt2 = torch.optim.Adam(**kwargs)
+
+    def zero_grad(self):
+        self.opt1.zero_grad()
+        self.opt2.zero_grad()
+
+    def step(self):
+        self.opt1.step()
+        self.opt2.step()
+
+    # to get this to work we will need to...
+    # zero grad
+    # backwards_1
+    # step_1
+    # zero grad
+    # bacwards_2
+    # step_2
+
+    # which is a bit fidly, and does not work with micro_batching
+
+
 def train(model: models.BaseModel, log: Logger):
     """
     Default parameters from stable baselines

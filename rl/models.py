@@ -48,13 +48,15 @@ class NatureCNN_Net(Base_Net):
         """ forwards input through model, returns features (without relu) """
         N = len(x)
         D = self.d
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = torch.reshape(x, [N,D])
+        x1 = F.relu(self.conv1(x))
+        x2 = F.relu(self.conv2(x1))
+        x3 = F.relu(self.conv3(x2))
+        x4 = torch.reshape(x3, [N,D])
         if self.hidden_units > 0:
-            x = self.fc(x)
-        return x
+            x5 = self.fc(x4)
+            return x5
+        else:
+            return x4
 
 class FDMEncoder_Net(Base_Net):
     """ Encoder for forward dynamics model
@@ -318,6 +320,8 @@ class TVFModel(BaseModel):
                  use_rnn=False,
                  epsilon=0.01,
                  horizon_scale=1000,
+                 use_rnd=False,
+                 split_model=False,
                  **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC_RNN-" + head if use_rnn else "AC-" + head
@@ -326,18 +330,34 @@ class TVFModel(BaseModel):
         if use_rnn and "hidden_units" not in kwargs:
             kwargs["hidden_units"] = 0
 
+        single_channel_input_dims = (1, *input_dims[1:])
+
         self.net = constructNet(head, input_dims, **kwargs)
+
+        self.split_model = split_model
+        if split_model:
+            self.value_net = constructNet(head, input_dims, **kwargs)
+
+        if use_rnd:
+            self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
+            self.target_net = RNDTarget_Net(single_channel_input_dims)
+
         self.use_rnn = use_rnn
         if self.use_rnn:
             self.lstm = nn.LSTM(input_size=self.net.d, hidden_size=512, num_layers=1)
 
+        self.obs_rms = utils.RunningMeanStd(shape=(single_channel_input_dims))
+
         final_hidden_units = 512 if use_rnn else self.net.hidden_units
 
+        self.features_mean = 0
+        self.features_std = 0
         extra_features = 1
+        self.use_rnd = use_rnd
 
         self.horizon_scale = horizon_scale
         self.fc_policy = nn.Linear(final_hidden_units, actions)
-        self.fc_value = nn.Linear(final_hidden_units, 1)
+        self.fc_value = nn.Linear(final_hidden_units, 2 if use_rnd else 1)
         self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, 512)
         self.fc_tvf_value = nn.Linear(512, 2)
         self.epsilon = epsilon
@@ -346,6 +366,52 @@ class TVFModel(BaseModel):
     def log_policy(self, x, state=None):
         """ Returns detached log_policy for given input. """
         return self.forward(x, state)["log_policy"].detach().cpu().numpy()
+
+    def perform_normalization(self, x):
+        """ Applies normalization transform, and updates running mean / std. """
+
+        # update normalization constants
+        if type(x) is torch.Tensor:
+            x = x.cpu().numpy()
+
+        assert x.dtype == np.uint8
+
+        x = np.asarray(x[:, 0:1], np.float32)
+        self.obs_rms.update(x)
+        mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device)
+        sigma = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device)
+
+        # normalize x
+        x = torch.tensor(x).to(self.device)
+        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5)
+
+        # note: clipping reduces the std down to 0.3 so we multiply the output so that it is roughly
+        # unit normal.
+        x *= 3.0
+
+        return x
+
+    def prediction_error(self, x):
+        """ Returns prediction error for given state. """
+
+        # only need first channel for this.
+        x = self.perform_normalization(x)
+
+        # random features have too low varience due to weight initialization being different from the OpenAI implementation
+        # we adjust it here by simply multiplying the output to scale the features to have a max of around 3
+        random_features = self.target_net.forward(x).detach()
+        predicted_features = self.prediction_net.forward(x)
+
+        # note: I really want to normalize these... otherwise scale just makes such a difference.
+        # or maybe tanh the features?
+
+        self.features_mean = float(random_features.mean().detach().cpu())
+        self.features_var = float(random_features.var(axis=0).mean().detach().cpu())
+        self.features_max = float(random_features.abs().max().detach().cpu())
+
+        errors = (random_features - predicted_features).pow(2).mean(axis=1)
+
+        return errors
 
     def forward(self, x, state=None, horizons=None):
         """
@@ -358,8 +424,14 @@ class TVFModel(BaseModel):
         if self.use_rnn and state is None:
             raise Exception("RNN Model requires LSTM state input.")
 
-        x = self.prep_for_model(x)
-        x = F.relu(self.net.forward(x))
+        x_prep = self.prep_for_model(x)
+
+        if self.split_model:
+            value_x = F.relu(self.value_net.forward(x_prep))
+            policy_x = F.relu(self.net.forward(x_prep))
+        else:
+            policy_x = F.relu(self.net.forward(x_prep))
+            value_x = policy_x
 
         result = {}
 
@@ -373,8 +445,9 @@ class TVFModel(BaseModel):
 
             result['state'] = (h[0], c[0])
 
-        log_policy = F.log_softmax(self.fc_policy(x), dim=1)
-        value = self.fc_value(x).squeeze(dim=-1)
+        log_policy = F.log_softmax(self.fc_policy(policy_x), dim=1)
+        values_out = self.fc_value(policy_x)
+        value = values_out[..., 0]
 
         if horizons is not None:
 
@@ -382,7 +455,7 @@ class TVFModel(BaseModel):
             if type(horizons) is np.ndarray:
                 horizons = torch.from_numpy(horizons)
 
-            horizons = horizons.to(device=x.device, dtype=torch.float32)
+            horizons = horizons.to(device=value_x.device, dtype=torch.float32)
 
             _, H = horizons.shape
 
@@ -390,7 +463,7 @@ class TVFModel(BaseModel):
 
             # parallel version
             # x is [B, 512], make it [B, H,  512]
-            x_duplicated = x[:, None, :].repeat(1, H, 1)
+            x_duplicated = value_x[:, None, :].repeat(1, H, 1)
 
             x_with_side_info = torch.cat([
                 x_duplicated,
@@ -406,6 +479,9 @@ class TVFModel(BaseModel):
 
         result['log_policy'] = log_policy
         result['ext_value'] = value
+        if self.use_rnd:
+            int_value = values_out[..., 1]
+            result['int_value'] = int_value
 
         return result
 

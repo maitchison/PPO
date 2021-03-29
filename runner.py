@@ -25,6 +25,7 @@ class bcolors:
 CHUNK_SIZE = 10
 DEVICE = "auto"
 OUTPUT_FOLDER = "./Run"
+WORKERS = 4
 
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
@@ -83,9 +84,11 @@ class Job:
         if status == "working":
             priority += 1000
 
-        # stub: work on partial ones first...
-        #priority = priority - self.get_completed_epochs()
-        priority = priority + self.get_completed_epochs()
+        if "search" in self.experiment_name:
+            # with search we want to make sure we complete partial runs first
+            priority = priority + self.get_completed_epochs()
+        else:
+            priority = priority - self.get_completed_epochs()
 
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
@@ -287,33 +290,53 @@ def setup_experiments6():
         'tvf_n_horizons': 128,
         'tvf_advantage': True,
         'vf_coef': 0.0,
-        'workers': 8,
+        'workers': 8, # we will be running lots of experiments so reduce this down a little... (8 is better though)
         'tvf_gamma': 0.997,
         'gamma': 0.997,
         'n_mini_batches': 32,
     }
 
-    for tvf_max_horizon in [300, 1000, 3000]:
+    for entropy_bonus in [0.001, 0.003, 0.01, 0.03]:
         add_job(
             "TVF_6A",
+            run_name=f"entropy_bonus={entropy_bonus}",
+            tvf_max_horizon=1000,
+            entropy_bonus=entropy_bonus,
+            priority=100,
+            **{k: v for k, v in default_args.items() if k != "entropy_bonus"}
+        )
+
+    for tvf_max_horizon in [300, 1000, 3000, 10000]:
+        add_job(
+            "TVF_6B",
             run_name=f"tvf_mh={tvf_max_horizon}",
             tvf_max_horizon=tvf_max_horizon,
             priority=50,
             **default_args
         )
 
-    for agents in [128, 256, 512]:
+    # as per previous
+    for tvf_max_horizon in [999, 1000, 1001, 2000, 4000]:
         add_job(
-            "TVF_6B",
+            "TVF_6B2",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            tvf_max_horizon=tvf_max_horizon,
+            priority=100,
+            **default_args
+        )
+
+    for agents in [64, 128, 256, 512]:
+        add_job(
+            "TVF_6C",
             run_name=f"agents={agents}",
             tvf_max_horizon=1000,
             agents=agents,
             **{k:v for k,v in default_args.items() if k != "agents"}
         )
 
-    for n_steps in [64, 128, 256]:
+    for n_steps in [16, 32, 64, 128, 256]:
         add_job(
-            "TVF_6C",
+            "TVF_6D",
             run_name=f"n_steps={n_steps}",
             tvf_max_horizon=1000,
             n_steps=n_steps,
@@ -322,7 +345,7 @@ def setup_experiments6():
 
     for distribution in ["uniform", "linear", "first_and_last"]:
         add_job(
-            "TVF_6D",
+            "TVF_6E",
             run_name=f"tvf_sample_dist={distribution} samples=32",
             tvf_max_horizon=1000,
             tvf_sample_dist=distribution,
@@ -330,171 +353,433 @@ def setup_experiments6():
             **{k:v for k,v in default_args.items() if k != "tvf_n_horizons"}
         )
 
-
-def setup_experiments5():
-
-    # 5A Just to make sure we didn't break anything when we changed how sampling works etc
-    # I did change gamma to be the same as tvf_gamma which enables the MC optimization and also
-    # might improve training, as otherwise noise at distant horizons gets scaled up a lot
-
-    default_args = {
-        'env_name': "Breakout",
-        'checkpoint_every': int(5e6),
-        'epochs': 50,
-        'agents': 256,
-        'n_steps': 128,
-        'max_grad_norm': 5.0,
-        'entropy_bonus': 0.01,
-        'use_tvf': True,
-        'tvf_coef': 0.1,
-        'tvf_n_horizons': 128,
-        'tvf_advantage': True,
-        'vf_coef': 0.0,
-        'workers': 8,
-        'tvf_gamma': 0.997,
-        'gamma': 0.997,
-        'n_mini_batches': 32, # should be 8 I think...
-    }
-
-    for tvf_max_horizon in [1000, 2000, 4000]:
+    for n_mini_batches in [8, 16, 32, 64]:
         add_job(
-            "TVF_5A",
+            "TVF_6F",
+            run_name=f"n_mini_batches={n_mini_batches}",
+            tvf_max_horizon=1000,
+            n_mini_batches=n_mini_batches,
+            **{k:v for k,v in default_args.items() if k != "n_mini_batches"}
+        )
+
+    for tvf_coef in [0.01, 0.03, 0.1, 0.3, 1]:
+        add_job(
+            "TVF_6G",
+            run_name=f"tvf_coef={tvf_coef}",
+            tvf_max_horizon=1000,
+            tvf_coef=tvf_coef,
+            **{k:v for k,v in default_args.items() if k != "tvf_coef"}
+        )
+
+    # make sure new advantage normalization code, and improved sampling works
+    for tvf_max_horizon in [1000, 999, 1001]: # just a way to get 3 runs...
+        add_job(
+            "TVF_6H",
             run_name=f"tvf_mh={tvf_max_horizon}",
             tvf_max_horizon=tvf_max_horizon,
-            priority=30,
+            priority=100,
             **default_args
         )
 
-    for tvf_max_horizon in [1000, 2000, 4000]:
-        add_job(
-            "TVF_5A",
-            run_name=f"tvf_mh={tvf_max_horizon} (MSE)",
-            tvf_max_horizon=tvf_max_horizon,
-            tvf_loss_func="mse",
-            priority=50,
-            **default_args
-        )
 
-    # check n_step
-    for tvf_n_step in [0, 1, 2, 4, 8, 16, 32, 64, 128]:
+    # evaluation on MR
+    for env in ['MontezumaRevenge']:
         add_job(
-            "TVF_5B",
-            run_name=f"tvf_n_step={tvf_n_step}",
+            "TVF_6_mr",
+            env_name=env,
+            run_name=f"env={env}",
             tvf_max_horizon=1000,
-            tvf_lambda=-tvf_n_step,
-            priority=30,
-            **default_args
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            priority=100,
         )
 
-    # check lambda style
-    # (algorithm was broken)
-    # for tvf_lambda in [0.9, 0.95, 0.99]:
-    #     add_job(
-    #         "TVF_5C",
-    #         run_name=f"tvf_lambda={tvf_lambda}",
-    #         tvf_max_horizon=1000,
-    #         tvf_lambda=tvf_lambda,
-    #         priority=30,
-    #         **default_args
-    #     )
-
-    # check effect of sampling
-    for tvf_n_horizons in [16, 32, 64, 128, 256, 512, 1000]:
+    # evaluation on MR
+    for env in ['Alien', 'MontezumaRevenge']:
         add_job(
-            "TVF_5D",
-            run_name=f"tvf_n_horizons={tvf_n_horizons}",
+            "TVF_6_rnd",
+            env_name=env,
+            run_name=f"env={env}",
             tvf_max_horizon=1000,
-            tvf_n_horizons=tvf_n_horizons,
-            max_micro_batch_size=256 if tvf_n_horizons==1000 else 512,
-            priority=50,
-            **{k:v for k,v in default_args.items() if k != "tvf_n_horizons"}
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            use_rnd=True,
+            observation_normalization=True,
+            vf_coef=0.5,
+            intrinsic_reward_scale=1.0,
+
+            workers=WORKERS,
+            # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            priority=100,
         )
 
-    # check effect of sampling
-    for tvf_n_horizons in [16, 32, 64, 128, 256, 512, 1000]:
+    # evaluation run (only setting difference is tvf_coef is now 0.01)
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
         add_job(
-            "TVF_5D",
-            run_name=f"tvf_n_horizons={tvf_n_horizons} dist=linear",
+            "TVF_6_eval",
+            env_name=env,
+            run_name=f"env={env}",
             tvf_max_horizon=1000,
-            tvf_n_horizons=tvf_n_horizons,
-            tvf_sample_dist='linear',
-            max_micro_batch_size=256 if tvf_n_horizons == 1000 else 512,
-            priority=50,
-            **{k: v for k, v in default_args.items() if k != "tvf_n_horizons"}
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            chunked=False,
+            priority=100,
+        )
+
+    # longer horizon..
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_999",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=3000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            workers=WORKERS,
+            # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.999,
+            gamma=0.999,
+            n_mini_batches=32,
+
+            chunked=False,
+            priority=60,
         )
 
 
-    # for tvf_max_horizon in [1000, 2000, 4000]:
-    #     add_job(
-    #         "TVF_5A",
-    #         run_name=f"tvf_mh={tvf_max_horizon} mb=8",
-    #         tvf_max_horizon=tvf_max_horizon,
-    #         priority=0,
-    #         n_mini_batches=8,
-    #         **{k:v for k,v in default_args.items() if k != "n_mini_batches"}
-    #     )
-    #
-    #
-    #     # 5B All kinds of tricks... horizon warmup
-    # for hw in [0.1, 0.5]:
-    #     add_job(
-    #         "TVF_5B",
-    #         run_name=f"tvf_mh={4000} hw={hw}",
-    #         tvf_max_horizon=4000,
-    #         tvf_horizon_warmup=hw,
-    #         **default_args
-    #     )
-    #
-    # # 5B All kinds of tricks... loss
-    # for loss_fn in ["huber", "mse"]:
-    #     add_job(
-    #         "TVF_5B",
-    #         run_name=f"tvf_mh={4000} lf={loss_fn}",
-    #         tvf_max_horizon=4000,
-    #         tvf_loss_func=loss_fn,
-    #         **default_args
-    #     )
-    #
-    # # 5B All kinds of tricks... dist
-    # for sd in ["linear"]:
-    #     add_job(
-    #         "TVF_5B",
-    #         run_name=f"tvf_mh={4000} sd={sd}",
-    #         tvf_max_horizon=4000,
-    #         tvf_sample_dist=sd,
-    #         **default_args
-    #     )
-    #
-    # # 5C Just checking microbatching works
-    # for mmbs in [32, 128, 512, 2048]:  # 1024 will not micro_batch training, and 2048 will not micro_batch the final value calculation
-    #     add_job(
-    #         "TVF_5C",
-    #         run_name=f"tvf_mh={4000} mmmbs={mmbs}",
-    #         tvf_max_horizon=4000,
-    #         n_mini_batches=32,
-    #         max_micro_batch_size=mmbs,
-    #         **{k: v for k, v in default_args.items() if k != "n_mini_batches"},
-    #     )
+    # trying the split model... (so we don't have to balance value and policy...
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_split",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
 
-    # 5B All kinds of tricks... minibatches
-    # for mb in [4, 8, 16]:
-    #     add_job(
-    #         "TVF_5B",
-    #         run_name=f"tvf_mh={4000} mb={sd}",
-    #         tvf_max_horizon=4000,
-    #         n_mini_batches=mb,
-    #         **default_args
-    #     )
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
 
-    # 5B All kinds of tricks... agents
-    # for agents in [128, 256, 512]:
-    #     add_job(
-    #         "TVF_5B",
-    #         run_name=f"tvf_mh={4000} agents={agents}",
-    #         tvf_max_horizon=4000,
-    #         agents=agents,
-    #         **default_args
-    #     )
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+            tvf_model='split',
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            chunked=False,
+            priority=120,
+        )
+
+    # trying the split model... (so we don't have to balance value and policy...
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_joint",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+            tvf_model='split',
+            tvf_joint_weight=0.1, # just a little hint to make these weights the same
+
+            workers=WORKERS,
+            # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            priority=175,
+        )
+
+    # some RND exploration
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_rnd",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            use_rnd=True,
+            observation_normalization=True,
+            vf_coef=0.5,
+            intrinsic_reward_scale=0.25, # big guess here...
+
+            priority=100,
+        )
+
+    # stronger RND
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_rnd2",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            workers=WORKERS,
+            # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            use_rnd=True,
+            observation_normalization=True,
+            vf_coef=0.5,
+            intrinsic_reward_scale=1.0,  # big guess here...
+
+            priority=100,
+        )
+
+    # evaluation run (only setting difference is tvf_coef is now 0.01)
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_high_samples",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=256,
+
+            workers=WORKERS,
+            tvf_gamma=0.997,
+            gamma=0.997,
+            n_mini_batches=32,
+
+            priority=100,
+        )
+
+    # evaluation run (only setting difference is tvf_coef is now 0.01)
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_99",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=300,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_advantage=True,
+            vf_coef=0.0,
+
+            tvf_coef=0.01,
+            tvf_n_horizons=64,
+
+            workers=WORKERS,
+            # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            tvf_gamma=0.99,
+            gamma=0.99,
+            n_mini_batches=32,
+
+            priority=100,
+        )
+
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_ppo_997",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=False,
+            tvf_advantage=False,
+            vf_coef=0.5,
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            gamma=0.997,
+            n_mini_batches=32,
+
+            priority=85,
+        )
+
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_ppo_999",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=False,
+            tvf_advantage=False,
+            vf_coef=0.5,
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            gamma=0.999,
+            n_mini_batches=32,
+
+            priority=85,
+        )
+
+    for env in ['Alien', 'BankHeist', 'CrazyClimber']:
+        add_job(
+            "TVF_6_eval_ppo_99",
+            env_name=env,
+            run_name=f"env={env}",
+            tvf_max_horizon=1000,
+
+            checkpoint_every=int(5e6),
+            epochs=50,
+            agents=256,
+            n_steps=128,
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=False,
+            tvf_advantage=False,
+            vf_coef=0.5,
+
+            workers=WORKERS,  # we will be running lots of experiments so reduce this down a little... (8 is better though)
+            gamma=0.99,
+            n_mini_batches=32,
+
+            priority=70,
+        )
 
 
 def random_search(run, main_params, search_params, count=128):
@@ -505,7 +790,11 @@ def random_search(run, main_params, search_params, count=128):
         for k, v in search_params.items():
             params[k] = np.random.choice(v)
 
-        add_job(run, run_name=f"{i:04d}", chunked=False, **main_params, **params)
+        # make sure params arn't too high (due to memory)
+        while params["agents"] * params["n_steps"] > 64*1024:
+            params["agents"] //= 2
+
+        add_job(run, run_name=f"{i:04d}", chunked=True, **main_params, **params)
 
 
 def nice_format(x):
@@ -523,36 +812,150 @@ def setup_tvf_random_search():
     main_params = {
         'env_name': "Breakout",
         'checkpoint_every': int(5e6),
-        'epochs': 25,
+        'epochs': 50, # can be done now that n_horizons is low, and we are using fast MC algorithm.
         'use_tvf': True,
         'tvf_advantage': True,
         'vf_coef': 0.0,
-        'tvf_epsilon': 0.1,
-        'workers': 8,
-        'time_aware': False,
+        'workers': WORKERS,
+        'tvf_gamma': 0.997,
+        'gamma': 0.997,
+        'priority': -100,
+        'tvf_max_horizon': 1000,
+
     }
+
+    # just want to figure out the interplay between mini_batch_size, n_steps, and n_agents...
+    # I should plot 'mini_batch_size' as well... and look for correlations between variables...
+
+    # goal would be to find some good settings, and get 500+ on atari in 50m.
 
     search_params = {
-        'agents': [64, 128, 256],
+        'agents': [64, 128, 256, 512],
         'n_steps': [32, 64, 128, 256, 512],
-        'max_grad_norm': [0.5, 5.0, None],
-        'entropy_bonus': [0.3, 0.01, 0.003],
-        'tvf_coef': [1.0, 0.3, 0.1, 0.03, 0.01],
-        'tvf_n_horizons': [30, 100, 250],
-        'tvf_max_horizon': [300, 1000, 3000],
-        'gamma': [0.99, 0.997, 0.999],
-        'n_mini_batches': [8, 16, 32, 64],
+        'tvf_coef': [0.1, 0.03, 0.01, 0.003],
+        'n_mini_batches': [4, 8, 16, 32, 64],  # might be better to have this as mini_batch size?
+
+        # I'm just interested to see what effect these have, but I don't expect any interplay.
+        'entropy_bonus': [0.03, 0.01, 0.003],
+        'ppo_epsilon': [0.1, 0.2], # allow for faster learning
+        'tvf_n_horizons': [16, 32, 64], # smaller samples should work and will be faster
         'adam_epsilon': [1e-5, 1e-8],
-        'learning_rate': [1e-3, 2.5e-4, 1e-4],
-        #'tvf_lambda': [0, 1, 0.9, 0.95, 0.99, -4, -8],
-        'tvf_lambda': [1.0],  # 1 is faster and more likely to work, and we can experiment witt the others later (they don't seem to work atm)
-        'tvf_loss_func': ['nlp', 'huber', 'mse'],
-        'tvf_sample_dist': ['linear', 'uniform'],
-        'tvf_horizon_warmup': [0, 0.1, 0.5],
-        'tvf_horizon_transform': [None, "log"],
+        'max_grad_norm': [0.5, 5.0, 10.0],
+        'tvf_sample_dist': ['uniform', 'linear'],
+        'learning_rate': [2.5e-4, 1e-4, 2.5e-5],  # try slower learning rates... might help for 200m
     }
 
-    random_search("tvf_search", main_params, search_params)
+    random_search("tvf_v6_search", main_params, search_params)
+
+
+def setup_experiments5():
+
+    for tvf_n_step in [16,32,64]:
+        add_job(
+            "TVF_5B_FIXED",
+            run_name=f"tvf_n_step={tvf_n_step}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+
+            agents=64,
+            n_steps=512,
+
+            tvf_lambda=-tvf_n_step,
+
+            tvf_gamma=0.997,
+            gamma=0.997,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=1000,
+            tvf_n_horizons=250,
+            tvf_advantage=True,
+            tvf_loss_func="nlp",
+            tvf_sample_dist="uniform",
+
+            vf_coef=0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            time_aware=False,
+            priority=200 if tvf_n_step == 32 else 150,
+        )
+
+    for tvf_n_step in [8,16,32,64,128,256,512]:
+        add_job(
+            "TVF_5B_OLD",
+            run_name=f"tvf_n_step={tvf_n_step}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+
+            agents=64,
+            n_steps=512,
+
+            tvf_lambda=-tvf_n_step,
+
+            tvf_gamma=0.997,
+            gamma=0.997,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=1000,
+            tvf_n_horizons=250,
+            tvf_advantage=True,
+            tvf_loss_func="nlp",
+            tvf_sample_dist="uniform",
+
+            vf_coef=0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            time_aware=False,
+            priority=200 if tvf_n_step == 32 else 150,
+        )
+
+
+    for tvf_n_step in [16,32,64]:
+        add_job(
+            "TVF_5B_SCRATCH",
+            run_name=f"tvf_n_step={tvf_n_step}",
+            env_name="Breakout",
+            checkpoint_every=int(5e6),
+            epochs=50,
+
+            agents=64,
+            n_steps=512,
+
+            tvf_lambda=-tvf_n_step,
+
+            tvf_gamma=0.997,
+            gamma=0.997,
+
+            max_grad_norm=5.0,
+            entropy_bonus=0.01,
+
+            use_tvf=True,
+            tvf_coef=0.03,
+            tvf_max_horizon=1000,
+            tvf_n_horizons=250,
+            tvf_advantage=True,
+            tvf_loss_func="nlp",
+            tvf_sample_dist="uniform",
+
+            vf_coef=0,
+            tvf_epsilon=0.1,
+
+            workers=8,
+            time_aware=False,
+            priority=200 if tvf_n_step == 32 else 150,
+        )
+
 
 
 if __name__ == "__main__":
@@ -565,7 +968,7 @@ if __name__ == "__main__":
     #setup_mvh4()
     setup_experiments5()
     setup_experiments6()
-    #setup_tvf_random_search()
+    setup_tvf_random_search()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

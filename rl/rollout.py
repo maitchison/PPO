@@ -331,6 +331,7 @@ class Runner():
         self.name = name
         self.model = model
         self.optimizer = optimizer
+        self.tvf_optimizer = None
         self.vec_env = None
         self.log = log
 
@@ -502,7 +503,7 @@ class Runner():
         else:
             return self.model.forward(self.states if states is None else states, **kwargs)
 
-    def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 30*60*15):
+    def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 60*60*15):
         """ Exports a movie of agent playing game.
             include_rollout: save a copy of the rollout (may as well include policy, actions, value etc)
         """
@@ -784,9 +785,6 @@ class Runner():
         self.advantage = args.extrinsic_reward_scale * self.ext_advantage
         if args.use_intrinsic_rewards:
             self.advantage += args.intrinsic_reward_scale * self.int_advantage
-        if args.normalize_advantages:
-            self.advantage = (self.advantage - self.advantage.mean()) / (
-                        self.advantage.std() + 1e-8)
 
         if args.normalize_observations:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
@@ -885,13 +883,11 @@ class Runner():
 
         return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
 
-    def train_minibatch(self, data, zero_grad=True, apply_update=True, initial_loss=None,
-                        loss_scale=1.0):
-
+    def train_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
 
         mini_batch_size = len(data["prev_state"])
 
-        loss = initial_loss or torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
         # -------------------------------------------------------------------------
         # Calculate loss_pg
@@ -918,7 +914,7 @@ class Runner():
         loss_clip_mean = (weights*loss_clip).mean()
 
         self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64)
-        loss += loss_clip_mean
+        loss = loss + loss_clip_mean
 
         # -------------------------------------------------------------------------
         # Calculate loss_value_function_horizons
@@ -944,21 +940,27 @@ class Runner():
                 dist = torch.distributions.Normal(mu, std)
                 tvf_loss_nlp = args.tvf_coef * dist.log_prob(targets)
                 self.log.watch_mean("tvf_loss_nlp", -tvf_loss_nlp.mean(), history_length=64)
-                loss += tvf_loss_nlp.mean()
+                tvf_loss = tvf_loss_nlp.mean()
                 raise Exception("NLP has been disabled due to stability issues during training")
             elif args.tvf_loss_func == "mse":
-                loss += tvf_loss_mse.mean()
+                tvf_loss = tvf_loss_mse.mean()
             elif args.tvf_loss_func == "huber":
                 tvf_loss_huber = -args.tvf_coef * torch.nn.functional.smooth_l1_loss(mu, targets)
-                loss += tvf_loss_huber.mean()
+                tvf_loss = tvf_loss_huber.mean()
             else:
                 raise ValueError(f"Invalid loss function {args.tvf_loss_func}")
+        else:
+            tvf_loss = 0
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
         # -------------------------------------------------------------------------
 
-        value_heads = ["ext"]
+
+        value_heads = []
+
+        if not args.use_tvf:
+            value_heads.append("ext")
 
         if args.use_intrinsic_rewards:
             value_heads.append("int")
@@ -980,19 +982,19 @@ class Runner():
                 # simpler version, just use MSE.
                 vf_losses1 = (value_prediction - returns).pow(2)
                 loss_value = -0.5 * torch.mean(vf_losses1 * weights)
-            loss_value *= args.vf_coef
+            loss_value = loss_value * args.vf_coef
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
-            loss += loss_value
+            loss = loss + loss_value
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
-        loss_entropy = -(logps.exp() * logps).sum(axis=1)
-        loss_entropy *= weights * args.entropy_bonus
+        loss_entropy = -(logps.exp() * logps).mean(axis=1)
+        loss_entropy = loss_entropy * weights * args.entropy_bonus
         loss_entropy = loss_entropy.mean()
         self.log.watch_mean("loss_ent", loss_entropy)
-        loss += loss_entropy
+        loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------
         # Calculate loss_rnd
@@ -1003,7 +1005,7 @@ class Runner():
             predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
             n = int(len(prev_states) * predictor_proportion)
             loss_rnd = -self.model.prediction_error(prev_states[:n]).mean()
-            loss += loss_rnd
+            loss = loss + loss_rnd
 
             self.log.watch_mean("loss_rnd", loss_rnd)
 
@@ -1012,9 +1014,26 @@ class Runner():
             self.log.watch_mean("feat_max", self.model.features_max, display_width=10, display_precision=1)
 
         # -------------------------------------------------------------------------
+        # Calculate loss joint
+        # -------------------------------------------------------------------------
+
+        if args.tvf_model == "split" and args.tvf_joint_weight != 0.0:
+            parameters_a = list(filter(lambda p: p.requires_grad, self.model.net.parameters()))
+            parameters_b = list(filter(lambda p: p.requires_grad, self.model.value_net.parameters()))
+            norm = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+            count = 0
+            for a,b in zip(parameters_a, parameters_b):
+                norm = norm + torch.norm(a.data - b.data, p=2)
+                count += len(a.data.reshape([-1]))
+            rms_cost = (norm / count) ** 0.5
+            loss -= rms_cost * args.tvf_joint_weight
+            self.log.watch_mean("joint_loss", rms_cost)
+
+        # -------------------------------------------------------------------------
         # Run optimizer
         # -------------------------------------------------------------------------
 
+        loss = loss + tvf_loss
         self.log.watch_mean("loss", loss * loss_scale)
 
         if zero_grad:
@@ -1126,7 +1145,9 @@ class Runner():
         batch_data["advantages"] = self.advantage.reshape(batch_size)
         batch_data["ext_value"] = self.ext_value.reshape(batch_size)
 
-        p = 0
+        p = None
+        required_horizons = None
+        all_horizons = None
 
         # number of sample in micro_batch
         B = self.micro_batch_size
@@ -1140,27 +1161,22 @@ class Runner():
             batch_data["tvf_returns"] = self.tvf_returns.reshape([batch_size, -1])
 
             if args.tvf_sample_dist == "uniform":
-                p = [1 / H for _ in range(H)]
+                p = None
             elif args.tvf_sample_dist == "linear":
-                p = [0.01 + 1 - (i / H) for i in range(H)]
-            elif args.tvf_sample_dist == "first_and_last":
-                p = [1000.0 if i < 10 or i == H-1 else 1.0 for i in range(H)]
+                p = [1 - (i / H) for i in range(H)]
             else:
                 raise Exception("Invalid distribution.")
 
-            p = np.asarray(p, dtype=np.float64)
-            p /= p.sum()
+            required_horizons = np.asarray([0, 1, H - 1], dtype=np.int64)
+            required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
+            all_horizons = np.asarray(range(H+1), dtype=np.int64)
+            all_horizons = np.repeat(all_horizons[None, :], B, axis=0)
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(batch_size)
             batch_data["int_value"] = self.int_value.reshape(batch_size)
 
         micro_batches = self.mini_batch_size // B
-
-        # just for debugging
-        #if self.step == 0:
-        #    self.log.info(
-        #        f"Using {micro_batches} micro_batches of size {B} on batch of size {batch_size}")
 
         for i in range(args.batch_epochs):
 
@@ -1170,6 +1186,10 @@ class Runner():
             counter = 0
 
             for j in range(args.n_mini_batches):
+
+                batch_advantages = batch_data["advantages"][ordering[counter*B:(counter+micro_batches)*B]]
+                adv_mu = batch_advantages.mean()
+                adv_std = batch_advantages.std()
 
                 for k in range(micro_batches):
 
@@ -1183,28 +1203,29 @@ class Runner():
 
                     for var_name, var_value in batch_data.items():
                         if var_name == "tvf_returns":
-                            # we want to down sample the horizons randomly each time
-                            # this is because we run out of GPU memory if we don't down sample, and also it is too slow.
-
-                            mb_returns = np.zeros([B, K], dtype=np.float32)
-                            mb_horizons = np.zeros_like(mb_returns)
-                            horizon_sample = np.zeros([B], dtype=np.int64)
-
                             # apply horizon sampling
-                            for b in range(B):
+                            # with replacement is a lot faster, and allows all samples to be generated together, rather
+                            # then individually for each b \in B.
 
-                                # sample with replacement is a little slow so we only update this every 16 values
-                                # this will still mix things up enough.
-                                if b % 16 == 0:
-                                    horizon_sample = np.random.choice(H, size=[K], replace=False, p=p)
-
-                                mb_horizons[b, :] = horizon_sample
-                                mb_returns[b, :] = var_value[sample[b], horizon_sample]
-
-                            minibatch_data["tvf_horizons"] = torch.from_numpy(mb_horizons).to(device=self.model.device, dtype=torch.int16)
-                            minibatch_data["tvf_returns"] = torch.from_numpy(mb_returns).to(device=self.model.device, dtype=torch.float32)
+                            if K >= H:
+                                # use all samples, this is more efficent as we won't sample the same horizon twice.
+                                minibatch_data["tvf_horizons"] = torch.from_numpy(all_horizons).to(
+                                    device=self.model.device, dtype=torch.int16)
+                                minibatch_data["tvf_returns"] = torch.from_numpy(var_value[sample]).to(
+                                    device=self.model.device, dtype=torch.float32)
+                            else:
+                                horizon_sample = np.random.choice(H, size=[B, K-required_horizons.shape[-1]], replace=True, p=p)
+                                horizon_sample = np.concatenate([horizon_sample, required_horizons], axis=1)
+                                mb_returns = np.take_along_axis(var_value[sample], horizon_sample, axis=1)
+                                minibatch_data["tvf_horizons"] = torch.from_numpy(horizon_sample).to(device=self.model.device, dtype=torch.int16)
+                                minibatch_data["tvf_returns"] = torch.from_numpy(mb_returns).to(device=self.model.device, dtype=torch.float32)
                         else:
                             minibatch_data[var_name] = torch.from_numpy(var_value[sample]).to(self.model.device)
+
+                    if args.normalize_advantages:
+                        # normalize advantage at the mini_batch_level
+                        minibatch_data["advantages"] = (minibatch_data["advantages"] - adv_mu) / (adv_std + 1e-8)
+
                     first_batch = k == 0
                     last_batch = k == (micro_batches-1)
                     self.train_minibatch(minibatch_data, zero_grad=first_batch, apply_update=last_batch, loss_scale=1/micro_batches)

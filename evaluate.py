@@ -2,6 +2,8 @@ from rl import models, atari, config, utils
 from rl.config import args
 from rl import hybridVecEnv
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import torch
@@ -22,7 +24,7 @@ REWARD_SCALE = float()
 MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
 
-GENERATE_EVAL = True
+GENERATE_EVAL = False
 GENERATE_MOVIES = True
 
 # run 100 evaluations
@@ -52,6 +54,13 @@ def load_checkpoint(checkpoint_path, device=None):
     """ Restores model from checkpoint. Returns current env_step"""
 
     load_args(checkpoint_path)
+
+    args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
+    args.res_x, args.res_y = (84, 84)
+
+    args.experiment_name = Path(checkpoint_path).parts[-3]
+    env = atari.make()
+
     model = make_model(env)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -64,15 +73,34 @@ def load_checkpoint(checkpoint_path, device=None):
     return model
 
 def make_model(env):
+
+
+    import importlib
+    model_module_path = f"Run.{args.experiment_name}.rl.models"
+    models = importlib.import_module(model_module_path, 'models')
+
+    # stub
+    import inspect
+    allowed_args = set(inspect.signature(models.TVFModel.__init__).parameters.keys())
+
+    additional_args = {}
+
+    additional_args['use_rnd'] = args.use_rnd,
+    additional_args['split_model'] = args.tvf_model == "split"
+    additional_args['use_rnn'] = False
+    additional_args['epsilon'] = args.tvf_epsilon
+    additional_args['horizon_scale'] = args.tvf_max_horizon
+    additional_args['horizon_transform'] = args.tvf_max_horizon # this was the old name
+
+
     return models.TVFModel(
         head="Nature",
         input_dims=env.observation_space.shape,
         actions=env.action_space.n,
         device=DEVICE,
         dtype=torch.float32,
-        use_rnn=False,
-        epsilon=args.tvf_epsilon,
-        horizon_scale=args.tvf_max_horizon
+        **{k:v for k,v in additional_args.items() if k in allowed_args},
+
     )
 
 def discount_rewards(rewards, gamma):
@@ -315,7 +343,7 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
         log_probs = model_out["log_policy"].detach().cpu().numpy()
 
         if np.isnan(log_probs).any():
-            raise Exception("NaN found in policy.")
+            raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
 
         action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
@@ -384,8 +412,6 @@ def export_movie(model, filename, max_frames = 30*60*15):
     start_time = time.time()
     buffer = generate_rollout(model, max_frames, include_video=True)
     rewards = buffer["rewards"]
-    end_time = time.time()
-    print(f"Rollout generated at {len(rewards)/(end_time-start_time):.0f} FPS")
 
     for t in range(len(rewards)):
 
@@ -458,23 +484,27 @@ def export_movie(model, filename, max_frames = 30*60*15):
 
     video_out.release()
 
+    end_time = time.time()
+    print(f"Video {filename} [{len(rewards) / (end_time - start_time):.0f} FPS] ({sum(rewards)*REWARD_SCALE:.0f})")
+
 
 def run_eval(path):
     for epoch in range(200):
         checkpoint_eval_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")
+        checkpoint_movie_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.mp4")
         checkpoint_name = os.path.join(path, f"checkpoint-{epoch:03d}M-params.pt")
         if os.path.exists(checkpoint_name) and not os.path.exists(checkpoint_eval_file):
-            print()
-            print(checkpoint_name)
-
-            # create an empty file to mark that we are working on this...
-            with open(checkpoint_eval_file, "wb"):
-                pass
-
-            model = load_checkpoint(checkpoint_name, device=DEVICE)
-            if GENERATE_MOVIES:
+            if GENERATE_MOVIES and not os.path.exists(checkpoint_movie_file):
+                # create an empty file to mark that we are working on this...
+                with open(checkpoint_movie_file, "wb"):
+                    pass
+                model = load_checkpoint(checkpoint_name, device=DEVICE)
                 export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"))
-            if GENERATE_EVAL:
+            if GENERATE_EVAL and not os.path.exists(checkpoint_eval_file):
+                # create an empty file to mark that we are working on this...
+                with open(checkpoint_eval_file, "wb"):
+                    pass
+                model = load_checkpoint(checkpoint_name, device=DEVICE)
                 evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
 
 def monitor(path):
@@ -487,21 +517,13 @@ def monitor(path):
 
 if __name__ == "__main__":
 
-    # set args by hand
     config.parse_args()
-
-    # get model
-    args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
-
-    # set resolution
-    args.res_x, args.res_y = (84, 84)
-
-    env = atari.make()
-
-    #for c in "ABCDEFGHIJKLMNOP":
-    #    monitor(f"./Run/TVF_4{c}")
-
-    for c in "ABCDEFGHIJKLMNOP":
-        monitor(f"./Run/TVF_6{c}")
+    folders = [name for name in os.listdir("./Run") if os.path.isdir(os.path.join('./Run',name))]
+    for folder in folders:
+        if "TVF_5" in folder:
+            monitor(os.path.join('./Run',folder))
+    for folder in folders:
+        if "TVF_6_eval" in folder:
+            monitor(os.path.join('./Run',folder))
 
 

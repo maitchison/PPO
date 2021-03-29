@@ -109,12 +109,12 @@ if __name__ == "__main__":
 
     model_args = {}
 
-    if args.use_rnd:
-        ACModel = models.RNDModel
-    elif args.use_tvf:
+    if args.use_tvf:
         ACModel = models.TVFModel
         model_args["epsilon"] = args.tvf_epsilon
         model_args["horizon_scale"] = args.tvf_max_horizon
+        model_args["use_rnd"] = args.use_rnd,
+        model_args["split_model"] = args.tvf_model == "split"
     else:
         ACModel = models.ActorCriticModel
 
