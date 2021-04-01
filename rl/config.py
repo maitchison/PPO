@@ -93,12 +93,6 @@ class Config:
 
         self.use_clipped_value_loss = bool()
 
-        # population based learning
-        self.pbl_population_size = int()
-        self.pbl_trust_region    = bool()
-
-        self.algo               = str()
-
         self.log_folder         = str()
         self.checkpoint_every   = int()
 
@@ -172,7 +166,6 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
     parser.add_argument("--agents", type=int, default=32)
-    parser.add_argument("--algo", type=str, default="ppo", help="Algorithm to use [ppo|pbl|arl]")
 
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
@@ -281,14 +274,6 @@ def parse_args():
     parser.add_argument("--tp_rest_blocks", type=int, default=1, help="Rollout blocks to rest for.")
     parser.add_argument("--tp_rest_learning_rate", type=float, default=0.0)
 
-    # population stuff
-    parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")
-
-    # these are really just for testing to get v-trace working
-    parser.add_argument("--pbl_policy_soften", type=str2bool, default=False)
-    parser.add_argument("--pbl_normalize_advantages", type=str, default="None")
-    parser.add_argument("--pbl_thinning", type=str, default="None")
-    parser.add_argument("--pbl_trust_region", type=str2bool, default=False)
 
     args.update(**parser.parse_args().__dict__)
 

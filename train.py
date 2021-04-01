@@ -6,7 +6,7 @@ import multiprocessing
 import ast
 
 from rl import utils, models, atari, config, logger
-from rl import ppo, pbl
+from rl import ppo
 from rl.config import args
 
 import json
@@ -96,7 +96,7 @@ if __name__ == "__main__":
     # population training gets a summary log, which we need to name differently as it can not be processed by
     # the analysis scripts (due to missing varaibles). The training_log_0.csv, training_log_1.csv can be read
     # just fine though.
-    log.csv_path = os.path.join(args.log_folder, "training_log.csv" if args.algo == "ppo" else "master_log.csv")
+    log.csv_path = os.path.join(args.log_folder, "training_log.csv")
     log.txt_path = os.path.join(args.log_folder, "log.txt")
 
     os.makedirs(args.log_folder, exist_ok=True)
@@ -130,30 +130,21 @@ if __name__ == "__main__":
         else:
             raise Exception("invalid model name {}.".format(args.model))
 
-        if args.algo.lower() == "ppo":
+        # reduce default hidden units from 512 to 64
+        # otherwise we have a 512x512 array, which will be 0.25M parameters
+        # actually... this is probably ok...
+        # if args.use_rnn and "hidden_units" not in model_args:
+        #     model_args["hidden_units"] = 64
 
-            # reduce default hidden units from 512 to 64
-            # otherwise we have a 512x512 array, which will be 0.25M parameters
-            # actually... this is probably ok...
-            # if args.use_rnn and "hidden_units" not in model_args:
-            #     model_args["hidden_units"] = 64
-
-            actor_critic_model = ACModel(
-                head=head_name,
-                input_dims=obs_space,
-                actions=n_actions,
-                device=args.device,
-                dtype=torch.float32,
-                **model_args
-            )
-            ppo.train(actor_critic_model, log)
-        elif args.algo.lower() == "pbl":
-            assert not args.use_rnn
-            model_constructor = lambda : ACModel(head=head_name, input_dims=obs_space, actions=n_actions,
-                                         device=args.device, use_rnn=args.use_rnn, dtype=torch.float32, **model_args)
-            pbl.train_population(model_constructor, log)
-        else:
-            raise Exception("Invalid algorithm", args.algo)
+        actor_critic_model = ACModel(
+            head=head_name,
+            input_dims=obs_space,
+            actions=n_actions,
+            device=args.device,
+            dtype=torch.float32,
+            **model_args
+        )
+        ppo.train(actor_critic_model, log)
 
         utils.release_lock()
 

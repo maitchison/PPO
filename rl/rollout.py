@@ -988,11 +988,12 @@ class Runner():
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
-        loss_entropy = -(logps.exp() * logps).mean(axis=1)
-        loss_entropy = loss_entropy * weights * args.entropy_bonus
-        loss_entropy = loss_entropy.mean()
-        self.log.watch_mean("loss_ent", loss_entropy)
-        loss = loss + loss_entropy
+        if args.entropy_bonus > 0:
+            loss_entropy = -(logps.exp() * logps).mean(axis=1)
+            loss_entropy = loss_entropy * weights * args.entropy_bonus
+            loss_entropy = loss_entropy.mean()
+            self.log.watch_mean("loss_ent", loss_entropy)
+            loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------
         # Calculate loss_rnd
@@ -1149,7 +1150,7 @@ class Runner():
 
         self.step = step
 
-        if self.current_learning_rate() == 0.0:
+        if self.current_learning_rate == 0.0:
             # no need to train...
             return
 

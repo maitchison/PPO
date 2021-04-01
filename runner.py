@@ -139,7 +139,7 @@ class Job:
         "clash": Job has multiple folders matching job name
         "running" Job is currently running
         "pending" Job has been started not not currently active
-        "stale: Job has a lock that has not been updated in 10min
+        "stale: Job has a lock that has not been updated in 30min
 
         """
 
@@ -164,7 +164,7 @@ class Job:
         if details is not None and details["fraction_complete"] >= 1.0:
             status = "done"
 
-        if status in ["running"] and self.minutes_since_modified() > 10:
+        if status in ["running"] and self.minutes_since_modified() > 30:
             status = "stale"
 
         return status
@@ -273,8 +273,15 @@ def run_next_experiment(filter_jobs=None):
             return
 
 def comma(x):
-    if type(x) is int or (type(x) is float and int(x) == x):
-        return "{:,}".format(x)
+    if type(x) is int or (type(x) is float and x >= 100):
+        postfix = ''
+        # if x > 100*1e6:
+        #     postfix = 'M'
+        #     x /= 1e6
+        # elif x > 100*1e3:
+        #     postfix = 'K'
+        #     x /= 1e3
+        return f"{int(x):,}{postfix}"
     else:
         return x
 
@@ -300,7 +307,7 @@ def show_experiments(filter_jobs=None, all=False):
             eta_hours = "{:.1f}h".format(details["eta"] / 60 / 60)
             score = details["score"]
             if score is None: score = 0
-            score = "{:.1f}".format(score)
+            score = comma(score)
             host = details["host"][:8] if status == "running" else ""
             fps = int(details["fps"])
             minutes = job.minutes_since_modified()
@@ -331,6 +338,8 @@ def show_fps(filter_jobs=None):
 
         if status == "running":
             details = job.get_details()
+            if details is None:
+                continue
             host = details["host"]
             if host not in fps:
                 fps[host] = 0
@@ -377,8 +386,9 @@ def setup_experiments6():
             "TVF_6B",
             run_name=f"tvf_mh={tvf_max_horizon}",
             tvf_max_horizon=tvf_max_horizon,
-            priority=50,
-            **default_args
+            epochs=70,
+            priority=300 if tvf_max_horizon==10000 else 200,
+            **{k: v for k, v in default_args.items() if k != "epochs"}
         )
 
     # as per previous
@@ -541,7 +551,7 @@ def setup_experiments6():
             n_mini_batches=32,
 
             chunked=False,
-            priority=100,
+            priority=0,
         )
 
     # longer horizon..
@@ -573,7 +583,7 @@ def setup_experiments6():
             n_mini_batches=32,
 
             chunked=False,
-            priority=60,
+            priority=0,
         )
 
 
@@ -606,7 +616,7 @@ def setup_experiments6():
             n_mini_batches=32,
 
             chunked=False,
-            priority=120,
+            priority=0,
         )
 
     # trying the split model... (so we don't have to balance value and policy...
@@ -639,7 +649,7 @@ def setup_experiments6():
             gamma=0.997,
             n_mini_batches=32,
 
-            priority=175,
+            priority=0,
         )
 
     # some RND exploration
@@ -986,26 +996,6 @@ def setup_experiments7():
     #         default_params=default_args
     #     )
 
-    # how many samples are needed to learn ev_10?
-    for tvf_n_horizons in [16, 32, 64, 128]:
-        add_job(
-            "TVF_7Db",
-            run_name=f"tvf_samples={tvf_n_horizons}",
-
-            tvf_n_horizons=tvf_n_horizons,
-
-            tvf_model="split",
-            tvf_joint_weight=0.1,
-
-            tvf_coef=0.5,
-            entropy_bonus=0.01,
-
-            epochs=25,
-            priority=0,
-
-            default_params=default_args
-        )
-
     # what network capacity is needed to learn ev_10?
     for tvf_hidden_units in [64, 128, 256, 512]:
         add_job(
@@ -1087,6 +1077,60 @@ def setup_experiments7():
     # mse weighted sampling
     #
 
+
+def setup_experiments8():
+
+    # these are just for the regression test
+    initial_args = {
+        'env_name': "Breakout",
+        'checkpoint_every': int(5e6),
+        'epochs': 50,
+        'agents': 256,
+        'n_steps': 128,
+        'max_grad_norm': 5.0,
+        'entropy_bonus': 0.01,
+        'use_tvf': True,
+        'tvf_advantage': True,
+        'tvf_coef': 0.5,
+        'vf_coef': 0.0,
+        'tvf_n_horizons': 64,
+        'workers': 8,
+        'tvf_gamma': 0.997,
+        'gamma': 0.997,
+        'mini_batch_size': 1024,
+    }
+
+    # these are the settings we will move towards
+    # (not worked out yet...)
+    prefered_args = {
+        'env_name': "Breakout",
+        'checkpoint_every': int(5e6),
+        'epochs': 50,
+        'agents': 256,
+        'n_steps': 64,
+        'max_grad_norm': 5.0,
+        'entropy_bonus': 0.01,
+        'use_tvf': True,
+        'tvf_advantage': True,
+        'tvf_coef': 0.5,
+        'vf_coef': 0.0,
+        'tvf_n_horizons': 64,
+        'workers': 8,
+        'tvf_gamma': 0.997,
+        'gamma': 0.997,
+        'mini_batch_size': 1024,
+    }
+
+    # Standard regression test
+    for tvf_max_horizon in [1000, 2000, 4000]:
+        add_job(
+            "TVF_8A",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            tvf_max_horizon=tvf_max_horizon,
+            priority=0,
+            default_params=initial_args,
+        )
+
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
@@ -1095,7 +1139,8 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_experiments6()
-    #setup_experiments7()
+    setup_experiments7()
+    setup_experiments8()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

@@ -111,9 +111,9 @@ def train(model: models.BaseModel, log: Logger):
 
     print("Warming up environments:", end='', flush=True)
 
-    max_steps = np.random.randint(1, 5000, [args.agents])
+    max_steps = np.random.randint(1, 1000, [args.agents])
 
-    for t in range(5000):
+    for t in range(1000):
 
         mask = t < max_steps
 
@@ -126,7 +126,7 @@ def train(model: models.BaseModel, log: Logger):
         ], dtype=np.int32)
         runner.states, ext_rewards, dones, infos = runner.vec_env.step(actions)
 
-        if t % 500 == 0:
+        if t % 100 == 0:
             print(".", end='', flush=True)
     print()
 
