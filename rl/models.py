@@ -322,6 +322,9 @@ class TVFModel(BaseModel):
                  horizon_scale=1000,
                  use_rnd=False,
                  split_model=False,
+                 tvf_hidden_units=512,
+                 tvf_activation="relu",
+                 tvf_h_scale='constant',  # estimates average reward, but then returns actual return
                  **kwargs):
         super().__init__(input_dims, actions)
         self.name = "AC_RNN-" + head if use_rnn else "AC-" + head
@@ -333,6 +336,7 @@ class TVFModel(BaseModel):
         single_channel_input_dims = (1, *input_dims[1:])
 
         self.net = constructNet(head, input_dims, **kwargs)
+        self.tvf_h_scale = tvf_h_scale
 
         self.split_model = split_model
         if split_model:
@@ -354,12 +358,15 @@ class TVFModel(BaseModel):
         self.features_std = 0
         extra_features = 1
         self.use_rnd = use_rnd
+        self.tvf_activation = tvf_activation
+
+        self.tvf_hidden_units = int(tvf_hidden_units)
 
         self.horizon_scale = horizon_scale
         self.fc_policy = nn.Linear(final_hidden_units, actions)
         self.fc_value = nn.Linear(final_hidden_units, 2 if use_rnd else 1)
-        self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, 512)
-        self.fc_tvf_value = nn.Linear(512, 2)
+        self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, self.tvf_hidden_units)
+        self.fc_tvf_value = nn.Linear(self.tvf_hidden_units, 2)
         self.epsilon = epsilon
         self.set_device_and_dtype(device, dtype)
 
@@ -469,10 +476,31 @@ class TVFModel(BaseModel):
                 x_duplicated,
                 transformed_horizons[:, :, None]
             ], dim=-1)
-            tvf_h = F.relu(self.fc_tvf_hidden(x_with_side_info))
+
+            if self.tvf_activation == "relu":
+                activation = F.relu
+            elif self.tvf_activation == "tanh":
+                activation = F.tanh
+            elif self.tvf_activation == "sigmoid":
+                activation = F.sigmoid
+            else:
+                raise Exception("invalid activation")
+
+            tvf_h = activation(self.fc_tvf_hidden(x_with_side_info))
             tvf_out = self.fc_tvf_value(tvf_h)
             tvf_values = tvf_out[..., 0]
             tvf_errors = tvf_out[..., 1]
+
+            if self.tvf_h_scale == "constant":
+                tvf_values = tvf_values
+            elif self.tvf_h_scale == "linear":
+                tvf_values = tvf_values * transformed_horizons
+            elif self.tvf_h_scale == "squared":
+                # this is a linear interpolation between constant and squared
+                tvf_values = tvf_values * (2 * transformed_horizons - transformed_horizons ** 2)
+            elif type(self.tvf_h_scale) is int:
+                # start with average but then switch to constant
+                tvf_values = tvf_values * torch.clamp(transformed_horizons * self.horizon_scale / int(self.tvf_h_scale), 0, 1.0)
 
             result['tvf_value'] = tvf_values
             result['tvf_std'] = self.epsilon + torch.exp(tvf_errors)

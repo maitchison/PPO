@@ -78,14 +78,7 @@ def make(non_determinism=None):
 
         env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
 
-        if args.reward_normalization:
-            env = wrappers.NormalizeRewardWrapper(env,
-                                                  initial_state=get_env_state("returns_norm_state")
-                                                  )
-
-
-        if args.reward_clip:
-            env = wrappers.ClipRewardWrapper(env, args.reward_clip)
+        env = wrappers.NullActionWrapper(env)
 
     else:
         raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))

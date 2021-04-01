@@ -29,7 +29,6 @@ class Config:
 
         self.input_crop         = bool()
         self.learning_rate      = float()
-        self.learning_rate_decay = float()
         self.adam_epsilon       = float()
         self.workers            = int()
         self.n_steps            = int()
@@ -41,10 +40,8 @@ class Config:
         self.intrinsic_reward_scale = float()
         self.extrinsic_reward_scale = float()
 
-        self.reward_clip        = float()
         self.reward_normalization = bool()
 
-        self.n_mini_batches       = int()
         self.sync_envs          = bool()
         self.resolution         = str()
         self.color              = bool()
@@ -59,6 +56,7 @@ class Config:
         self.sticky_actions     = bool()
         self.guid               = str()
         self.max_micro_batch_size = float()
+        self.mini_batch_size    = int()
 
         self.use_tvf            = bool()
         self.tvf_coef           = float()
@@ -71,6 +69,11 @@ class Config:
         self.tvf_loss_func      = bool()
         self.tvf_sample_dist    = str()
         self.tvf_horizon_warmup = float()
+        self.tvf_hidden_units   = int()
+        self.tvf_model          = str()
+        self.tvf_joint_weight   = float()
+        self.tvf_h_scale        = str()
+        self.tvf_activation     = str()
 
         self.time_aware = bool()
         self.ed_type = str()
@@ -82,9 +85,9 @@ class Config:
         self.debug_print_freq   = int()
         self.debug_log_freq     = int()
         self.noop_start         = bool()
+        self.moving_updates     = bool()
 
         self.frame_stack        = int()
-        self.tvf_joint_weight   = float()
 
         self.normalize_advantages = bool()
 
@@ -100,7 +103,12 @@ class Config:
         self.checkpoint_every   = int()
 
         self.model              = str()
-        self.tvf_model          = str()
+        self.use_rnd            = bool()
+
+        self.use_training_pauses = bool()
+        self.tp_train_blocks    =int()
+        self.tp_rest_blocks     =int()
+        self.tp_rest_learning_rate=float()
 
         self.__dict__.update(kwargs)
 
@@ -122,6 +130,15 @@ class Config:
     @property
     def normalize_observations(self):
         return self.use_rnd
+
+    @property
+    def batch_size(self):
+        return self.n_steps * self.agents
+
+    @property
+    def n_mini_batches(self):
+        assert self.batch_size % self.mini_batch_size == 0
+        return self.batch_size // self.mini_batch_size
 
 LOCK_KEY = str(uuid.uuid4().hex)
 
@@ -168,12 +185,12 @@ def parse_args():
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--ppo_epsilon", type=float, default=0.1, help="PPO epsilon parameter.")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Value function coefficient.")
-    parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Clip gradients during training to this.")
+    parser.add_argument("--max_grad_norm", type=float, default=5.0, help="Clip gradients during training to this.")
+
 
     parser.add_argument("--input_crop", type=str2bool, default=False, help="Enables atari input cropping.")
     parser.add_argument("--learning_rate", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
-    parser.add_argument("--learning_rate_decay", type=float, default=1.0, help="Learning rate is decayed exponentially by this amount per epoch.")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of environment steps per training step.")
     parser.add_argument("--epochs", type=int, default=200,
@@ -185,8 +202,8 @@ def parse_args():
     parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
-    parser.add_argument("--tvf_max_horizon", type=int, default=100, help="Max horizon for TVF.")
-    parser.add_argument("--tvf_n_horizons", type=int, default=100, help="Number of horizons to sample during training.")
+    parser.add_argument("--tvf_max_horizon", type=int, default=300, help="Max horizon for TVF.")
+    parser.add_argument("--tvf_n_horizons", type=int, default=64, help="Number of horizons to sample during training.")
     parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
     parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
     parser.add_argument("--tvf_loss_func", type=str, default="mse", help="[nlp|mse|huber]")
@@ -194,15 +211,17 @@ def parse_args():
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon")
     parser.add_argument("--tvf_model", type=str, default="default", help="[default|split]")
     parser.add_argument("--tvf_joint_weight", type=float, default=0.0, help="How constrained the two models are")
+    parser.add_argument("--tvf_hidden_units", type=float, default=512)
+    parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
+    parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
-    parser.add_argument("--reward_clip", type=float, default=5.0)
 
-    parser.add_argument("--n_mini_batches", type=int, default=8)
+    parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--max_micro_batch_size", type=int, default=512)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")
@@ -220,6 +239,7 @@ def parse_args():
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
+    parser.add_argument("--moving_updates", type=str2bool, default=False)
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=False)
@@ -254,6 +274,12 @@ def parse_args():
     parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
 
     #parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
+
+    # pauses
+    parser.add_argument("--use_training_pauses", type=str2bool, default=False)
+    parser.add_argument("--tp_train_blocks", type=int, default=3, help="Rollout blocks to train for.")
+    parser.add_argument("--tp_rest_blocks", type=int, default=1, help="Rollout blocks to rest for.")
+    parser.add_argument("--tp_rest_learning_rate", type=float, default=0.0)
 
     # population stuff
     parser.add_argument("--pbl_population_size", type=int, default=4, help="Number of agents in population.")

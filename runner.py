@@ -1,13 +1,9 @@
-import numpy
 import os
 import sys
-import pandas as pd
 import json
 import time
 import random
-import numpy as np
-
-from rl import utils
+import platform
 
 import socket
 HOST_NAME = socket.gethostname()
@@ -22,34 +18,68 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-CHUNK_SIZE = 10
-DEVICE = "auto"
-OUTPUT_FOLDER = "./Run"
-WORKERS = 4
+
+CHUNK_SIZE=10
+DEVICE="auto"
+OUTPUT_FOLDER="./Run"
+WORKERS=4
 
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
-def add_job(experiment_name, run_name, priority=0, chunked=True, **kwargs):
+def add_job(experiment_name, run_name, priority=0, chunked=True, default_params=None, **kwargs):
+
+    if default_params is not None:
+        for k,v in default_params.items():
+            if k not in kwargs:
+                kwargs[k]=v
 
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
 
+
+
     job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
 
-def get_run_folder(experiment_name, run_name):
-    """ Returns the path for given experiment and run, or none if not found. """
+def get_run_folders(experiment_name, run_name):
+    """ Returns the paths for given experiment and run, or empty list if not found. """
 
     path = os.path.join(OUTPUT_FOLDER, experiment_name)
     if not os.path.exists(path):
-        return None
+        return []
+
+    result = []
 
     for file in os.listdir(path):
         name = os.path.split(file)[-1]
         this_run_name = name[:-(8+3)]  # crop off the id code.
         if this_run_name == run_name:
-            return os.path.join(path, name)
-    return None
+            result.append(os.path.join(path, name))
+    return result
+
+def copy_source_files(source, destination, force=False):
+    """ Copies all source files from source path to destination. Returns path to destination training script. """
+    try:
+
+        destination_train_script = os.path.join(destination, "train.py")
+
+        if not force and os.path.exists(destination_train_script):
+            return destination_train_script
+        # we need to copy across train.py and then all the files under rl...
+        os.makedirs(os.path.join(destination, "rl"), exist_ok=True)
+        if platform.system() == "Windows":
+            copy_command = "copy"
+        else:
+            copy_command = "cp"
+
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "train.py"), os.path.join(destination, "train.py")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "rl", "*.py"), os.path.join(destination, "rl")))
+
+        return destination_train_script
+    except Exception as e:
+        print("Failed to copy training file to log folder.", e)
+        return None
+
 
 class Job:
 
@@ -81,7 +111,7 @@ class Job:
         priority = self.priority
 
         # make running tasks appear at top...
-        if status == "working":
+        if status == "running":
             priority += 1000
 
         if "search" in self.experiment_name:
@@ -93,43 +123,60 @@ class Job:
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
     def get_path(self):
-        # returns path to this job.
-        return get_run_folder(self.experiment_name, self.run_name)
+        # returns path to this job. or none if not found
+        paths = self.get_paths()
+        return paths[0] if len(paths) > 0 else None
+
+    def get_paths(self):
+        # returns list of paths for this jo
+        return get_run_folders(self.experiment_name, self.run_name)
 
     def get_status(self):
+        """
+        Returns job status
 
-        path = self.get_path()
-        if path is None or not os.path.exists(path):
-            return "pending"
+        "": Job has not been started
+        "clash": Job has multiple folders matching job name
+        "running" Job is currently running
+        "pending" Job has been started not not currently active
+        "stale: Job has a lock that has not been updated in 10min
 
-        status = "pending"
+        """
 
-        last_modifed = None
+        paths = self.get_paths()
+        if len(paths) >= 2:
+            return "clash"
+
+        if len(paths) == 0:
+            return ""
+
+        status = ""
+
+        path = paths[0]
 
         if os.path.exists(os.path.join(path, "params.txt")):
-            status = "waiting"
+            status = "pending"
+
+        if os.path.exists(os.path.join(path, "lock.txt")):
+            status = "running"
 
         details = self.get_details()
         if details is not None and details["fraction_complete"] >= 1.0:
-            status = "completed"
+            status = "done"
 
-        if os.path.exists(os.path.join(path, "lock.txt")):
-            last_modifed = os.path.getmtime(os.path.join(path, "lock.txt"))
-            status = "working"
-
-        if status in ["working"] and last_modifed is not None:
-            hours_since_modified = (time.time()-last_modifed)/60/60
-            if hours_since_modified > 1.0:
-                status = "stale"
+        if status in ["running"] and self.minutes_since_modified() > 10:
+            status = "stale"
 
         return status
 
-    def get_data(self):
-        try:
-            path = os.path.join(self.get_path(), "training_log.csv")
-            return pd.read_csv(path)
-        except:
-            return None
+    def minutes_since_modified(self):
+        path = self.get_path()
+        if path is None:
+            return -1
+        if os.path.exists(os.path.join(path, "lock.txt")):
+            last_modifed = os.path.getmtime(os.path.join(path, "lock.txt"))
+            return (time.time()-last_modifed)/60
+        return -1
 
     def get_params(self):
         try:
@@ -171,7 +218,7 @@ class Job:
             os.makedirs(experiment_folder, exist_ok=True)
 
         # copy script across if needed.
-        train_script_path = utils.copy_source_files("./", experiment_folder)
+        train_script_path = copy_source_files("./", experiment_folder)
 
         self.params["experiment_name"] = self.experiment_name
         self.params["run_name"] = self.run_name
@@ -218,7 +265,7 @@ def run_next_experiment(filter_jobs=None):
             continue
         status = job.get_status()
 
-        if status in ["pending", "waiting"]:
+        if status in ["", "pending"]:
 
             job.get_params()
 
@@ -233,9 +280,9 @@ def comma(x):
 
 def show_experiments(filter_jobs=None, all=False):
     job_list.sort()
-    print("-" * 151)
-    print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "fps", "score", "host"))
-    print("-" * 151)
+    print("-" * 161)
+    print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "fps", "score", "host", "ping"))
+    print("-" * 161)
     for job in job_list:
 
         if filter_jobs is not None and not filter_jobs(job):
@@ -243,7 +290,7 @@ def show_experiments(filter_jobs=None, all=False):
 
         status = job.get_status()
 
-        if status == "completed" and not all:
+        if status == "done" and not all:
             continue
 
         details = job.get_details()
@@ -254,25 +301,44 @@ def show_experiments(filter_jobs=None, all=False):
             score = details["score"]
             if score is None: score = 0
             score = "{:.1f}".format(score)
-            host = details["host"][:8]
+            host = details["host"][:8] if status == "running" else ""
             fps = int(details["fps"])
+            minutes = job.minutes_since_modified()
+            ping = f"{minutes:.0f}" if minutes >= 0 else ""
         else:
             percent_complete = ""
             eta_hours = ""
             score = ""
             host = ""
             fps = ""
+            ping = ""
 
-        status_transform = {
-            "pending": "",
-            "stale": "stale",
-            "completed": "done",
-            "working": "running",
-            "waiting": "pending"
-        }
+        print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
+            job.priority, job.experiment_name[:19], job.run_name, percent_complete, status, eta_hours, comma(fps), comma(score), host, ping))
 
-        print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}".format(
-            job.priority, job.experiment_name[:19], job.run_name, percent_complete, status_transform[status], eta_hours, comma(fps), comma(score), host))
+
+def show_fps(filter_jobs=None):
+    job_list.sort()
+
+    fps = {}
+
+    for job in job_list:
+
+        if filter_jobs is not None and not filter_jobs(job):
+            continue
+
+        status = job.get_status()
+
+        if status == "running":
+            details = job.get_details()
+            host = details["host"]
+            if host not in fps:
+                fps[host] = 0
+            fps[host] += int(details["fps"])
+
+    for k,v in fps.items():
+        print(f"{k:<20} {v:,.0f} FPS")
+
 
 
 def setup_experiments6():
@@ -290,7 +356,7 @@ def setup_experiments6():
         'tvf_n_horizons': 128,
         'tvf_advantage': True,
         'vf_coef': 0.0,
-        'workers': 8, # we will be running lots of experiments so reduce this down a little... (8 is better though)
+        'workers': WORKERS, # we will be running lots of experiments so reduce this down a little... (8 is better though)
         'tvf_gamma': 0.997,
         'gamma': 0.997,
         'n_mini_batches': 32,
@@ -786,9 +852,9 @@ def random_search(run, main_params, search_params, count=128):
 
     for i in range(count):
         params = {}
-        np.random.seed(i)
+        random.seed(i)
         for k, v in search_params.items():
-            params[k] = np.random.choice(v)
+            params[k] = random.choice(v)
 
         # make sure params arn't too high (due to memory)
         while params["agents"] * params["n_steps"] > 64*1024:
@@ -847,116 +913,179 @@ def setup_tvf_random_search():
 
     random_search("tvf_v6_search", main_params, search_params)
 
+def setup_experiments7():
 
-def setup_experiments5():
+    default_args = {
+        'env_name': "Breakout",
+        'checkpoint_every': int(5e6),
+        'epochs': 50,
+        'agents': 256,
+        'n_steps': 128,
+        'max_grad_norm': 5.0,
+        'entropy_bonus': 0.003,
+        'use_tvf': True,
+        'tvf_coef': 0.01,
+        'tvf_n_horizons': 64,
+        'tvf_advantage': True,
+        'vf_coef': 0.0,
+        'workers': 8,
+        'tvf_gamma': 0.997,
+        'gamma': 0.997,
+        'mini_batch_size': 1024,
+    }
 
-    for tvf_n_step in [16,32,64]:
+    for tvf_max_horizon in [300, 1000, 3000]:
         add_job(
-            "TVF_5B_FIXED",
-            run_name=f"tvf_n_step={tvf_n_step}",
-            env_name="Breakout",
-            checkpoint_every=int(5e6),
-            epochs=50,
-
-            agents=64,
-            n_steps=512,
-
-            tvf_lambda=-tvf_n_step,
-
-            tvf_gamma=0.997,
-            gamma=0.997,
-
-            max_grad_norm=5.0,
-            entropy_bonus=0.01,
-
-            use_tvf=True,
-            tvf_coef=0.03,
-            tvf_max_horizon=1000,
-            tvf_n_horizons=250,
-            tvf_advantage=True,
-            tvf_loss_func="nlp",
-            tvf_sample_dist="uniform",
-
-            vf_coef=0,
-            tvf_epsilon=0.1,
-
-            workers=8,
-            time_aware=False,
-            priority=200 if tvf_n_step == 32 else 150,
+            "TVF_7A",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            tvf_max_horizon=tvf_max_horizon,
+            priority=0,
+            default_params=default_args
         )
 
-    for tvf_n_step in [8,16,32,64,128,256,512]:
+    # mostly so I can see what kl should be...
+    for gamma in [0.99, 0.997, 0.999]:
         add_job(
-            "TVF_5B_OLD",
-            run_name=f"tvf_n_step={tvf_n_step}",
-            env_name="Breakout",
-            checkpoint_every=int(5e6),
-            epochs=50,
-
-            agents=64,
-            n_steps=512,
-
-            tvf_lambda=-tvf_n_step,
-
-            tvf_gamma=0.997,
-            gamma=0.997,
-
-            max_grad_norm=5.0,
-            entropy_bonus=0.01,
-
-            use_tvf=True,
-            tvf_coef=0.03,
-            tvf_max_horizon=1000,
-            tvf_n_horizons=250,
-            tvf_advantage=True,
-            tvf_loss_func="nlp",
-            tvf_sample_dist="uniform",
-
-            vf_coef=0,
-            tvf_epsilon=0.1,
-
-            workers=8,
-            time_aware=False,
-            priority=200 if tvf_n_step == 32 else 150,
+            "TVF_PPO",
+            run_name=f"gamma={gamma}",
+            use_tvf=False,
+            vf_coef=0.5,
+            priority=0,
+            gamma=gamma,
+            default_params=default_args
         )
 
 
-    for tvf_n_step in [16,32,64]:
+    for tvf_max_horizon in [300, 1000, 3000]:
         add_job(
-            "TVF_5B_SCRATCH",
-            run_name=f"tvf_n_step={tvf_n_step}",
-            env_name="Breakout",
-            checkpoint_every=int(5e6),
-            epochs=50,
+            "TVF_7B",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            tvf_max_horizon=tvf_max_horizon,
+            priority=0,
+            default_params=default_args
+        )
 
-            agents=64,
-            n_steps=512,
+    # this didn't work
+    # for n_steps in [128, 256, 512]:
+    #     add_job(
+    #         "TVF_7C",
+    #         run_name=f"n_steps={n_steps} moving=True",
+    #         tvf_max_horizon=1000,
+    #         moving_updates=True,
+    #         priority=200,
+    #         default_params=default_args
+    #     )
 
-            tvf_lambda=-tvf_n_step,
+    # for n_steps in [128, 256, 512]:
+    #     add_job(
+    #         "TVF_7C",
+    #         run_name=f"n_steps={n_steps} moving=False",
+    #         tvf_max_horizon=1000,
+    #         moving_updates=False,
+    #         priority=200,
+    #         default_params=default_args
+    #     )
 
-            tvf_gamma=0.997,
-            gamma=0.997,
+    # how many samples are needed to learn ev_10?
+    for tvf_n_horizons in [16, 32, 64, 128]:
+        add_job(
+            "TVF_7Db",
+            run_name=f"tvf_samples={tvf_n_horizons}",
 
-            max_grad_norm=5.0,
+            tvf_n_horizons=tvf_n_horizons,
+
+            tvf_model="split",
+            tvf_joint_weight=0.1,
+
+            tvf_coef=0.5,
             entropy_bonus=0.01,
 
-            use_tvf=True,
-            tvf_coef=0.03,
-            tvf_max_horizon=1000,
-            tvf_n_horizons=250,
-            tvf_advantage=True,
-            tvf_loss_func="nlp",
-            tvf_sample_dist="uniform",
+            epochs=25,
+            priority=0,
 
-            vf_coef=0,
-            tvf_epsilon=0.1,
+            default_params=default_args
+        )
 
-            workers=8,
-            time_aware=False,
-            priority=200 if tvf_n_step == 32 else 150,
+    # what network capacity is needed to learn ev_10?
+    for tvf_hidden_units in [64, 128, 256, 512]:
+        add_job(
+            "TVF_7D2b",
+            run_name=f"tvf_hu={tvf_hidden_units}",
+
+            tvf_hidden_units=tvf_hidden_units,
+
+            tvf_model="split",
+            tvf_joint_weight=0.1,
+
+            tvf_coef=0.5,
+            entropy_bonus=0.01,
+
+            epochs=25,
+            priority=0,
+
+            default_params=default_args
+
+        )
+
+    # average reward (might need to redo this...?
+    # for tvf_h_scale in ['constant', 'linear', 'squared', 100, -100, 'mse']:
+    #     add_job(
+    #         "TVF_7E",
+    #         run_name=f"tvf_hs={tvf_h_scale}",
+    #         tvf_coef=0.5,
+    #         entropy_bonus=0.01,
+    #         tvf_max_horizon=1000,
+    #         tvf_h_scale=tvf_h_scale,
+    #         default_params=default_args,
+    #         priority=320 if tvf_h_scale == "squared" else 310,
+    #     )
+
+
+    # first attempt at really long horizons (vinilla)
+    for tvf_max_horizon in [1000, 3000, 10000]:
+        add_job(
+            "TVF_7F",
+            run_name=f"tvf_mh={tvf_max_horizon}",
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_gamma=0.999,
+            gamma=0.999,
+            priority=0,
+
+            # improved settings...
+            tvf_model="split",
+            tvf_joint_weight=0.1,
+            tvf_coef=0.5,
+            entropy_bonus=0.01,
+
+            default_params=default_args
+        )
+
+        add_job(
+            "TVF_7F",
+            run_name=f"tvf_mh={tvf_max_horizon} (high samples)",
+            tvf_max_horizon=tvf_max_horizon,
+            tvf_gamma=0.999,
+            gamma=0.999,
+            priority=0,
+
+            tvf_n_horizons=256,
+
+            # improved settings...
+            tvf_model="split",
+            tvf_joint_weight=0.1,
+            tvf_coef=0.5,
+            entropy_bonus=0.01,
+
+            default_params=default_args
         )
 
 
+    # pending experiments
+    # activation function
+    # horizon warmup (don't like this)
+    # long horizon
+    # mse weighted sampling
+    #
 
 if __name__ == "__main__":
 
@@ -965,10 +1094,8 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    #setup_mvh4()
-    setup_experiments5()
     setup_experiments6()
-    setup_tvf_random_search()
+    #setup_experiments7()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
@@ -979,6 +1106,8 @@ if __name__ == "__main__":
         show_experiments(all=True)
     elif experiment_name == "show":
         show_experiments()
+    elif experiment_name == "fps":
+        show_fps()
     elif experiment_name == "auto":
         run_next_experiment()
     else:

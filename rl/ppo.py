@@ -10,7 +10,7 @@ import math
 
 
 from .logger import Logger, LogVariable
-from .rollout import Runner, adjust_learning_rate, save_progress
+from .rollout import Runner, save_progress
 
 import torch.multiprocessing
 
@@ -106,15 +106,30 @@ def train(model: models.BaseModel, log: Logger):
     runner.reset()
 
     # if we restored from a checkpoint the environments will all be in sync
-    # we generate a few rollouts but do not train on them, this way environments will be close to IID again
-    if did_restore:
-        print("Warming up environments:",end='')
-        # note: this is a lot, but it'll make sure we're good and IID.
-        rollouts_needed = math.ceil(5000 / runner.N)
-        for _ in range(rollouts_needed):
-            runner.generate_rollout()
-            print(".",end='')
-        print()
+    # we run the environments for a number of steps sampled uniformly from [0...5000] without any training
+    # note: this is a good idea even if we didn't restore, so as to make sure we are out of sync at the start.
+
+    print("Warming up environments:", end='', flush=True)
+
+    max_steps = np.random.randint(1, 5000, [args.agents])
+
+    for t in range(5000):
+
+        mask = t < max_steps
+
+        with torch.no_grad():
+            model_out = runner.forward()
+            log_policy = model_out["log_policy"].cpu().numpy()
+
+        actions = np.asarray([
+            utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, mask)
+        ], dtype=np.int32)
+        runner.states, ext_rewards, dones, infos = runner.vec_env.step(actions)
+
+        if t % 500 == 0:
+            print(".", end='', flush=True)
+    print()
+
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"), "w") as f:
@@ -159,8 +174,6 @@ def train(model: models.BaseModel, log: Logger):
                   display_precision=2)
         log.watch("walltime", walltime,
                   display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
-
-        adjust_learning_rate(optimizer, env_step / 1e6)
 
         # generate the rollout
         rollout_start_time = time.time()

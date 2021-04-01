@@ -36,6 +36,8 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             super().__init__(vec_functions, worker=worker_function, **kwargs)
 
             self.is_batched = True
+            # super will set num_envs to number of workers, so we fix it here.
+            self.num_envs = len(env_fns)
 
     def reset(self):
         if self.is_batched:
@@ -45,6 +47,9 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             return super(HybridAsyncVectorEnv, self).reset()
 
     def step(self, actions):
+        """
+        mask: (optional) boolean nd array of shape [A] indicating which environments should accept this input.
+        """
         if self.is_batched:
 
             # put actions into 2d python array.
@@ -56,7 +61,7 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
                 actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
                 actions = [list(actions[i]) for i in range(len(actions))]
 
-            observations_list, rewards, dones, infos = super(HybridAsyncVectorEnv, self).step(actions)
+            observations_list, rewards, dones, infos = super().step(actions)
 
             return (
                 np.reshape(observations_list, [-1, *observations_list.shape[2:]]),
@@ -65,7 +70,7 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
                 np.reshape(infos, [-1])
             )
         else:
-            return super(HybridAsyncVectorEnv, self).step(actions)
+            return super().step(actions)
 
 def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
     assert shared_memory is None

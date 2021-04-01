@@ -215,10 +215,28 @@ def get_tvf_test_params_three():
         1.0,
     )
 
+def test_rediscounted_value_estimate():
+    # data = np.asarray([[1,2],[3,4]], dtype=np.float32)
+    # ratios = np.asarray([1, 1], dtype=np.float32)
+    # print(rollout.get_rediscounted_value_estimate(data, gamma=0.5), rediscount_ratios=ratios)
+    # print(data)
+
+    # todo: do this later
+    return True
+
+def test_gae():
+    rewards = np.asarray([1, 0, 2, 4, 6], dtype=np.float32)[:, None]
+    dones = np.asarray( [0, 0, 1, 0, 0], dtype=np.float32)[:, None]
+    final_value_estimate = np.asarray(5, dtype=np.float32)
+    value_estimates = np.asarray([0, 0.5, 0.5, 3, 4], dtype=np.float32)[:, None]
+    result = rollout.calculate_gae(rewards, value_estimates, final_value_estimate, dones, gamma=0.5, lamb=1.0)
+    assert_is_similar(result, np.asarray([1.5, 0.5, 1.5, 5.25, 4.5])[:, None])
+    return True
+
 def test_calculate_tvf_n_step():
 
     params = get_tvf_test_params_one()
-
+    params_str = tuple(repr(x) for x in params)
     ref_result = rollout.calculate_tvf_td(*params)
     n_step_result = rollout.calculate_tvf_n_step(*params, n_step=1)
     assert_is_similar(n_step_result, ref_result)
@@ -235,6 +253,7 @@ def test_calculate_tvf_n_step():
         ]
     )[:, None, :]
     assert_is_similar(n_step_result, ref_result)
+    assert params_str == tuple(repr(x) for x in params)
 
     return True
 
@@ -305,5 +324,9 @@ print("TVF_TD: ", end='')
 print("Pass" if test_calculate_tvf_td() else "Fail!")
 print("TVF_N_STEP: ", end='')
 print("Pass" if test_calculate_tvf_n_step() else "Fail!")
+print("GAE: ", end='')
+print("Pass" if test_gae() else "Fail!")
+#print("Rediscount: ", end='')
+#print("Pass" if test_rediscounted_value_estimate() else "Fail!")
 #print("TVF_Lambda: ", end='')
 #print("Pass" if test_calculate_tvf_lambda() else "Fail!")

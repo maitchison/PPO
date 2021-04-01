@@ -115,6 +115,9 @@ if __name__ == "__main__":
         model_args["horizon_scale"] = args.tvf_max_horizon
         model_args["use_rnd"] = args.use_rnd,
         model_args["split_model"] = args.tvf_model == "split"
+        model_args["tvf_hidden_units"] = args.tvf_hidden_units
+        model_args["tvf_h_scale"] = args.tvf_h_scale
+        model_args["tvf_activation"] = args.tvf_activation
     else:
         ACModel = models.ActorCriticModel
 

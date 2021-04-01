@@ -91,7 +91,10 @@ def make_model(env):
     additional_args['epsilon'] = args.tvf_epsilon
     additional_args['horizon_scale'] = args.tvf_max_horizon
     additional_args['horizon_transform'] = args.tvf_max_horizon # this was the old name
-
+    additional_args['tvf_hidden_units'] = args.tvf_hidden_units
+    additional_args['tvf_activation'] = args.tvf_activation
+    additional_args['tvf_h_scale'] = args.tvf_h_scale
+    additional_args['tvf_average_reward'] = args.tvf_h_scale=="linear"
 
     return models.TVFModel(
         head="Nature",
@@ -313,6 +316,7 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
     """
 
     env = hybridVecEnv.HybridAsyncVectorEnv([atari.make for _ in range(num_rollouts)])
+
     _ = env.reset()
     states = env.reset()
 
@@ -413,10 +417,12 @@ def export_movie(model, filename, max_frames = 30*60*15):
     buffer = generate_rollout(model, max_frames, include_video=True)
     rewards = buffer["rewards"]
 
+    max_score = discount_rewards(rewards, args.gamma)
+
     for t in range(len(rewards)):
 
         frame = buffer["frames"][t]
-        values = buffer["values"][t] * REWARD_SCALE
+        values = buffer["values"][t] * REWARD_SCALE # model learned scaled rewards
         errors = buffer["errors"][t] * REWARD_SCALE
         model_value = buffer["model_values"][t] * REWARD_SCALE
 
@@ -435,22 +441,24 @@ def export_movie(model, filename, max_frames = 30*60*15):
         # calculate actual truncated values using real future rewards
         true_values = np.zeros(MAX_HORIZON, dtype=np.float32)
         for k in range(len(true_values)):
-            this_reward = (args.tvf_gamma ** k) * rewards[t+k] * REWARD_SCALE if (t+k) < len(rewards) else 0
+            this_reward = (args.tvf_gamma ** k) * rewards[t+k] * 1 if (t+k) < len(rewards) else 0
             prev_rewards = true_values[k-1] if k > 0 else 0
             true_values[k] = this_reward + prev_rewards
 
         fig = plt.figure(figsize=(7, 4), dpi=100)
 
-        # plot predicted values...
-        ys = values
-        xs = list(range(len(ys)))
-        plt.fill_between(xs, ys-errors, ys+errors, facecolor="blue", alpha=0.2)
-        plt.plot(xs, ys, label="Predicted", c="blue")
-
         # plot true value
         xs = list(range(len(true_values)))
         ys = true_values
         plt.plot(xs, ys, label="True", c="red")
+
+        # plot predicted values...
+        ys = values
+        xs = list(range(len(ys)))
+        plt.fill_between(xs, ys-errors, ys+errors, facecolor="blue", alpha=0.2)
+        plt.plot(xs, ys, label="Predicted", c="blue", alpha=0.75)
+
+
 
         # plot model value prediction
         #y_true = np.clip(true_values[-1], 0, 200)
@@ -459,14 +467,9 @@ def export_movie(model, filename, max_frames = 30*60*15):
         plt.xlabel("k")
         plt.ylabel("Score")
 
-        limit = max(
-            100,
-            10+max(true_values),
-            10+model_value,
-            10+max(values+errors),
-        )
+        limit = math.ceil(max_score/20) * 20 + 5
 
-        plt.ylim(-10, (int(limit)//20) * 20)
+        plt.ylim(-10, limit)
 
         plt.grid(True)
 
@@ -520,10 +523,20 @@ if __name__ == "__main__":
     config.parse_args()
     folders = [name for name in os.listdir("./Run") if os.path.isdir(os.path.join('./Run',name))]
     for folder in folders:
+        if "TVF_7E" in folder:
+            monitor(os.path.join('./Run',folder))
+    for folder in folders:
+        if "TVF_7" in folder:
+            monitor(os.path.join('./Run',folder))
+    for folder in folders:
         if "TVF_5" in folder:
             monitor(os.path.join('./Run',folder))
     for folder in folders:
         if "TVF_6_eval" in folder:
             monitor(os.path.join('./Run',folder))
+    for folder in folders:
+        if "TVF_6" in folder:
+            monitor(os.path.join('./Run',folder))
+
 
 

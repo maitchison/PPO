@@ -6,7 +6,7 @@ import hashlib
 import collections
 from . import utils
 
-
+from gym.vector import VectorEnv
 
 class EpisodicDiscounting(gym.Wrapper):
     """
@@ -175,7 +175,9 @@ class ClipRewardWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        reward = np.clip(reward, -self.clip, +self.clip)
+        if reward > self.clip or reward < -self.clip:
+            info["unclipped_reward"] = reward
+            reward = np.clip(reward, -self.clip, +self.clip)
         return obs, reward, done, info
 
 
@@ -211,6 +213,46 @@ class NormalizeObservationsWrapper(gym.Wrapper):
             return scaled_obs, reward, done, info
 
 
+class VecNormalizeRewardWrapper(gym.Wrapper):
+    """
+    Normalizes rewards such that returns are unit normal.
+    Vectorized version.
+    Also clips rewards
+    """
+
+    def __init__(self, env:VectorEnv, initial_state=None, clip=10):
+        """
+        Normalizes returns
+        """
+        super().__init__(env)
+
+        self.env = env
+        self.clip = clip
+        self.epsilon = 1e-4
+        self.current_returns = np.zeros([env.num_envs], dtype=np.float32)
+        self.ret_rms = utils.RunningMeanStd(shape=())
+        self.mean = 0.0
+        self.std = 0.0
+        if initial_state is not None:
+            self.ret_rms.restore_state(initial_state)
+
+    def step(self, actions):
+        obs, rewards, dones, infos = self.env.step(actions)
+
+        self.current_returns = rewards + self.current_returns * (1-dones)
+
+        self.ret_rms.update(self.current_returns)
+        self.mean = self.ret_rms.mean
+        self.std = math.sqrt(self.ret_rms.var)
+
+        scaled_rewards = np.clip(rewards / (self.std + self.epsilon), -self.clip, +self.clip)
+
+        infos[0]["returns_norm_state"] = self.ret_rms.save_state()
+        infos[0]["unscaled_rewards"] = rewards.copy()
+
+        return obs, scaled_rewards, dones, infos
+
+
 class NormalizeRewardWrapper(gym.Wrapper):
     """
     Normalizes rewards such that returns are unit normal.
@@ -233,7 +275,7 @@ class NormalizeRewardWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        self.current_return = reward + self.current_return * 0.99 * (1-done)
+        self.current_return = reward + self.current_return * (1-done)
         self.ret_rms.update(self.current_return)
         self.mean = self.ret_rms.mean
         self.std = math.sqrt(self.ret_rms.var)
@@ -549,6 +591,32 @@ class AtariWrapper(gym.Wrapper):
     def reset(self):
         obs = self.env.reset()
         return self._process_frame(obs)
+
+class NullActionWrapper(gym.Wrapper):
+    """
+    Allows passing of a negative action to indicate not to proceed the environment forward.
+    Observation, frozen, info emply, and reward will be 0, done will be false
+    Child environment will not be stepped.
+    Helpful for vectorized environments.
+    """
+
+    def __init__(self, env):
+        gym.Wrapper.__init__(self, env)
+        self._prev_obs = None
+
+    def step(self, action:int):
+        if action < 0:
+            return self._prev_obs, 0, False, dict()
+        else:
+            obs, reward, done, info = self.env.step(action)
+            self._prev_obs = obs
+            return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self._prev_obs = obs
+        return obs
+
 
 class NoopResetWrapper(gym.Wrapper):
     """
