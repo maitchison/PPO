@@ -364,7 +364,7 @@ class TVFModel(BaseModel):
 
         self.horizon_scale = horizon_scale
         self.fc_policy = nn.Linear(final_hidden_units, actions)
-        self.fc_value = nn.Linear(final_hidden_units, 2 if use_rnd else 1)
+        self.fc_value = nn.Linear(final_hidden_units, 2)
         self.fc_tvf_hidden = nn.Linear(final_hidden_units + extra_features, self.tvf_hidden_units)
         self.fc_tvf_value = nn.Linear(self.tvf_hidden_units, 2)
         self.epsilon = epsilon

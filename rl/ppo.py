@@ -7,6 +7,7 @@ import torch.nn as nn
 import time
 import json
 import math
+import sys
 
 
 from .logger import Logger, LogVariable
@@ -97,11 +98,17 @@ def train(model: models.BaseModel, log: Logger):
         walltime = 0
         did_restore = False
 
+    if not did_restore:
+        log.log("To run experiment again use:")
+        log.log("python train.py "+ " ".join(sys.argv[1:]))
+
     runner.create_envs()
 
     if not did_restore and args.normalize_observations:
         # this will get an initial estimate for the normalization constants.
         runner.run_random_agent(20)
+
+
 
     runner.reset()
 
@@ -109,20 +116,31 @@ def train(model: models.BaseModel, log: Logger):
     # we run the environments for a number of steps sampled uniformly from [0...5000] without any training
     # note: this is a good idea even if we didn't restore, so as to make sure we are out of sync at the start.
 
-    print("Warming up environments:", end='', flush=True)
+    if not did_restore:
+        warmup_duration = 500
+    else:
+        if "ep_length" in log._vars:
+            ep_mean, ep_std, ep_min, ep_max = log._vars["ep_length"].value
+            warmup_duration = math.ceil((ep_mean + ep_std*2) / 100)*100 # this should be enough...
+            warmup_duration = min(ep_max, warmup_duration) # no need to go above maximum episode length
+            warmup_duration = int(warmup_duration)
+        else:
+            warmup_duration = 2000
 
-    max_steps = np.random.randint(1, 1000, [args.agents])
+    print(f"Warming up environments for {warmup_duration} steps:", end='', flush=True)
 
-    for t in range(1000):
+    max_steps = np.random.randint(1, warmup_duration, [args.agents])
 
-        mask = t < max_steps
+    for t in range(max(max_steps)):
+
+        masks = t < max_steps
 
         with torch.no_grad():
-            model_out = runner.forward()
+            model_out = runner.forward(state = runner.states)
             log_policy = model_out["log_policy"].cpu().numpy()
 
         actions = np.asarray([
-            utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, mask)
+            utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
         ], dtype=np.int32)
         runner.states, ext_rewards, dones, infos = runner.vec_env.step(actions)
 

@@ -290,16 +290,17 @@ class MonitorWrapper(gym.Wrapper):
     This can be helpful to retain an unmodified copy of the input.
     """
 
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, monitor_video=False):
         super().__init__(env)
         self.env = env
+        self.monitor_video = monitor_video
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        info["monitor_obs"] = obs.copy()
+        if self.monitor_video:
+            info["monitor_obs"] = obs.copy()
         info["raw_reward"] = reward
         return obs, reward, done, info
-
 
 class ResetOnCrash(gym.Wrapper):
     """
@@ -615,6 +616,31 @@ class NullActionWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
         self._prev_obs = obs
+        return obs
+
+
+class EpisodeScoreWrapper(gym.Wrapper):
+    """
+    Records episode length and score
+    """
+
+    def __init__(self, env):
+        gym.Wrapper.__init__(self, env)
+        self.ep_score = 0
+        self.ep_length = 0
+
+    def step(self, action:int):
+        obs, reward, done, info = self.env.step(action)
+        self.ep_score += reward
+        self.ep_length += 1
+        info["ep_score"] = self.ep_score
+        info["ep_length"] = self.ep_length
+        return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self.ep_score = 0
+        self.ep_length = 0
         return obs
 
 

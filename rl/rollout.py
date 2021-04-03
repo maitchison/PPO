@@ -339,7 +339,7 @@ class Runner():
         self.actions = np.zeros([N, A], dtype=np.int64)
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
-        self.terminals = np.zeros([N, A], dtype=np.bool)
+        self.terminals = np.zeros([N, A], dtype=np.bool) # indicates prev_state was a terminal state.
         self.ext_value = np.zeros([N, A], dtype=np.float32)
 
         # value function horizons
@@ -515,7 +515,7 @@ class Runner():
 
         scale = 2
 
-        env = atari.make()
+        env = atari.make(monitor_video=True)
         _ = env.reset()
         action = 0
         state, reward, done, info = env.step(0)
@@ -650,6 +650,9 @@ class Runner():
 
             self.states, ext_rewards, dones, infos = self.vec_env.step(actions)
 
+            # per step reward
+            ext_rewards += args.per_step_reward
+
             # work out our intrinsic rewards
             if args.use_intrinsic_rewards:
                 value_int = model_out["int_value"].detach().cpu().numpy()
@@ -681,13 +684,13 @@ class Runner():
             #    if "unclipped_reward" in info:
             #        print(f"Env {i:03d} clipped reward from {info['unclipped_reward']:.1f}")
 
-            for i, done in enumerate(dones):
+            for i, (done, info) in enumerate(zip(dones, infos)):
                 if done:
                     # reset is handled automatically by vectorized environments
                     # so just need to keep track of book-keeping
                     if not is_warmup:
-                        self.log.watch_full("ep_score", self.episode_score[i])
-                        self.log.watch_full("ep_length", self.episode_len[i])
+                        self.log.watch_full("ep_score", info["ep_score"])
+                        self.log.watch_full("ep_length", info["ep_length"])
                         if "game_freeze" in infos[i]:
                             self.game_crashes += 1
                     self.episode_score[i] = 0
@@ -821,7 +824,8 @@ class Runner():
                 value = self.tvf_values[:, :, h].ravel().astype(np.float32)
                 target = self.tvf_returns[:, :, h].ravel().astype(np.float32)
                 self.log.watch_mean(f"ev_{h:04d}", utils.explained_variance(value, target), display_width=8)
-                self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(value - target)) * self.reward_scale**2, display_width=0)
+                # raw is RMS on unscaled error
+                self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale*(value - target)) ** 0.5), display_width=0)
                 self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
         else:
             self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
@@ -926,28 +930,29 @@ class Runner():
             targets = data["tvf_returns"]
             mu = model_out["tvf_value"]
 
-            # MSE loss (calculate for reference even when using distributional)
-            tvf_loss_mse = -0.5 * args.tvf_coef * (targets - mu).pow(2)
+            if args.tvf_loss_weighting == "default":
+                weighting = 1
+            elif args.tvf_loss_weighting == "advanced":
+                if args.tvf_lambda < 0:
+                    # n step returns
+                    effective_n_step = -args.tvf_lambda
+                    # td updates
+                elif args.tvf_lambda == 0:
+                    effective_n_step = 1
+                elif args.tvf_lambda == 1:
+                    # MC style
+                    effective_n_step = args.n_steps / 2
+                else:
+                    effective_n_step = min(1/(1-args.tvf_lambda), args.n_steps)
+                weighting =(self.current_max_horizon - data["tvf_horizons"] + effective_n_step) / effective_n_step
+            else:
+                raise ValueError("Invalid tvf_loss_weighting value.")
+
+            # MSE loss
+            tvf_loss_mse = -0.5 * weighting * args.tvf_coef * (targets - mu).pow(2)
             self.log.watch_mean("tvf_loss_mse", -tvf_loss_mse.mean(), history_length=64)
 
-            if args.tvf_loss_func == "nlp":
-                std = model_out["tvf_std"]
-                # log prob loss on gaussian distribution
-                # I think this is dodgy, as log_prob is really log_pdf, and therefore we will get log_probs > 0.
-                # not sure how to solve this though? Maybe scale the prob of each individual sample based on the
-                # std of the gaussian?? In the end it seems to work though
-                dist = torch.distributions.Normal(mu, std)
-                tvf_loss_nlp = args.tvf_coef * dist.log_prob(targets)
-                self.log.watch_mean("tvf_loss_nlp", -tvf_loss_nlp.mean(), history_length=64)
-                tvf_loss = tvf_loss_nlp.mean()
-                raise Exception("NLP has been disabled due to stability issues during training")
-            elif args.tvf_loss_func == "mse":
-                tvf_loss = tvf_loss_mse.mean()
-            elif args.tvf_loss_func == "huber":
-                tvf_loss_huber = -args.tvf_coef * torch.nn.functional.smooth_l1_loss(mu, targets)
-                tvf_loss = tvf_loss_huber.mean()
-            else:
-                raise ValueError(f"Invalid loss function {args.tvf_loss_func}")
+            tvf_loss = tvf_loss_mse.mean()
         else:
             tvf_loss = 0
 
@@ -1016,17 +1021,21 @@ class Runner():
         # Calculate loss joint
         # -------------------------------------------------------------------------
 
-        if args.tvf_model == "split" and args.tvf_joint_weight != 0.0:
+        if args.tvf_model == "split" and args.joint_model_weight != 0.0:
             parameters_a = list(filter(lambda p: p.requires_grad, self.model.net.parameters()))
             parameters_b = list(filter(lambda p: p.requires_grad, self.model.value_net.parameters()))
             norm = torch.tensor(0, dtype=torch.float32, device=self.model.device)
             count = 0
             for a,b in zip(parameters_a, parameters_b):
-                norm = norm + torch.norm(a.data - b.data, p=2)
+                norm = norm + torch.norm(a.data - b.data, p=2)**2
                 count += len(a.data.reshape([-1]))
-            rms_cost = (norm / count) ** 0.5
-            loss -= rms_cost * args.tvf_joint_weight
-            self.log.watch_mean("joint_loss", rms_cost)
+
+            norm = norm / count
+
+            joint_loss = norm * args.joint_model_weight
+            loss -= joint_loss
+            self.log.watch_mean("joint_loss", joint_loss)
+            self.log.watch_mean("joint_mse", norm)
 
         # -------------------------------------------------------------------------
         # Run optimizer
@@ -1082,8 +1091,6 @@ class Runner():
                     utils.dump_data(mu, f_name("tvf_values"))
                     utils.dump_data(targets - mu, f_name("tvf_errors"))
                     utils.dump_data(tvf_loss_mse, f_name("tvf_loss_mse"))
-                    if args.tvf_loss_func == "nlp":
-                        utils.dump_data(tvf_loss_nlp, f_name("tvf_loss_nlp"))
 
             tensors_to_check = [loss, logps, advantages]
             if args.use_tvf:

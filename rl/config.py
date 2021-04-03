@@ -66,14 +66,14 @@ class Config:
         self.tvf_lambda         = float()
         self.tvf_advantage      = bool()
         self.tvf_epsilon        = bool()
-        self.tvf_loss_func      = bool()
         self.tvf_sample_dist    = str()
         self.tvf_horizon_warmup = float()
         self.tvf_hidden_units   = int()
         self.tvf_model          = str()
-        self.tvf_joint_weight   = float()
+        self.joint_model_weight = float()
         self.tvf_h_scale        = str()
         self.tvf_activation     = str()
+        self.tvf_loss_weighting = str()
 
         self.time_aware = bool()
         self.ed_type = str()
@@ -103,6 +103,8 @@ class Config:
         self.tp_train_blocks    =int()
         self.tp_rest_blocks     =int()
         self.tp_rest_learning_rate=float()
+
+        self.per_step_reward = float()
 
         self.__dict__.update(kwargs)
 
@@ -156,11 +158,12 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def parse_args():
+def parse_args(no_env=False):
 
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
-    parser.add_argument("environment")
+    if not no_env:
+        parser.add_argument("environment")
 
     parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
@@ -199,14 +202,14 @@ def parse_args():
     parser.add_argument("--tvf_n_horizons", type=int, default=64, help="Number of horizons to sample during training.")
     parser.add_argument("--tvf_advantage", type=str2bool, default=False, help="Use truncated value function for advantages, and disable model value prediction")
     parser.add_argument("--tvf_epsilon", type=float, default=0.01, help="Smallest STD for error prediction.")
-    parser.add_argument("--tvf_loss_func", type=str, default="mse", help="[nlp|mse|huber]")
     parser.add_argument("--tvf_sample_dist", type=str, default="uniform", help="[uniform|linear]")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon")
     parser.add_argument("--tvf_model", type=str, default="default", help="[default|split]")
-    parser.add_argument("--tvf_joint_weight", type=float, default=0.0, help="How constrained the two models are")
+    parser.add_argument("--joint_model_weight", type=float, default=0.0, help="How constrained the two models are")
     parser.add_argument("--tvf_hidden_units", type=float, default=512)
     parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
+    parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
@@ -233,6 +236,7 @@ def parse_args():
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_start", type=str2bool, default=True)
     parser.add_argument("--moving_updates", type=str2bool, default=False)
+    parser.add_argument("--per_step_reward", type=float, default=0.0)
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=False)

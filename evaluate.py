@@ -59,7 +59,7 @@ def load_checkpoint(checkpoint_path, device=None):
     args.res_x, args.res_y = (84, 84)
 
     args.experiment_name = Path(checkpoint_path).parts[-3]
-    env = atari.make()
+    env = atari.make(monitor_video=True)
 
     model = make_model(env)
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -83,28 +83,37 @@ def make_model(env):
     import inspect
     allowed_args = set(inspect.signature(models.TVFModel.__init__).parameters.keys())
 
-    additional_args = {}
+    if args.use_tvf:
 
-    additional_args['use_rnd'] = args.use_rnd,
-    additional_args['split_model'] = args.tvf_model == "split"
-    additional_args['use_rnn'] = False
-    additional_args['epsilon'] = args.tvf_epsilon
-    additional_args['horizon_scale'] = args.tvf_max_horizon
-    additional_args['horizon_transform'] = args.tvf_max_horizon # this was the old name
-    additional_args['tvf_hidden_units'] = args.tvf_hidden_units
-    additional_args['tvf_activation'] = args.tvf_activation
-    additional_args['tvf_h_scale'] = args.tvf_h_scale
-    additional_args['tvf_average_reward'] = args.tvf_h_scale=="linear"
+        additional_args = {}
 
-    return models.TVFModel(
-        head="Nature",
-        input_dims=env.observation_space.shape,
-        actions=env.action_space.n,
-        device=DEVICE,
-        dtype=torch.float32,
-        **{k:v for k,v in additional_args.items() if k in allowed_args},
+        additional_args['use_rnd'] = args.use_rnd
+        additional_args['split_model'] = args.tvf_model == "split"
+        additional_args['use_rnn'] = False
+        additional_args['epsilon'] = args.tvf_epsilon
+        additional_args['horizon_scale'] = args.tvf_max_horizon
+        additional_args['horizon_transform'] = args.tvf_max_horizon # this was the old name
+        additional_args['tvf_hidden_units'] = args.tvf_hidden_units
+        additional_args['tvf_activation'] = args.tvf_activation
+        additional_args['tvf_h_scale'] = args.tvf_h_scale
+        additional_args['tvf_average_reward'] = args.tvf_h_scale=="linear"
 
-    )
+        return models.TVFModel(
+            head="Nature",
+            input_dims=env.observation_space.shape,
+            actions=env.action_space.n,
+            device=DEVICE,
+            dtype=torch.float32,
+            **{k:v for k,v in additional_args.items() if k in allowed_args},
+        )
+    else:
+        return models.ActorCriticModel(
+            head="Nature",
+            input_dims=env.observation_space.shape,
+            actions=env.action_space.n,
+            device=DEVICE,
+            dtype=torch.float32,
+        )
 
 def discount_rewards(rewards, gamma):
     """
@@ -214,7 +223,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     episode_scores = []
     episode_lengths = []
 
-    print("Evaluating:",end='')
+    print("Evaluating:",end='', flush=True)
 
     remaining_samples = samples
 
@@ -315,7 +324,7 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
     todo: vectorize this so we can generate multiple rollouts at once (will take extra memory though)
     """
 
-    env = hybridVecEnv.HybridAsyncVectorEnv([atari.make for _ in range(num_rollouts)])
+    env = hybridVecEnv.HybridAsyncVectorEnv([lambda : atari.make(monitor_video=True) for _ in range(num_rollouts)])
 
     _ = env.reset()
     states = env.reset()
@@ -343,7 +352,10 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
 
     while any(is_running) and frame_count < max_frames:
 
-        model_out = model.forward(states, horizons=horizons)
+        if args.use_tvf:
+            model_out = model.forward(states, horizons=horizons)
+        else:
+            model_out = model.forward(states)
         log_probs = model_out["log_policy"].detach().cpu().numpy()
 
         if np.isnan(log_probs).any():
@@ -363,8 +375,6 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
             rendered_frame = infos[i].get("monitor_obs", states[i])
             agent_layers = states[i]
 
-            values = model_out["tvf_value"][i, :].detach().cpu().numpy()
-            errors = model_out["tvf_std"][i, :].detach().cpu().numpy() * 1.96
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
 
@@ -374,8 +384,10 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
 
             game_reset = "game_freeze" in infos[i]
 
-            buffers[i]['values'].append(values)
-            buffers[i]['errors'].append(errors)
+            if args.use_tvf:
+                values = model_out["tvf_value"][i, :].detach().cpu().numpy()
+                buffers[i]['values'].append(values)
+
             buffers[i]['model_values'].append(model_value)
             buffers[i]['rewards'].append(rewards[i])
             buffers[i]['raw_rewards'].append(raw_reward)
@@ -390,7 +402,7 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
     return buffers
 
 
-def export_movie(model, filename, max_frames = 30*60*15):
+def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_filename=False):
     """
     Modified version of export movie that supports display of truncated value functions
     In order to show the true discounted returns we write all observations to a buffer, which may take
@@ -399,7 +411,7 @@ def export_movie(model, filename, max_frames = 30*60*15):
 
     scale = 4
 
-    env = atari.make()
+    env = atari.make(monitor_video=True)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)
@@ -410,27 +422,25 @@ def export_movie(model, filename, max_frames = 30*60*15):
     width = (width * scale) // 4 * 4  # make sure these are multiples of 4
     height = (height * scale) // 4 * 4
 
-    # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-    video_out = cv2.VideoWriter(filename+".mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+    print(f"Video {filename_base} ", end='', flush=True)
 
     start_time = time.time()
     buffer = generate_rollout(model, max_frames, include_video=True)
     rewards = buffer["rewards"]
 
-    max_score = discount_rewards(rewards, args.gamma)
+    # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
+    final_score = sum(rewards)
+    postfix = f" [{int(final_score):,}].mp4" if include_score_in_filename else ".mp4"
+    video_out = cv2.VideoWriter(filename_base+postfix, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+
+    print(f"score:{int(sum(rewards)):,} ", end='', flush=True)
+
+    current_score = 0
 
     for t in range(len(rewards)):
 
         frame = buffer["frames"][t]
-        values = buffer["values"][t] * REWARD_SCALE # model learned scaled rewards
-        errors = buffer["errors"][t] * REWARD_SCALE
         model_value = buffer["model_values"][t] * REWARD_SCALE
-
-        if args.tvf_loss_func != "nlp":
-            errors *= 0
-
-        if args.vf_coef == 0:
-            model_value = 0
 
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
@@ -440,12 +450,23 @@ def export_movie(model, filename, max_frames = 30*60*15):
 
         # calculate actual truncated values using real future rewards
         true_values = np.zeros(MAX_HORIZON, dtype=np.float32)
+        true_score = np.zeros(MAX_HORIZON, dtype=np.float32)
+        future_score = current_score
         for k in range(len(true_values)):
             this_reward = (args.tvf_gamma ** k) * rewards[t+k] * 1 if (t+k) < len(rewards) else 0
             prev_rewards = true_values[k-1] if k > 0 else 0
             true_values[k] = this_reward + prev_rewards
+            true_score[k] = future_score
+            future_score += this_reward
+
+        current_score += rewards[t]
 
         fig = plt.figure(figsize=(7, 4), dpi=100)
+
+        # plot score
+        xs = list(range(len(true_score)))
+        ys = true_score
+        plt.plot(xs, ys, label="Score", c="green", alpha=0.50)
 
         # plot true value
         xs = list(range(len(true_values)))
@@ -453,21 +474,20 @@ def export_movie(model, filename, max_frames = 30*60*15):
         plt.plot(xs, ys, label="True", c="red")
 
         # plot predicted values...
-        ys = values
-        xs = list(range(len(ys)))
-        plt.fill_between(xs, ys-errors, ys+errors, facecolor="blue", alpha=0.2)
-        plt.plot(xs, ys, label="Predicted", c="blue", alpha=0.75)
-
-
+        if args.use_tvf:
+            values = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
+            ys = values
+            xs = list(range(len(ys)))
+            plt.plot(xs, ys, label="Predicted", c="blue", alpha=0.75)
 
         # plot model value prediction
-        #y_true = np.clip(true_values[-1], 0, 200)
-        plt.hlines(model_value, 0, len(xs), label="Model", colors=["black"])
+        if args.vf_coef > 0:
+            plt.hlines(model_value, 0, len(xs), label="Model", colors=["black"])
 
         plt.xlabel("k")
         plt.ylabel("Score")
 
-        limit = math.ceil(max_score/20) * 20 + 5
+        limit = math.ceil(final_score/20) * 20 + 5
 
         plt.ylim(-10, limit)
 
@@ -488,21 +508,57 @@ def export_movie(model, filename, max_frames = 30*60*15):
     video_out.release()
 
     end_time = time.time()
-    print(f"Video {filename} [{len(rewards) / (end_time - start_time):.0f} FPS] ({sum(rewards)*REWARD_SCALE:.0f})")
-
+    print(f"completed at {len(rewards) / (end_time - start_time):.0f} FPS")
 
 def run_eval(path):
+
+    files_in_dir = [os.path.join(path, x) for x in os.listdir(path)]
+    first_hit = True
+
     for epoch in range(200):
         checkpoint_eval_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")
-        checkpoint_movie_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.mp4")
         checkpoint_name = os.path.join(path, f"checkpoint-{epoch:03d}M-params.pt")
-        if os.path.exists(checkpoint_name) and not os.path.exists(checkpoint_eval_file):
-            if GENERATE_MOVIES and not os.path.exists(checkpoint_movie_file):
-                # create an empty file to mark that we are working on this...
-                with open(checkpoint_movie_file, "wb"):
-                    pass
-                model = load_checkpoint(checkpoint_name, device=DEVICE)
-                export_movie(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"))
+
+        checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval"
+        movie_placeholder_path = os.path.join(path, f"_{checkpoint_movie_base}.mp4")
+
+        if os.path.exists(checkpoint_name):
+
+            if first_hit:
+                #print(f"<{path}>")
+                first_hit = False
+
+            if GENERATE_MOVIES:
+
+                matching_files = [x for x in files_in_dir if checkpoint_movie_base in x]
+
+                if len(matching_files) >= 2:
+                    print(f"Multiple matches for file {path}/{checkpoint_movie_base}.")
+                    continue
+
+                if len(matching_files) == 1:
+                    last_modifed = os.path.getmtime(matching_files[0])
+                    file_size = os.path.getsize(matching_files[0])
+                    minutes_since_modified = (time.time()-last_modifed)/60
+                    needs_redo = file_size < 1024 and minutes_since_modified > 30
+                    if needs_redo:
+                        print(f" - found stale video {matching_files[0]}, regenerating.")
+                        os.remove(matching_files[0])
+                else:
+                    needs_redo = False
+
+                if len(matching_files) == 0 or needs_redo:
+                    # create an empty file to mark that we are working on this...
+                    with open(movie_placeholder_path, "wb"):
+                        pass
+                    model = load_checkpoint(checkpoint_name, device=DEVICE)
+                    export_movie(model, os.path.join(path, checkpoint_movie_base), include_score_in_filename=True)
+                    try:
+                        os.remove(movie_placeholder_path)
+                    except:
+                        print(" - failed to remove placeholder movie file.")
+                        pass
+
             if GENERATE_EVAL and not os.path.exists(checkpoint_eval_file):
                 # create an empty file to mark that we are working on this...
                 with open(checkpoint_eval_file, "wb"):
@@ -519,24 +575,8 @@ def monitor(path):
             print("Error:"+str(e))
 
 if __name__ == "__main__":
-
-    config.parse_args()
+    config.parse_args(no_env=True)
     folders = [name for name in os.listdir("./Run") if os.path.isdir(os.path.join('./Run',name))]
     for folder in folders:
-        if "TVF_7E" in folder:
+        if "TVF_8" in folder:
             monitor(os.path.join('./Run',folder))
-    for folder in folders:
-        if "TVF_7" in folder:
-            monitor(os.path.join('./Run',folder))
-    for folder in folders:
-        if "TVF_5" in folder:
-            monitor(os.path.join('./Run',folder))
-    for folder in folders:
-        if "TVF_6_eval" in folder:
-            monitor(os.path.join('./Run',folder))
-    for folder in folders:
-        if "TVF_6" in folder:
-            monitor(os.path.join('./Run',folder))
-
-
-

@@ -113,7 +113,7 @@ if __name__ == "__main__":
         ACModel = models.TVFModel
         model_args["epsilon"] = args.tvf_epsilon
         model_args["horizon_scale"] = args.tvf_max_horizon
-        model_args["use_rnd"] = args.use_rnd,
+        model_args["use_rnd"] = args.use_rnd
         model_args["split_model"] = args.tvf_model == "split"
         model_args["tvf_hidden_units"] = args.tvf_hidden_units
         model_args["tvf_h_scale"] = args.tvf_h_scale

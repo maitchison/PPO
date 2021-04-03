@@ -16,7 +16,7 @@ for env in gym.envs.registry.all():
 def get_env_state(key):
     return ENV_STATE.get(key, None)
 
-def make(non_determinism=None):
+def make(non_determinism=None, monitor_video=False):
     """ Construct environment of given name, including any required wrappers."""
 
     env_type = None
@@ -53,7 +53,7 @@ def make(non_determinism=None):
         else:
             raise Exception("Invalid non determinism type {}.".format(non_determinism))
 
-        env = wrappers.MonitorWrapper(env)
+        env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
 
         if args.input_crop:
             env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
@@ -77,6 +77,8 @@ def make(non_determinism=None):
             env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
 
         env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
+
+        env = wrappers.EpisodeScoreWrapper(env)
 
         env = wrappers.NullActionWrapper(env)
 
