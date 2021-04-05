@@ -74,6 +74,7 @@ class Config:
         self.tvf_h_scale        = str()
         self.tvf_activation     = str()
         self.tvf_loss_weighting = str()
+        self.tvf_joint_mode     = str()
 
         self.time_aware = bool()
         self.ed_type = str()
@@ -87,11 +88,14 @@ class Config:
         self.noop_start         = bool()
         self.moving_updates     = bool()
 
+        self.deferred_rewards   = bool()
+
         self.frame_stack        = int()
 
         self.normalize_advantages = bool()
 
         self.use_clipped_value_loss = bool()
+        self.reward_clipping    = str()
 
         self.log_folder         = str()
         self.checkpoint_every   = int()
@@ -104,7 +108,7 @@ class Config:
         self.tp_rest_blocks     =int()
         self.tp_rest_learning_rate=float()
 
-        self.per_step_reward = float()
+        self.per_step_reward    = float()
 
         self.__dict__.update(kwargs)
 
@@ -210,12 +214,11 @@ def parse_args(no_env=False):
     parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
+    parser.add_argument("--tvf_joint_mode", type=str, default="both", help="[both|policy|value]")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
-
-    parser.add_argument("--reward_normalization", type=str2bool, default=True)
 
     parser.add_argument("--mini_batch_size", type=int, default=1024)
     parser.add_argument("--max_micro_batch_size", type=int, default=512)
@@ -237,6 +240,9 @@ def parse_args(no_env=False):
     parser.add_argument("--noop_start", type=str2bool, default=True)
     parser.add_argument("--moving_updates", type=str2bool, default=False)
     parser.add_argument("--per_step_reward", type=float, default=0.0)
+    parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
+    parser.add_argument("--reward_normalization", type=str2bool, default=True)
+    parser.add_argument("--deferred_rewards", type=str2bool, default=False)
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=False)

@@ -8,6 +8,8 @@ from . import utils
 
 from gym.vector import VectorEnv
 
+from typing import Union
+
 class EpisodicDiscounting(gym.Wrapper):
     """
     Applies discounting at the episode level
@@ -166,19 +168,77 @@ class FrameSkipWrapper(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-class ClipRewardWrapper(gym.Wrapper):
+def cast_down(x: Union[str, float, int]):
+    """
+    Try to convert string / float into an integer, float, or string, in that order...
+    """
+    try:
+        if int(x) == x:
+            return int(x)
+    except:
+        pass
+    try:
+        if float(x) == x:
+            return float(x)
+    except:
+        pass
+    return str(x)
 
-    def __init__(self, env, clip):
+
+class ClipRewardWrapper(gym.Wrapper):
+    """ Clips reward to given range"""
+
+    def __init__(self, env: gym.Env, clip: float):
         super().__init__(env)
         self.env = env
+
         self.clip = clip
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
+
         if reward > self.clip or reward < -self.clip:
             info["unclipped_reward"] = reward
             reward = np.clip(reward, -self.clip, +self.clip)
+
         return obs, reward, done, info
+
+
+class DeferredRewardWrapper(gym.Wrapper):
+    """
+    All rewards are delayed until terminal state.
+    Note: this is also a good test to see if terminal states are being used properly.
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.env = env
+        self.episode_reward = 0
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.episode_reward += reward
+        new_reward = self.episode_reward if done else 0
+        return obs, new_reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        self.episode_reward = 0
+        return obs
+
+class SqrtRewardWrapper(gym.Wrapper):
+    """ Clips reward to given range"""
+
+    def __init__(self, env: gym.Env, epsilon: float = 1e-3):
+        super().__init__(env)
+        self.env = env
+        self.epsilon = epsilon
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        sign = -1 if reward < 0 else +1
+        new_reward = sign*(math.sqrt(abs(reward)+1)-1)+self.epsilon*reward
+        return obs, new_reward, done, info
 
 
 class NormalizeObservationsWrapper(gym.Wrapper):

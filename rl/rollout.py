@@ -332,6 +332,8 @@ class Runner():
         self.rnn_state_shape = [2, 512] #records h and c for LSTM units.
         self.policy_shape = [model.actions]
 
+        self.batch_counter = 0
+
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.states = np.zeros([A, *self.state_shape], dtype=np.uint8)
@@ -466,6 +468,7 @@ class Runner():
         self.episode_len *= 0
         self.step = 0
         self.game_crashes = 0
+        self.batch_counter = 0
 
     def run_random_agent(self, iterations):
         self.log.info("Warming up model with random agent...")
@@ -806,6 +809,8 @@ class Runner():
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
+        self.log.watch_mean("reward_scale", self.reward_scale, display_width=0)
+
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0)
         self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0)
         self.log.watch_mean("adv_max", np.max(self.advantage), display_width=0)
@@ -950,9 +955,8 @@ class Runner():
 
             # MSE loss
             tvf_loss_mse = -0.5 * weighting * args.tvf_coef * (targets - mu).pow(2)
-            self.log.watch_mean("tvf_loss_mse", -tvf_loss_mse.mean(), history_length=64)
-
-            tvf_loss = tvf_loss_mse.mean()
+            tvf_loss = tvf_loss_mse.sum() / mini_batch_size
+            self.log.watch_mean("loss_tvf", -tvf_loss, history_length=64, display_width=8)
         else:
             tvf_loss = 0
 
@@ -1021,21 +1025,34 @@ class Runner():
         # Calculate loss joint
         # -------------------------------------------------------------------------
 
-        if args.tvf_model == "split" and args.joint_model_weight != 0.0:
+        needs_joint_calculation = args.joint_model_weight != 0 or self.batch_counter % 16 == 0
+
+        if args.tvf_model == "split" and needs_joint_calculation:
             parameters_a = list(filter(lambda p: p.requires_grad, self.model.net.parameters()))
             parameters_b = list(filter(lambda p: p.requires_grad, self.model.value_net.parameters()))
-            norm = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+            norm = torch.tensor(0, dtype=torch.float32, device=self.model.device, requires_grad=True)
             count = 0
             for a,b in zip(parameters_a, parameters_b):
-                norm = norm + torch.norm(a.data - b.data, p=2)**2
+                # we only want policy get hints from value, not the other way around.
+                # this means we don't need to balance tvf_loss with joint_model_weight, and policy_loss is fairly stable
+                # also, we believe TVF has the richer features.
+                if args.tvf_joint_mode == "both":
+                    norm = norm + torch.norm(a - b, p=2)**2
+                elif args.tvf_joint_mode == "policy":
+                    norm = norm + torch.norm(a - b.data.detach(), p=2) ** 2
+                elif args.tvf_joint_mode == "value":
+                    norm = norm + torch.norm(a.data.detach() - b, p=2) ** 2
+                else:
+                    raise ValueError(f"Invalid tvf_joint_mode {args.tvf_joint_mode}")
                 count += len(a.data.reshape([-1]))
 
             norm = norm / count
 
             joint_loss = norm * args.joint_model_weight
-            loss -= joint_loss
-            self.log.watch_mean("joint_loss", joint_loss)
-            self.log.watch_mean("joint_mse", norm)
+            loss = loss - joint_loss
+            if args.joint_model_weight != 0:
+                self.log.watch_mean("joint_loss", joint_loss, display_precision=4)
+            self.log.watch_mean("joint_mse", norm, display_precision=4)
 
         # -------------------------------------------------------------------------
         # Run optimizer
@@ -1110,6 +1127,8 @@ class Runner():
 
                 self.log_high_grad_norm = False
 
+        self.batch_counter += 1
+
     @property
     def training_fraction(self):
         return (self.step / 1e6) / args.epochs
@@ -1137,7 +1156,10 @@ class Runner():
     @property
     def reward_scale(self):
         """ The amount rewards have been scaled by. """
-        return atari.get_env_state("returns_norm_state")[1] ** 0.5
+        if args.reward_normalization:
+            return atari.get_env_state("returns_norm_state")[1] ** 0.5
+        else:
+            return 1.0
 
     @property
     def current_learning_rate(self):

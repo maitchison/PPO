@@ -54,9 +54,24 @@ def make(non_determinism=None, monitor_video=False):
             raise Exception("Invalid non determinism type {}.".format(non_determinism))
 
         env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
+        env = wrappers.EpisodeScoreWrapper(env)
 
         if args.input_crop:
             env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
+
+        if args.reward_clipping == "off":
+            pass
+        elif args.reward_clipping == "sqrt":
+            env = wrappers.SqrtRewardWrapper(env)
+        else:
+            try:
+                clip = float(args.reward_clipping)
+            except:
+                raise ValueError("reward_clipping should be off, sqrt, or a float")
+            env = wrappers.ClipRewardWrapper(env, clip)
+
+        if args.deferred_rewards:
+            env = wrappers.DeferredRewardWrapper(env)
 
         # apply filter
         if args.filter == "none":
@@ -77,8 +92,6 @@ def make(non_determinism=None, monitor_video=False):
             env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
 
         env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
-
-        env = wrappers.EpisodeScoreWrapper(env)
 
         env = wrappers.NullActionWrapper(env)
 

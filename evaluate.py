@@ -580,3 +580,6 @@ if __name__ == "__main__":
     for folder in folders:
         if "TVF_8" in folder:
             monitor(os.path.join('./Run',folder))
+    for folder in folders:
+        if "TVF_9" in folder:
+            monitor(os.path.join('./Run',folder))
