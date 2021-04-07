@@ -523,8 +523,8 @@ def setup_experiments9():
         'agents': [32, 64, 128, None, 512, 1024],
         'tvf_max_horizon': [300, None, 3000, 10000],
         'use_training_pauses': [True, None],
-        'tvf_hidden_units': [64, 128, 256, None, 1024],
-        'tvf_n_horizons': [8, 16, 32, None, 128],
+        'tvf_hidden_units': [0, 1, 4, 64, 128, 256, None, 1024],
+        'tvf_n_horizons': [4, 8, 16, 32, None, 128, 1000], # 1000 has no sampling (we have 2 compulsary horizons so 4 is very low!
         'max_grad_norm': [0.5, None, 20.0],
         'learning_rate': [1e-4, None, 1e-3],
         'entropy_bonus': [0, 0.001, None, 0.1],         # 0.01 was default
@@ -535,7 +535,7 @@ def setup_experiments9():
         'mini_batch_size': [512, None, 2048],
         'ppo_epsilon': [0.05, None, 0.2, 0.3], # this should have been 0.2 by default
         'tvf_gamma': [1.0, None],  # try rediscounting again... might give better estimates (but slower...)
-        'batch_epochs': [2, None, 8],
+        'batch_epochs': [2, 3, None, 6, 8], # this makes a big difference
         'tvf_h_scale': [None, 'linear', 'squared'],
         'tvf_activation': [None, 'tanh', 'sigmoid'],
         'max_micro_batch_size': [256, None, 1024], #just checking...
@@ -680,6 +680,146 @@ def setup_experiments9():
         # keep n_horizons at 64, as it's fast enough
 
 
+def setup_experiments10():
+
+    # these are just for the regression test
+    initial_args = {
+        'checkpoint_every': int(5e6),
+        'env_name': 'DemonAttack',
+        'epochs': 50,
+        'agents': 256,
+        'n_steps': 256,
+        'max_grad_norm': 5.0,
+        'entropy_bonus': 0.01,
+        'use_tvf': True,
+        'tvf_max_horizon': 1000,
+        'tvf_n_horizons': 64,
+        'tvf_coef': 0.01,
+        'vf_coef':0.5,              # this won't do anything (by default)
+        'workers': WORKERS,
+        'tvf_gamma': 0.999,
+        'gamma': 0.999,
+        'policy_mini_batch_size': 2048,
+        'value_mini_batch_size': 256,
+    }
+
+    # this is very close to the old settings
+    # this worked **very** well, I should probably use this as the reference, and see if I can get TVF to perform
+    # as well as this. Maybe we can improve things a little by tweaking too?
+    add_job(
+        f"TVF_10_Regression",
+        run_name=f"ppo (alt)",
+        max_grad_norm=20.0,
+        agents=256,
+        n_steps=64,
+        use_tvf=False,
+        priority=150,
+        policy_mini_batch_size=1024,
+        value_mini_batch_size=1024,
+        value_epochs=4,
+        policy_epochs=4,
+        target_kl=1.0,
+        ppo_epsilon=0.1,
+        value_lr=2.5e-4,
+        policy_lr=2.5e-4,
+        gamma=0.999,
+        default_params=initial_args,
+    )
+
+    # this could just be a more realistic target to hit than 0.999?
+    # (actually 0.999 is probably fine)
+    add_job(
+        f"TVF_10_Regression",
+        run_name=f"ppo (alt_997)",
+        max_grad_norm=20.0,
+        agents=256,
+        n_steps=64,
+        use_tvf=False,
+        priority=150,
+        policy_mini_batch_size=1024,
+        value_mini_batch_size=1024,
+        value_epochs=4,
+        policy_epochs=4,
+        target_kl=1.0,
+        ppo_epsilon=0.1,
+        value_lr=2.5e-4,
+        policy_lr=2.5e-4,
+        gamma=0.997,
+        default_params=initial_args,
+    )
+
+    add_job(
+        # the is very close to the old settings
+        f"TVF_10_Regression",
+        run_name=f"tvf (alt)",
+        max_grad_norm=20.0,
+        agents=256,
+        n_steps=64,
+        use_tvf=True,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+        priority=150,
+        policy_mini_batch_size=1024,
+        value_mini_batch_size=1024,
+        value_epochs=4,
+        policy_epochs=4,
+        target_kl=1.0,
+        ppo_epsilon=0.1,
+        value_lr=2.5e-4,
+        policy_lr=2.5e-4,
+        default_params=initial_args,
+    )
+
+    add_job(
+        # the is very close to the old settings
+        f"TVF_10_Regression",
+        run_name=f"tvf (alt-16)",
+        max_grad_norm=20.0,
+        agents=256,
+        n_steps=64,
+        use_tvf=True,
+        tvf_lambda=-16, # try lower n-step.. this will be slow... but at least we wont be reusing the one bootstrap estimate...
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+        priority=150,
+        policy_mini_batch_size=1024,
+        value_mini_batch_size=1024,
+        value_epochs=4,
+        policy_epochs=4,
+        target_kl=1.0,
+        ppo_epsilon=0.1,
+        value_lr=2.5e-4,
+        policy_lr=2.5e-4,
+        default_params=initial_args,
+    )
+
+    add_job(
+        # try make sure we learn value function fast enough...
+        f"TVF_10_Regression",
+        run_name=f"tvf (alt-16-hq)",
+        max_grad_norm=20.0,
+        agents=256,
+        n_steps=64,
+        use_tvf=True,
+        tvf_lambda=-16,
+        # try lower n-step.. this will be slow... but at least we wont be reusing the one bootstrap estimate...
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+        priority=150,
+        policy_mini_batch_size=1024,
+        value_mini_batch_size=1024,
+        value_epochs=2,
+        policy_epochs=6,
+        target_kl=1.0,
+        ppo_epsilon=0.1,
+        value_lr=2.5e-4,
+        policy_lr=2.5e-4,
+        default_params=initial_args,
+    )
+
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
@@ -688,6 +828,7 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_experiments9()
+    setup_experiments10()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

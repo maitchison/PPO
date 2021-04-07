@@ -109,18 +109,6 @@ if __name__ == "__main__":
 
     model_args = {}
 
-    if args.use_tvf:
-        ACModel = models.TVFModel
-        model_args["epsilon"] = args.tvf_epsilon
-        model_args["horizon_scale"] = args.tvf_max_horizon
-        model_args["use_rnd"] = args.use_rnd
-        model_args["split_model"] = args.tvf_model == "split"
-        model_args["tvf_hidden_units"] = args.tvf_hidden_units
-        model_args["tvf_h_scale"] = args.tvf_h_scale
-        model_args["tvf_activation"] = args.tvf_activation
-    else:
-        ACModel = models.ActorCriticModel
-
     try:
 
         utils.lock_job()
@@ -136,13 +124,19 @@ if __name__ == "__main__":
         # if args.use_rnn and "hidden_units" not in model_args:
         #     model_args["hidden_units"] = 64
 
-        actor_critic_model = ACModel(
-            head=head_name,
+        actor_critic_model = models.TVFModel(
+            network=head_name,
             input_dims=obs_space,
             actions=n_actions,
             device=args.device,
             dtype=torch.float32,
-            **model_args
+
+            use_rnd=args.use_rnd,
+            use_rnn=False,
+            tvf_horizon_transform=lambda x: x / args.tvf_max_horizon,
+            tvf_hidden_units=args.tvf_hidden_units,
+            tvf_activation=args.tvf_activation,
+            tvf_h_scale=args.tvf_h_scale,
         )
         ppo.train(actor_critic_model, log)
 

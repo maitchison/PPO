@@ -1,11 +1,13 @@
 import os
 import numpy as np
 import gym
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 import time
 import json
-import math
 import cv2
 import pickle
 import gzip
@@ -13,7 +15,7 @@ from collections import defaultdict
 from typing import Union
 
 from .logger import Logger
-from . import utils, atari, hybridVecEnv, wrappers
+from . import utils, atari, hybridVecEnv, wrappers, models
 from .config import args
 
 def save_progress(log: Logger):
@@ -315,13 +317,17 @@ def calculate_tvf_td(
 
 class Runner():
 
-    def __init__(self, model, optimizer, log, name="agent"):
+    def __init__(self, model:models.TVFModel, log, name="agent"):
         """ Setup our rollout runner. """
 
         self.name = name
         self.model = model
-        self.optimizer = optimizer
-        self.tvf_optimizer = None
+
+        self.policy_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=args.policy_lr, eps=args.adam_epsilon)
+        self.value_optimizer = torch.optim.Adam(model.value_net.parameters(), lr=args.policy_lr, eps=args.adam_epsilon)
+        if args.use_rnd:
+            self.rnd_optimizer = torch.optim.Adam(model.prediction_net.parameters(), lr=args.policy_lr, eps=args.adam_epsilon)
+
         self.vec_env = None
         self.log = log
 
@@ -336,8 +342,8 @@ class Runner():
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
-        self.states = np.zeros([A, *self.state_shape], dtype=np.uint8)
-        self.prev_state = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
+        self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
+        self.prev_obs = np.zeros([N, A, *self.state_shape], dtype=np.uint8)
         self.actions = np.zeros([N, A], dtype=np.int64)
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
@@ -378,9 +384,6 @@ class Runner():
             self.tvf_debug_horizons.append(args.tvf_max_horizon)
         self.tvf_debug_horizons.sort()
 
-        assert self.mini_batch_size % self.micro_batch_size == 0
-
-
     def create_envs(self):
         """ Creates environments for runner"""
         env_fns = [lambda : atari.make() for _ in range(args.agents)]
@@ -406,10 +409,14 @@ class Runner():
         data = {
             'step': step,
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
             'logs': self.log,
-            'env_state': atari.ENV_STATE
+            'env_state': atari.ENV_STATE,
+            'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
+            'value_optimizer_state_dict': self.value_optimizer.state_dict()
         }
+
+        if args.use_rnd:
+            data['rnd_optimizer_state_dict'] = self.rnd_optimizer.state_dict()
 
         if args.use_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
@@ -419,11 +426,6 @@ class Runner():
             data["observation_norm_state"] = self.model.obs_rms.save_state()
 
         torch.save(data, filename)
-
-    def _adjust_learning_rate(self, lr):
-        """Sets the learning rate of the optimizer to lr"""
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
 
     def get_checkpoints(self, path):
         """ Returns list of (epoch, filename) for each checkpoint in given folder. """
@@ -440,9 +442,14 @@ class Runner():
     def load_checkpoint(self, checkpoint_path):
         """ Restores model from checkpoint. Returns current env_step"""
         checkpoint = torch.load(checkpoint_path, map_location=args.device)
+
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        if self.optimizer is not None:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
+        self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
+        if "rnd_optimizer_state_dict" in checkpoint:
+            self.rnd_optimizer = checkpoint['rnd_optimizer_state_dict']
+
         step = checkpoint['step']
         self.log = checkpoint['logs']
         self.step = step
@@ -463,7 +470,7 @@ class Runner():
         assert self.vec_env is not None, "Please call create_envs first."
 
         # initialize agent
-        self.states = self.vec_env.reset()
+        self.obs = self.vec_env.reset()
         self.episode_score *= 0
         self.episode_len *= 0
         self.step = 0
@@ -479,37 +486,30 @@ class Runner():
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
-    def forward(self, states=None, max_batch_size=None, **kwargs):
+    def forward(self, obs, max_batch_size=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
         """
 
-        if states is None:
-            states = self.states
-
         # break large forwards into batches
-        if max_batch_size is not None and len(states) > max_batch_size:
+        if max_batch_size is not None and len(obs) > max_batch_size:
 
-            mid_point = len(states) // 2
-
-            # just for debugging
-            #if self.step == 0:
-            #    self.log.info(f"Using forward split from {len(states)} to {mid_point} on max_batch_size of {max_batch_size:.2f}")
+            mid_point = len(obs) // 2
 
             if 'horizons' in kwargs:
                 horizons = kwargs["horizons"]
                 del kwargs["horizons"]
-                a = self.forward(states[:mid_point], horizons=horizons[:mid_point], max_batch_size=max_batch_size, **kwargs)
-                b = self.forward(states[mid_point:], horizons=horizons[mid_point:], max_batch_size=max_batch_size, **kwargs)
+                a = self.forward(obs[:mid_point], horizons=horizons[:mid_point], max_batch_size=max_batch_size, **kwargs)
+                b = self.forward(obs[mid_point:], horizons=horizons[mid_point:], max_batch_size=max_batch_size, **kwargs)
             else:
-                a = self.forward(states[:mid_point], **kwargs)
-                b = self.forward(states[mid_point:], **kwargs)
+                a = self.forward(obs[:mid_point], **kwargs)
+                b = self.forward(obs[mid_point:], **kwargs)
             result = {}
             for k in a.keys():
                 result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
             return result
         else:
-            return self.model.forward(self.states if states is None else states, **kwargs)
+            return self.model.forward(obs, **kwargs)
 
     def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 60*60*15):
         """ Exports a movie of agent playing game.
@@ -622,24 +622,24 @@ class Runner():
 
         for t in range(self.N):
 
-            prev_states = self.states.copy()
+            prev_obs = self.obs.copy()
 
             # forward state through model, then detach the result and convert to numpy.
             if args.use_tvf:
                 if self.tvf_requires_full_horizon_at_rollout:
-                    model_out = self.forward(horizons=all_horizons, max_batch_size=max_rollout_batch_size)
+                    model_out = self.forward(self.obs, horizons=all_horizons, max_batch_size=max_rollout_batch_size)
                     tvf_values = model_out["tvf_value"].cpu().numpy()
                     self.tvf_values[t,:max_h+1] = tvf_values
                     ext_value = self.get_rediscounted_value_estimate(tvf_values[:,:max_h+1], args.gamma)
                 else:
-                    model_out = self.forward(horizons=far_horizons, max_batch_size=max_rollout_batch_size)
+                    model_out = self.forward(self.obs, horizons=far_horizons, max_batch_size=max_rollout_batch_size)
                     tvf_values = model_out["tvf_value"].cpu().numpy()
                     # map across all the required horizons
                     for index, h in enumerate(required_horizons):
                         self.tvf_values[t, :, h] = tvf_values[:, index]
                     ext_value = tvf_values[..., -1]
             else:
-                model_out = self.forward()
+                model_out = self.forward(self.obs)
                 ext_value = model_out["ext_value"].cpu().numpy()
 
             log_policy = model_out["log_policy"].cpu().numpy()
@@ -651,7 +651,7 @@ class Runner():
                 # sample actions and run through environment.
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
-            self.states, ext_rewards, dones, infos = self.vec_env.step(actions)
+            self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
 
             # per step reward
             ext_rewards += args.per_step_reward
@@ -665,10 +665,10 @@ class Runner():
                 if args.use_rnd:
                     if is_warmup:
                         # in random mode just update the normalization constants
-                        self.model.perform_normalization(self.states)
+                        self.model.perform_normalization(self.obs)
                     else:
                         # reward is prediction error on state we land inn.
-                        loss_rnd = self.model.prediction_error(self.states).detach().cpu().numpy()
+                        loss_rnd = self.model.prediction_error(self.obs).detach().cpu().numpy()
                         int_rewards += loss_rnd
                 else:
                     assert False, "No intrinsic rewards set."
@@ -699,7 +699,7 @@ class Runner():
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
 
-            self.prev_state[t] = prev_states
+            self.prev_obs[t] = prev_obs
             self.actions[t] = actions
 
             self.ext_rewards[t] = ext_rewards
@@ -722,12 +722,12 @@ class Runner():
 
         # get value estimates for final state.
         if args.use_tvf:
-            model_out = self.forward(horizons=all_horizons, max_batch_size=max_final_batch_size)
+            model_out = self.forward(self.obs, horizons=all_horizons, max_batch_size=max_final_batch_size)
             final_tvf_values = model_out["tvf_value"].cpu().numpy()
             self.tvf_final_value_estimates[:, :max_h+1] = final_tvf_values
             self.ext_final_value_estimate = self.get_rediscounted_value_estimate(final_tvf_values[:, :max_h+1], args.gamma)
         else:
-            model_out = self.forward(max_batch_size=max_final_batch_size)
+            model_out = self.forward(self.obs, max_batch_size=max_final_batch_size)
             self.ext_final_value_estimate = model_out["ext_value"].cpu().numpy()
 
         if "int_value" in model_out:
@@ -866,63 +866,44 @@ class Runner():
         # faster version used cached rediscount ratios
         return get_rediscounted_value_estimate(values, old_gamma=args.tvf_gamma, new_gamma=gamma)
 
-    def train_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
+    def train_rnd_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
+
+        raise Exception("Not implemented yet")
+
+        # mini_batch_size = len(data["prev_state"])
+        #
+        # # -------------------------------------------------------------------------
+        # # Calculate loss_rnd
+        # # -------------------------------------------------------------------------
+        #
+        # if args.use_rnd:
+        #     # learn prediction slowly by only using some of the samples... otherwise it learns too quickly.
+        #     predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
+        #     n = int(len(prev_states) * predictor_proportion)
+        #     loss_rnd = -self.model.prediction_error(prev_states[:n]).mean()
+        #     loss = loss + loss_rnd
+        #
+        #     self.log.watch_mean("loss_rnd", loss_rnd)
+        #
+        #     self.log.watch_mean("feat_mean", self.model.features_mean, display_width=0)
+        #     self.log.watch_mean("feat_var", self.model.features_var, display_width=10)
+        #     self.log.watch_mean("feat_max", self.model.features_max, display_width=10, display_precision=1)
+
+
+    def train_value_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
 
         mini_batch_size = len(data["prev_state"])
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
         prev_states = data["prev_state"]
-        actions = data["actions"].to(torch.long)
-        policy_logprobs = data["log_policy"]
-        advantages = data["advantages"]
-        weights = data["weights"] if "weights" in data else 1
 
         # create additional args if needed
         kwargs = {}
         if args.use_tvf:
             kwargs['horizons'] = data["tvf_horizons"]
 
-        model_out = self.forward(prev_states, **kwargs)
-
-        # -------------------------------------------------------------------------
-        # Calculate loss_pg
-        # -------------------------------------------------------------------------
-
-
-        logps = model_out["log_policy"]
-
-        if args.moving_updates:
-            # allow trust region to move each epoch
-            # logps is current policy
-            # policy_moved is policy for trust region
-            # policy_logprobs is behaviour
-            moved_logps = policy_logprobs = data["moved_log_policy"]
-            correction_ratios = torch.exp(moved_logps[range(mini_batch_size), actions] - policy_logprobs[range(mini_batch_size), actions])
-            logpac = logps[range(mini_batch_size), actions]
-            old_logpac = policy_logprobs[range(mini_batch_size), actions]
-            moved_logpac = moved_logps[range(mini_batch_size), actions]
-            ratio = torch.exp(logpac - moved_logpac)
-            clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
-
-            loss_clip = correction_ratios * torch.min(ratio * advantages, clipped_ratio * advantages)
-            loss_clip_mean = (weights * loss_clip).mean()
-        else:
-            logpac = logps[range(mini_batch_size), actions]
-            old_logpac = policy_logprobs[range(mini_batch_size), actions]
-            ratio = torch.exp(logpac - old_logpac)
-            clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
-
-            loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
-            loss_clip_mean = (weights*loss_clip).mean()
-
-        approx_kl = 0.5 * ((old_logpac-logpac)**2).mean()
-        clip_frac = torch.gt(torch.abs(ratio - 1.0), args.ppo_epsilon).float().mean()
-
-        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64)
-        self.log.watch_mean("approx_kl", approx_kl, display_width=8)
-        self.log.watch_mean("clip_frac", clip_frac, display_width=8)
-        loss = loss + loss_clip_mean
+        model_out = self.forward(prev_states, output="value", **kwargs)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value_function_horizons
@@ -954,7 +935,7 @@ class Runner():
                 raise ValueError("Invalid tvf_loss_weighting value.")
 
             # MSE loss
-            tvf_loss_mse = -0.5 * weighting * args.tvf_coef * (targets - mu).pow(2)
+            tvf_loss_mse = -0.5 * weighting * args.tvf_coef * torch.square(targets - mu)
             tvf_loss = tvf_loss_mse.sum() / mini_batch_size
             self.log.watch_mean("loss_tvf", -tvf_loss, history_length=64, display_width=8)
         else:
@@ -972,7 +953,6 @@ class Runner():
         if args.use_intrinsic_rewards:
             value_heads.append("int")
 
-        loss_value = 0
         for value_head in value_heads:
             value_prediction = model_out["{}_value".format(value_head)]
             returns = data["{}_returns".format(value_head)]
@@ -984,85 +964,24 @@ class Runner():
                                                                          -args.ppo_epsilon, +args.ppo_epsilon)
                 vf_losses1 = (value_prediction - returns).pow(2)
                 vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2) * weights)
+                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
             else:
                 # simpler version, just use MSE.
                 vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = -0.5 * torch.mean(vf_losses1 * weights)
+                loss_value = -0.5 * torch.mean(vf_losses1)
             loss_value = loss_value * args.vf_coef
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss = loss + loss_value
-
-        # -------------------------------------------------------------------------
-        # Calculate loss_entropy
-        # -------------------------------------------------------------------------
-
-        if args.entropy_bonus > 0:
-            loss_entropy = -(logps.exp() * logps).mean(axis=1)
-            loss_entropy = loss_entropy * weights * args.entropy_bonus
-            loss_entropy = loss_entropy.mean()
-            self.log.watch_mean("loss_ent", loss_entropy)
-            loss = loss + loss_entropy
-
-        # -------------------------------------------------------------------------
-        # Calculate loss_rnd
-        # -------------------------------------------------------------------------
-
-        if args.use_rnd:
-            # learn prediction slowly by only using some of the samples... otherwise it learns too quickly.
-            predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
-            n = int(len(prev_states) * predictor_proportion)
-            loss_rnd = -self.model.prediction_error(prev_states[:n]).mean()
-            loss = loss + loss_rnd
-
-            self.log.watch_mean("loss_rnd", loss_rnd)
-
-            self.log.watch_mean("feat_mean", self.model.features_mean, display_width=0)
-            self.log.watch_mean("feat_var", self.model.features_var, display_width=10)
-            self.log.watch_mean("feat_max", self.model.features_max, display_width=10, display_precision=1)
-
-        # -------------------------------------------------------------------------
-        # Calculate loss joint
-        # -------------------------------------------------------------------------
-
-        needs_joint_calculation = args.joint_model_weight != 0 or self.batch_counter % 16 == 0
-
-        if args.tvf_model == "split" and needs_joint_calculation:
-            parameters_a = list(filter(lambda p: p.requires_grad, self.model.net.parameters()))
-            parameters_b = list(filter(lambda p: p.requires_grad, self.model.value_net.parameters()))
-            norm = torch.tensor(0, dtype=torch.float32, device=self.model.device, requires_grad=True)
-            count = 0
-            for a,b in zip(parameters_a, parameters_b):
-                # we only want policy get hints from value, not the other way around.
-                # this means we don't need to balance tvf_loss with joint_model_weight, and policy_loss is fairly stable
-                # also, we believe TVF has the richer features.
-                if args.tvf_joint_mode == "both":
-                    norm = norm + torch.norm(a - b, p=2)**2
-                elif args.tvf_joint_mode == "policy":
-                    norm = norm + torch.norm(a - b.data.detach(), p=2) ** 2
-                elif args.tvf_joint_mode == "value":
-                    norm = norm + torch.norm(a.data.detach() - b, p=2) ** 2
-                else:
-                    raise ValueError(f"Invalid tvf_joint_mode {args.tvf_joint_mode}")
-                count += len(a.data.reshape([-1]))
-
-            norm = norm / count
-
-            joint_loss = norm * args.joint_model_weight
-            loss = loss - joint_loss
-            if args.joint_model_weight != 0:
-                self.log.watch_mean("joint_loss", joint_loss, display_precision=4)
-            self.log.watch_mean("joint_mse", norm, display_precision=4)
 
         # -------------------------------------------------------------------------
         # Run optimizer
         # -------------------------------------------------------------------------
 
         loss = loss + tvf_loss
-        self.log.watch_mean("loss", loss * loss_scale)
+        self.log.watch_mean("value_loss", loss * loss_scale)
 
         if zero_grad:
-            self.optimizer.zero_grad()
+            self.value_optimizer.zero_grad()
 
         loss = -loss * loss_scale
 
@@ -1070,64 +989,120 @@ class Runner():
 
         if apply_update:
             if args.max_grad_norm is not None and args.max_grad_norm != 0:
-                grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), args.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(self.model.value_net.parameters(), args.max_grad_norm)
             else:
                 # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
                 # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
                 grad_norm = 0
-                parameters = list(filter(lambda p: p.grad is not None, self.model.parameters()))
+                parameters = list(filter(lambda p: p.grad is not None, self.model.value_net.parameters()))
                 for p in parameters:
                     param_norm = p.grad.data.norm(2)
                     grad_norm += param_norm.item() ** 2
                 grad_norm = grad_norm ** 0.5
 
-            self.log.watch_mean("opt_grad", grad_norm)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            self.log.watch_mean("grad_value", grad_norm)
+            self.value_optimizer.step()
+            self.value_optimizer.zero_grad()
 
-            # -------------------------------------------------------------------------
-            # -------------------------------------------------------------------------
+        return {}
 
-            def dump_data():
-                f_name = lambda x: os.path.join(args.log_folder, self.name + "-" + x + "-" + str(self.log["env_step"]))
 
-                utils.dump_data(advantages, f_name("advantages"))
-                utils.dump_data(loss_clip, f_name("loss_clip"))
-                utils.dump_data(ratio, f_name("ratio"))
-                utils.dump_data(clipped_ratio, f_name("clipped_ratio"))
-                utils.dump_data(logps, f_name("logps"))
-                utils.dump_data(policy_logprobs, f_name("policy_logprobs"))
-                utils.dump_data(actions, f_name("actions"))
-                utils.dump_data(data["ext_value"], f_name("values"))
-                utils.dump_data(data["ext_returns"], f_name("returns"))
+    def train_policy_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
 
-                if args.use_tvf:
-                    targets = data["tvf_returns"]
-                    mu = model_out["tvf_value"]
-                    utils.dump_data(targets, f_name("tvf_targets"))
-                    utils.dump_data(mu, f_name("tvf_values"))
-                    utils.dump_data(targets - mu, f_name("tvf_errors"))
-                    utils.dump_data(tvf_loss_mse, f_name("tvf_loss_mse"))
+        mini_batch_size = len(data["prev_state"])
 
-            tensors_to_check = [loss, logps, advantages]
-            if args.use_tvf:
-                tensors_to_check.append(data["tvf_returns"])
-                tensors_to_check.append(model_out["tvf_value"])
-            for tensor in tensors_to_check:
-                if torch.isnan(tensor if type(tensor) is torch.Tensor else torch.from_numpy(tensor)).any():
-                    print("NaN found, terminating")
-                    dump_data()
-                    raise Exception("Error, NaN found during training.")
+        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
-            if self.log_high_grad_norm and grad_norm > 100:
-                self.log.important("Extremely high grad norm ... outputting inputs.")
-                self.log.important("Loss clip was " + str(loss_clip_mean))
-                self.log.important("Loss value was " + str(loss_value))
-                dump_data()
+        prev_states = data["prev_state"]
+        actions = data["actions"].to(torch.long)
+        old_policy_logprobs = data["log_policy"]
+        advantages = data["advantages"]
 
-                self.log_high_grad_norm = False
+        model_out = self.forward(prev_states, output="policy")
 
-        self.batch_counter += 1
+        # -------------------------------------------------------------------------
+        # Calculate loss_pg
+        # -------------------------------------------------------------------------
+
+        logps = model_out["log_policy"]
+
+        logpac = logps[range(mini_batch_size), actions]
+        old_logpac = old_policy_logprobs[range(mini_batch_size), actions]
+        ratio = torch.exp(logpac - old_logpac)
+        clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
+
+        loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
+        loss_clip_mean = loss_clip.mean()
+
+        # approx kl
+        # this is from https://stable-baselines.readthedocs.io/en/master/_modules/stable_baselines/ppo2/ppo2.html
+        # but https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/ppo.py
+        # uses approx_kl = (b_logprobs[minibatch_ind] - newlogproba).mean() which I think is wrong
+        # anyway, why not just calculate the true kl?
+
+        # ok, I figured this out, we want
+        # sum_x P(x) log(P/Q)
+        # our actions were sampled from the policy so we have
+        # pi(expected_action) = sum_x P(x) then just mulitiply this by log(P/Q) which is log(p)-log(q)
+        # this means the spinning up version is right.
+
+        with torch.no_grad():
+            clip_frac = torch.gt(torch.abs(ratio - 1.0), args.ppo_epsilon).float().mean()
+            kl_approx = (old_logpac - logpac).mean()
+            kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
+
+        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64)
+        self.log.watch_mean("kl_approx", kl_approx, display_width=8)
+        self.log.watch_mean("kl_true", kl_true, display_width=8)
+        self.log.watch_mean("clip_frac", clip_frac, display_width=8)
+        loss = loss + loss_clip_mean
+
+        # -------------------------------------------------------------------------
+        # Calculate loss_entropy
+        # -------------------------------------------------------------------------
+
+        if args.entropy_bonus > 0:
+            loss_entropy = -(logps.exp() * logps).mean(axis=1)
+            loss_entropy = loss_entropy * args.entropy_bonus
+            loss_entropy = loss_entropy.mean()
+            self.log.watch_mean("loss_ent", loss_entropy)
+            loss = loss + loss_entropy
+
+        # -------------------------------------------------------------------------
+        # Run optimizer
+        # -------------------------------------------------------------------------
+
+        self.log.watch_mean("policy_loss", loss * loss_scale)
+
+        if zero_grad:
+            self.policy_optimizer.zero_grad()
+
+        loss = -loss * loss_scale
+
+        loss.backward()
+
+        if apply_update:
+            if args.max_grad_norm is not None and args.max_grad_norm != 0:
+                grad_norm = nn.utils.clip_grad_norm_(self.model.policy_net.parameters(), args.max_grad_norm)
+            else:
+                # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
+                # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
+                grad_norm = 0
+                parameters = list(filter(lambda p: p.grad is not None, self.model.policy_net.parameters()))
+                for p in parameters:
+                    param_norm = p.grad.data.norm(2)
+                    grad_norm += param_norm.item() ** 2
+                grad_norm = grad_norm ** 0.5
+
+            self.log.watch_mean("grad_policy", grad_norm)
+            self.policy_optimizer.step()
+            self.policy_optimizer.zero_grad()
+
+        return {
+            'kl_approx': float(kl_approx.detach()), # make sure we don't pass the graph through.
+            'kl_true': float(kl_true.detach()),
+            'clip_frac': float(clip_frac.detach()),
+        }
 
     @property
     def training_fraction(self):
@@ -1142,18 +1117,6 @@ class Runner():
             return int(args.tvf_max_horizon)
 
     @property
-    def mini_batch_size(self):
-        return self.batch_size // args.n_mini_batches
-
-    @property
-    def batch_size(self):
-        return args.n_steps * args.agents
-
-    @property
-    def micro_batch_size(self):
-        return min(args.max_micro_batch_size, self.mini_batch_size)
-
-    @property
     def reward_scale(self):
         """ The amount rewards have been scaled by. """
         if args.reward_normalization:
@@ -1161,138 +1124,154 @@ class Runner():
         else:
             return 1.0
 
-    @property
-    def current_learning_rate(self):
-        """ The current learning rate for policy and value. """
-
-        if args.use_training_pauses:
-            block_on = self.step // (self.N * self.A)
-            if block_on % (args.tp_train_blocks + args.tp_rest_blocks) >= args.tp_train_blocks:
-                return args.tp_rest_learning_rate
-            else:
-                return args.learning_rate
-
-        return args.learning_rate
-
     def train(self, step):
-        """ trains agent on it's own experience """
 
         self.step = step
 
-        if self.current_learning_rate == 0.0:
-            # no need to train...
-            return
+        # ----------------------------------------------------
+        # policy phase
 
-        self._adjust_learning_rate(self.current_learning_rate)
+        B = args.batch_size
 
-        # organise our data...
         batch_data = {}
-        batch_size = self.N * self.A
+        batch_data["prev_state"] = self.prev_obs.reshape([B, *self.state_shape])
+        batch_data["actions"] = self.actions.reshape(B).astype(np.long)
+        batch_data["log_policy"] = self.log_policy.reshape([B, *self.policy_shape])
 
-        batch_data["prev_state"] = self.prev_state.reshape([batch_size, *self.state_shape])
-        batch_data["actions"] = self.actions.reshape(batch_size).astype(np.long)
-        batch_data["ext_returns"] = self.ext_returns.reshape(batch_size)
-
-        batch_data["log_policy"] = self.log_policy.reshape([batch_size, *self.policy_shape])
-        batch_data["advantages"] = self.advantage.reshape(batch_size)
-        batch_data["ext_value"] = self.ext_value.reshape(batch_size)
-
-        p = None
-        required_horizons = None
-        all_horizons = None
-
-        # number of sample in micro_batch
-        B = self.micro_batch_size
-        # max horizon to train on
-        H = self.current_max_horizon
-        # number of sample to use
-        K = min(args.tvf_n_horizons, H)
-
-        if args.use_tvf:
-            batch_data["tvf_returns"] = self.tvf_returns.reshape([batch_size, -1])
-            if args.tvf_sample_dist == "uniform":
-                p = None
-            elif args.tvf_sample_dist == "linear":
-                p = [1 - (i / H) for i in range(H)]
-            else:
-                raise Exception("Invalid distribution.")
-
-            required_horizons = np.asarray([0, 1, H], dtype=np.int64)
-            required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
-            all_horizons = np.asarray(range(H+1), dtype=np.int64)
-            all_horizons = np.repeat(all_horizons[None, :], B, axis=0)
+        if args.normalize_advantages:
+            # we should normalize at the mini_batch level, but it's so much easyer to do this at the batch level.
+            advantages = self.advantage.reshape(B)
+            batch_data["advantages"] = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        else:
+            batch_data["advantages"] = self.advantage.reshape(B)
 
         if args.use_intrinsic_rewards:
-            batch_data["int_returns"] = self.int_returns.reshape(batch_size)
-            batch_data["int_value"] = self.int_value.reshape(batch_size)
+            batch_data["int_returns"] = self.int_returns.reshape(B)
+            batch_data["int_value"] = self.int_value.reshape(B)
 
-        micro_batches = self.mini_batch_size // B
+        policy_epochs = 0
+        for _ in range(args.policy_epochs):
+            results = self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_policy_minibatch,
+                mini_batch_size=args.policy_mini_batch_size,
+                hooks={
+                    'after_mini_batch': lambda x : x["outputs"][-1]["kl_approx"] > 1.5 * args.target_kl
+                }
+            )
+            expected_mini_batches = (args.batch_size / args.policy_mini_batch_size)
+            policy_epochs += results["mini_batches"] / expected_mini_batches
+            if results["mini_batches"] < expected_mini_batches:
+                break
+        self.log.watch_full("policy_epochs", policy_epochs, display_width=8)
 
-        for i in range(args.batch_epochs):
+        # ----------------------------------------------------
+        # value phase
 
-            if args.moving_updates:
-                # update moving policy every epoch (allows for policy to change faster with long n_steps)
-                if i == 0:
-                    batch_data["moved_log_policy"] = batch_data["log_policy"].copy()
+        batch_data = {}
+        batch_data["prev_state"] = self.prev_obs.reshape([B, *self.state_shape])
+        batch_data["ext_returns"] = self.ext_returns.reshape(B)
+        batch_data["ext_value"] = self.ext_value.reshape(B)
+
+        if args.use_tvf:
+
+            # max horizon to train on
+            H = self.current_max_horizon
+            # number of sample to use
+            K = min(args.tvf_n_horizons, H)
+
+            required_horizons = np.asarray([0, H], dtype=np.int32)
+            required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
+            all_horizons = np.asarray(range(H + 1), dtype=np.int32)
+            all_horizons = np.repeat(all_horizons[None, :], B, axis=0)
+            all_returns = self.tvf_returns.reshape([B, -1])
+
+            if K >= H and args.tvf_sample_dist=="uniform":
+                # use all samples, this is more efficent as we won't sample the same horizon twice.
+                batch_data["tvf_horizons"] = all_horizons
+                batch_data["tvf_returns"] = all_returns
+            else:
+                # perform sub sampling
+                if args.tvf_sample_dist == "uniform":
+                    p = None
+                elif args.tvf_sample_dist == "linear":
+                    p = [1 - (i / H) for i in range(H)]
                 else:
-                    segments = batch_size // self.micro_batch_size
-                    for j in range(segments):
-                        with torch.no_grad():
-                            segment_slice = slice(j*self.micro_batch_size, (j+1)*self.micro_batch_size)
-                            prev_states = batch_data["prev_state"][segment_slice]
-                            model_out = self.forward(prev_states)
-                            batch_data["moved_log_policy"][segment_slice] = model_out["log_policy"].cpu()
+                    raise Exception("Invalid distribution.")
 
-            ordering = list(range(batch_size))
-            np.random.shuffle(ordering)
+                horizon_sample = np.random.choice(H, size=[B, K - required_horizons.shape[-1]], replace=True, p=p)
+                horizon_sample = np.concatenate([horizon_sample, required_horizons], axis=1)
+                batch_data["tvf_horizons"] = horizon_sample
+                batch_data["tvf_returns"] = np.take_along_axis(all_returns, horizon_sample, axis=1)
 
 
-            counter = 0
+        if args.use_intrinsic_rewards:
+            batch_data["int_returns"] = self.int_returns.reshape(B)
+            batch_data["int_value"] = self.int_value.reshape(B)
 
-            for j in range(args.n_mini_batches):
+        for _ in range(args.value_epochs):
+            self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_value_minibatch,
+                mini_batch_size=args.value_mini_batch_size,
+            )
 
-                batch_advantages = batch_data["advantages"][ordering[counter*B:(counter+micro_batches)*B]]
-                adv_mu = batch_advantages.mean()
-                adv_std = batch_advantages.std()
+        # aux phase is not implemented yet...
+        # we also want to include rnd here somewhere..
+        pass
 
-                for k in range(micro_batches):
+        self.batch_counter += 1
 
-                    # put together a micro_batch.
-                    batch_start = counter * B
-                    batch_end = (counter + 1) * B
-                    sample = ordering[batch_start:batch_end]
-                    counter += 1
+    def train_batch(self, batch_data, mini_batch_func, mini_batch_size, hooks:Union[dict, None] = None) -> dict:
+        """
+        Trains agent policy on current batch of experience
+        Returns context with
+            'mini_batches' number of mini_batches completed
+            'outputs' output from each mini_batch update
+        """
 
-                    minibatch_data = {}
+        mini_batches = args.batch_size // mini_batch_size
+        micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
+        micro_batches = mini_batch_size // micro_batch_size
 
-                    for var_name, var_value in batch_data.items():
-                        if var_name == "tvf_returns":
-                            # apply horizon sampling
-                            # with replacement is a lot faster, and allows all samples to be generated together, rather
-                            # then individually for each b \in B.
+        ordering = list(range(args.batch_size))
+        np.random.shuffle(ordering)
 
-                            if K >= H:
-                                # use all samples, this is more efficent as we won't sample the same horizon twice.
-                                minibatch_data["tvf_horizons"] = torch.from_numpy(all_horizons).to(
-                                    device=self.model.device, dtype=torch.int16)
-                                minibatch_data["tvf_returns"] = torch.from_numpy(var_value[sample]).to(
-                                    device=self.model.device, dtype=torch.float32)
-                            else:
-                                horizon_sample = np.random.choice(H, size=[B, K-required_horizons.shape[-1]], replace=True, p=p)
-                                horizon_sample = np.concatenate([horizon_sample, required_horizons], axis=1)
-                                mb_returns = np.take_along_axis(var_value[sample], horizon_sample, axis=1)
-                                minibatch_data["tvf_horizons"] = torch.from_numpy(horizon_sample).to(device=self.model.device, dtype=torch.int16)
-                                minibatch_data["tvf_returns"] = torch.from_numpy(mb_returns).to(device=self.model.device, dtype=torch.float32)
-                        else:
-                            minibatch_data[var_name] = torch.from_numpy(var_value[sample]).to(self.model.device)
+        micro_batch_counter = 0
+        outputs = []
 
-                    if args.normalize_advantages:
-                        # normalize advantage at the mini_batch_level
-                        minibatch_data["advantages"] = (minibatch_data["advantages"] - adv_mu) / (adv_std + 1e-8)
+        context = {}
 
-                    first_batch = k == 0
-                    last_batch = k == (micro_batches-1)
-                    self.train_minibatch(minibatch_data, zero_grad=first_batch, apply_update=last_batch, loss_scale=1/micro_batches)
+        for j in range(mini_batches):
+
+            for k in range(micro_batches):
+                # put together a micro_batch.
+                batch_start = micro_batch_counter * micro_batch_size
+                batch_end = (micro_batch_counter + 1) * micro_batch_size
+                sample = ordering[batch_start:batch_end]
+                micro_batch_counter += 1
+
+                minibatch_data = {}
+                for var_name, var_value in batch_data.items():
+                    minibatch_data[var_name] = torch.from_numpy(var_value[sample]).to(self.model.device)
+
+                first_batch = k == 0
+                last_batch = k == (micro_batches-1)
+                outputs.append(mini_batch_func(
+                    minibatch_data, zero_grad=first_batch, apply_update=last_batch, loss_scale=1 / micro_batches
+                ))
+
+            context = {
+                'mini_batches': j + 1,
+                'outputs': outputs
+            }
+
+            if hooks is not None and "after_mini_batch" in hooks:
+                if hooks["after_mini_batch"](context):
+                    break
+
+        return context
+
 
 def get_rediscounted_value_estimate(values:Union[np.ndarray, torch.Tensor], old_gamma:float, new_gamma:float):
     """

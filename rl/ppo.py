@@ -1,9 +1,6 @@
 import os
 import numpy as np
-import gym
 import torch
-import torchvision
-import torch.nn as nn
 import time
 import json
 import math
@@ -15,7 +12,7 @@ from .rollout import Runner, save_progress
 
 import torch.multiprocessing
 
-from . import utils, models, atari, hybridVecEnv, config, logger, keyboard
+from . import utils, models, keyboard
 from .config import args
 
 class DualOptimizer:
@@ -48,7 +45,7 @@ class DualOptimizer:
     # which is a bit fidly, and does not work with micro_batching
 
 
-def train(model: models.BaseModel, log: Logger):
+def train(model: models.TVFModel, log: Logger):
     """
     Default parameters from stable baselines
 
@@ -79,8 +76,7 @@ def train(model: models.BaseModel, log: Logger):
     final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
     n_iterations = math.ceil((final_epoch * 1e6) / batch_size)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
-    runner = Runner(model, optimizer, log)
+    runner = Runner(model, log)
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
@@ -108,8 +104,6 @@ def train(model: models.BaseModel, log: Logger):
         # this will get an initial estimate for the normalization constants.
         runner.run_random_agent(20)
 
-
-
     runner.reset()
 
     # if we restored from a checkpoint the environments will all be in sync
@@ -136,13 +130,13 @@ def train(model: models.BaseModel, log: Logger):
         masks = t < max_steps
 
         with torch.no_grad():
-            model_out = runner.forward(state = runner.states)
+            model_out = runner.forward(runner.obs, output="policy")
             log_policy = model_out["log_policy"].cpu().numpy()
 
         actions = np.asarray([
             utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
         ], dtype=np.int32)
-        runner.states, ext_rewards, dones, infos = runner.vec_env.step(actions)
+        runner.obs, ext_rewards, dones, infos = runner.vec_env.step(actions)
 
         if t % 100 == 0:
             print(".", end='', flush=True)
