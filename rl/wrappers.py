@@ -764,7 +764,7 @@ class FrameStack(gym.Wrapper):
         self.original_channels = c
         self.n_channels = self.n_stacks * self.original_channels
 
-        self.stack = np.zeros((self.n_channels, w, h), dtype=np.uint8)
+        self.stack = np.zeros((self.n_channels, h, w), dtype=np.uint8)
 
         self.ordering = ordering
 
@@ -773,14 +773,13 @@ class FrameStack(gym.Wrapper):
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(self.n_channels, w, h),
+            shape=(self.n_channels, h, w),
             dtype=np.uint8,
         )
 
     def _push_obs(self, obs):
 
         # stub, label frames
-        # obs = obs * 0 + self.counter
         self.counter += 1
 
         if self.ordering == "default":

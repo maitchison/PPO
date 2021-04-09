@@ -27,7 +27,7 @@ WORKERS=8
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
-def add_job(experiment_name, run_name, priority=0, chunked=True, default_params=None, **kwargs):
+def add_job(experiment_name, run_name, priority=0, chunked=True, default_params=None, score_threshold=None, **kwargs):
 
     if default_params is not None:
         for k,v in default_params.items():
@@ -37,9 +37,19 @@ def add_job(experiment_name, run_name, priority=0, chunked=True, default_params=
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
 
+    job = Job(experiment_name, run_name, priority, chunked, kwargs)
 
+    if score_threshold is not None:
+        job_details = job.get_details()
+        if job_details is not None and 'score' in job_details:
+            modified_kwargs = kwargs.copy()
+            chunks_completed = job_details['completed_epochs'] / CHUNK_SIZE
+            if job_details['score'] < score_threshold * chunks_completed and chunks_completed > 0.75:
+                modified_kwargs["epochs"] = CHUNK_SIZE
+            job = Job(experiment_name, run_name, priority, chunked, modified_kwargs)
 
-    job_list.append(Job(experiment_name, run_name, priority, chunked, kwargs))
+    job_list.append(job)
+    return job
 
 def get_run_folders(experiment_name, run_name):
     """ Returns the paths for given experiment and run, or empty list if not found. """
@@ -114,12 +124,13 @@ class Job:
         if status == "running":
             priority += 1000
 
-        # if "search" in self.experiment_name:
-        #     # with search we want to make sure we complete partial runs first
-        #     priority = priority + self.get_completed_epochs()
-        # else:
-        #     priority = priority - self.get_completed_epochs()
-        priority = priority - self.get_completed_epochs()
+        if "search" in self.experiment_name.lower():
+            # with search we want to make sure we complete partial runs first
+            priority = priority + self.get_completed_epochs()
+        else:
+            priority = priority - self.get_completed_epochs()
+
+        # priority = priority - self.get_completed_epochs()
 
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
@@ -195,6 +206,8 @@ class Job:
             # if max_epochs has changed fix up the fraction_complete.
             if details["max_epochs"] != self.params["epochs"]:
                 details["fraction_complete"] = details["completed_epochs"] / self.params["epochs"]
+                details["max_epochs"] = self.params["epochs"]
+                details["eta"] = (details["max_epochs"] - details["completed_epochs"]) * 1e6 / details["fps"]
 
             return details
         except:
@@ -351,7 +364,7 @@ def show_fps(filter_jobs=None):
     for k,v in fps.items():
         print(f"{k:<20} {v:,.0f} FPS")
 
-def random_search(run, main_params, search_params, count=128):
+def random_search(run, main_params, search_params, score_threshold=None, count=128):
 
     for i in range(count):
         params = {}
@@ -363,7 +376,13 @@ def random_search(run, main_params, search_params, count=128):
         while params["agents"] * params["n_steps"] > 64*1024:
             params["agents"] //= 2
 
-        add_job(run, run_name=f"{i:04d}", chunked=True, **main_params, **params)
+        while params["agents"] * params["n_steps"] < params["policy_mini_batch_size"]:
+            params["policy_mini_batch_size"] //= 2
+
+        while params["agents"] * params["n_steps"] < params["value_mini_batch_size"]:
+            params["value_mini_batch_size"] //= 2
+
+        add_job(run, run_name=f"{i:04d}", chunked=True, score_threshold=score_threshold, **main_params, **params)
 
 
 def nice_format(x):
@@ -379,305 +398,330 @@ def nice_format(x):
 # ---------------------------------------------------------------------------------------------------------
 
 
-def setup_experiments9():    
-
-    # these are just for the regression test
-    initial_args = {
-        'checkpoint_every': int(5e6),
-        'epochs': 50,
-        'agents': 256,
-        'n_steps': 128,
-        'max_grad_norm': 5.0,
-        'entropy_bonus': 0.01,
-        'use_tvf': True,
-        'tvf_coef': 0.01, # because of new scaling this needs to be 0.1 rather than 0.5 to avoid high grad at start.
-        'vf_coef': 0.0,
-        'tvf_max_horizon': 1000,
-        'tvf_n_horizons': 64,
-        'workers': WORKERS,
-        'tvf_gamma': 0.997,
-        'gamma': 0.997,
-        'mini_batch_size': 1024,
-        'tvf_model': 'split',
-        'joint_model_weight': 0.1, # seems like a small amount of this is helpful for breakout
-        'tvf_joint_mode': 'policy', # this seems to work best
-    }
-
-    # these are just for the regression test
-    ppo_args = {
-        'checkpoint_every': int(5e6),
-        'epochs': 50,
-        'agents': 256,
-        'n_steps': 128,
-        'max_grad_norm': 5.0,
-        'entropy_bonus': 0.01,
-        'use_tvf': False,
-        'vf_coef': 0.5,
-        'workers': WORKERS,
-        'gamma': 0.997,
-        'mini_batch_size': 1024,
-    }
-
-    # Standard regression test
-    for tvf_max_horizon in [1000, 2000, 4000]:
-        add_job(
-            "TVF_9A",
-            env_name="Breakout",
-            run_name=f"tvf_mh={tvf_max_horizon}",
-            tvf_max_horizon=tvf_max_horizon,
-            priority=20,
-            default_params=initial_args,
-        )
-
-    # Test reward clipping change
-    for reward_clipping in [1, "off", "sqrt"]:
-        for reward_normalization in [True, False]:
-            add_job(
-                "TVF_9_RewardClipping",
-                env_name="DemonAttack",
-                run_name=f"norm={reward_normalization} clip={reward_clipping}",
-                reward_clipping=reward_clipping,
-                reward_normalization=reward_normalization,
-                priority=0,
-                default_params=initial_args,
-            )
-
-    # Test gamma
-    for gamma in [0.99, 0.997, 0.999, 0.9999, 1.0]:
-        add_job(
-            "TVF_9_Gamma",
-            env_name="DemonAttack",
-            run_name=f"tvf_3k gamma={gamma}",
-            tvf_max_horizon=3000,
-            gamma=gamma,
-            tvf_gamma=gamma,
-            priority=0,
-            default_params=initial_args,
-        )
-
-        add_job(
-            "TVF_9_Gamma",
-            env_name="DemonAttack",
-            run_name=f"ppo gamma={gamma}",
-            gamma=gamma,
-            priority=0,
-            default_params=ppo_args,
-        )
-
-    # Test deferred rewards (very hard!)
-    add_job(
-        "TVF_9_DeferredReward",
-        env_name="DemonAttack",
-        run_name=f"algo=tvf",
-        deferred_rewards=True,
-        priority=0,
-        default_params=initial_args,
-    )
-
-    # Test deferred rewards (very hard!)
-    add_job(
-        "TVF_9_DeferredReward",
-        env_name="DemonAttack",
-        run_name=f"algo=tvf_3k",
-        tvf_max_horizon=3000,
-        deferred_rewards=True,
-        priority=0,
-        default_params=initial_args,
-    )
-
-    # Test deferred rewards (very hard!)
-    add_job(
-        "TVF_9_DeferredReward",
-        env_name="DemonAttack",
-        run_name=f"algo=tvf_3k_nd",
-        tvf_gamma=1.0,
-        gamma=1.0,
-        tvf_max_horizon=3000,
-        deferred_rewards=True,
-        priority=25,
-        default_params=initial_args,
-    )
-
-    # Test deferred rewards (very hard!)
-    add_job(
-        "TVF_9_DeferredReward",
-        env_name="DemonAttack",
-        run_name=f"algo=ppo",
-        deferred_rewards=True,
-        priority=0,
-        default_params=ppo_args,
-    )
-
-    add_job(
-        "TVF_9_DeferredReward",
-        env_name="DemonAttack",
-        run_name=f"algo=ppo_nd",
-        deferred_rewards=True,
-        gamma=1.0,
-        priority=50,
-        default_params=ppo_args,
-    )
-
-    search_vars = {
-        'n_steps':[4, 8, 16, 32, 64, None, 256, 512, 1024],
-        'agents': [32, 64, 128, None, 512, 1024],
-        'tvf_max_horizon': [300, None, 3000, 10000],
-        'use_training_pauses': [True, None],
-        'tvf_hidden_units': [0, 1, 4, 64, 128, 256, None, 1024],
-        'tvf_n_horizons': [4, 8, 16, 32, None, 128, 1000], # 1000 has no sampling (we have 2 compulsary horizons so 4 is very low!
-        'max_grad_norm': [0.5, None, 20.0],
-        'learning_rate': [1e-4, None, 1e-3],
-        'entropy_bonus': [0, 0.001, None, 0.1],         # 0.01 was default
-        'joint_model_weight': [-1, 0, 0.01, None, 1],   # 0.1 was default
-        'tvf_model': ['default', None],
-        'tvf_coef': [0.05, None, 0.5],
-        'tvf_loss_weighting': [None, 'advanced'],
-        'mini_batch_size': [512, None, 2048],
-        'ppo_epsilon': [0.05, None, 0.2, 0.3], # this should have been 0.2 by default
-        'tvf_gamma': [1.0, None],  # try rediscounting again... might give better estimates (but slower...)
-        'batch_epochs': [2, 3, None, 6, 8], # this makes a big difference
-        'tvf_h_scale': [None, 'linear', 'squared'],
-        'tvf_activation': [None, 'tanh', 'sigmoid'],
-        'max_micro_batch_size': [256, None, 1024], #just checking...
-        'sticky_actions': [True, None],  # why not...
-        'color': [True, None],  # not even sure if this works
-        'resolution': ['full', None, 'half'],  # again not sure if this works...
-        'per_step_reward': [None, round(-1 / (60 * 30 * 15), 6)], # encourage agent to complete game in a reasonable time.
-    }
-
-    counter = 0
-    for env in ['DemonAttack']:
-        for k, vs in search_vars.items():
-            for v in vs:
-                if v is None:
-                    # these represent the default settings, no need to run these as I have run them 3 times already...
-                    continue
-                add_job(
-                    f"TVF_9_Search_{env}",
-                    run_name=f"{k}={v}",
-                    **{k: v},
-                    env_name=env,
-                    epochs=20, # should be 50, but just for the moment..
-                    priority=-(100+counter),
-                    default_params=initial_args,
-                )
-                counter += 1
-
-
-    # initial tests on our new games
-    #for env in ['Amidar', 'BattleZone', 'DemonAttack']:
-    for env in ['DemonAttack']:
-        for run in range(3):
-            add_job(
-                f"TVF_9_Ref_{env}",
-                run_name=f"tvf run={run}",
-                env_name=env,
-                priority=0 if run != 0 else 100,
-                default_params=initial_args,
-            )
-
-    # just some games I'd be interested in seeing the score on.
-    for env in ['Alien', 'Skiing', 'Seaquest', 'Pitfall']:
-        for run in range(1):
-            add_job(
-                f"TVF_9_Ref_{env}",
-                run_name=f"tvf run={run}",
-                env_name=env,
-                priority=-100 if env != "Skiing" else 100,
-                default_params=initial_args,
-            )
-        add_job(
-            f"TVF_9_Ref_{env}",
-            run_name=f"tvf_rnd",
-            env_name=env,
-            use_rnd=True,
-            observation_normalization=True,
-            vf_coef=0.5,
-            intrinsic_reward_scale=1.0,
-            priority=-150,
-            default_params=initial_args,
-        )
-
-    add_job(
-        f"TVF_9_Ref_Skiing",
-        run_name=f"tvf_5k_rnd",
-        env_name='Skiing',
-        use_rnd=True,
-        observation_normalization=True,
-        vf_coef=0.5,
-        intrinsic_reward_scale=1.0,
-        tvf_max_horizon=5000,
-        priority=100,
-        default_params=initial_args,
-    )
-
-    add_job(
-        f"TVF_9_Ref_Skiing",
-        run_name=f"tvf_5k_rnd_nd",
-        env_name='Skiing',
-        use_rnd=True,
-        observation_normalization=True,
-        vf_coef=0.5,
-        intrinsic_reward_scale=1.0,
-        tvf_max_horizon=5000,
-        priority=100,
-        tvf_gamma=1.0,
-        gamma=1.0,
-        default_params=initial_args,
-    )
-
-    add_job(
-        f"TVF_9_Ref_Skiing",
-        run_name=f"tvf_5k",
-        env_name='Skiing',
-        tvf_max_horizon=5000,
-        priority=100,
-        default_params=initial_args,
-    )
-
-    add_job(
-        f"TVF_9_Ref_Skiing",
-        run_name=f"ppo",
-        env_name='Skiing',
-
-        priority=100,
-        default_params=ppo_args,
-    )
-
-    # this is just best settings found so far at various points
-    for env in ['DemonAttack']:
-        add_job(
-            f"TVF_9_Eval_{env}",
-            run_name=f"bundle_0",
-            env_name=env,
-
-            epochs=200,
-
-            priority=0,
-            default_params=initial_args,
-        )
-
-        add_job(
-            f"TVF_9_Eval_{env}_1",
-            run_name=f"bundle_1",
-            env_name=env,
-            n_steps=32,                 # 16 was a little better, but we've upped max_horizon
-            agents=256,
-            tvf_max_horizon=3000,
-            reward_clipping="sqrt",
-
-            epochs=200,
-
-            priority=50,
-            default_params=initial_args,
-        )
-
-        # bundle 2 ideas
-        # max_horizon to 1000 for performance reasons
-        # turn of sqrt clipping, it's not needed (less parts)
-        # agents=128 will be fine, reduces memory
-        # hidden units=256 will be faster, less GPU ram
-        # keep n_horizons at 64, as it's fast enough
+# def setup_experiments9():
+#
+#     # these are just for the regression test
+#     initial_args = {
+#         'checkpoint_every': int(5e6),
+#         'epochs': 50,
+#         'agents': 256,
+#         'n_steps': 128,
+#         'max_grad_norm': 5.0,
+#         'entropy_bonus': 0.01,
+#         'use_tvf': True,
+#         'tvf_coef': 0.01, # because of new scaling this needs to be 0.1 rather than 0.5 to avoid high grad at start.
+#         'vf_coef': 0.0,
+#         'tvf_max_horizon': 1000,
+#         'tvf_n_horizons': 64,
+#         'workers': WORKERS,
+#         'tvf_gamma': 0.997,
+#         'gamma': 0.997,
+#         'mini_batch_size': 1024,
+#         'tvf_model': 'split',
+#         'joint_model_weight': 0.1, # seems like a small amount of this is helpful for breakout
+#         'tvf_joint_mode': 'policy', # this seems to work best
+#     }
+#
+#     # these are just for the regression test
+#     ppo_args = {
+#         'checkpoint_every': int(5e6),
+#         'epochs': 50,
+#         'agents': 256,
+#         'n_steps': 128,
+#         'max_grad_norm': 5.0,
+#         'entropy_bonus': 0.01,
+#         'use_tvf': False,
+#         'vf_coef': 0.5,
+#         'workers': WORKERS,
+#         'gamma': 0.997,
+#         'mini_batch_size': 1024,
+#     }
+#
+#     # Standard regression test
+#     for tvf_max_horizon in [1000, 2000, 4000]:
+#         add_job(
+#             "TVF_9A",
+#             env_name="Breakout",
+#             run_name=f"tvf_mh={tvf_max_horizon}",
+#             tvf_max_horizon=tvf_max_horizon,
+#             priority=20,
+#             default_params=initial_args,
+#         )
+#
+#     # Test reward clipping change
+#     for reward_clipping in [1, "off", "sqrt"]:
+#         for reward_normalization in [True, False]:
+#             add_job(
+#                 "TVF_9_RewardClipping",
+#                 env_name="DemonAttack",
+#                 run_name=f"norm={reward_normalization} clip={reward_clipping}",
+#                 reward_clipping=reward_clipping,
+#                 reward_normalization=reward_normalization,
+#                 priority=0,
+#                 default_params=initial_args,
+#             )
+#
+#     # Test gamma
+#     for gamma in [0.99, 0.997, 0.999, 0.9999, 1.0]:
+#         add_job(
+#             "TVF_9_Gamma",
+#             env_name="DemonAttack",
+#             run_name=f"tvf_3k gamma={gamma}",
+#             tvf_max_horizon=3000,
+#             gamma=gamma,
+#             tvf_gamma=gamma,
+#             priority=0,
+#             default_params=initial_args,
+#         )
+#
+#         add_job(
+#             "TVF_9_Gamma",
+#             env_name="DemonAttack",
+#             run_name=f"ppo gamma={gamma}",
+#             gamma=gamma,
+#             priority=0,
+#             default_params=ppo_args,
+#         )
+#
+#     # Test deferred rewards (very hard!)
+#     add_job(
+#         "TVF_9_DeferredReward",
+#         env_name="DemonAttack",
+#         run_name=f"algo=tvf",
+#         deferred_rewards=True,
+#         priority=0,
+#         default_params=initial_args,
+#     )
+#
+#     # Test deferred rewards (very hard!)
+#     add_job(
+#         "TVF_9_DeferredReward",
+#         env_name="DemonAttack",
+#         run_name=f"algo=tvf_3k",
+#         tvf_max_horizon=3000,
+#         deferred_rewards=True,
+#         priority=0,
+#         default_params=initial_args,
+#     )
+#
+#     # Test deferred rewards (very hard!)
+#     add_job(
+#         "TVF_9_DeferredReward",
+#         env_name="DemonAttack",
+#         run_name=f"algo=tvf_3k_nd",
+#         tvf_gamma=1.0,
+#         gamma=1.0,
+#         tvf_max_horizon=3000,
+#         deferred_rewards=True,
+#         priority=25,
+#         default_params=initial_args,
+#     )
+#
+#     # Test deferred rewards (very hard!)
+#     add_job(
+#         "TVF_9_DeferredReward",
+#         env_name="DemonAttack",
+#         run_name=f"algo=ppo",
+#         deferred_rewards=True,
+#         priority=0,
+#         default_params=ppo_args,
+#     )
+#
+#     add_job(
+#         "TVF_9_DeferredReward",
+#         env_name="DemonAttack",
+#         run_name=f"algo=ppo_nd",
+#         deferred_rewards=True,
+#         gamma=1.0,
+#         priority=50,
+#         default_params=ppo_args,
+#     )
+#
+#     search_vars = {
+#         'n_steps':[4, 8, 16, 32, 64, None, 256, 512, 1024],
+#         'agents': [32, 64, 128, None, 512, 1024],
+#         'tvf_max_horizon': [300, None, 3000, 10000],
+#         'use_training_pauses': [True, None],
+#         'tvf_hidden_units': [0, 1, 4, 16, 64, 128, 256, 1024],
+#         'tvf_n_horizons': [3, 4, 8, 16, 32, None, 128, 1000], # 1000 has no sampling (we have 3 required horizons so 4 is very low!
+#         'max_grad_norm': [0.5, None, 20.0],
+#         'learning_rate': [1e-4, None, 1e-3],
+#         'entropy_bonus': [0, 0.001, None, 0.1],         # 0.01 was default
+#         'joint_model_weight': [-1, 0, 0.01, None, 1],   # 0.1 was default
+#         'tvf_model': ['default', None],
+#         'tvf_coef': [0.05, None, 0.5],
+#         'tvf_loss_weighting': [None, 'advanced'],
+#         'mini_batch_size': [512, None, 2048],
+#         'ppo_epsilon': [0.05, None, 0.2, 0.3], # this should have been 0.2 by default
+#         'tvf_gamma': [0.999, 1.0, None],  # try rediscounting again... might give better estimates (but slower...) (gamma is 0.997)
+#         'batch_epochs': [1, 2, 3, None, 6, 8], # this makes a big difference
+#         'tvf_h_scale': [None, 'linear', 'squared'],
+#         'tvf_activation': [None, 'tanh', 'sigmoid'],
+#         'max_micro_batch_size': [256, None, 1024], #just checking...
+#         'sticky_actions': [True, None],  # why not...
+#         'color': [True, None],  # not even sure if this works
+#         'resolution': ['full', None, 'half'],  # again not sure if this works...
+#         'per_step_reward': [None, round(-1 / (60 * 30 * 15), 6)], # encourage agent to complete game in a reasonable time.
+#     }
+#
+#     important_runs = [
+#         "tvf_h_scale",
+#         "tvf_hidden_units",
+#         "tvf_n_horizons",
+#         "mini_batch_size",
+#         "ppo_epsilon",
+#         "tvf_gamma",
+#         "batch_epochs",
+#         "entropy_bonus",
+#         "tvf_loss_weighting",
+#     ]
+#
+#     counter = 0
+#     for env in ['DemonAttack']:
+#         for k, vs in search_vars.items():
+#             for v in vs:
+#                 if v is None:
+#                     # these represent the default settings, no need to run these as I have run them 3 times already...
+#                     continue
+#                 add_job(
+#                     f"TVF_9_Search_{env}",
+#                     run_name=f"{k}={v}",
+#                     **{k: v},
+#                     env_name=env,
+#                     epochs=20 if k not in important_runs else 50, # should be 50, but just for the moment..
+#                     priority=-((100 if k not in important_runs else 0)+counter),
+#                     default_params=initial_args,
+#                 )
+#                 counter += 1
+#
+#     # extra searchs
+#     for env in ['DemonAttack']:
+#         add_job(
+#             f"TVF_9_Search_{env}",
+#             run_name=f"tvf_loss_weighting=scaled",
+#             tvf_loss_weighting="advanced",
+#             env_name=env,
+#             tvf_coef=0.01 / 10,
+#             epochs=50,
+#             priority=0,
+#             default_params=initial_args,
+#         )
+#         counter += 1
+#
+#     # initial tests on our new games
+#     #for env in ['Amidar', 'BattleZone', 'DemonAttack']:
+#     for env in ['DemonAttack']:
+#         for run in range(3):
+#             add_job(
+#                 f"TVF_9_Ref_{env}",
+#                 run_name=f"tvf run={run}",
+#                 env_name=env,
+#                 priority=0 if run != 0 else 100,
+#                 default_params=initial_args,
+#             )
+#
+#     # just some games I'd be interested in seeing the score on.
+#     for env in ['Alien', 'Skiing', 'Seaquest', 'Pitfall']:
+#         for run in range(1):
+#             add_job(
+#                 f"TVF_9_Ref_{env}",
+#                 run_name=f"tvf run={run}",
+#                 env_name=env,
+#                 priority=-100 if env != "Skiing" else 100,
+#                 default_params=initial_args,
+#             )
+#         # add_job(
+#         #     f"TVF_9_Ref_{env}",
+#         #     run_name=f"tvf_rnd",
+#         #     env_name=env,
+#         #     use_rnd=True,
+#         #     observation_normalization=True,
+#         #     vf_coef=0.5,
+#         #     intrinsic_reward_scale=1.0,
+#         #     priority=-150,
+#         #     default_params=initial_args,
+#         # )
+#
+#     add_job(
+#         f"TVF_9_Ref_Skiing",
+#         run_name=f"tvf_5k_rnd",
+#         env_name='Skiing',
+#         use_rnd=True,
+#         observation_normalization=True,
+#         vf_coef=0.5,
+#         intrinsic_reward_scale=1.0,
+#         tvf_max_horizon=5000,
+#         priority=100,
+#         default_params=initial_args,
+#     )
+#
+#     add_job(
+#         f"TVF_9_Ref_Skiing",
+#         run_name=f"tvf_5k_rnd_nd",
+#         env_name='Skiing',
+#         use_rnd=True,
+#         observation_normalization=True,
+#         vf_coef=0.5,
+#         intrinsic_reward_scale=1.0,
+#         tvf_max_horizon=5000,
+#         priority=100,
+#         tvf_gamma=1.0,
+#         gamma=1.0,
+#         default_params=initial_args,
+#     )
+#
+#     add_job(
+#         f"TVF_9_Ref_Skiing",
+#         run_name=f"tvf_5k",
+#         env_name='Skiing',
+#         tvf_max_horizon=5000,
+#         priority=100,
+#         default_params=initial_args,
+#     )
+#
+#     add_job(
+#         f"TVF_9_Ref_Skiing",
+#         run_name=f"ppo",
+#         env_name='Skiing',
+#
+#         priority=100,
+#         default_params=ppo_args,
+#     )
+#
+#     # this is just best settings found so far at various points
+#     for env in ['DemonAttack']:
+#         add_job(
+#             f"TVF_9_Eval_{env}",
+#             run_name=f"bundle_0",
+#             env_name=env,
+#
+#             epochs=200,
+#
+#             priority=0,
+#             default_params=initial_args,
+#         )
+#
+#         add_job(
+#             f"TVF_9_Eval_{env}_1",
+#             run_name=f"bundle_1",
+#             env_name=env,
+#             n_steps=32,                 # 16 was a little better, but we've upped max_horizon
+#             agents=256,
+#             tvf_max_horizon=3000,
+#             reward_clipping="sqrt",
+#
+#             epochs=200,
+#
+#             priority=50,
+#             default_params=initial_args,
+#         )
+#
+#         # bundle 2 ideas
+#         # max_horizon to 1000 for performance reasons
+#         # turn of sqrt clipping, it's not needed (less parts)
+#         # agents=128 will be fine, reduces memory
+#         # hidden units=256 will be faster, less GPU ram
+#         # keep n_horizons at 64, as it's fast enough
 
 
 def setup_experiments10():
@@ -685,6 +729,7 @@ def setup_experiments10():
     # these are just for the regression test
     initial_args = {
         'checkpoint_every': int(5e6),
+        'workers': WORKERS,
         'env_name': 'DemonAttack',
         'epochs': 50,
         'agents': 256,
@@ -696,7 +741,6 @@ def setup_experiments10():
         'tvf_n_horizons': 64,
         'tvf_coef': 0.01,
         'vf_coef':0.5,              # this won't do anything (by default)
-        'workers': WORKERS,
         'tvf_gamma': 0.999,
         'gamma': 0.999,
         'policy_mini_batch_size': 2048,
@@ -820,6 +864,172 @@ def setup_experiments10():
         default_params=initial_args,
     )
 
+    main_params = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'use_tvf': False,
+        'gamma': 0.999,
+        'env_name': 'DemonAttack',
+        'epochs': 50,       # because we filter out runs with low scores 50 epochs is fine
+        'vf_coef': 0.5,
+        'priority': -200,
+    }
+
+    search_params = {
+        'max_grad_norm': [0.5, 5, 20.0],    # should have no effect
+        'agents': [64, 128, 256],           # should have little effect
+        'n_steps': [16, 32, 64, 128],       # 16 was best from before, but unstable
+        'policy_mini_batch_size': [512, 1024, 2048],
+        'value_mini_batch_size': [512, 1024, 2048],
+        'value_epochs': [1, 2, 3, 4, 6, 8], # I have no idea about this one
+        'policy_epochs': [1, 2, 3, 4],      # I have no idea about this one
+        'target_kl': [1.0, 0.1, 0.01],      # 1.0 is effectively off
+        'ppo_epsilon': [0.05, 0.1, 0.2, 0.3], # I have only gotten <= 0.1 to work so far
+        'value_lr': [1e-4, 2.5e-4, 5e-4],   # any of these should work, but faster is better I guess?
+        'policy_lr': [1e-4, 2.5e-4, 5e-4],
+    }
+
+    # score threshold should be 200, but I want some early good results...
+    random_search("TVF_10_Search_PPO", main_params, search_params, score_threshold=500, count=64)
+
+    # initial long horizon test... :)
+    tuned_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 10,
+        'max_grad_norm': 0.5,
+        'agents': 128,
+        'n_steps': 128,
+        'policy_mini_batch_size': 512,      # does this imply microbatching is broken?
+        'value_mini_batch_size': 512,
+        'value_epochs': 2,                  # this seems really low?
+        'policy_epochs': 4,
+        'target_kl': 0.01,
+        'ppo_epsilon': 0.05,
+        'value_lr': 5e-4,
+        'policy_lr': 2.5e-4,
+        'gamma': 0.999,
+    }
+
+    # initial long horizon test... :)
+    better_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 10,
+        'max_grad_norm': 5,             # more than before  [mode=5]
+        'agents': 128,                  #                   [mode=128]
+        'n_steps': 32,                  # less than before  [mode=128] (higher better)
+        'policy_mini_batch_size': 1024, # more than before  [mode=1024]
+        'value_mini_batch_size': 512,   #                   [mode=512] (lower better)
+        'value_epochs': 4,              # more than before  [mode=2]
+        'policy_epochs': 4,             #                   [mode=4] (higher better)
+        'target_kl': 0.10,              # much more than before (see if this is an issue...) [no mode]
+        'ppo_epsilon': 0.05,            # why so low?       [mode=0.05] (lower is better, but 0.3 works too?)
+        'value_lr': 1e-4,               # much lower        [no mode]
+        'policy_lr': 5e-4,              # higher? weird...  [mode=2.5e-4]
+        'gamma': 0.999,
+    }
+
+    for gamma, tvf_max_horizon in zip(
+        [0.99, 0.997, 0.999, 0.9997],
+        [300, 1000, 3000, 10000]
+    ):
+        continue
+
+        # later on we should try
+        # tvf_h_scale=squared
+        # tvf_loss_weighting=advanced (but with automaticly adjusted MSE weight)
+
+        add_job(
+            f"TVF_10_LongHorizon",
+            run_name=f"tvf_mc_gamma={gamma}",
+            use_tvf=True,
+            tvf_hidden_units=128,                   # mostly a performance optimization
+            tvf_n_horizons=128,
+            tvf_lambda=1.0,
+            tvf_max_horizon=tvf_max_horizon,
+            gamma=gamma,
+            tvf_gamma=gamma,
+            default_params=tuned_args,
+            priority=-400,  # turn off for the moment...
+        )
+
+        add_job(
+            # note: would be interesting to try setting tvf_gamma to 1.
+            f"TVF_10_LongHorizon",
+            run_name=f"tvf_16_gamma={gamma}",
+            use_tvf=True,
+            tvf_hidden_units=128,                   # mostly a performance optimization
+            tvf_n_horizons=128,
+            tvf_lambda=-16,
+            tvf_max_horizon=tvf_max_horizon,
+            gamma=gamma,
+            tvf_gamma=gamma,
+            default_params=tuned_args,
+            priority=-400,  # turn off for the moment...
+        )
+
+        add_job(
+            f"TVF_10_LongHorizon",
+            run_name=f"ppo_gamma={gamma}",
+            use_tvf=False,
+            gamma=gamma,
+            default_params=tuned_args,
+            priority=-400,  # turn off for the moment...
+        )
+
+    # bundles...
+    add_job(
+        f"TVF_10_Eval",
+        run_name=f"bundle_0",
+        use_tvf=False,
+        epochs=200,
+        default_params=tuned_args,
+        priority=100,
+    )
+    add_job(
+        f"TVF_10_Eval",
+        run_name=f"bundle_1",
+        use_tvf=False,
+        epochs=200,
+        default_params=better_args,
+        priority=100,
+    )
+
+    add_job(
+        f"TVF_10_Eval",
+        run_name=f"tvf_1_adv",
+
+        use_tvf=True,
+        tvf_max_horizon=3000,
+        tvf_hidden_units=128,
+        tvf_n_horizons=16,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        epochs=200,
+        default_params=better_args,
+        priority=100,  # turn off for the moment...
+    )
+
+    add_job(
+        f"TVF_10_Eval",
+        run_name=f"tvf_1_std",
+
+        use_tvf=True,
+        tvf_max_horizon=3000,
+        tvf_hidden_units=128,
+        tvf_n_horizons=16,
+
+        epochs=200,
+        default_params=better_args,
+        priority=100,  # turn off for the moment...
+    )
+
+
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
@@ -827,7 +1037,6 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    setup_experiments9()
     setup_experiments10()
 
     if len(sys.argv) == 1:

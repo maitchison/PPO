@@ -930,7 +930,9 @@ class Runner():
                     effective_n_step = args.n_steps / 2
                 else:
                     effective_n_step = min(1/(1-args.tvf_lambda), args.n_steps)
-                weighting =(self.current_max_horizon - data["tvf_horizons"] + effective_n_step) / effective_n_step
+                weighting = (self.current_max_horizon - data["tvf_horizons"] + effective_n_step) / effective_n_step
+                # normalize so weights average out to be 1
+                weighting = weighting / weighting.mean()
             else:
                 raise ValueError("Invalid tvf_loss_weighting value.")
 
@@ -1180,7 +1182,7 @@ class Runner():
             # number of sample to use
             K = min(args.tvf_n_horizons, H)
 
-            required_horizons = np.asarray([0, H], dtype=np.int32)
+            required_horizons = np.asarray([0, H], dtype=np.int32) # stub should be 0, H
             required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
             all_horizons = np.asarray(range(H + 1), dtype=np.int32)
             all_horizons = np.repeat(all_horizons[None, :], B, axis=0)

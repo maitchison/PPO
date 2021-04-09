@@ -1,3 +1,6 @@
+import matplotlib
+import matplotlib.pyplot as plt
+
 from rl import models, atari, config, utils
 from rl.config import args
 from rl import hybridVecEnv
@@ -8,18 +11,26 @@ import cv2
 import numpy as np
 import torch
 import os
-import matplotlib.pyplot as plt
+
 import json
 import pickle
 import time
 import math
+
+
+# draw times are:
+# default: 35ms
+# qt5agg: 35ms
+# qt4agg: 35ms
+# tkagg: 51ms
+
 
 # my PC, 355 FPS on GPU, 281 on CPU
 
 from os import listdir
 from os.path import isfile, join
 
-DEVICE = "cuda:0"
+DEVICE = "cpu"
 REWARD_SCALE = float()
 MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
@@ -79,7 +90,6 @@ def make_model(env):
     model_module_path = f"Run.{args.experiment_name}.rl.models"
     models = importlib.import_module(model_module_path, 'models')
 
-    # stub
     import inspect
     allowed_args = set(inspect.signature(models.TVFModel.__init__).parameters.keys())
 
@@ -223,7 +233,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     episode_scores = []
     episode_lengths = []
 
-    print("Evaluating:",end='', flush=True)
+    print("Evaluating:", end='', flush=True)
 
     remaining_samples = samples
 
@@ -317,6 +327,17 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
 def generate_rollout(model, max_frames = 30*60*15, include_video=False):
     return generate_rollouts(model, max_frames, include_video, num_rollouts=1)[0]
 
+def generate_fake_rollout(num_frames = 30*60):
+    """
+    Generate a fake rollout for testing
+    """
+    return {
+        'values': np.zeros([num_frames, args.tvf_n_horizons], dtype=np.float32),
+        'model_values': np.zeros([num_frames], dtype=np.float32),
+        'rewards': np.zeros([num_frames], dtype=np.float32),
+        'raw_rewards': np.zeros([num_frames], dtype=np.float32),
+        'frames': np.zeros([num_frames, 210, 334, 3], dtype=np.uint8)
+    }
 
 def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rollouts=1):
     """
@@ -426,6 +447,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     start_time = time.time()
     buffer = generate_rollout(model, max_frames, include_video=True)
+    #buffer = generate_fake_rollout(27000)
     rewards = buffer["rewards"]
 
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
@@ -435,9 +457,32 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     print(f"score:{int(sum(rewards)):,} ", end='', flush=True)
 
-    current_score = 0
+    prev_limits = (0.0, 0.0)
+    total_time = 0
+
+    # work out discounting values to make plotting a little faster
+    # discount_values = np.zeros([MAX_HORIZON], dtype=np.float32)
+    # for k in range(len(discount_values)):
+    #     discount_values[k] = args.tvf_gamma ** k
+    # cumulative_sum = np.zeros([len(rewards)], dtype=np.float32)
+    # reward_sum = 0
+    # for k in range(len(cumulative_sum)):
+    #     reward_sum += reward[k]
+    #     cumulative_sum[k] = reward_sum
+
+    max_fps = float('-inf')
+    min_fps = float('inf')
+
+    marker_time = time.time()
+    very_start_time = time.time()
+    fps_list = []
 
     for t in range(len(rewards)):
+
+        # todo: make this extremely fast for large horizon...
+        start_time = time.time()
+
+        #1: get frames
 
         frame = buffer["frames"][t]
         model_value = buffer["model_values"][t] * REWARD_SCALE
@@ -450,28 +495,21 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
         # calculate actual truncated values using real future rewards
         true_values = np.zeros(MAX_HORIZON, dtype=np.float32)
-        true_score = np.zeros(MAX_HORIZON, dtype=np.float32)
-        future_score = current_score
+
+
         for k in range(len(true_values)):
-            this_reward = (args.tvf_gamma ** k) * rewards[t+k] * 1 if (t+k) < len(rewards) else 0
+            this_reward = (args.tvf_gamma ** k) * rewards[t+k] if (t+k) < len(rewards) else 0
             prev_rewards = true_values[k-1] if k > 0 else 0
             true_values[k] = this_reward + prev_rewards
-            true_score[k] = future_score
-            future_score += this_reward
-
-        current_score += rewards[t]
 
         fig = plt.figure(figsize=(7, 4), dpi=100)
-
-        # plot score
-        xs = list(range(len(true_score)))
-        ys = true_score
-        plt.plot(xs, ys, label="Score", c="green", alpha=0.50)
 
         # plot true value
         xs = list(range(len(true_values)))
         ys = true_values
         plt.plot(xs, ys, label="True", c="red")
+        min_height = 0
+        max_height = max(true_values)
 
         # plot predicted values...
         if args.use_tvf:
@@ -479,17 +517,24 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
             ys = values
             xs = list(range(len(ys)))
             plt.plot(xs, ys, label="Predicted", c="blue", alpha=0.75)
+            max_height = max(max_height, max(ys))
+            min_height = min(ys)
 
         # plot model value prediction
         if args.vf_coef > 0:
             plt.hlines(model_value, 0, len(xs), label="Model", colors=["black"])
+            max_height = max(max_height, max(model_value))
 
         plt.xlabel("k")
         plt.ylabel("Score")
 
-        limit = math.ceil(final_score/20) * 20 + 5
+        max_limit = math.ceil(max_height+5)
+        min_limit = math.floor(min_height-1)
+        max_limit = max(prev_limits[0], max_limit)
+        min_limit = min(prev_limits[1], min_limit)
 
-        plt.ylim(-10, limit)
+        plt.ylim(min_limit, max_limit)
+        prev_limits = (min_limit, max_limit)
 
         plt.grid(True)
 
@@ -505,10 +550,22 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
         video_out.write(frame)
 
+        total_time = time.time() - start_time
+
+        fps = 1 / total_time
+        fps_list.append(fps)
+        max_fps = max(fps, max_fps)
+        min_fps = min(fps, min_fps)
+
+        # every 60 second print time
+        if (time.time() - marker_time) > 60:
+            print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-10:]):.1f} FPS> ", end='')
+            marker_time = time.time()
+
     video_out.release()
 
     end_time = time.time()
-    print(f"completed at {len(rewards) / (end_time - start_time):.0f} FPS")
+    print(f"completed at {len(rewards) / (end_time - very_start_time):.1f} FPS")
 
 def run_eval(path):
 
@@ -566,9 +623,12 @@ def run_eval(path):
                 model = load_checkpoint(checkpoint_name, device=DEVICE)
                 evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
 
-def monitor(path):
+def monitor(path, run_filter=None):
     folders = [x[0] for x in os.walk(path)]
     for folder in folders:
+        if run_filter is not None and not run_filter(folder):
+            continue
+
         try:
             run_eval(folder)
         except Exception as e:
@@ -576,10 +636,8 @@ def monitor(path):
 
 if __name__ == "__main__":
     config.parse_args(no_env=True)
-    folders = [name for name in os.listdir("./Run") if os.path.isdir(os.path.join('./Run',name))]
-    for folder in folders:
-        if "TVF_8" in folder:
-            monitor(os.path.join('./Run',folder))
+    folders = [name for name in os.listdir("./Run/") if os.path.isdir(os.path.join('./Run',name))]
     for folder in folders:
         if "TVF_9" in folder:
+            # run_filter = lambda x : "tvf_n_horizons=1000" in x
             monitor(os.path.join('./Run',folder))

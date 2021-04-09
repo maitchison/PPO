@@ -18,7 +18,6 @@ resolution_map = {
     "half": (42, 42)
 }
 
-
 def get_previous_experiment_guid(experiment_path, run_name):
     """ Looks for previous experiment with same run_name. Returns the guid if found. """
     if not os.path.exists(experiment_path):
@@ -53,7 +52,6 @@ if __name__ == "__main__":
 
     # set threading
     torch.set_num_threads(int(args.threads))
-
 
     # calculate number of workers to use.
     if args.workers < 0:

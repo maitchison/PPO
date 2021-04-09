@@ -65,6 +65,7 @@ class Config:
         self.tvf_h_scale        = str()
         self.tvf_activation     = str()
         self.tvf_loss_weighting = str()
+        self.tvf_interpolation_samples = int()
     
         self.time_aware = bool()
         self.ed_type = str()
@@ -193,6 +194,7 @@ def parse_args(no_env=False):
     parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
+    parser.add_argument("--tvf_interpolation_samples", type=int, default=0, help="number of samples to use for FV interplation, 0=generate all samples")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
