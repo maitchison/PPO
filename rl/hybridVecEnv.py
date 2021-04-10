@@ -11,10 +11,10 @@ from gym.vector.utils import write_to_shared_memory
 class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
     """ Async vector env, that limits the number of worker threads spawned """
 
-    def __init__(self, env_fns, max_cpus=8, verbose=False, **kwargs):
+    def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True, shared_memory=True):
         if len(env_fns) <= max_cpus:
             # this is just a standard vec env
-            super().__init__(env_fns, **kwargs)
+            super().__init__(env_fns, copy=copy, shared_memory=shared_memory)
             self.is_batched = False
         else:
             # create sequential envs for each worker
@@ -24,16 +24,15 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             vec_functions = []
             for i in range(self.n_parallel):
                 # I prefer the lambda, but it won't work with pickle, and I want to multiprocessor this...
-                constructor = functools.partial(gym.vector.SyncVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], **kwargs)
+                constructor = functools.partial(gym.vector.SyncVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
                 vec_functions.append(constructor)
 
             if verbose:
                 print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
 
-            use_shared_memory = kwargs.get("shared_memory", True)
-            worker_function = _worker_shared_memory if use_shared_memory else _worker
+            worker_function = _worker_shared_memory if shared_memory else _worker
 
-            super().__init__(vec_functions, worker=worker_function, **kwargs)
+            super().__init__(vec_functions, worker=worker_function, copy=copy, shared_memory=shared_memory)
 
             self.is_batched = True
             # super will set num_envs to number of workers, so we fix it here.

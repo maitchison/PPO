@@ -890,7 +890,7 @@ def setup_experiments10():
     }
 
     # score threshold should be 200, but I want some early good results...
-    random_search("TVF_10_Search_PPO", main_params, search_params, score_threshold=500, count=64)
+    random_search("TVF_10_Search_PPO", main_params, search_params, score_threshold=400, count=64)
 
     # initial long horizon test... :)
     tuned_args = {
@@ -932,15 +932,12 @@ def setup_experiments10():
         'gamma': 0.999,
     }
 
+    # just a first test to get some early results
+
     for gamma, tvf_max_horizon in zip(
         [0.99, 0.997, 0.999, 0.9997],
         [300, 1000, 3000, 10000]
     ):
-        continue
-
-        # later on we should try
-        # tvf_h_scale=squared
-        # tvf_loss_weighting=advanced (but with automaticly adjusted MSE weight)
 
         add_job(
             f"TVF_10_LongHorizon",
@@ -949,11 +946,12 @@ def setup_experiments10():
             tvf_hidden_units=128,                   # mostly a performance optimization
             tvf_n_horizons=128,
             tvf_lambda=1.0,
+            tvf_coef=0.01,
             tvf_max_horizon=tvf_max_horizon,
             gamma=gamma,
             tvf_gamma=gamma,
             default_params=tuned_args,
-            priority=-400,  # turn off for the moment...
+            priority=0,  # turn off for the moment...
         )
 
         add_job(
@@ -965,10 +963,11 @@ def setup_experiments10():
             tvf_n_horizons=128,
             tvf_lambda=-16,
             tvf_max_horizon=tvf_max_horizon,
+            tvf_coef=0.01,
             gamma=gamma,
             tvf_gamma=gamma,
             default_params=tuned_args,
-            priority=-400,  # turn off for the moment...
+            priority=0,  # turn off for the moment...
         )
 
         add_job(
@@ -977,7 +976,7 @@ def setup_experiments10():
             use_tvf=False,
             gamma=gamma,
             default_params=tuned_args,
-            priority=-400,  # turn off for the moment...
+            priority=0,  # turn off for the moment...
         )
 
     # bundles...
@@ -998,6 +997,32 @@ def setup_experiments10():
         priority=100,
     )
 
+    #slow and stead wins the race
+    add_job(
+        f"TVF_10_Eval",
+        run_name=f"bundle_2",
+        use_tvf=False,
+        epochs=200,
+
+        # mostly set from modes
+        max_grad_norm=5,
+        agents=128,
+        n_steps=128,
+        policy_mini_batch_size=1024,
+        value_mini_batch_size=512,
+        value_epochs=2,
+        policy_epochs=4,
+        target_kl=0.01,
+        ppo_epsilon=0.05,
+        value_lr=1e-4,
+        policy_lr=2.5e-4,
+        gamma=0.999,
+
+        default_params=better_args,
+        priority=100,
+    )
+
+    # these had tvf_coef set wrong... (it was 0.1, should be 0.01)
     add_job(
         f"TVF_10_Eval",
         run_name=f"tvf_1_adv",
@@ -1012,17 +1037,51 @@ def setup_experiments10():
 
         epochs=200,
         default_params=better_args,
-        priority=100,  # turn off for the moment...
+        priority=100,
     )
+    #
+    # add_job(
+    #     f"TVF_10_Eval",
+    #     run_name=f"tvf_1_std",
+    #
+    #     use_tvf=True,
+    #     tvf_max_horizon=3000,
+    #     tvf_hidden_units=128,
+    #     tvf_n_horizons=16,
+    #
+    #     epochs=200,
+    #     default_params=better_args,
+    #     priority=100,
+    # )
+
 
     add_job(
         f"TVF_10_Eval",
-        run_name=f"tvf_1_std",
+        run_name=f"tvf_1_adv_coef",
 
         use_tvf=True,
         tvf_max_horizon=3000,
         tvf_hidden_units=128,
         tvf_n_horizons=16,
+        tvf_coef=0.01,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        epochs=200,
+        default_params=better_args,
+        priority=100,  # turn off for the moment...
+    )
+
+    add_job(
+        f"TVF_10_Eval",
+        run_name=f"tvf_1_std_coef",
+
+        use_tvf=True,
+        tvf_max_horizon=3000,
+        tvf_hidden_units=128,
+        tvf_n_horizons=16,
+        tvf_coef=0.01,
 
         epochs=200,
         default_params=better_args,

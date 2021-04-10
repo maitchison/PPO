@@ -45,6 +45,29 @@ class DualOptimizer:
     # which is a bit fidly, and does not work with micro_batching
 
 
+def desync_envs(runner, warmup_duration:int):
+    print(f"Warming up environments for {warmup_duration} steps:", end='', flush=True)
+
+    max_steps = np.random.randint(1, warmup_duration, [args.agents])
+
+    for t in range(max(max_steps)):
+
+        masks = t < max_steps
+
+        with torch.no_grad():
+            model_out = runner.forward(runner.obs, output="policy")
+            log_policy = model_out["log_policy"].cpu().numpy()
+
+        actions = np.asarray([
+            utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
+        ], dtype=np.int32)
+        runner.obs, ext_rewards, dones, infos = runner.vec_env.step(actions)
+
+        if t % 100 == 0:
+            print(".", end='', flush=True)
+    print()
+
+
 def train(model: models.TVFModel, log: Logger):
     """
     Default parameters from stable baselines
@@ -110,38 +133,21 @@ def train(model: models.TVFModel, log: Logger):
     # we run the environments for a number of steps sampled uniformly from [0...5000] without any training
     # note: this is a good idea even if we didn't restore, so as to make sure we are out of sync at the start.
 
-    if not did_restore:
-        warmup_duration = 500
-    else:
-        if "ep_length" in log._vars:
-            ep_mean, ep_std, ep_min, ep_max = log._vars["ep_length"].value
-            warmup_duration = math.ceil((ep_mean + ep_std*2) / 100)*100 # this should be enough...
-            warmup_duration = min(ep_max, warmup_duration) # no need to go above maximum episode length
-            warmup_duration = int(warmup_duration)
+
+    if args.env_desync:
+
+        if not did_restore:
+            warmup_duration = 500
         else:
-            warmup_duration = 2000
+            if "ep_length" in log._vars:
+                ep_mean, ep_std, ep_min, ep_max = log._vars["ep_length"].value
+                warmup_duration = math.ceil((ep_mean + ep_std * 2) / 100) * 100  # this should be enough...
+                warmup_duration = min(ep_max, warmup_duration)  # no need to go above maximum episode length
+                warmup_duration = int(warmup_duration)
+            else:
+                warmup_duration = 2000
 
-    print(f"Warming up environments for {warmup_duration} steps:", end='', flush=True)
-
-    max_steps = np.random.randint(1, warmup_duration, [args.agents])
-
-    for t in range(max(max_steps)):
-
-        masks = t < max_steps
-
-        with torch.no_grad():
-            model_out = runner.forward(runner.obs, output="policy")
-            log_policy = model_out["log_policy"].cpu().numpy()
-
-        actions = np.asarray([
-            utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
-        ], dtype=np.int32)
-        runner.obs, ext_rewards, dones, infos = runner.vec_env.step(actions)
-
-        if t % 100 == 0:
-            print(".", end='', flush=True)
-    print()
-
+        desync_envs(runner, warmup_duration)
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"), "w") as f:

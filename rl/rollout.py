@@ -391,7 +391,13 @@ class Runner():
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
         else:
-            self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=args.workers, verbose=True)
+            self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(
+                env_fns,
+                copy=False,
+                shared_memory=True,
+                max_cpus=args.workers,
+                verbose=True
+            )
 
 
         if args.reward_normalization:
@@ -632,6 +638,7 @@ class Runner():
                     self.tvf_values[t,:max_h+1] = tvf_values
                     ext_value = self.get_rediscounted_value_estimate(tvf_values[:,:max_h+1], args.gamma)
                 else:
+                    
                     model_out = self.forward(self.obs, horizons=far_horizons, max_batch_size=max_rollout_batch_size)
                     tvf_values = model_out["tvf_value"].cpu().numpy()
                     # map across all the required horizons

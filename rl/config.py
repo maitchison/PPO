@@ -83,6 +83,8 @@ class Config:
 
         #
 
+        self.env_desync = bool()
+
         self.use_icm            = bool()
         self.icm_eta            = str()
 
@@ -245,6 +247,7 @@ def parse_args(no_env=False):
     parser.add_argument("--ed_gamma", type=float, default=1.0)
 
     parser.add_argument("--frame_stack", type=int, default=4)
+    parser.add_argument("--env_desync", type=str2bool, default=True, help="Runs environments without policy to desync before training.")
 
     parser.add_argument("--log_folder", type=str, default=None)
 
@@ -262,6 +265,8 @@ def parse_args(no_env=False):
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
                         help="allows intrinsic returns to propagate through end of episode."
     )
+
+
 
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
