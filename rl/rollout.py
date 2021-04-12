@@ -638,7 +638,6 @@ class Runner():
                     self.tvf_values[t,:max_h+1] = tvf_values
                     ext_value = self.get_rediscounted_value_estimate(tvf_values[:,:max_h+1], args.gamma)
                 else:
-                    
                     model_out = self.forward(self.obs, horizons=far_horizons, max_batch_size=max_rollout_batch_size)
                     tvf_values = model_out["tvf_value"].cpu().numpy()
                     # map across all the required horizons
@@ -896,8 +895,32 @@ class Runner():
         #     self.log.watch_mean("feat_var", self.model.features_var, display_width=10)
         #     self.log.watch_mean("feat_max", self.model.features_max, display_width=10, display_precision=1)
 
+    def optimizer_step(self, optimizer:torch.optim.Optimizer, label: str = "opt"):
 
-    def train_value_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
+        # get parameters
+        parameters = []
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                if p.grad is not None:
+                    parameters.append(p)
+
+        if args.max_grad_norm is not None and args.max_grad_norm != 0:
+            grad_norm = nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
+        else:
+            # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
+            # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
+            grad_norm = 0
+            for p in parameters:
+                param_norm = p.grad.data.norm(2)
+                grad_norm += param_norm.item() ** 2
+            grad_norm = grad_norm ** 0.5
+
+        self.log.watch_mean(f"grad_{label}", grad_norm)
+        optimizer.step()
+        return float(grad_norm)
+
+
+    def train_value_minibatch(self, data, loss_scale=1.0):
 
         mini_batch_size = len(data["prev_state"])
 
@@ -921,7 +944,7 @@ class Runner():
             # predictions "tvf_value" are [N, A, K]
             # predictions need to be generated... this could take a lot of time so just sample a few..
             targets = data["tvf_returns"]
-            mu = model_out["tvf_value"]
+            value_predictions = model_out["tvf_value"]
 
             if args.tvf_loss_weighting == "default":
                 weighting = 1
@@ -944,11 +967,10 @@ class Runner():
                 raise ValueError("Invalid tvf_loss_weighting value.")
 
             # MSE loss
-            tvf_loss_mse = -0.5 * weighting * args.tvf_coef * torch.square(targets - mu)
-            tvf_loss = tvf_loss_mse.sum() / mini_batch_size
-            self.log.watch_mean("loss_tvf", -tvf_loss, history_length=64, display_width=8)
-        else:
-            tvf_loss = 0
+            tvf_loss = 0.5 * weighting * args.tvf_coef * torch.square(targets - value_predictions)
+            tvf_loss = tvf_loss.sum() / mini_batch_size
+            loss = loss + tvf_loss
+            self.log.watch_mean("loss_tvf", tvf_loss, history_length=64, display_width=8)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -973,11 +995,11 @@ class Runner():
                                                                          -args.ppo_epsilon, +args.ppo_epsilon)
                 vf_losses1 = (value_prediction - returns).pow(2)
                 vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = -0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
+                loss_value = 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
             else:
                 # simpler version, just use MSE.
                 vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = -0.5 * torch.mean(vf_losses1)
+                loss_value = 0.5 * torch.mean(vf_losses1)
             loss_value = loss_value * args.vf_coef
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
             loss = loss + loss_value
@@ -986,37 +1008,16 @@ class Runner():
         # Run optimizer
         # -------------------------------------------------------------------------
 
-        loss = loss + tvf_loss
         self.log.watch_mean("value_loss", loss * loss_scale)
 
-        if zero_grad:
-            self.value_optimizer.zero_grad()
-
-        loss = -loss * loss_scale
+        loss = loss * loss_scale
 
         loss.backward()
-
-        if apply_update:
-            if args.max_grad_norm is not None and args.max_grad_norm != 0:
-                grad_norm = nn.utils.clip_grad_norm_(self.model.value_net.parameters(), args.max_grad_norm)
-            else:
-                # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
-                # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
-                grad_norm = 0
-                parameters = list(filter(lambda p: p.grad is not None, self.model.value_net.parameters()))
-                for p in parameters:
-                    param_norm = p.grad.data.norm(2)
-                    grad_norm += param_norm.item() ** 2
-                grad_norm = grad_norm ** 0.5
-
-            self.log.watch_mean("grad_value", grad_norm)
-            self.value_optimizer.step()
-            self.value_optimizer.zero_grad()
 
         return {}
 
 
-    def train_policy_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
+    def train_policy_minibatch(self, data, loss_scale=1.0):
 
         mini_batch_size = len(data["prev_state"])
 
@@ -1042,6 +1043,7 @@ class Runner():
 
         loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
         loss_clip_mean = loss_clip.mean()
+        loss = loss + loss_clip_mean
 
         # approx kl
         # this is from https://stable-baselines.readthedocs.io/en/master/_modules/stable_baselines/ppo2/ppo2.html
@@ -1064,18 +1066,16 @@ class Runner():
         self.log.watch_mean("kl_approx", kl_approx, display_width=8)
         self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8)
-        loss = loss + loss_clip_mean
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
-        if args.entropy_bonus > 0:
-            loss_entropy = -(logps.exp() * logps).mean(axis=1)
-            loss_entropy = loss_entropy * args.entropy_bonus
-            loss_entropy = loss_entropy.mean()
-            self.log.watch_mean("loss_ent", loss_entropy)
-            loss = loss + loss_entropy
+        loss_entropy = -(logps.exp() * logps).mean(axis=1)
+        loss_entropy = loss_entropy * args.entropy_bonus
+        loss_entropy = loss_entropy.mean()
+        self.log.watch_mean("loss_ent", loss_entropy)
+        loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------
         # Run optimizer
@@ -1083,29 +1083,9 @@ class Runner():
 
         self.log.watch_mean("policy_loss", loss * loss_scale)
 
-        if zero_grad:
-            self.policy_optimizer.zero_grad()
-
         loss = -loss * loss_scale
 
         loss.backward()
-
-        if apply_update:
-            if args.max_grad_norm is not None and args.max_grad_norm != 0:
-                grad_norm = nn.utils.clip_grad_norm_(self.model.policy_net.parameters(), args.max_grad_norm)
-            else:
-                # even if we don't clip the gradient we should at least log the norm. This is probably a bit slow though.
-                # we could do this every 10th step, but it's important that a large grad_norm doesn't get missed.
-                grad_norm = 0
-                parameters = list(filter(lambda p: p.grad is not None, self.model.policy_net.parameters()))
-                for p in parameters:
-                    param_norm = p.grad.data.norm(2)
-                    grad_norm += param_norm.item() ** 2
-                grad_norm = grad_norm ** 0.5
-
-            self.log.watch_mean("grad_policy", grad_norm)
-            self.policy_optimizer.step()
-            self.policy_optimizer.zero_grad()
 
         return {
             'kl_approx': float(kl_approx.detach()), # make sure we don't pass the graph through.
@@ -1164,6 +1144,8 @@ class Runner():
                 batch_data=batch_data,
                 mini_batch_func=self.train_policy_minibatch,
                 mini_batch_size=args.policy_mini_batch_size,
+                optimizer=self.policy_optimizer,
+                label="train",
                 hooks={
                     'after_mini_batch': lambda x : x["outputs"][-1]["kl_approx"] > 1.5 * args.target_kl
                 }
@@ -1189,7 +1171,7 @@ class Runner():
             # number of sample to use
             K = min(args.tvf_n_horizons, H)
 
-            required_horizons = np.asarray([0, H], dtype=np.int32) # stub should be 0, H
+            required_horizons = np.asarray([0, H], dtype=np.int32)
             required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
             all_horizons = np.asarray(range(H + 1), dtype=np.int32)
             all_horizons = np.repeat(all_horizons[None, :], B, axis=0)
@@ -1223,6 +1205,8 @@ class Runner():
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
                 mini_batch_size=args.value_mini_batch_size,
+                optimizer=self.value_optimizer,
+                label="value",
             )
 
         # aux phase is not implemented yet...
@@ -1231,7 +1215,14 @@ class Runner():
 
         self.batch_counter += 1
 
-    def train_batch(self, batch_data, mini_batch_func, mini_batch_size, hooks:Union[dict, None] = None) -> dict:
+    def train_batch(
+            self,
+            batch_data,
+            mini_batch_func,
+            mini_batch_size,
+            optimizer:torch.optim.Optimizer,
+            label,
+            hooks:Union[dict, None] = None) -> dict:
         """
         Trains agent policy on current batch of experience
         Returns context with
@@ -1253,6 +1244,8 @@ class Runner():
 
         for j in range(mini_batches):
 
+            optimizer.zero_grad(set_to_none=True)
+
             for k in range(micro_batches):
                 # put together a micro_batch.
                 batch_start = micro_batch_counter * micro_batch_size
@@ -1264,10 +1257,8 @@ class Runner():
                 for var_name, var_value in batch_data.items():
                     minibatch_data[var_name] = torch.from_numpy(var_value[sample]).to(self.model.device)
 
-                first_batch = k == 0
-                last_batch = k == (micro_batches-1)
                 outputs.append(mini_batch_func(
-                    minibatch_data, zero_grad=first_batch, apply_update=last_batch, loss_scale=1 / micro_batches
+                    minibatch_data, loss_scale=1 / micro_batches
                 ))
 
             context = {
@@ -1278,6 +1269,8 @@ class Runner():
             if hooks is not None and "after_mini_batch" in hooks:
                 if hooks["after_mini_batch"](context):
                     break
+
+            self.optimizer_step(optimizer=optimizer, label=label)
 
         return context
 

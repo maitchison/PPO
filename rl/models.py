@@ -291,7 +291,7 @@ class TVFModel(nn.Module):
 
         return errors
 
-    def forward(self, x, horizons=None, output:str = "both"):
+    def forward(self, x, horizons=None, output:str = "both", policy_temperature: float = 1.0):
         """
 
         Forward input through model and return dictionary containing
@@ -316,9 +316,16 @@ class TVFModel(nn.Module):
 
         # policy part
         if output in ["both", "policy"]:
+
             policy_features = F.relu(self.policy_net.forward(x))
-            policy_values = self.policy_net_policy(policy_features)
-            result['log_policy'] = F.log_softmax(self.policy_net_policy(policy_features), dim=1)
+            policy_values = self.policy_net_value(policy_features)
+            unscaled_policy = self.policy_net_policy(policy_features)
+            result['raw_policy'] = unscaled_policy
+
+            rescaled_policy = unscaled_policy / policy_temperature
+
+            result['log_policy'] = F.log_softmax(rescaled_policy, dim=1)
+
             result['policy_ext_value'] = policy_values[:, 0]
             result['policy_int_value'] = policy_values[:, 1]
 

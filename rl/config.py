@@ -156,7 +156,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def parse_args(no_env=False):
+def parse_args(no_env=False, args_override=None):
 
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
@@ -266,8 +266,6 @@ def parse_args(no_env=False):
                         help="allows intrinsic returns to propagate through end of episode."
     )
 
-
-
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
@@ -276,9 +274,10 @@ def parse_args(no_env=False):
     # model
     parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
 
-    #parser.add_argument("--model_hidden_units", type=int, help="Number of hidden units in model.")
-
-    args.update(**parser.parse_args().__dict__)
+    if args_override is not None:
+        args.update(**parser.parse_args(args_override).__dict__)
+    else:
+        args.update(**parser.parse_args().__dict__)
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

@@ -1,7 +1,9 @@
-import matplotlib
+import ast
+import sys
+
 import matplotlib.pyplot as plt
 
-from rl import models, atari, config, utils
+from rl import atari, config, utils
 from rl.config import args
 from rl import hybridVecEnv
 
@@ -17,23 +19,11 @@ import pickle
 import time
 import math
 
-
-# draw times are:
-# default: 35ms
-# qt5agg: 35ms
-# qt4agg: 35ms
-# tkagg: 51ms
-
-
-# my PC, 355 FPS on GPU, 281 on CPU
-
-from os import listdir
-from os.path import isfile, join
-
-DEVICE = "cpu"
+DEVICE = "cuda:0"
 REWARD_SCALE = float()
 MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
+PARALLEL_ENVS = 64 # number of environments to run in parallel
 
 GENERATE_EVAL = False
 GENERATE_MOVIES = True
@@ -93,36 +83,24 @@ def make_model(env):
     import inspect
     allowed_args = set(inspect.signature(models.TVFModel.__init__).parameters.keys())
 
-    if args.use_tvf:
+    additional_args = {}
 
-        additional_args = {}
+    additional_args['use_rnd'] = args.use_rnd
+    additional_args['use_rnn'] = False
+    additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
+    additional_args['tvf_hidden_units'] = args.tvf_hidden_units
+    additional_args['tvf_activation'] = args.tvf_activation
+    additional_args['tvf_h_scale'] = args.tvf_h_scale
 
-        additional_args['use_rnd'] = args.use_rnd
-        additional_args['split_model'] = args.tvf_model == "split"
-        additional_args['use_rnn'] = False
-        additional_args['epsilon'] = args.tvf_epsilon
-        additional_args['horizon_scale'] = args.tvf_max_horizon
-        additional_args['horizon_transform'] = args.tvf_max_horizon # this was the old name
-        additional_args['tvf_hidden_units'] = args.tvf_hidden_units
-        additional_args['tvf_activation'] = args.tvf_activation
-        additional_args['tvf_h_scale'] = args.tvf_h_scale
-        additional_args['tvf_average_reward'] = args.tvf_h_scale=="linear"
+    additional_args['head'] = "Nature"
+    additional_args['network'] = "Nature"
 
-        return models.TVFModel(
-            head="Nature",
+    return models.TVFModel(
             input_dims=env.observation_space.shape,
             actions=env.action_space.n,
             device=DEVICE,
             dtype=torch.float32,
             **{k:v for k,v in additional_args.items() if k in allowed_args},
-        )
-    else:
-        return models.ActorCriticModel(
-            head="Nature",
-            input_dims=env.observation_space.shape,
-            actions=env.action_space.n,
-            device=DEVICE,
-            dtype=torch.float32,
         )
 
 def discount_rewards(rewards, gamma):
@@ -224,7 +202,7 @@ def rediscount_TVF_dcyc(value_mu, value_std, new_gamma, alpha=10):
 
     return new_values[-1]
 
-def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
+def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperature=1.0):
 
     # we play the games one at a time so as to not take up too much memory
     # this is required as the need to know the future rewards at the same time as the states.
@@ -233,7 +211,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
     episode_scores = []
     episode_lengths = []
 
-    print("Evaluating:", end='', flush=True)
+    print(f"Evaluating {filename}:", end='', flush=True)
 
     remaining_samples = samples
 
@@ -241,15 +219,8 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
 
     while remaining_samples > 0:
 
-        batch_samples = min(1, remaining_samples) # 1 at a time is slower, but better on the memory for long runs...
-        buffers = generate_rollouts(model, max_frames, num_rollouts=batch_samples)
-
-        # always use these horizons, but add additional up to and including the final horizon
-        horizons_to_use = [1, 10, 30, 100, 300]
-        h = 500
-        while h <= args.tvf_max_horizon:
-            horizons_to_use.append(h)
-            h *= 2
+        batch_samples = min(PARALLEL_ENVS, remaining_samples) # 1 at a time is slower, but better on the memory for long runs...
+        buffers = generate_rollouts(model, max_frames, num_rollouts=batch_samples, temperature=temperature, include_horizons=False)
 
         for i, buffer in enumerate(buffers):
             # get game score and length
@@ -259,48 +230,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
             episode_scores.append(episode_score)
             episode_lengths.append(episode_length)
 
-            for discount in [0.99, 0.997, 0.999]:
-
-                if discount not in return_estimates:
-                    return_estimates[discount] = {
-                        "trunc_err": [],
-                        "model_err": [],
-                        #"bestk_err": [],
-                        #"count_err": [],
-                        "trunc_err_k": [],
-                        "true_return": [],
-                    }
-
-                trunc_err = return_estimates[discount]["trunc_err"]
-                model_err = return_estimates[discount]["model_err"]
-                #bestk_err = return_estimates[discount]["bestk_err"]
-                #count_err = return_estimates[discount]["count_err"]
-                true_return = return_estimates[discount]["true_return"]
-                trunc_err_k = return_estimates[discount]["trunc_err_k"]
-
-                for t in range(episode_length):
-                    # evaluate value estimate using different methods
-                    model_value = buffer["model_values"][t]
-                    tvf_value = rediscount_TVF(buffer["values"][t][:args.tvf_max_horizon], discount)
-                    true_value = discount_rewards(buffer["rewards"][t:], discount)
-
-                    trunc_err.append(tvf_value - true_value)
-                    model_err.append(model_value - true_value)
-                    true_return.append(true_value)
-
-                    # evaluate error over horizon
-                    true_value_discount = discount_rewards(buffer["rewards"][t:], discount)
-                    true_value_no_discount = discount_rewards(buffer["rewards"][t:], 1)
-                    for k in horizons_to_use:
-                        if k > len(buffer["values"][t]):
-                            continue
-                        tvf_value = rediscount_TVF(buffer["values"][t][:k], discount)
-                        # true value of V(s,k) discounted
-                        true_value = discount_rewards(buffer["rewards"][t:t + k], discount)
-
-                        trunc_err_k.append((k, tvf_value, true_value, true_value_discount, true_value_no_discount, i, t))
-
-                print(".", end='')
+            print(".", end='')
 
         remaining_samples -= batch_samples
 
@@ -321,11 +251,11 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15):
         'return_estimates': return_estimates,
     }
 
-    with open(filename+".dat", "wb") as f:
+    with open(filename, "wb") as f:
         pickle.dump(data, f)
 
-def generate_rollout(model, max_frames = 30*60*15, include_video=False):
-    return generate_rollouts(model, max_frames, include_video, num_rollouts=1)[0]
+def generate_rollout(model, max_frames = 30*60*15, include_video=False, temperature=1.0):
+    return generate_rollouts(model, max_frames, include_video, num_rollouts=1, temperature=temperature)[0]
 
 def generate_fake_rollout(num_frames = 30*60):
     """
@@ -339,13 +269,20 @@ def generate_fake_rollout(num_frames = 30*60):
         'frames': np.zeros([num_frames, 210, 334, 3], dtype=np.uint8)
     }
 
-def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rollouts=1):
+
+def generate_rollouts(
+        model,
+        max_frames = 30*60*15,
+        include_video=False,
+        num_rollouts=1,
+        temperature=1.0,
+        include_horizons=True,
+    ):
     """
-    Generates a rollout
-    todo: vectorize this so we can generate multiple rollouts at once (will take extra memory though)
+    Generates rollouts
     """
 
-    env = hybridVecEnv.HybridAsyncVectorEnv([lambda : atari.make(monitor_video=True) for _ in range(num_rollouts)])
+    env = hybridVecEnv.HybridAsyncVectorEnv([lambda : atari.make(monitor_video=include_video) for _ in range(num_rollouts)])
 
     _ = env.reset()
     states = env.reset()
@@ -369,14 +306,19 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
         if include_video:
             buffers[-1]['frames'] = []  # video frames
 
-    horizons = np.repeat(np.arange(MAX_HORIZON)[None, :], repeats=num_rollouts, axis=0)
+    if include_horizons and args.use_tvf:
+        horizons = np.repeat(np.arange(MAX_HORIZON)[None, :], repeats=num_rollouts, axis=0)
+    else:
+        horizons = None
 
     while any(is_running) and frame_count < max_frames:
 
-        if args.use_tvf:
-            model_out = model.forward(states, horizons=horizons)
-        else:
-            model_out = model.forward(states)
+        model_out = model.forward(
+            states,
+            horizons=horizons,
+            **({'policy_temperature':temperature} if temperature is not None else {})
+        )
+
         log_probs = model_out["log_policy"].detach().cpu().numpy()
 
         if np.isnan(log_probs).any():
@@ -392,20 +334,19 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
             if not is_running[i]:
                 continue
 
-            channels = infos[i].get("channels", None)
-            rendered_frame = infos[i].get("monitor_obs", states[i])
-            agent_layers = states[i]
-
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
 
             if 'frames' in buffers[i]:
+                agent_layers = states[i]
+                channels = infos[i].get("channels", None)
+                rendered_frame = infos[i].get("monitor_obs", states[i])
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 buffers[i]['frames'].append(frame)
 
             game_reset = "game_freeze" in infos[i]
 
-            if args.use_tvf:
+            if horizons is not None:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
                 buffers[i]['values'].append(values)
 
@@ -423,7 +364,7 @@ def generate_rollouts(model, max_frames = 30*60*15, include_video=False, num_rol
     return buffers
 
 
-def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_filename=False):
+def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_filename=False, temperature=1.0):
     """
     Modified version of export movie that supports display of truncated value functions
     In order to show the true discounted returns we write all observations to a buffer, which may take
@@ -445,20 +386,18 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     print(f"Video {filename_base} ", end='', flush=True)
 
-    start_time = time.time()
-    buffer = generate_rollout(model, max_frames, include_video=True)
-    #buffer = generate_fake_rollout(27000)
+    buffer = generate_rollout(model, max_frames, include_video=True, temperature=temperature)
     rewards = buffer["rewards"]
 
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
     final_score = sum(rewards)
     postfix = f" [{int(final_score):,}].mp4" if include_score_in_filename else ".mp4"
-    video_out = cv2.VideoWriter(filename_base+postfix, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
+    video_filename = filename_base + postfix
+    video_out = cv2.VideoWriter(video_filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height), isColor=True)
 
     print(f"score:{int(sum(rewards)):,} ", end='', flush=True)
 
     prev_limits = (0.0, 0.0)
-    total_time = 0
 
     # work out discounting values to make plotting a little faster
     # discount_values = np.zeros([MAX_HORIZON], dtype=np.float32)
@@ -523,7 +462,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
         # plot model value prediction
         if args.vf_coef > 0:
             plt.hlines(model_value, 0, len(xs), label="Model", colors=["black"])
-            max_height = max(max_height, max(model_value))
+            max_height = max(max_height, model_value)
 
         plt.xlabel("k")
         plt.ylabel("Score")
@@ -566,31 +505,30 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     end_time = time.time()
     print(f"completed at {len(rewards) / (end_time - very_start_time):.1f} FPS")
+    return video_filename
 
-def run_eval(path):
+
+def run_eval(path, temperature=None, max_epoch=200):
 
     files_in_dir = [os.path.join(path, x) for x in os.listdir(path)]
-    first_hit = True
 
-    for epoch in range(200):
-        checkpoint_eval_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")
+    for epoch in range(max_epoch+1):
+
+        temp_postfix = f"_t={temperature}" if temperature is not None else ""
+
+        checkpoint_eval_file = os.path.join(path, f"checkpoint-{epoch:03d}M-eval{temp_postfix}.dat")
         checkpoint_name = os.path.join(path, f"checkpoint-{epoch:03d}M-params.pt")
 
-        checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval"
-        movie_placeholder_path = os.path.join(path, f"_{checkpoint_movie_base}.mp4")
+        checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{temp_postfix}"
 
         if os.path.exists(checkpoint_name):
 
-            if first_hit:
-                #print(f"<{path}>")
-                first_hit = False
-
             if GENERATE_MOVIES:
 
-                matching_files = [x for x in files_in_dir if checkpoint_movie_base in x]
+                matching_files = [x for x in files_in_dir if checkpoint_movie_base+'.mp4' in x]
 
                 if len(matching_files) >= 2:
-                    print(f"Multiple matches for file {path}/{checkpoint_movie_base}.")
+                    print(f"Multiple matches for file {path}/{checkpoint_movie_base+'.mp4'}.")
                     continue
 
                 if len(matching_files) == 1:
@@ -606,38 +544,72 @@ def run_eval(path):
 
                 if len(matching_files) == 0 or needs_redo:
                     # create an empty file to mark that we are working on this...
-                    with open(movie_placeholder_path, "wb"):
-                        pass
                     model = load_checkpoint(checkpoint_name, device=DEVICE)
-                    export_movie(model, os.path.join(path, checkpoint_movie_base), include_score_in_filename=True)
+                    video_filename = export_movie(
+                        model,
+                        os.path.join(path, "_"+checkpoint_movie_base),
+                        include_score_in_filename=True,
+                        temperature = temperature,
+                    )
                     try:
-                        os.remove(movie_placeholder_path)
+                        path, file = os.path.split(video_filename)
+                        # remove _ from start of file
+                        os.rename(video_filename, path+"/"+file[1:])
                     except:
-                        print(" - failed to remove placeholder movie file.")
-                        pass
+                        print("failed to rename video file")
 
             if GENERATE_EVAL and not os.path.exists(checkpoint_eval_file):
-                # create an empty file to mark that we are working on this...
-                with open(checkpoint_eval_file, "wb"):
-                    pass
                 model = load_checkpoint(checkpoint_name, device=DEVICE)
-                evaluate_model(model, os.path.join(path, f"checkpoint-{epoch:03d}M-eval"), samples=SAMPLES)
+                evaluate_model(
+                    model,
+                    checkpoint_eval_file,
+                    samples=SAMPLES,
+                    temperature=temperature
+                )
 
 def monitor(path, run_filter=None):
+
     folders = [x[0] for x in os.walk(path)]
     for folder in folders:
         if run_filter is not None and not run_filter(folder):
             continue
-
+        if os.path.split(folder)[-1] == "rl":
+            continue
+        print(folder)
         try:
-            run_eval(folder)
+            for max_epoch in range(0, 201, 5):
+                for temperature in temperatures:
+                    run_eval(folder, temperature=temperature, max_epoch=max_epoch)
         except Exception as e:
             print("Error:"+str(e))
 
 if __name__ == "__main__":
-    config.parse_args(no_env=True)
+
+    # usage
+    # python evaluate.py TVF_10_Eval bundle_0 [-0.01 , -0.1, -0.5, -1]
+
+    config.parse_args(no_env=True, args_override=[])
+    assert len(sys.argv) == 4
+
+    filter_1 = sys.argv[1]
+    filter_2 = sys.argv[2]
+
+    if sys.argv[3] == "video":
+        GENERATE_EVAL = False
+        GENERATE_MOVIES = True
+        temperatures = [None]
+    else:
+        temperatures = ast.literal_eval(sys.argv[3])
+        GENERATE_EVAL = True
+        GENERATE_MOVIES = False
+
+        if type(temperatures) in [float, int]:
+            temperatures = [temperatures]
+
     folders = [name for name in os.listdir("./Run/") if os.path.isdir(os.path.join('./Run',name))]
     for folder in folders:
-        if "TVF_9" in folder:
-            # run_filter = lambda x : "tvf_n_horizons=1000" in x
-            monitor(os.path.join('./Run',folder))
+        if filter_1 in folder:
+            monitor(
+                os.path.join('./Run', folder),
+                run_filter=lambda x: filter_2 in x,
+            )

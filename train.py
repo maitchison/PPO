@@ -4,8 +4,6 @@ import torch
 import uuid
 import multiprocessing
 
-import ast
-
 from rl import utils, models, atari, config, logger
 from rl import ppo
 from rl.config import args

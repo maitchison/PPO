@@ -311,7 +311,7 @@ def assume_type(value):
 
     if type(value) == torch.Tensor:
         assert len(value.shape) == 0, "Torch tensor must be scalar, but found shape {}".format(value.shape)
-        if value.dtype == torch.float:
+        if value.dtype in [torch.float32, torch.float16]:
             return "float"
         if value.dtype == torch.int:
             return "int"
