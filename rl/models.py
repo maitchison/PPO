@@ -144,6 +144,107 @@ class RNDPredictor_Net(Base_Net):
 # Models
 # ----------------------------------------------------------------------------------------------------------------
 
+class PolicyNet(nn.Module):
+
+    def __init__(self, network, input_dims, actions, **kwargs):
+        super().__init__()
+        self.policy_encoder = construct_network(network, input_dims, **kwargs)
+        # policy outputs policy, but also value so that we can train it to predict value as an aux task
+        # value outputs extrinsic and intrinsic value
+        self.policy_net_policy = nn.Linear(self.policy_encoder.hidden_units, actions)
+        self.policy_net_value = nn.Linear(self.policy_encoder.hidden_units, 2)
+
+    def forward(self, x, policy_temperature=1.0):
+
+        result = {}
+
+        policy_features = F.relu(self.policy_encoder(x))
+        policy_values = self.policy_net_value(policy_features)
+        unscaled_policy = self.policy_net_policy(policy_features)
+        result['raw_policy'] = unscaled_policy
+        result['log_policy'] = F.log_softmax(unscaled_policy / policy_temperature, dim=1)
+
+        result['policy_ext_value'] = policy_values[:, 0]
+        result['policy_int_value'] = policy_values[:, 1]
+
+        return result
+
+
+class ValueNet(nn.Module):
+
+    def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_h_scale, tvf_horizon_transform, **kwargs):
+        super().__init__()
+
+        self.value_encoder = construct_network(network, input_dims, **kwargs)
+
+        self.tvf_activation = tvf_activation
+        self.tvf_hidden_units = int(tvf_hidden_units)
+        self.horizon_transform = tvf_horizon_transform
+        self.tvf_h_scale = tvf_h_scale
+
+        # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
+        self.value_net_value = nn.Linear(self.value_encoder.hidden_units, 2)
+        self.value_net_hidden = nn.Linear(self.value_encoder.hidden_units + 1, self.tvf_hidden_units)
+        self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
+
+    def forward(self, x, horizons=None):
+
+        result = {}
+
+        value_features = F.relu(self.value_encoder(x))
+        value_values = self.value_net_value(value_features)
+        result['ext_value'] = value_values[:, 0]
+        result['int_value'] = value_values[:, 1]
+
+        # horizon generation
+        if horizons is not None:
+
+            # upload horizons to GPU and cast to float
+            if type(horizons) is np.ndarray:
+                horizons = torch.from_numpy(horizons)
+
+            horizons = horizons.to(device=value_values.device, dtype=torch.float32)
+
+            _, H = horizons.shape
+
+            transformed_horizons = self.horizon_transform(horizons)
+
+            # x is [B, 512], make it [B, H, 512]
+            x_duplicated = value_features[:, None, :].repeat(1, H, 1)
+
+            x_with_side_info = torch.cat([
+                x_duplicated,
+                transformed_horizons[:, :, None]
+            ], dim=-1)
+
+            if self.tvf_activation == "relu":
+                activation = F.relu
+            elif self.tvf_activation == "tanh":
+                activation = F.tanh
+            elif self.tvf_activation == "sigmoid":
+                activation = F.sigmoid
+            else:
+                raise Exception("invalid activation")
+
+            tvf_h = activation(self.value_net_hidden(x_with_side_info))
+            tvf_values = self.value_net_tvf(tvf_h)[..., 0]
+
+            if self.tvf_h_scale == "constant":
+                tvf_values = tvf_values
+            elif self.tvf_h_scale == "linear":
+                tvf_values = tvf_values * transformed_horizons
+            elif self.tvf_h_scale == "squared":
+                # this is a linear interpolation between constant and squared
+                tvf_values = tvf_values * (2 * transformed_horizons - transformed_horizons ** 2)
+            else:
+                # todo: implement the linear then constant version
+                raise ValueError(f"invalid h_scale: {self.tvf_h_scale}")
+
+            result['tvf_value'] = tvf_values
+
+        return result
+
+
 class TVFModel(nn.Module):
     """
     Truncated Value Function model
@@ -195,31 +296,25 @@ class TVFModel(nn.Module):
 
         self.name = "PPG-" + network
         single_channel_input_dims = (1, *input_dims[1:])
-        self.tvf_h_scale = tvf_h_scale
         self.use_rnd = use_rnd
 
-        self.policy_net = construct_network(network, input_dims, **(network_args or {}))
-        self.value_net = construct_network(network, input_dims, **(network_args or {}))
+        self.policy_net = PolicyNet(network=network, input_dims=input_dims, actions=actions, **(network_args or {}))
+        self.value_net = ValueNet(
+            network=network,
+            input_dims=input_dims,
+            tvf_activation=tvf_activation,
+            tvf_hidden_units=tvf_hidden_units,
+            tvf_h_scale=tvf_h_scale,
+            tvf_horizon_transform=tvf_horizon_transform,
+            **(network_args or {})
+        )
+
         if self.use_rnd:
             self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
             self.target_net = RNDTarget_Net(single_channel_input_dims)
             self.obs_rms = utils.RunningMeanStd(shape=single_channel_input_dims)
             self.features_mean = 0
             self.features_std = 0
-
-        self.tvf_activation = tvf_activation
-        self.tvf_hidden_units = int(tvf_hidden_units)
-        self.horizon_transform = tvf_horizon_transform
-
-        # policy outputs policy, but also value so that we can train it to predict value as an aux task
-        # value outputs extrinsic and intrinsic value
-        self.policy_net_policy = nn.Linear(self.policy_net.hidden_units, actions)
-        self.policy_net_value = nn.Linear(self.policy_net.hidden_units, 2)
-
-        # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
-        self.value_net_value = nn.Linear(self.policy_net.hidden_units, 2)
-        self.value_net_hidden = nn.Linear(self.policy_net.hidden_units + 1, self.tvf_hidden_units)
-        self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
 
         self.set_device_and_dtype(device, dtype)
 
@@ -314,73 +409,11 @@ class TVFModel(nn.Module):
         result = {}
         x = self.prep_for_model(x)
 
-        # policy part
         if output in ["both", "policy"]:
+            result.update(self.policy_net(x, policy_temperature=policy_temperature))
 
-            policy_features = F.relu(self.policy_net.forward(x))
-            policy_values = self.policy_net_value(policy_features)
-            unscaled_policy = self.policy_net_policy(policy_features)
-            result['raw_policy'] = unscaled_policy
-
-            rescaled_policy = unscaled_policy / policy_temperature
-
-            result['log_policy'] = F.log_softmax(rescaled_policy, dim=1)
-
-            result['policy_ext_value'] = policy_values[:, 0]
-            result['policy_int_value'] = policy_values[:, 1]
-
-        # value part
         if output in ["both", "value"]:
-            value_features = F.relu(self.value_net.forward(x))
-            value_values = self.value_net_value(value_features)
-            result['ext_value'] = value_values[:, 0]
-            result['int_value'] = value_values[:, 1]
-
-            # horizon generation
-            if horizons is not None:
-
-                # upload horizons to GPU and cast to float
-                if type(horizons) is np.ndarray:
-                    horizons = torch.from_numpy(horizons)
-
-                horizons = horizons.to(device=value_values.device, dtype=torch.float32)
-
-                _, H = horizons.shape
-
-                transformed_horizons = self.horizon_transform(horizons)
-
-                # x is [B, 512], make it [B, H, 512]
-                x_duplicated = value_features[:, None, :].repeat(1, H, 1)
-
-                x_with_side_info = torch.cat([
-                    x_duplicated,
-                    transformed_horizons[:, :, None]
-                ], dim=-1)
-
-                if self.tvf_activation == "relu":
-                    activation = F.relu
-                elif self.tvf_activation == "tanh":
-                    activation = F.tanh
-                elif self.tvf_activation == "sigmoid":
-                    activation = F.sigmoid
-                else:
-                    raise Exception("invalid activation")
-
-                tvf_h = activation(self.value_net_hidden(x_with_side_info))
-                tvf_values = self.value_net_tvf(tvf_h)[..., 0]
-
-                if self.tvf_h_scale == "constant":
-                    tvf_values = tvf_values
-                elif self.tvf_h_scale == "linear":
-                    tvf_values = tvf_values * transformed_horizons
-                elif self.tvf_h_scale == "squared":
-                    # this is a linear interpolation between constant and squared
-                    tvf_values = tvf_values * (2 * transformed_horizons - transformed_horizons ** 2)
-                else:
-                    # todo: implement the linear then constant version
-                    raise ValueError(f"invalid h_scale: {self.tvf_h_scale}")
-
-                result['tvf_value'] = tvf_values
+            result.update(self.value_net(x, horizons=horizons))
 
         return result
 

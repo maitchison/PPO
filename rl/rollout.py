@@ -328,6 +328,16 @@ class Runner():
         if args.use_rnd:
             self.rnd_optimizer = torch.optim.Adam(model.prediction_net.parameters(), lr=args.policy_lr, eps=args.adam_epsilon)
 
+        # stub: show optimizer parameters
+        def show_opt_params(opt:torch.optim.Optimizer):
+            for param in opt.param_groups[0]['params']:
+                print(param.shape)
+
+        # print("Policy Optimizer")
+        # show_opt_params(self.policy_optimizer)
+        # print("Value Optimizer")
+        # show_opt_params(self.value_optimizer)
+
         self.vec_env = None
         self.log = log
 
@@ -728,6 +738,14 @@ class Runner():
 
         # get value estimates for final state.
         if args.use_tvf:
+
+            def debug_plot():
+                xs = range(3001)
+                ys = [np.mean(self.tvf_final_value_estimates[:, x]) for x in xs]
+                import matplotlib.pyplot as plt
+                plt.plot(xs, ys)
+                plt.show()
+
             model_out = self.forward(self.obs, horizons=all_horizons, max_batch_size=max_final_batch_size)
             final_tvf_values = model_out["tvf_value"].cpu().numpy()
             self.tvf_final_value_estimates[:, :max_h+1] = final_tvf_values
@@ -1175,10 +1193,10 @@ class Runner():
             required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
             all_horizons = np.asarray(range(H + 1), dtype=np.int32)
             all_horizons = np.repeat(all_horizons[None, :], B, axis=0)
-            all_returns = self.tvf_returns.reshape([B, -1])
+            all_returns = self.tvf_returns.reshape([B, H+1])
 
             if K >= H and args.tvf_sample_dist=="uniform":
-                # use all samples, this is more efficent as we won't sample the same horizon twice.
+                # use all samples, this is more efficient as we won't sample the same horizon twice.
                 batch_data["tvf_horizons"] = all_horizons
                 batch_data["tvf_returns"] = all_returns
             else:

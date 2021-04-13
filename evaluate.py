@@ -379,11 +379,12 @@ class QuickPlot():
     Supports only basic functions.
     Old plt.draw was ~40ms, this one is ?
     """
-    def __init__(self, y_min=0, y_max=1000):
+    def __init__(self, y_min=0, y_max=1000, log_scale=False):
         self._y_min = y_min
         self._y_max = y_max
         self._background:np.ndarray
         self._transform: matplotlib.transforms.Transform
+        self.log_scale = log_scale
         self._generate_background()
         self.buffer = self._background.copy()
 
@@ -391,10 +392,15 @@ class QuickPlot():
         fig = plt.figure(figsize=(7, 4), dpi=100)
         plt.plot([1], [0], label="True", c="red")
         plt.plot([1], [0], label="Pred", c="green")
-        plt.xlim(1, np.log10(args.tvf_max_horizon+10))
+
         plt.ylim(self._y_min, self._y_max)
         plt.grid(True)
-        plt.xlabel("log_10(10+h)")
+        if self.log_scale:
+            plt.xlabel("log_10(10+h)")
+            plt.xlim(1, np.log10(args.tvf_max_horizon + 10))
+        else:
+            plt.xlabel("h")
+            plt.xlim(0, args.tvf_max_horizon)
         plt.ylabel("Score")
         plt.legend(loc="upper left")
         fig.canvas.draw()
@@ -431,7 +437,8 @@ class QuickPlot():
         We assume xs are sorted.
         """
 
-        xs = np.log10(10+np.asarray(xs))
+        if self.log_scale:
+            xs = np.log10(10+np.asarray(xs))
 
         c = mpl.colors.to_rgba(color)[:3][::-1] # swap from RGB to BGA
         c = (np.asarray(c, dtype=np.float32) * 255).astype(dtype=np.uint8)
@@ -519,7 +526,8 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
     y_min = 0
 
     # step 3. draw background plot
-    fig = QuickPlot(y_min, y_max)
+    log_fig = QuickPlot(y_min, y_max, log_scale=True)
+    linear_fig = QuickPlot(y_min, y_max, log_scale=False)
 
     # step 4. run through video and generate data
     for t in range(len(rewards)):
@@ -541,21 +549,25 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
         true_returns = np.cumsum(true_returns)
 
         # plotting...
-        fig.clear()
+        log_fig.clear()
+        linear_fig.clear()
 
         xs = list(range(len(true_returns)))
         ys = true_returns
-        fig.plot(xs, ys, 'red')
+        log_fig.plot(xs, ys, 'red')
+        linear_fig.plot(xs, ys, 'red')
 
         # plot predicted values...
         if args.use_tvf:
             values = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
             ys = values
             xs = list(range(len(ys)))
-            fig.plot(xs, ys, 'green')
+            log_fig.plot(xs, ys, 'green')
+            linear_fig.plot(xs, ys, 'green')
 
-        plot_height, plot_width= fig.buffer.shape[:2]
-        frame[:plot_height, -plot_width:] = fig.buffer
+        plot_height, plot_width= log_fig.buffer.shape[:2]
+        frame[:plot_height, -plot_width:] = log_fig.buffer
+        frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer
 
         video_out.write(frame)
 
@@ -600,10 +612,10 @@ def run_eval(path, temperature=None, max_epoch=200):
 
             if GENERATE_MOVIES:
 
-                matching_files = [x for x in files_in_dir if checkpoint_movie_base+'.mp4' in x]
+                matching_files = [x for x in files_in_dir if checkpoint_movie_base in x]
 
                 if len(matching_files) >= 2:
-                    print(f"Multiple matches for file {path}/{checkpoint_movie_base+'.mp4'}.")
+                    print(f"Multiple matches for file {path}/{checkpoint_movie_base}.")
                     continue
 
                 if len(matching_files) == 1:
