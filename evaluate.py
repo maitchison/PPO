@@ -1,7 +1,17 @@
+# limit to 4 threads...
+import os
+os.environ["MKL_NUM_THREADS"] = "4"
+import torch
+torch.set_num_threads(4)
+
 import ast
 import sys
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.transforms
+import matplotlib.colors
+import numpy.random
 
 from rl import atari, config, utils
 from rl.config import args
@@ -17,11 +27,11 @@ import os
 import json
 import pickle
 import time
-import math
 
-DEVICE = "cuda:0"
+from typing import Union
+
+DEVICE = "cuda:1"
 REWARD_SCALE = float()
-MAX_HORIZON = 500 # this gets changed depending on model's max_horizon
 SAMPLES = 64 # 16 is too few, might need 256...
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 
@@ -68,9 +78,7 @@ def load_checkpoint(checkpoint_path, device=None):
     step = checkpoint['step']
     atari.ENV_STATE = checkpoint['env_state']
     global REWARD_SCALE
-    global MAX_HORIZON
     REWARD_SCALE = checkpoint['env_state']['returns_norm_state'][1] ** 0.5
-    MAX_HORIZON = min(args.tvf_max_horizon + 200, 1000)
     return model
 
 def make_model(env):
@@ -282,7 +290,7 @@ def generate_rollouts(
     Generates rollouts
     """
 
-    env = hybridVecEnv.HybridAsyncVectorEnv([lambda : atari.make(monitor_video=include_video) for _ in range(num_rollouts)])
+    env = hybridVecEnv.HybridAsyncVectorEnv([lambda : atari.make(monitor_video=include_video, seed=i) for i in range(num_rollouts)])
 
     _ = env.reset()
     states = env.reset()
@@ -307,7 +315,7 @@ def generate_rollouts(
             buffers[-1]['frames'] = []  # video frames
 
     if include_horizons and args.use_tvf:
-        horizons = np.repeat(np.arange(MAX_HORIZON)[None, :], repeats=num_rollouts, axis=0)
+        horizons = np.repeat(np.arange(args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
     else:
         horizons = None
 
@@ -364,6 +372,94 @@ def generate_rollouts(
     return buffers
 
 
+class QuickPlot():
+    """
+    Class to handle fast plotting.
+    Background is rendered by py plot, and plots are overlayed using custom drawing
+    Supports only basic functions.
+    Old plt.draw was ~40ms, this one is ?
+    """
+    def __init__(self, y_min=0, y_max=1000):
+        self._y_min = y_min
+        self._y_max = y_max
+        self._background:np.ndarray
+        self._transform: matplotlib.transforms.Transform
+        self._generate_background()
+        self.buffer = self._background.copy()
+
+    def _generate_background(self):
+        fig = plt.figure(figsize=(7, 4), dpi=100)
+        plt.plot([1], [0], label="True", c="red")
+        plt.plot([1], [0], label="Pred", c="green")
+        plt.xlim(1, np.log10(args.tvf_max_horizon+10))
+        plt.ylim(self._y_min, self._y_max)
+        plt.grid(True)
+        plt.xlabel("log_10(10+h)")
+        plt.ylabel("Score")
+        plt.legend(loc="upper left")
+        fig.canvas.draw()
+        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        plot_height, plot_width, _ = data.shape
+        self._background = data[:, :, ::-1]
+        self._transform = plt.gca().transData
+        plt.close(fig)
+
+    def clear(self):
+        self.buffer = self._background.copy()
+
+    def plot_pixel(self, x, y, c):
+        # plots pixel at given co-ords, if out of bounds uses black color
+        h, w, channels = self.buffer.shape
+        out_of_bounds = False
+        if y < 0:
+            y = 0
+            out_of_bounds = True
+        if y >= h:
+            y = h - 1
+            out_of_bounds = True
+        if x < 0:
+            x = 0
+            out_of_bounds = True
+        if x >= w:
+            x = w - 1
+            out_of_bounds = True
+        self.buffer[-y, x] = (0,0,0) if out_of_bounds else c
+
+    def plot(self, xs, ys, color):
+        """
+        We assume xs are sorted.
+        """
+
+        xs = np.log10(10+np.asarray(xs))
+
+        c = mpl.colors.to_rgba(color)[:3][::-1] # swap from RGB to BGA
+        c = (np.asarray(c, dtype=np.float32) * 255).astype(dtype=np.uint8)
+
+        zipped_data = list(zip(xs, ys))
+        transformed_data = self._transform.transform(zipped_data)
+        tx, ty = transformed_data[:, 0], transformed_data[:, 1]
+
+        old_x = int(tx[0])
+        old_y = int(ty[0])
+
+        # i'm doing a weird zig-zag thing here which, in this setting, makes more sense than straight line
+        # interpolation.
+        for x, y in zip(tx, ty):
+            x = int(x)
+            y = int(y)
+            if x == old_x:
+                # don't plot pixels twice
+                continue
+            new_x = x
+            new_y = y
+            for x in range(old_x, new_x+1):
+                self.plot_pixel(x, old_y, c)
+            for y in range(old_y, new_y+1):
+                self.plot_pixel(new_x, y, c)
+            old_x = new_x
+            old_y = new_y
+
 def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_filename=False, temperature=1.0):
     """
     Modified version of export movie that supports display of truncated value functions
@@ -373,7 +469,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     scale = 4
 
-    env = atari.make(monitor_video=True)
+    env = atari.make(monitor_video=True, seed=1)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)
@@ -397,17 +493,8 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     print(f"score:{int(sum(rewards)):,} ", end='', flush=True)
 
-    prev_limits = (0.0, 0.0)
-
     # work out discounting values to make plotting a little faster
-    # discount_values = np.zeros([MAX_HORIZON], dtype=np.float32)
-    # for k in range(len(discount_values)):
-    #     discount_values[k] = args.tvf_gamma ** k
-    # cumulative_sum = np.zeros([len(rewards)], dtype=np.float32)
-    # reward_sum = 0
-    # for k in range(len(cumulative_sum)):
-    #     reward_sum += reward[k]
-    #     cumulative_sum[k] = reward_sum
+    discount_weights = args.gamma ** np.arange(0, args.tvf_max_horizon+1)
 
     max_fps = float('-inf')
     min_fps = float('inf')
@@ -416,15 +503,31 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
     very_start_time = time.time()
     fps_list = []
 
+    # step 1: work out undiscounted returns ahead of time
+
+    # step 2. work out how big our graph will be (with a coarse estimate)
+    max_true_return = 0
+    step_size = max(len(rewards)//100, 1)
+    for t in range(0, len(rewards), step_size):
+        true_rewards = rewards[t:t + args.tvf_max_horizon]
+        true_returns = true_rewards * discount_weights[:len(true_rewards)]
+        final_return = np.sum(true_returns)
+        max_true_return = max(max_true_return, final_return)
+
+    max_value_estimate = np.max(buffer["values"]) * REWARD_SCALE
+    y_max = max(max_true_return, max_value_estimate)
+    y_min = 0
+
+    # step 3. draw background plot
+    fig = QuickPlot(y_min, y_max)
+
+    # step 4. run through video and generate data
     for t in range(len(rewards)):
 
-        # todo: make this extremely fast for large horizon...
-        start_time = time.time()
+        start_frame_time = time.time()
 
-        #1: get frames
-
+        # get frames
         frame = buffer["frames"][t]
-        model_value = buffer["model_values"][t] * REWARD_SCALE
 
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
@@ -433,72 +536,39 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
             (width, height, 3), frame.shape)
 
         # calculate actual truncated values using real future rewards
-        true_values = np.zeros(MAX_HORIZON, dtype=np.float32)
+        true_rewards = rewards[t:t+args.tvf_max_horizon]
+        true_returns = true_rewards * discount_weights[:len(true_rewards)]
+        true_returns = np.cumsum(true_returns)
 
+        # plotting...
+        fig.clear()
 
-        for k in range(len(true_values)):
-            this_reward = (args.tvf_gamma ** k) * rewards[t+k] if (t+k) < len(rewards) else 0
-            prev_rewards = true_values[k-1] if k > 0 else 0
-            true_values[k] = this_reward + prev_rewards
-
-        fig = plt.figure(figsize=(7, 4), dpi=100)
-
-        # plot true value
-        xs = list(range(len(true_values)))
-        ys = true_values
-        plt.plot(xs, ys, label="True", c="red")
-        min_height = 0
-        max_height = max(true_values)
+        xs = list(range(len(true_returns)))
+        ys = true_returns
+        fig.plot(xs, ys, 'red')
 
         # plot predicted values...
         if args.use_tvf:
             values = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
             ys = values
             xs = list(range(len(ys)))
-            plt.plot(xs, ys, label="Predicted", c="blue", alpha=0.75)
-            max_height = max(max_height, max(ys))
-            min_height = min(ys)
+            fig.plot(xs, ys, 'green')
 
-        # plot model value prediction
-        if args.vf_coef > 0:
-            plt.hlines(model_value, 0, len(xs), label="Model", colors=["black"])
-            max_height = max(max_height, model_value)
-
-        plt.xlabel("k")
-        plt.ylabel("Score")
-
-        max_limit = math.ceil(max_height+5)
-        min_limit = math.floor(min_height-1)
-        max_limit = max(prev_limits[0], max_limit)
-        min_limit = min(prev_limits[1], min_limit)
-
-        plt.ylim(min_limit, max_limit)
-        prev_limits = (min_limit, max_limit)
-
-        plt.grid(True)
-
-        plt.legend(loc="upper left")
-
-        # from https://stackoverflow.com/questions/7821518/matplotlib-save-plot-to-numpy-array
-        fig.canvas.draw()
-        data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        plot_height, plot_width, _ = data.shape
-        frame[0:plot_height,-plot_width:] = data[:, :, ::-1]
-        plt.close(fig)
+        plot_height, plot_width= fig.buffer.shape[:2]
+        frame[:plot_height, -plot_width:] = fig.buffer
 
         video_out.write(frame)
 
-        total_time = time.time() - start_time
+        frame_time = time.time() - start_frame_time
 
-        fps = 1 / total_time
+        fps = 1 / frame_time
         fps_list.append(fps)
         max_fps = max(fps, max_fps)
         min_fps = min(fps, min_fps)
 
         # every 60 second print time
         if (time.time() - marker_time) > 60:
-            print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-10:]):.1f} FPS> ", end='')
+            print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-100:]):.1f} FPS> ", end='')
             marker_time = time.time()
 
     video_out.release()
@@ -512,7 +582,7 @@ def run_eval(path, temperature=None, max_epoch=200):
 
     files_in_dir = [os.path.join(path, x) for x in os.listdir(path)]
 
-    for epoch in range(max_epoch+1):
+    for epoch in range(0, max_epoch+1):
 
         temp_postfix = f"_t={temperature}" if temperature is not None else ""
 
@@ -522,6 +592,11 @@ def run_eval(path, temperature=None, max_epoch=200):
         checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{temp_postfix}"
 
         if os.path.exists(checkpoint_name):
+
+            # fixed seed
+            # this will sort out the policy but envs are on another process so we need do them separately
+            torch.manual_seed(1)
+            np.random.seed(1)
 
             if GENERATE_MOVIES:
 
@@ -549,8 +624,9 @@ def run_eval(path, temperature=None, max_epoch=200):
                         model,
                         os.path.join(path, "_"+checkpoint_movie_base),
                         include_score_in_filename=True,
-                        temperature = temperature,
+                        temperature=temperature,
                     )
+
                     try:
                         path, file = os.path.split(video_filename)
                         # remove _ from start of file

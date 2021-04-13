@@ -16,7 +16,7 @@ for env in gym.envs.registry.all():
 def get_env_state(key):
     return ENV_STATE.get(key, None)
 
-def make(non_determinism=None, monitor_video=False):
+def make(non_determinism=None, monitor_video=False, seed=None):
     """ Construct environment of given name, including any required wrappers."""
 
     env_type = None
@@ -28,6 +28,11 @@ def make(non_determinism=None, monitor_video=False):
             env_type = k
 
     env = gym.make(env_name)
+
+    if seed is not None:
+        np.random.seed(seed)
+        env.seed(seed)
+
 
     if env_name == "MemorizeNoFrameskip-v4":
         env.set_number_of_actions_and_cards(args.memorize_actions, args.memorize_cards)
