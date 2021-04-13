@@ -612,7 +612,7 @@ def run_eval(path, temperature=None, max_epoch=200):
 
             if GENERATE_MOVIES:
 
-                matching_files = [x for x in files_in_dir if checkpoint_movie_base in x]
+                matching_files = [x for x in files_in_dir if checkpoint_movie_base in x and x.endswith('.mp4')]
 
                 if len(matching_files) >= 2:
                     print(f"Multiple matches for file {path}/{checkpoint_movie_base}.")

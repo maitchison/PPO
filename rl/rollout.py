@@ -387,6 +387,7 @@ class Runner():
 
         self.step = 0
         self.game_crashes = 0
+        self.ep_count = 0
 
         #  these horizons will always be generated and their scores logged.
         self.tvf_debug_horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if h <= args.tvf_max_horizon]
@@ -424,6 +425,7 @@ class Runner():
 
         data = {
             'step': step,
+            'ep_count': self.ep_count,
             'model_state_dict': self.model.state_dict(),
             'logs': self.log,
             'env_state': atari.ENV_STATE,
@@ -469,6 +471,7 @@ class Runner():
         step = checkpoint['step']
         self.log = checkpoint['logs']
         self.step = step
+        self.ep_count = checkpoint.get('ep_count', 0)
 
         if args.use_intrinsic_rewards:
             self.ems_norm = checkpoint['ems_norm']
@@ -492,6 +495,7 @@ class Runner():
         self.step = 0
         self.game_crashes = 0
         self.batch_counter = 0
+        self.ep_count = 0
 
     def run_random_agent(self, iterations):
         self.log.info("Warming up model with random agent...")
@@ -708,8 +712,10 @@ class Runner():
                     # reset is handled automatically by vectorized environments
                     # so just need to keep track of book-keeping
                     if not is_warmup:
+                        self.ep_count += 1
                         self.log.watch_full("ep_score", info["ep_score"])
                         self.log.watch_full("ep_length", info["ep_length"])
+                        self.log.watch_mean("ep_count", self.ep_count, history_length=1)
                         if "game_freeze" in infos[i]:
                             self.game_crashes += 1
                     self.episode_score[i] = 0

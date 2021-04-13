@@ -18,8 +18,6 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-
-CHUNK_SIZE=10
 DEVICE="auto"
 OUTPUT_FOLDER="./Run"
 WORKERS=8
@@ -27,7 +25,7 @@ WORKERS=8
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
-def add_job(experiment_name, run_name, priority=0, chunked=True, default_params=None, score_threshold=None, **kwargs):
+def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
 
     if default_params is not None:
         for k,v in default_params.items():
@@ -37,16 +35,16 @@ def add_job(experiment_name, run_name, priority=0, chunked=True, default_params=
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
 
-    job = Job(experiment_name, run_name, priority, chunked, kwargs)
+    job = Job(experiment_name, run_name, priority, chunk_size, kwargs)
 
-    if score_threshold is not None:
+    if score_threshold is not None and chunk_size > 0:
         job_details = job.get_details()
         if job_details is not None and 'score' in job_details:
             modified_kwargs = kwargs.copy()
-            chunks_completed = job_details['completed_epochs'] / CHUNK_SIZE
+            chunks_completed = job_details['completed_epochs'] / chunk_size
             if job_details['score'] < score_threshold * chunks_completed and chunks_completed > 0.75:
-                modified_kwargs["epochs"] = CHUNK_SIZE
-            job = Job(experiment_name, run_name, priority, chunked, modified_kwargs)
+                modified_kwargs["epochs"] = chunk_size
+            job = Job(experiment_name, run_name, priority, chunk_size, modified_kwargs)
 
     job_list.append(job)
     return job
@@ -101,13 +99,13 @@ class Job:
     # class variable to keep track of insertion order.
     id = 0
 
-    def __init__(self, experiment_name, run_name, priority, chunked, params):
+    def __init__(self, experiment_name, run_name, priority, chunk_size:int, params):
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.priority = priority
         self.params = params
         self.id = Job.id
-        self.chunked = chunked
+        self.chunk_size = chunk_size
         Job.id += 1
 
     def __lt__(self, other):
@@ -220,7 +218,7 @@ class Job:
         else:
             return 0
 
-    def run(self, chunked=False):
+    def run(self, chunk_size:int):
 
         self.params["output_folder"] = OUTPUT_FOLDER
 
@@ -246,12 +244,12 @@ class Job:
         else:
             print(f"No restore point found for path {self.get_path()}")
 
-        if chunked:
+        if chunk_size > 0:
             # work out the next block to do
             if details is None:
-                next_chunk = CHUNK_SIZE
+                next_chunk = chunk_size
             else:
-                next_chunk = (round(details["completed_epochs"] / CHUNK_SIZE) * CHUNK_SIZE) + CHUNK_SIZE
+                next_chunk = (round(details["completed_epochs"] / chunk_size) * chunk_size) + chunk_size
             self.params["limit_epochs"] = int(next_chunk)
 
 
@@ -283,7 +281,7 @@ def run_next_experiment(filter_jobs=None):
 
             job.get_params()
 
-            job.run(chunked=job.chunked)
+            job.run(chunk_size=job.chunk_size)
             return
 
 def comma(x):
@@ -364,7 +362,7 @@ def show_fps(filter_jobs=None):
     for k,v in fps.items():
         print(f"{k:<20} {v:,.0f} FPS")
 
-def random_search(run, main_params, search_params, score_threshold=None, count=128):
+def random_search(run, main_params, search_params, envs:list, score_thresholds=list, count=128):
 
     for i in range(count):
         params = {}
@@ -382,7 +380,9 @@ def random_search(run, main_params, search_params, score_threshold=None, count=1
         while params["agents"] * params["n_steps"] < params["value_mini_batch_size"]:
             params["value_mini_batch_size"] //= 2
 
-        add_job(run, run_name=f"{i:04d}", chunked=True, score_threshold=score_threshold, **main_params, **params)
+        for env_name, score_threshold in zip(envs, score_thresholds):
+            main_params['env_name'] = env_name
+            add_job(run, run_name=f"{i:04d}_{env_name}", chunked=True, score_threshold=score_threshold, **main_params, **params)
 
 
 def nice_format(x):
@@ -932,7 +932,6 @@ def nice_format(x):
 #         )
 #
 
-
 def setup_experiments_11():
 
 
@@ -992,7 +991,7 @@ def setup_experiments_11():
         run_name=f"tvf (tuned)",
 
         use_tvf=True,
-        tvf_hidden_units=128,  # mostly a performance optimization
+        tvf_hidden_units=128,
         tvf_n_horizons=128,
         tvf_lambda=1.0,
         tvf_coef=0.01,
@@ -1008,7 +1007,7 @@ def setup_experiments_11():
         run_name=f"tvf (better)",
 
         use_tvf=True,
-        tvf_hidden_units=128,  # mostly a performance optimization
+        tvf_hidden_units=128,
         tvf_n_horizons=128,
         tvf_lambda=1.0,
         tvf_coef=0.01,
@@ -1024,9 +1023,28 @@ def setup_experiments_11():
         run_name=f"tvf (tuned_adv)",
 
         use_tvf=True,
-        tvf_hidden_units=128,  # mostly a performance optimization
+        tvf_hidden_units=128,
         tvf_n_horizons=128,
         tvf_lambda=1.0,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+    )
+
+    add_job(
+        f"TVF_11_Regression",
+        run_name=f"tvf_16 (tuned_adv)",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+        tvf_n_horizons=128,
+        tvf_lambda=-16,
         tvf_coef=0.01,
         tvf_max_horizon=3000,
         gamma=0.999,
@@ -1057,6 +1075,163 @@ def setup_experiments_11():
         default_params=better_args,
     )
 
+def setup_experiments_11_eval():
+    # initial long horizon test... :)
+    tuned_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 50,
+        'max_grad_norm': 0.5,
+        'agents': 128,
+        'n_steps': 128,
+        'policy_mini_batch_size': 512,  # does this imply microbatching is broken?
+        'value_mini_batch_size': 512,
+        'value_epochs': 2,  # this seems really low?
+        'policy_epochs': 4,
+        'target_kl': 0.01,
+        'ppo_epsilon': 0.05,
+        'value_lr': 5e-4,
+        'policy_lr': 2.5e-4,
+        'gamma': 0.999,
+    }
+
+    tvf_tuned_adv_args = {
+        'use_tvf': True,
+        'tvf_hidden_units': 128,
+        'tvf_n_horizons': 128,
+        'tvf_lambda': 1.0,
+        'tvf_coef': 0.01,
+        'tvf_max_horizon': 3000,
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,
+        'tvf_loss_weighting': "advanced",
+         'tvf_h_scale': "squared",
+        **tuned_args
+    }
+
+    # initial long horizon test... :)
+    better_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 50,
+        'max_grad_norm': 5,  # more than before  [mode=5]
+        'agents': 128,  # [mode=128]
+        'n_steps': 32,  # less than before  [mode=128] (higher better)
+        'policy_mini_batch_size': 1024,  # more than before  [mode=1024]
+        'value_mini_batch_size': 512,  # [mode=512] (lower better)
+        'value_epochs': 4,  # more than before  [mode=2]
+        'policy_epochs': 4,  # [mode=4] (higher better)
+        'target_kl': 0.10,  # much more than before (see if this is an issue...) [no mode]
+        'ppo_epsilon': 0.05,  # why so low?       [mode=0.05] (lower is better, but 0.3 works too?)
+        'value_lr': 1e-4,  # much lower        [no mode]
+        'policy_lr': 5e-4,  # higher? weird...  [mode=2.5e-4]
+        'gamma': 0.999,
+    }
+
+    for env_name in ["Alien", "BankHeist", "CrazyClimber"]:
+        add_job(
+            f"TVF_11_Test_PPO_tuned",
+            run_name=f"{env_name}",
+            env_name=env_name,
+            use_tvf=False,
+            epochs=50,
+            default_params=tuned_args,
+            priority=0,
+        )
+
+        add_job(
+            f"TVF_11_Test_TVF_tuned_adv",
+            run_name=f"{env_name}",
+            env_name=env_name,
+            epochs=50,
+
+            use_tvf=True,
+            tvf_hidden_units=128,  # mostly a performance optimization
+            tvf_n_horizons=128,
+            tvf_lambda=1.0,
+            tvf_coef=0.01,
+            tvf_max_horizon=3000,
+            gamma=0.999,
+            tvf_gamma=0.999,
+
+            tvf_loss_weighting="advanced",
+            tvf_h_scale="squared",
+
+            default_params=tuned_args,
+            priority=0,
+        )
+
+    add_job(
+        f"TVF_11_Periodic",
+        run_name=f"tvf_tuned_adv",
+        epochs=50,
+
+        default_params=tvf_tuned_adv_args,
+        priority=200,
+    )
+
+    for chunk_size in [5,10,20,50]:
+        add_job(
+            f"TVF_11_Chunking",
+            run_name=f"chunk={chunk_size}",
+            epochs=50,
+            chunk_size=chunk_size,
+
+            default_params=tvf_tuned_adv_args,
+            priority=200,
+        )
+
+
+
+    for tvf_n_horizons in [16, 32, 64, 128]:
+        add_job(
+            f"TVF_11_n_horizons",
+            run_name=f"tvf_n_horizons={tvf_n_horizons}",
+            epochs=50,
+            tvf_n_horizons=tvf_n_horizons,
+            default_params=tvf_tuned_adv_args,
+            priority=20,
+        )
+
+
+def random_search_11_ppo():
+    main_params = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'use_tvf': False,
+        'gamma': 0.999,
+        'env_name': 'DemonAttack',
+        'epochs': 50,       # because we filter out runs with low scores 50 epochs is fine
+        'vf_coef': 0.5,
+        'priority': -200,
+    }
+
+    search_params = {
+        'max_grad_norm': [0.5, 5, 20.0],    # should have no effect
+        'agents': [64, 128, 256],           # should have little effect
+        'n_steps': [16, 32, 64, 128],       # 16 was best from before, but unstable
+        'policy_mini_batch_size': [512, 1024, 2048],
+        'value_mini_batch_size': [512, 1024, 2048],
+        'value_epochs': [1, 2, 3, 4, 6, 8],
+        'policy_epochs': [1, 2, 3, 4],
+        'target_kl': [1.0, 0.1, 0.01],      # 1.0 is effectively off
+        'ppo_epsilon': [0.05, 0.1, 0.2, 0.3], # I have only gotten <= 0.1 to work so far
+        'value_lr': [1e-4, 2.5e-4, 5e-4],   # any of these should work, but faster is better I guess?
+        'policy_lr': [1e-4, 2.5e-4, 5e-4],
+    }
+
+    # score threshold should be 200, but I want some early good results...
+    random_search(
+        "TVF_11_Search_PPO",
+        main_params,
+        search_params,
+        count=64,
+        envs=['BattleZone', 'DemonAttack', 'Amidar']
+    )
+
+
 
 if __name__ == "__main__":
 
@@ -1066,6 +1241,8 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_experiments_11()
+    setup_experiments_11_eval()
+    #random_search_11_ppo()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
