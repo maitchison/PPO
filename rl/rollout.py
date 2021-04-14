@@ -495,7 +495,6 @@ class Runner():
         self.step = 0
         self.game_crashes = 0
         self.batch_counter = 0
-        self.ep_count = 0
 
     def run_random_agent(self, iterations):
         self.log.info("Warming up model with random agent...")

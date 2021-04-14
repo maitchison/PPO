@@ -362,7 +362,10 @@ def show_fps(filter_jobs=None):
     for k,v in fps.items():
         print(f"{k:<20} {v:,.0f} FPS")
 
-def random_search(run, main_params, search_params, envs:list, score_thresholds=list, count=128):
+
+def random_search(run:str, main_params:dict, search_params:dict, envs:list, score_thresholds:list, count:int=128):
+
+    assert len(envs) == len(score_thresholds)
 
     for i in range(count):
         params = {}
@@ -382,7 +385,7 @@ def random_search(run, main_params, search_params, envs:list, score_thresholds=l
 
         for env_name, score_threshold in zip(envs, score_thresholds):
             main_params['env_name'] = env_name
-            add_job(run, run_name=f"{i:04d}_{env_name}", chunked=True, score_threshold=score_threshold, **main_params, **params)
+            add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
 
 
 def nice_format(x):
@@ -1163,16 +1166,7 @@ def setup_experiments_11_eval():
             priority=0,
         )
 
-    add_job(
-        f"TVF_11_Periodic",
-        run_name=f"tvf_tuned_adv",
-        epochs=50,
-
-        default_params=tvf_tuned_adv_args,
-        priority=200,
-    )
-
-    for chunk_size in [5,10,20,50]:
+    for chunk_size in [5, 10, 20, 50]:
         add_job(
             f"TVF_11_Chunking",
             run_name=f"chunk={chunk_size}",
@@ -1180,12 +1174,10 @@ def setup_experiments_11_eval():
             chunk_size=chunk_size,
 
             default_params=tvf_tuned_adv_args,
-            priority=200,
+            priority=10,
         )
 
-
-
-    for tvf_n_horizons in [16, 32, 64, 128]:
+    for tvf_n_horizons in [2, 4, 8, 16, 32, 64, 128]:
         add_job(
             f"TVF_11_n_horizons",
             run_name=f"tvf_n_horizons={tvf_n_horizons}",
@@ -1228,9 +1220,9 @@ def random_search_11_ppo():
         main_params,
         search_params,
         count=64,
-        envs=['BattleZone', 'DemonAttack', 'Amidar']
+        envs=['BattleZone', 'DemonAttack', 'Amidar'],
+        score_thresholds=[5000, 500, 50],
     )
-
 
 
 if __name__ == "__main__":
@@ -1242,7 +1234,7 @@ if __name__ == "__main__":
     job_list = []
     setup_experiments_11()
     setup_experiments_11_eval()
-    #random_search_11_ppo()
+    random_search_11_ppo()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
