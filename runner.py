@@ -1223,7 +1223,7 @@ def random_search_11_ppo():
         'workers': WORKERS,
         'use_tvf': False,
         'gamma': 0.999,
-        'epochs': 50,       # because we filter out runs with low scores 50 epochs is fine
+        'epochs': 10,
         'priority': -200,
     }
 

@@ -14,7 +14,6 @@ import gzip
 from collections import defaultdict
 from typing import Union
 import bisect
-import math
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models
@@ -387,14 +386,6 @@ class Runner():
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.terminals = np.zeros([N, A], dtype=np.bool) # indicates prev_state was a terminal state.
-        self.ext_value = np.zeros([N, A], dtype=np.float32)
-
-        # value function horizons
-        if args.use_tvf:
-            self.tvf_returns = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
-            self.tvf_values = np.zeros([N, A, args.tvf_max_horizon + 1], dtype=np.float32)
-            # we need to have a final value estimate for each horizon, as we don't know which ones will be used.
-            self.tvf_final_value_estimates = np.zeros([A, args.tvf_max_horizon + 1], dtype=np.float32)
 
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
@@ -405,7 +396,6 @@ class Runner():
         self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
-        self.ext_final_value_estimate = np.zeros([A], dtype=np.float32)
         self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
@@ -721,13 +711,10 @@ class Runner():
 
         frame_count = 0
 
-        history = defaultdict(list)
+        history = defaultdict(Union[list, np.ndarray])
 
         # play the game...
         while not done:
-
-            prev_state = state.copy()
-            prev_action = action
 
             additional_params = {}
 
@@ -806,22 +793,7 @@ class Runner():
             prev_obs = self.obs.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            if args.use_tvf:
-                if self.tvf_requires_full_horizon_at_rollout:
-                    model_out = self.forward(self.obs, horizons=all_horizons, max_batch_size=max_rollout_batch_size)
-                    tvf_values = model_out["tvf_value"].cpu().numpy()
-                    self.tvf_values[t,:max_h+1] = tvf_values
-                    ext_value = self.get_rediscounted_value_estimate(tvf_values[:,:max_h+1], args.gamma)
-                else:
-                    model_out = self.forward(self.obs, horizons=far_horizons, max_batch_size=max_rollout_batch_size)
-                    tvf_values = model_out["tvf_value"].cpu().numpy()
-                    # map across all the required horizons
-                    for index, h in enumerate(required_horizons):
-                        self.tvf_values[t, :, h] = tvf_values[:, index]
-                    ext_value = tvf_values[..., -1]
-            else:
-                model_out = self.forward(self.obs)
-                ext_value = model_out["ext_value"].cpu().numpy()
+            model_out = self.forward(self.obs, output="policy")
 
             log_policy = model_out["log_policy"].cpu().numpy()
 
@@ -864,10 +836,6 @@ class Runner():
             self.episode_score += raw_rewards
             self.episode_len += 1
 
-            #for i, info in enumerate(infos): #just check info 0
-            #    if "unclipped_reward" in info:
-            #        print(f"Env {i:03d} clipped reward from {info['unclipped_reward']:.1f}")
-
             for i, (done, info) in enumerate(zip(dones, infos)):
                 if done:
                     # reset is handled automatically by vectorized environments
@@ -888,7 +856,6 @@ class Runner():
             self.ext_rewards[t] = ext_rewards
             self.log_policy[t] = log_policy
             self.terminals[t] = dones
-            self.ext_value[t] = ext_value
 
         #  save a copy of the observation normalization statistics.
         if args.normalize_observations:
@@ -903,84 +870,80 @@ class Runner():
             self.log.watch("returns_norm_mu", norm_mean, display_width=0)
             self.log.watch("returns_norm_std", norm_var ** 0.5, display_width=0)
 
-        # get value estimates for final state.
+    @torch.no_grad()
+    def get_value_estimates(self, horizons=None):
+        """
+        Returns value estimates for each [N+1,A] pair
+        If horizons is none max_horizon is used.
+        Includes final obs
+        """
+
+        N, A, *state_shape = self.prev_obs.shape
+
+        obs = np.concatenate((self.prev_obs, self.obs[None, :]), axis=0).reshape([(N+1)*A, *state_shape])
+
         if args.use_tvf:
-
-            def debug_plot():
-                xs = range(3001)
-                ys = [np.mean(self.tvf_final_value_estimates[:, x]) for x in xs]
-                import matplotlib.pyplot as plt
-                plt.plot(xs, ys)
-                plt.show()
-
-            model_out = self.forward(self.obs, horizons=all_horizons, max_batch_size=max_final_batch_size)
-            final_tvf_values = model_out["tvf_value"].cpu().numpy()
-            self.tvf_final_value_estimates[:, :max_h+1] = final_tvf_values
-            self.ext_final_value_estimate = self.get_rediscounted_value_estimate(final_tvf_values[:, :max_h+1], args.gamma)
+            if horizons is None:
+                horizons = np.asarray([args.tvf_max_horizon])[None, :]
+                horizons = np.repeat(horizons, (N + 1) * A, axis=0)
+                model_out = self.forward(
+                    obs=obs,
+                    output="value",
+                    horizons=horizons,
+                    max_batch_size=args.max_micro_batch_size * 2
+                )
+                return model_out["tvf_value"].reshape([N+1, A]).cpu().numpy()
+            else:
+                raise Exception("Not implemented yet")
         else:
-            model_out = self.forward(self.obs, max_batch_size=max_final_batch_size)
-            self.ext_final_value_estimate = model_out["ext_value"].cpu().numpy()
+            raise Exception("Not implemented yet")
 
-        if "int_value" in model_out:
-            self.int_final_value_estimate = model_out["int_value"].cpu().numpy()
 
     def calculate_returns(self):
 
-        if args.use_tvf:
+        N, A, *state_shape = self.prev_obs.shape
 
+        # 1. first we calculate the ext_value estimate
+
+        if args.use_tvf:
             # if gamma's match we generate the final horizon
             # if they don't we need to generate them all and rediscount
 
             assert args.tvf_lambda < 0, "only n-step returns supported at the moment"
 
             if args.tvf_gamma == args.gamma:
-                # this is easy just take the final value estimate for each horizon
-                value_samples = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_value_samples)
-                returns = self.calculate_sampled_returns(
-                    n_step=-int(args.tvf_lambda),
-                    value_sample_horizons=value_samples,
-                    required_horizons=np.asarray([args.tvf_max_horizon]),
-                )
+                ext_value_estimates = self.get_value_estimates()
             else:
+                raise Exception("Not implemented yet")
                 # we could down sample this... but for the moment do them all
                 # this is easy just take the final value estimate for each horizon
-                value_samples = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_value_samples)
-                returns = self.calculate_sampled_returns(
-                    n_step=-int(args.tvf_lambda),
-                    value_sample_horizons=value_samples,
-                    required_horizons=np.asarray([range(0, args.tvf_max_horizon+1)]),
-                )
+                # value_samples = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_value_samples)
+                # returns = self.calculate_sampled_returns(
+                #     n_step=-int(args.tvf_lambda),
+                #     value_sample_horizons=value_samples,
+                #     required_horizons=np.asarray([range(0, args.tvf_max_horizon+1)]),
+                # )
+        else:
+            # in this case just generate ext value estimates from model
+            raise Exception("Not Implemented Yet")
+            # with torch.no_grad():
+            #     ext_value_estimates = self.forward(
+            #         obs=np.concatenate((self.prev_obs, self.obs), axis=0),
+            #         output="value",
+            #         max_batch_size=args.max_micro_batch_size*2
+            #     )["ext_value"]
 
-            params = (
-                self.ext_rewards,
-                self.terminals,
-                self.tvf_values,
-                self.tvf_final_value_estimates,
-                args.tvf_gamma,
-            )
-
-            # negative values are assumed to be n_step, positive are td_lambda
-            # 0, and 1 have special cases implemented which are faster.
-
-            # also, we copy into returns just to make sure shape is right, and to insure the type is right.
-            if args.tvf_lambda < 0:
-                self.tvf_returns[:] = calculate_tvf_n_step(*params, n_step=-int(args.tvf_lambda))
-            else:
-                # tvf_lambda has special cases for lambda=0, and lambda=1 which are more efficient.
-                self.tvf_returns[:] = calculate_tvf_lambda(*params, lamb=args.tvf_lambda)
-
-        if args.use_tvf:
-            self.log.watch("tvf_horizon", self.current_max_horizon)
 
         self.ext_advantage = calculate_gae(
             self.ext_rewards,
-            self.ext_value,
-            self.ext_final_value_estimate,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
             self.terminals,
             args.gamma,
             args.gae_lambda
         )
-        self.ext_returns = self.ext_advantage + self.ext_value
+        # calculate ext_returns for PPO targets
+        self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -1034,21 +997,23 @@ class Runner():
         self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
         self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std",
                             display_width=0)
-        self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
-        self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
+        #self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
+        #self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
 
         self.log.watch("game_crashes", self.game_crashes, display_width=0 if self.game_crashes==0 else 8)
 
         if args.use_tvf:
-            for h in self.tvf_debug_horizons:
-                value = self.tvf_values[:, :, h].ravel().astype(np.float32)
-                target = self.tvf_returns[:, :, h].ravel().astype(np.float32)
-                self.log.watch_mean(f"ev_{h:04d}", utils.explained_variance(value, target), display_width=8)
-                # raw is RMS on unscaled error
-                self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale*(value - target)) ** 0.5), display_width=0)
-                self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
+            self.log.watch("tvf_horizon", self.current_max_horizon)
+            # for h in self.tvf_debug_horizons:
+            #     value = self.tvf_values[:, :, h].ravel().astype(np.float32)
+            #     target = self.tvf_returns[:, :, h].ravel().astype(np.float32)
+            #     self.log.watch_mean(f"ev_{h:04d}", utils.explained_variance(value, target), display_width=8)
+            #     # raw is RMS on unscaled error
+            #     self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale*(value - target)) ** 0.5), display_width=0)
+            #     self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
         else:
-            self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
+            #self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
+            pass
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
@@ -1421,7 +1386,6 @@ class Runner():
         batch_data = {}
         batch_data["prev_state"] = self.prev_obs.reshape([B, *self.state_shape])
         batch_data["ext_returns"] = self.ext_returns.reshape(B)
-        batch_data["ext_value"] = self.ext_value.reshape(B)
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
