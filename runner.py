@@ -1340,6 +1340,52 @@ def setup_experiments_12():
         priority=200,
     )
 
+    add_job(
+        f"TVF_12_Regression2",
+        run_name=f"tvf_16_v3",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=64,
+        tvf_value_samples=64,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression2",
+        run_name=f"tvf_16_v3",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_value_samples=128,
+        tvf_horizon_samples=128,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
 
 
 if __name__ == "__main__":
