@@ -937,7 +937,6 @@ def nice_format(x):
 
 def setup_experiments_11():
 
-
     tuned_args = {
         'checkpoint_every': int(5e6),
         'workers': WORKERS,
@@ -977,16 +976,32 @@ def setup_experiments_11():
         'gamma': 0.999,
     }
 
+    tvf_tuned_adv_args = {
+        'use_tvf': True,
+        'tvf_hidden_units': 128,
+        'tvf_n_horizons': 128,
+        'tvf_lambda': 1.0,
+        'tvf_coef': 0.01,
+        'tvf_max_horizon': 3000,
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,
+        'tvf_loss_weighting': "advanced",
+        'tvf_h_scale': "squared",
+        **tuned_args
+    }
+
     add_job(
         f"TVF_11_Regression",
         run_name=f"ppo (tuned)",
         default_params=tuned_args,
+        priority=100,
     )
 
     add_job(
         f"TVF_11_Regression",
         run_name=f"ppo (better)",
         default_params=better_args,
+        priority=100,
     )
 
     add_job(
@@ -1003,6 +1018,7 @@ def setup_experiments_11():
         tvf_gamma=0.999,
 
         default_params=tuned_args,
+        priority=100,
     )
 
     add_job(
@@ -1019,6 +1035,7 @@ def setup_experiments_11():
         tvf_gamma=0.999,
 
         default_params=better_args,
+        priority=100,
     )
 
     add_job(
@@ -1038,6 +1055,7 @@ def setup_experiments_11():
         tvf_h_scale="squared",
 
         default_params=tuned_args,
+        priority=100,
     )
 
     add_job(
@@ -1057,6 +1075,7 @@ def setup_experiments_11():
         tvf_h_scale="squared",
 
         default_params=tuned_args,
+        priority=100,
     )
 
     add_job(
@@ -1076,7 +1095,30 @@ def setup_experiments_11():
         tvf_h_scale="squared",
 
         default_params=better_args,
+        priority=100,
     )
+
+    for chunk_size in [5, 10, 20, 50]:
+        add_job(
+            f"TVF_11_Chunking",
+            run_name=f"chunk={chunk_size}",
+            epochs=50,
+            chunk_size=chunk_size,
+
+            default_params=tvf_tuned_adv_args,
+            priority=-100,
+        )
+
+    for tvf_n_horizons in [2, 4, 8, 16, 32, 64, 128]:
+        add_job(
+            f"TVF_11_n_horizons",
+            run_name=f"tvf_n_horizons={tvf_n_horizons}",
+            epochs=50,
+            tvf_n_horizons=tvf_n_horizons,
+            default_params=tvf_tuned_adv_args,
+            priority=20,
+        )
+
 
 def setup_experiments_11_eval():
     # initial long horizon test... :)
@@ -1097,20 +1139,6 @@ def setup_experiments_11_eval():
         'value_lr': 5e-4,
         'policy_lr': 2.5e-4,
         'gamma': 0.999,
-    }
-
-    tvf_tuned_adv_args = {
-        'use_tvf': True,
-        'tvf_hidden_units': 128,
-        'tvf_n_horizons': 128,
-        'tvf_lambda': 1.0,
-        'tvf_coef': 0.01,
-        'tvf_max_horizon': 3000,
-        'gamma': 0.999,
-        'tvf_gamma': 0.999,
-        'tvf_loss_weighting': "advanced",
-         'tvf_h_scale': "squared",
-        **tuned_args
     }
 
     # initial long horizon test... :)
@@ -1166,25 +1194,26 @@ def setup_experiments_11_eval():
             priority=0,
         )
 
-    for chunk_size in [5, 10, 20, 50]:
         add_job(
-            f"TVF_11_Chunking",
-            run_name=f"chunk={chunk_size}",
+            f"TVF_11_Test_TVF_16_tuned_adv",
+            run_name=f"{env_name}",
+            env_name=env_name,
             epochs=50,
-            chunk_size=chunk_size,
 
-            default_params=tvf_tuned_adv_args,
-            priority=10,
-        )
+            use_tvf=True,
+            tvf_hidden_units=128,
+            tvf_n_horizons=128,
+            tvf_lambda=-16,
+            tvf_coef=0.01,
+            tvf_max_horizon=3000,
+            gamma=0.999,
+            tvf_gamma=0.999,
 
-    for tvf_n_horizons in [2, 4, 8, 16, 32, 64, 128]:
-        add_job(
-            f"TVF_11_n_horizons",
-            run_name=f"tvf_n_horizons={tvf_n_horizons}",
-            epochs=50,
-            tvf_n_horizons=tvf_n_horizons,
-            default_params=tvf_tuned_adv_args,
-            priority=20,
+            tvf_loss_weighting="advanced",
+            tvf_h_scale="squared",
+
+            default_params=tuned_args,
+            priority=0,
         )
 
 
@@ -1194,9 +1223,7 @@ def random_search_11_ppo():
         'workers': WORKERS,
         'use_tvf': False,
         'gamma': 0.999,
-        'env_name': 'DemonAttack',
         'epochs': 50,       # because we filter out runs with low scores 50 epochs is fine
-        'vf_coef': 0.5,
         'priority': -200,
     }
 
@@ -1212,6 +1239,7 @@ def random_search_11_ppo():
         'ppo_epsilon': [0.05, 0.1, 0.2, 0.3], # I have only gotten <= 0.1 to work so far
         'value_lr': [1e-4, 2.5e-4, 5e-4],   # any of these should work, but faster is better I guess?
         'policy_lr': [1e-4, 2.5e-4, 5e-4],
+        'vf_coef': [0.125, 0.5, 2.0],
     }
 
     # score threshold should be 200, but I want some early good results...
@@ -1225,6 +1253,95 @@ def random_search_11_ppo():
     )
 
 
+def setup_experiments_12():
+
+    tuned_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 50,
+        'max_grad_norm': 0.5,
+        'agents': 128,
+        'n_steps': 128,
+        'policy_mini_batch_size': 512,      # does this imply microbatching is broken?
+        'value_mini_batch_size': 512,
+        'value_epochs': 2,                  # this seems really low?
+        'policy_epochs': 4,
+        'target_kl': 0.01,
+        'ppo_epsilon': 0.05,
+        'value_lr': 5e-4,
+        'policy_lr': 2.5e-4,
+        'gamma': 0.999,
+    }
+
+    # initial long horizon test... :)
+    better_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 50,
+        'max_grad_norm': 5,             # more than before  [mode=5]
+        'agents': 128,                  #                   [mode=128]
+        'n_steps': 32,                  # less than before  [mode=128] (higher better)
+        'policy_mini_batch_size': 1024, # more than before  [mode=1024]
+        'value_mini_batch_size': 512,   #                   [mode=512] (lower better)
+        'value_epochs': 4,              # more than before  [mode=2]
+        'policy_epochs': 4,             #                   [mode=4] (higher better)
+        'target_kl': 0.10,              # much more than before (see if this is an issue...) [no mode]
+        'ppo_epsilon': 0.05,            # why so low?       [mode=0.05] (lower is better, but 0.3 works too?)
+        'value_lr': 1e-4,               # much lower        [no mode]
+        'policy_lr': 5e-4,              # higher? weird...  [mode=2.5e-4]
+        'gamma': 0.999,
+    }
+
+    add_job(
+        f"TVF_12_Regression",
+        run_name=f"tvf_16",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=32,
+        tvf_value_samples=32,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression",
+        run_name=f"tvf_16_v2",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=128, # should be the same as previously
+        tvf_value_samples=-1,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+
+
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
@@ -1233,6 +1350,7 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_experiments_11()
+    setup_experiments_12()
     setup_experiments_11_eval()
     random_search_11_ppo()
 

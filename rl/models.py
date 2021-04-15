@@ -184,7 +184,8 @@ class ValueNet(nn.Module):
 
         # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
         self.value_net_value = nn.Linear(self.value_encoder.hidden_units, 2)
-        self.value_net_hidden = nn.Linear(self.value_encoder.hidden_units + 1, self.tvf_hidden_units)
+        self.value_net_hidden = nn.Linear(self.value_encoder.hidden_units, self.tvf_hidden_units)
+        self.value_net_hidden_aux = nn.Linear(1, self.tvf_hidden_units)
         self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
 
     def forward(self, x, horizons=None):
@@ -209,14 +210,6 @@ class ValueNet(nn.Module):
 
             transformed_horizons = self.horizon_transform(horizons)
 
-            # x is [B, 512], make it [B, H, 512]
-            x_duplicated = value_features[:, None, :].repeat(1, H, 1)
-
-            x_with_side_info = torch.cat([
-                x_duplicated,
-                transformed_horizons[:, :, None]
-            ], dim=-1)
-
             if self.tvf_activation == "relu":
                 activation = F.relu
             elif self.tvf_activation == "tanh":
@@ -226,7 +219,13 @@ class ValueNet(nn.Module):
             else:
                 raise Exception("invalid activation")
 
-            tvf_h = activation(self.value_net_hidden(x_with_side_info))
+            # calculate horizons the fast way
+            features_part = activation(self.value_net_hidden(value_features))
+            # aux part will be [B, H, 128]
+            aux_part = activation(self.value_net_hidden_aux(transformed_horizons[:, :, None]))
+            # features will be [B, 128], but needs to be [B, 1, 128]
+            tvf_h = features_part[:, None, :] + aux_part
+
             tvf_values = self.value_net_tvf(tvf_h)[..., 0]
 
             if self.tvf_h_scale == "constant":

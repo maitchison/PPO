@@ -54,11 +54,11 @@ class Config:
         self.use_tvf            = bool()
         self.tvf_coef           = float()
         self.tvf_max_horizon    = int()
-        self.tvf_n_horizons     = int()
+        self.tvf_value_samples  = int()
+        self.tvf_horizon_samples= int()
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_epsilon        = bool()
-        self.tvf_sample_dist    = str()
         self.tvf_horizon_warmup = float()
         self.tvf_hidden_units   = int()
         self.tvf_model          = str()        
@@ -189,9 +189,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
-    parser.add_argument("--tvf_n_horizons", type=int, default=64, help="Number of horizons to sample during training.")    
-    parser.add_argument("--tvf_sample_dist", type=str, default="uniform", help="[uniform|linear]")
-    parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon")
+    parser.add_argument("--tvf_value_samples", type=int, default=32, help="Number of values to sample during training.")
+    parser.add_argument("--tvf_horizon_samples", type=int, default=32, help="Number of horizons to sample during training. (-1 = all)")
+    parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
     parser.add_argument("--tvf_hidden_units", type=float, default=512)
     parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
@@ -285,5 +285,6 @@ def parse_args(no_env=False, args_override=None):
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
 
-    assert args.tvf_n_horizons <= args.tvf_max_horizon, "tvf_n_horizons must be <= tvf_max_horizon."
+    assert args.tvf_value_samples <= args.tvf_max_horizon, "tvf_value_samples must be <= tvf_max_horizon."
+    assert args.tvf_horizon_samples <= args.tvf_max_horizon, "tvf_horizon_samples must be <= tvf_max_horizon."
 

@@ -13,6 +13,8 @@ import pickle
 import gzip
 from collections import defaultdict
 from typing import Union
+import bisect
+import math
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models
@@ -315,6 +317,33 @@ def calculate_tvf_td(
     return returns
 
 
+
+def _interplolate(horizons, values, target_horizon):
+    """
+    Returns linearly interpolated value from source_values
+
+    horizons: sorted ndarray of shape[K] of horizons, must be in *strictly* ascending order
+    values: ndarray of shape [*shape, K] where values[...,h] corresponds to horizon horizons[h]
+    target_horizon: the horizon we would like to know the interpolated value of
+
+    """
+
+    if target_horizon <= 0:
+        # by definition value of a 0 horizon is 0.
+        return values[:, :, 0] * 0
+
+    index = bisect.bisect_left(horizons, target_horizon)
+    if index == 0:
+        return values[..., 0]
+    if index == len(horizons):
+        return values[..., -1]
+    value_pre = values[..., index - 1]
+    value_post = values[..., index]
+    factor = (target_horizon - horizons[index - 1]) / (horizons[index] - horizons[index-1])
+    return value_pre * (1-factor) + value_post * factor
+
+
+
 class Runner():
 
     def __init__(self, model:models.TVFModel, log, name="agent"):
@@ -521,14 +550,147 @@ class Runner():
                 a = self.forward(obs[:mid_point], horizons=horizons[:mid_point], max_batch_size=max_batch_size, **kwargs)
                 b = self.forward(obs[mid_point:], horizons=horizons[mid_point:], max_batch_size=max_batch_size, **kwargs)
             else:
-                a = self.forward(obs[:mid_point], **kwargs)
-                b = self.forward(obs[mid_point:], **kwargs)
+                a = self.forward(obs[:mid_point], max_batch_size=max_batch_size, **kwargs)
+                b = self.forward(obs[mid_point:], max_batch_size=max_batch_size, **kwargs)
             result = {}
             for k in a.keys():
                 result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
             return result
         else:
             return self.model.forward(obs, **kwargs)
+
+    def _calculate_sampled_returns_old(
+            self,
+            n_step: int,
+            value_sample_horizons: np.ndarray,
+            required_horizons: np.ndarray
+    ):
+        """
+        This was the older reference version, and is much slower for large horizions
+        """
+
+        N, A, *state_shape = self.prev_obs.shape
+        H = args.tvf_max_horizon
+
+        # step 1:
+        # use our model to generate the value estimates required
+        # for MC this is just an estimate at the end of the window
+        horizons = value_sample_horizons[None, None, :]
+        horizons = np.repeat(horizons, repeats=(N+1), axis=0)
+        horizons = np.repeat(horizons, repeats=A, axis=1)
+
+        all_states = np.concatenate([self.prev_obs, self.obs[None, :]], axis=0)
+        with torch.no_grad():
+            model_out = self.forward(
+                obs=all_states.reshape([(N+1)*A, *state_shape]),
+                horizons=horizons.reshape([(N+1)*A, -1]),
+                output="value",
+                max_batch_size=args.max_micro_batch_size*2, # x2 because forward only
+            )
+        value_samples = model_out["tvf_value"].reshape([(N+1), A, len(value_sample_horizons)]).cpu().numpy()
+
+        # step 2:
+        # calculate returns for the horizons required
+        # for the moment generate everything, and sample down
+        interpolated_values = np.zeros([N+1, A, H + 1])
+        for h in range(H + 1):
+            interpolated_values[:, :, h] = _interplolate(value_sample_horizons, value_samples, h)
+
+        returns = calculate_tvf_n_step(
+            rewards=self.ext_rewards,
+            dones=self.terminals,
+            values=interpolated_values[:N],
+            final_value_estimates=interpolated_values[N],
+            gamma=args.tvf_gamma,
+            n_step=n_step,
+        )
+
+        return returns[:, :, required_horizons]
+
+    def calculate_sampled_returns(
+            self,
+            n_step: int,
+            value_sample_horizons: np.ndarray,
+            required_horizons: np.ndarray
+    ):
+        """
+        Calculates and returns the n-step return estimates for given rollout.
+        Only supports n-step at the moment
+
+        prev_states: ndarray of dims [N, B, *state_shape] containing prev_states
+        rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
+        value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
+        required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
+        """
+
+        N, A, *state_shape = self.prev_obs.shape
+        H = args.tvf_max_horizon
+
+        # step 1:
+        # use our model to generate the value estimates required
+        # for MC this is just an estimate at the end of the window
+        horizons = value_sample_horizons[None, None, :]
+        horizons = np.repeat(horizons, repeats=(N+1), axis=0)
+        horizons = np.repeat(horizons, repeats=A, axis=1)
+
+        all_states = np.concatenate([self.prev_obs, self.obs[None, :]], axis=0)
+        with torch.no_grad():
+            model_out = self.forward(
+                obs=all_states.reshape([(N+1)*A, *state_shape]),
+                horizons=horizons.reshape([(N+1)*A, -1]),
+                output="value",
+                max_batch_size=args.max_micro_batch_size*2, # x2 because forward only
+            )
+        value_samples = model_out["tvf_value"].reshape([(N+1), A, len(value_sample_horizons)]).cpu().numpy()
+
+        # setup
+        rewards = self.ext_rewards
+        dones=self.terminals
+        gamma=args.tvf_gamma
+        n_step=n_step
+
+        N, A = rewards.shape
+        K = len(required_horizons)
+
+        returns = np.zeros([N, A, K], dtype=np.float32)
+
+        # this allows us to map to our 'sparse' returns table
+        h_lookup = {}
+        for index, h in enumerate(required_horizons):
+            h_lookup[h] = index
+
+        for t in range(N):
+
+            # first collect the rewards
+            discount = np.ones([A], dtype=np.float32)
+            reward_sum = np.zeros([A], dtype=np.float32)
+            steps_made = 0
+
+            for n in range(1, n_step + 1):
+                if (t + n - 1) >= N:
+                    break
+                # n_step is longer that horizon required
+                if n >= H:
+                    break
+                this_reward = rewards[t + n - 1]
+                reward_sum += discount * this_reward
+                discount *= gamma * (1 - dones[t + n - 1])
+                steps_made += 1
+
+                # the first n_step returns are just the discounted rewards, no bootstrap estimates...
+                if n in h_lookup:
+                    returns[t, :, h_lookup[n]] = reward_sum
+
+            for h in required_horizons:
+                if h < steps_made+1:
+                    # these are just the accumulated sums and don't need horizon bootstrapping
+                    continue
+                interpolated_value = _interplolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
+                bootstrap_estimate = discount * interpolated_value
+                returns[t, :, h_lookup[h]] = reward_sum + bootstrap_estimate
+
+        return returns
+
 
     def export_movie(self, filename, include_rollout=False, include_video=True, max_frames = 60*60*15):
         """ Exports a movie of agent playing game.
@@ -613,7 +775,7 @@ class Runner():
 
     @property
     def tvf_requires_full_horizon_at_rollout(self):
-        return args.tvf_gamma != args.gamma or args.tvf_lambda != 1
+        return args.tvf_gamma != args.gamma
 
     @torch.no_grad()
     def generate_rollout(self, is_warmup=False):
@@ -765,6 +927,10 @@ class Runner():
     def calculate_returns(self):
 
         if args.use_tvf:
+
+
+            
+
             params = (
                 self.ext_rewards,
                 self.terminals,
@@ -1039,6 +1205,41 @@ class Runner():
 
         return {}
 
+    def generate_return_sample(self):
+
+        # max horizon to train on
+        H = self.current_max_horizon
+        N, A, *state_shape = self.prev_obs.shape
+
+        def generate_sample(max_value: int, samples: int) -> np.ndarray:
+            """
+            generates random samples from 0 to max (inclusive) using sampling with replacement
+            and always including the first and last value
+            """
+            if samples == -1 or samples >= (max_value + 1):
+                return np.arange(0, max_value + 1)
+            required = np.asarray([0, max_value], dtype=np.int32)
+            sampled = np.random.choice(range(1, max_value - 1), samples - 2, replace=False)
+            result = list(np.concatenate((required, sampled)))
+            result.sort()
+            return np.asarray(result)
+
+        value_samples = generate_sample(H, args.tvf_value_samples)
+        horizon_samples = generate_sample(H, args.tvf_horizon_samples)
+
+        assert args.tvf_lambda < 0, "Only n-step supported at this point..."
+
+        returns = self.calculate_sampled_returns(
+            n_step=-int(args.tvf_lambda),
+            value_sample_horizons=value_samples,
+            required_horizons=horizon_samples,
+        )
+
+        horizon_samples = horizon_samples[None, None, :]
+        horizon_samples = np.repeat(horizon_samples, N, axis=0)
+        horizon_samples = np.repeat(horizon_samples, A, axis=1)
+        return returns, horizon_samples
+
 
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
@@ -1182,48 +1383,38 @@ class Runner():
         # ----------------------------------------------------
         # value phase
 
+        if args.use_tvf:
+            # we do this once at the start, generate one returns estimate for each epoch on different horizons then
+            # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
+            # we don't drift, as the updates will modify our model and change the value estimates.
+            # it is possible that instead we should be updating our return estimates as we go though
+            all_returns = np.zeros([args.value_epochs, B, args.tvf_horizon_samples], dtype=np.float32)
+            all_horizons = np.zeros([args.value_epochs, B, args.tvf_horizon_samples], dtype=np.int16)
+            for i in range(args.value_epochs):
+                returns, horizons = self.generate_return_sample()
+                all_returns[i] = returns.reshape([B, -1])
+                all_horizons[i] = horizons.reshape([B, -1])
+        else:
+            all_returns = None
+            all_horizons = None
+
         batch_data = {}
         batch_data["prev_state"] = self.prev_obs.reshape([B, *self.state_shape])
         batch_data["ext_returns"] = self.ext_returns.reshape(B)
         batch_data["ext_value"] = self.ext_value.reshape(B)
-
-        if args.use_tvf:
-
-            # max horizon to train on
-            H = self.current_max_horizon
-            # number of sample to use
-            K = min(args.tvf_n_horizons, H)
-
-            required_horizons = np.asarray([0, H], dtype=np.int32)
-            required_horizons = np.repeat(required_horizons[None, :], B, axis=0)
-            all_horizons = np.asarray(range(H + 1), dtype=np.int32)
-            all_horizons = np.repeat(all_horizons[None, :], B, axis=0)
-            all_returns = self.tvf_returns.reshape([B, H+1])
-
-            if K >= H and args.tvf_sample_dist=="uniform":
-                # use all samples, this is more efficient as we won't sample the same horizon twice.
-                batch_data["tvf_horizons"] = all_horizons
-                batch_data["tvf_returns"] = all_returns
-            else:
-                # perform sub sampling
-                if args.tvf_sample_dist == "uniform":
-                    p = None
-                elif args.tvf_sample_dist == "linear":
-                    p = [1 - (i / H) for i in range(H)]
-                else:
-                    raise Exception("Invalid distribution.")
-
-                horizon_sample = np.random.choice(H, size=[B, K - required_horizons.shape[-1]], replace=True, p=p)
-                horizon_sample = np.concatenate([horizon_sample, required_horizons], axis=1)
-                batch_data["tvf_horizons"] = horizon_sample
-                batch_data["tvf_returns"] = np.take_along_axis(all_returns, horizon_sample, axis=1)
-
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
             batch_data["int_value"] = self.int_value.reshape(B)
 
         for _ in range(args.value_epochs):
+
+            # sample from our returns buffer, this way we get something slightly different every epoch
+            if args.use_tvf:
+                sample = np.random.randint(0, args.value_epochs, size=(1, B, args.tvf_horizon_samples))
+                batch_data["tvf_returns"] = np.take_along_axis(all_returns, sample, axis=0)[0]
+                batch_data["tvf_horizons"] = np.take_along_axis(all_horizons, sample, axis=0)[0]
+
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
