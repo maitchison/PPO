@@ -928,8 +928,28 @@ class Runner():
 
         if args.use_tvf:
 
+            # if gamma's match we generate the final horizon
+            # if they don't we need to generate them all and rediscount
 
-            
+            assert args.tvf_lambda < 0, "only n-step returns supported at the moment"
+
+            if args.tvf_gamma == args.gamma:
+                # this is easy just take the final value estimate for each horizon
+                value_samples = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_value_samples)
+                returns = self.calculate_sampled_returns(
+                    n_step=-int(args.tvf_lambda),
+                    value_sample_horizons=value_samples,
+                    required_horizons=np.asarray([args.tvf_max_horizon]),
+                )
+            else:
+                # we could down sample this... but for the moment do them all
+                # this is easy just take the final value estimate for each horizon
+                value_samples = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_value_samples)
+                returns = self.calculate_sampled_returns(
+                    n_step=-int(args.tvf_lambda),
+                    value_sample_horizons=value_samples,
+                    required_horizons=np.asarray([range(0, args.tvf_max_horizon+1)]),
+                )
 
             params = (
                 self.ext_rewards,
@@ -1205,27 +1225,27 @@ class Runner():
 
         return {}
 
+    def generate_horizon_sample(self, max_value: int, samples: int) -> np.ndarray:
+        """
+        generates random samples from 0 to max (inclusive) using sampling with replacement
+        and always including the first and last value
+        """
+        if samples == -1 or samples >= (max_value + 1):
+            return np.arange(0, max_value + 1)
+        required = np.asarray([0, max_value], dtype=np.int32)
+        sampled = np.random.choice(range(1, max_value - 1), samples - 2, replace=False)
+        result = list(np.concatenate((required, sampled)))
+        result.sort()
+        return np.asarray(result)
+
     def generate_return_sample(self):
 
         # max horizon to train on
         H = self.current_max_horizon
         N, A, *state_shape = self.prev_obs.shape
 
-        def generate_sample(max_value: int, samples: int) -> np.ndarray:
-            """
-            generates random samples from 0 to max (inclusive) using sampling with replacement
-            and always including the first and last value
-            """
-            if samples == -1 or samples >= (max_value + 1):
-                return np.arange(0, max_value + 1)
-            required = np.asarray([0, max_value], dtype=np.int32)
-            sampled = np.random.choice(range(1, max_value - 1), samples - 2, replace=False)
-            result = list(np.concatenate((required, sampled)))
-            result.sort()
-            return np.asarray(result)
-
-        value_samples = generate_sample(H, args.tvf_value_samples)
-        horizon_samples = generate_sample(H, args.tvf_horizon_samples)
+        value_samples = self.generate_horizon_sample(H, args.tvf_value_samples)
+        horizon_samples = self.generate_horizon_sample(H, args.tvf_horizon_samples)
 
         assert args.tvf_lambda < 0, "Only n-step supported at this point..."
 
