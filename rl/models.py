@@ -220,11 +220,11 @@ class ValueNet(nn.Module):
                 raise Exception("invalid activation")
 
             # calculate horizons the fast way
-            features_part = activation(self.value_net_hidden(value_features))
+            features_part = self.value_net_hidden(value_features)
             # aux part will be [B, H, 128]
-            aux_part = activation(self.value_net_hidden_aux(transformed_horizons[:, :, None]))
+            aux_part = self.value_net_hidden_aux(transformed_horizons[:, :, None])
             # features will be [B, 128], but needs to be [B, 1, 128]
-            tvf_h = features_part[:, None, :] + aux_part
+            tvf_h = activation(features_part[:, None, :] + aux_part)
 
             tvf_values = self.value_net_tvf(tvf_h)[..., 0]
 

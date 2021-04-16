@@ -56,6 +56,7 @@ class Config:
         self.tvf_max_horizon    = int()
         self.tvf_value_samples  = int()
         self.tvf_horizon_samples= int()
+        self.tvf_value_distribution = str()
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_epsilon        = bool()
@@ -65,7 +66,7 @@ class Config:
         self.tvf_h_scale        = str()
         self.tvf_activation     = str()
         self.tvf_loss_weighting = str()
-        self.tvf_interpolation_samples = int()
+
     
         self.time_aware = bool()
         self.ed_type = str()
@@ -190,13 +191,16 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
     parser.add_argument("--tvf_value_samples", type=int, default=32, help="Number of values to sample during training.")
+    parser.add_argument("--tvf_value_distribution", type=str, default="hyperbolic", help="Sampling distribution to use when generating value samples.")
     parser.add_argument("--tvf_horizon_samples", type=int, default=32, help="Number of horizons to sample during training. (-1 = all)")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
     parser.add_argument("--tvf_hidden_units", type=float, default=512)
     parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
-    parser.add_argument("--tvf_interpolation_samples", type=int, default=0, help="number of samples to use for FV interplation, 0=generate all samples")
+
+
+
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
