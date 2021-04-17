@@ -330,7 +330,7 @@ def _interplolate(horizons, values, target_horizon):
 
     if target_horizon <= 0:
         # by definition value of a 0 horizon is 0.
-        return values[:, :, 0] * 0
+        return values[..., 0] * 0
 
     index = bisect.bisect_left(horizons, target_horizon)
     if index == 0:
@@ -611,6 +611,18 @@ class Runner():
         for index, h in enumerate(required_horizons):
             h_lookup[h] = index
 
+        # stub show value curve
+        def plot_debug_curve():
+            xs = []
+            ys = []
+            print(value_sample_horizons)
+            for h in range(args.tvf_max_horizon):
+                xs.append(h)
+                ys.append(_interplolate(value_sample_horizons, value_samples[0, 0], h))
+            import matplotlib.pyplot as plt
+            plt.plot(xs, ys)
+            plt.show()
+
         # step 2:
         # generate return estimates using n-step returns
         for t in range(N):
@@ -879,6 +891,7 @@ class Runner():
         """
         Writes value quality stats to log
         """
+
         if args.use_tvf:
 
             # first we generate the value estimates, then we calculate the returns required for each debug horizon
@@ -1244,6 +1257,16 @@ class Runner():
             # adjust exponential so mean is half horizon
             p = np.asarray([np.exp(-(2/max_value*h)) for h in range(max_value - 1)])
             p /= np.sum(p)
+        elif distribution == "hyperbolic_100":
+            p = np.asarray([1 / (1+0.01*h) for h in range(max_value - 1)])
+            p /= np.sum(p)
+        elif distribution == "hyperbolic_10":
+            p = np.asarray([1 / (1+0.1*h) for h in range(max_value - 1)])
+            p /= np.sum(p)
+        elif distribution == "exponential_4":
+            # adjust exponential so mean is quarter horizon
+            p = np.asarray([np.exp(-(4 / max_value * h)) for h in range(max_value - 1)])
+            p /= np.sum(p)
         else:
             raise Exception("invalid distribution")
 
@@ -1430,9 +1453,9 @@ class Runner():
             # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
             # we don't drift, as the updates will modify our model and change the value estimates.
             # it is possible that instead we should be updating our return estimates as we go though
-            all_returns = np.zeros([args.value_epochs, B, args.tvf_horizon_samples], dtype=np.float32)
-            all_horizons = np.zeros([args.value_epochs, B, args.tvf_horizon_samples], dtype=np.int16)
-            for i in range(args.value_epochs):
+            all_returns = np.zeros([args.tvf_return_mixing, B, args.tvf_horizon_samples], dtype=np.float32)
+            all_horizons = np.zeros([args.tvf_return_mixing, B, args.tvf_horizon_samples], dtype=np.int16)
+            for i in range(args.tvf_return_mixing):
                 returns, horizons = self.generate_return_sample()
                 all_returns[i] = returns.reshape([B, -1])
                 all_horizons[i] = horizons.reshape([B, -1])
@@ -1452,7 +1475,7 @@ class Runner():
 
             # sample from our returns buffer, this way we get something slightly different every epoch
             if args.use_tvf:
-                sample = np.random.randint(0, args.value_epochs, size=(1, B, args.tvf_horizon_samples))
+                sample = np.random.randint(0, args.tvf_return_mixing, size=(1, B, args.tvf_horizon_samples))
                 batch_data["tvf_returns"] = np.take_along_axis(all_returns, sample, axis=0)[0]
                 batch_data["tvf_horizons"] = np.take_along_axis(all_horizons, sample, axis=0)[0]
 

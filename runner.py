@@ -739,234 +739,217 @@ def random_search_11_ppo():
     )
 
 
-def setup_experiments_12():
+def setup_old_regression_experiments():
+    add_job(
+        f"TVF_12_Regression",
+        run_name=f"tvf_16",
 
-    # check how many value samples are required
-    # switch to v8 args...
-    for tvf_value_distribution in ["constant", "linear", "hyperbolic", "exponential"]:
-        for tvf_value_samples in [4, 8, 16, 64, 256]:
-            add_job(
-                f"TVF_12_VS",
-                run_name=f"samples={tvf_value_samples} dist={tvf_value_distribution}",
-                tvf_value_samples=tvf_value_samples,
-                tvf_value_distribution=tvf_value_distribution,
-                default_params=v8_args,
-                epochs=10,  # just to get an idea for the moment... 
-                priority=20,
-            )
+        use_tvf=True,
+        tvf_hidden_units=128,
 
+        tvf_horizon_samples=32,
+        tvf_value_samples=32,
 
-    # add_job(
-    #     f"TVF_12_Regression",
-    #     run_name=f"tvf_16",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_horizon_samples=32,
-    #     tvf_value_samples=32,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # add_job(
-    #     f"TVF_12_Regression",
-    #     run_name=f"tvf_16_v2",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_horizon_samples=128, # should be the same as previously
-    #     tvf_value_samples=-1,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # add_job(
-    #     f"TVF_12_Regression2",
-    #     run_name=f"tvf_16_v3",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_horizon_samples=64,
-    #     tvf_value_samples=64,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # add_job(
-    #     f"TVF_12_Regression3",
-    #     run_name=f"tvf_16_v4",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_value_samples=128,
-    #     tvf_horizon_samples=128,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # # reset kl back to approx kl... (which is what we tuned for)
-    #
-    # add_job(
-    #     f"TVF_12_Regression5",
-    #     run_name=f"tvf_16_v5",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_value_samples=128,
-    #     tvf_horizon_samples=128,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # add_job(
-    #     f"TVF_12_Regression6",
-    #     run_name=f"tvf_16_v1_dup",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_horizon_samples=32,
-    #     tvf_value_samples=32,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # add_job(
-    #     f"TVF_12_Regression6",
-    #     run_name=f"tvf_16_v6",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_value_samples=128,
-    #     tvf_horizon_samples=128,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    # add_job(
-    #     f"TVF_12_Regression6",
-    #     run_name=f"tvf_16_v2_dup",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     tvf_horizon_samples=128, # should be the same as previously
-    #     tvf_value_samples=-1,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
-    #
-    #
-    # add_job(
-    #     f"TVF_12_Regression7",
-    #     run_name=f"tvf_16_v7",
-    #
-    #     use_tvf=True,
-    #     tvf_hidden_units=128,
-    #
-    #     value_lr=2.5e-4,
-    #
-    #     tvf_value_samples=128,
-    #     tvf_horizon_samples=128,
-    #
-    #     tvf_lambda=-16,
-    #     tvf_coef=0.01,
-    #     tvf_max_horizon=3000,
-    #     gamma=0.999,
-    #     tvf_gamma=0.999,
-    #
-    #     tvf_loss_weighting="advanced",
-    #     tvf_h_scale="squared",
-    #
-    #     default_params=tuned_args,
-    #     priority=200,
-    # )
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression",
+        run_name=f"tvf_16_v2",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=128,  # should be the same as previously
+        tvf_value_samples=-1,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression2",
+        run_name=f"tvf_16_v3",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=64,
+        tvf_value_samples=64,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression3",
+        run_name=f"tvf_16_v4",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_value_samples=128,
+        tvf_horizon_samples=128,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    # reset kl back to approx kl... (which is what we tuned for)
+
+    add_job(
+        f"TVF_12_Regression5",
+        run_name=f"tvf_16_v5",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_value_samples=128,
+        tvf_horizon_samples=128,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression6",
+        run_name=f"tvf_16_v1_dup",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=32,
+        tvf_value_samples=32,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression6",
+        run_name=f"tvf_16_v6",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_value_samples=128,
+        tvf_horizon_samples=128,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression6",
+        run_name=f"tvf_16_v2_dup",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        tvf_horizon_samples=128,  # should be the same as previously
+        tvf_value_samples=-1,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_12_Regression7",
+        run_name=f"tvf_16_v7",
+
+        use_tvf=True,
+        tvf_hidden_units=128,
+
+        value_lr=2.5e-4,
+
+        tvf_value_samples=128,
+        tvf_horizon_samples=128,
+
+        tvf_lambda=-16,
+        tvf_coef=0.01,
+        tvf_max_horizon=3000,
+        gamma=0.999,
+        tvf_gamma=0.999,
+
+        tvf_loss_weighting="advanced",
+        tvf_h_scale="squared",
+
+        default_params=tuned_args,
+        priority=200,
+    )
 
     add_job(
         f"TVF_12_Regression8",
@@ -995,7 +978,93 @@ def setup_experiments_12():
     )
 
 
+def setup_experiments_12():
 
+    for tvf_value_distribution in ["constant", "linear", "hyperbolic", "exponential"]:
+        for tvf_value_samples in [4, 8, 16, 64, 256]:
+            add_job(
+                f"TVF_12_ValueSamples_{tvf_value_distribution.capitalize()}",
+                run_name=f"samples={tvf_value_samples}",
+                tvf_value_samples=tvf_value_samples,
+                tvf_value_distribution=tvf_value_distribution,
+                default_params=new_args,
+                epochs=50 if tvf_value_distribution == "constant" else 30,
+                priority=50,
+            )
+
+    # check return mixing
+    for return_mixing in [1, 2, 4, 8, 16]:
+        add_job(
+            f"TVF_12_ReturnMixing",
+            run_name=f"return_mixing={return_mixing}",
+            tvf_return_mixing=return_mixing,
+            tvf_horizon_samples=128,
+            tvf_value_samples=128,
+            tvf_value_distribution="constant",
+            default_params=new_args,
+            epochs=20,  # just to get an idea for the moment...
+            priority=200,
+        )
+
+    # check samples in x/x/ mode with new settings
+    for samples in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
+        add_job(
+            f"TVF_12_Sampling",
+            run_name=f"samples={samples}",
+            tvf_horizon_samples=samples,
+            tvf_value_samples=samples,
+            tvf_value_distribution="constant",
+            default_params=new_args,
+            epochs=10,  # just to get an idea for the moment...
+            priority=0,
+        )
+
+def retired_experiments():
+    pass
+    # decided to use new as much as I could
+
+    # # just trying to get lower samples to work
+    # for tvf_value_distribution in ["hyperbolic_100", "hyperbolic_10", "exponential_4"]:
+    #     for tvf_value_samples in [4, 8, 16]:
+    #         add_job(
+    #             f"TVF_12_VS2",
+    #             run_name=f"samples={tvf_value_samples} dist={tvf_value_distribution}",
+    #             tvf_value_samples=tvf_value_samples,
+    #             tvf_value_distribution=tvf_value_distribution,
+    #             default_params=v8_args,
+    #             epochs=30,  # just to get an idea for the moment...
+    #             priority=30,
+    #         )
+
+    # check how many value samples are required
+    # for tvf_horizon_samples in [4, 8, 16, 32, 64, 256, 1024]:
+    #     add_job(
+    #         f"TVF_12_HS",
+    #         run_name=f"h_samples={tvf_horizon_samples}",
+    #         tvf_horizon_samples=tvf_horizon_samples,
+    #         tvf_value_samples=256,
+    #         tvf_value_distribution="constant",
+    #         default_params=v8_args,
+    #         epochs=20,  # just to get an idea for the moment...
+    #         priority=0,
+    #     )
+
+    # check how many value samples are required
+    # this uses v8
+    # for tvf_value_distribution in ["constant", "linear", "hyperbolic", "exponential"]:
+    #     for tvf_value_samples in [4, 8, 16, 64, 256, -1]:
+    #         # only want these high ones for constant, they are just to get an idea of what optimal performance looks like.
+    #         if tvf_value_samples == -1 and tvf_value_distribution != "constant":
+    #             continue
+    #         add_job(
+    #             f"TVF_12_VS",
+    #             run_name=f"samples={tvf_value_samples} dist={tvf_value_distribution}",
+    #             tvf_value_samples=tvf_value_samples,
+    #             tvf_value_distribution=tvf_value_distribution,
+    #             default_params=v8_args,
+    #             epochs=30,  # just to get an idea for the moment...
+    #             priority=40,
+    #         )
 
 
 if __name__ == "__main__":
@@ -1005,10 +1074,8 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    setup_experiments_11()
-    setup_experiments_12()
-    setup_experiments_11_eval()
     random_search_11_ppo()
+    setup_experiments_12()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

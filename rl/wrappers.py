@@ -39,8 +39,10 @@ class EpisodicDiscounting(gym.Wrapper):
 
 class TimeAwareWrapper(gym.Wrapper):
     """
-    Includes time at bottom of observation
-    Observational spaces should be 2d image.
+    Includes time on frame of last channel of observation (which is last state if using stacking)
+    Observational spaces should be 2d image in format
+
+    [..., C, H, W]
     """
 
     def __init__(self, env: gym.Env, max_time):
@@ -55,22 +57,13 @@ class TimeAwareWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-
+        assert obs.dtype == np.uint8
         time_code = self.t / self.max_time
-
-        if obs.dtype == np.float32:
-            obs[..., -3, :, :] = (time_code * 100) % 1
-            obs[..., -2, :, :] = (time_code * 10) % 1
-            obs[..., -1, :, :] = (time_code * 1) % 1
-        elif obs.dtype == np.uint8:
-            obs[..., -3, :, :] = int(np.clip((time_code * 100) % 1 * 255, 0, 255))
-            obs[..., -2, :, :] = int(np.clip((time_code * 10) % 1 * 255, 0, 255))
-            obs[..., -1, :, :] = int(np.clip((time_code * 1) * 255, 0, 255))
-        else:
-            raise ValueError("Invalid observation dtype, expected uint8 or float32.")
-
+        obs[..., -1, -3:, :] = int(time_code * 255)
+        obs[..., -1, 3, :] = int(time_code * 255)
+        obs[..., -1, -3:, :] = int(time_code * 255)
+        obs[..., -1, :3, :] = int(time_code * 255)
         self.t = self.t + 1
-
         return obs, reward, done, info
 
 
@@ -749,7 +742,7 @@ class FrameStack(gym.Wrapper):
             to enable the ordering 0, 1, 2, 3 set ordering = "ascending".
     """
 
-    def __init__(self, env, n_stacks=4, ordering="default"):
+    def __init__(self, env, n_stacks=4, ordering="ascending"):
 
         super().__init__(env)
 
@@ -784,7 +777,7 @@ class FrameStack(gym.Wrapper):
 
         if self.ordering == "default":
             # most recent is in slot 0, then ascending from there... strange ordering, but it's what I used
-            # previously so I keep it for compatability.
+            # previously so I keep it for compatibility.
             self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
 
             if self.original_channels == 1:
