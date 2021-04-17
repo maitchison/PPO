@@ -120,7 +120,6 @@ new_args = {
         'ppo_epsilon': 0.1,                 # hard to say if this is right...
         'value_lr': 2.5e-4,                 # slow and steady wins the race
         'policy_lr': 2.5e-4,
-        'gamma': 0.999,
 
         'use_tvf': True,
         'tvf_hidden_units': 128,            # big guess here
@@ -134,6 +133,40 @@ new_args = {
         'tvf_loss_weighting': "advanced",   # these seem to help
         'tvf_h_scale': "squared",
     }
+
+
+# this are the 'fast but good' settings.
+optimized_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'env_name': 'DemonAttack',
+        'epochs': 50,
+        'max_grad_norm': 5.0,
+        'agents': 256,                      # more is probably better
+        'n_steps': 128,                     # hard to know, but atleast we are now free the MC algorithm
+        'policy_mini_batch_size': 1024,
+        'value_mini_batch_size': 256,       # smaller is probably better
+        'value_epochs': 2,                  # I probably want 4 with early stopping
+        'policy_epochs': 4,
+        'target_kl': 0.01,                  # need to search more around this
+        'ppo_epsilon': 0.1,                 # hard to say if this is right...
+        'value_lr': 2.5e-4,                 # slow and steady wins the race
+        'policy_lr': 2.5e-4,
+
+        'use_tvf': True,
+        'tvf_hidden_units': 128,            # big guess here
+        'tvf_value_samples': 64,            # reducing from 128 samples to 64 is fine, even 16 would work.
+        'tvf_horizon_samples': 64,
+        'tvf_lambda': -8,
+        'tvf_coef': 0.01,                   # big guess
+        'tvf_max_horizon': 3000,            # could be much higher if we wanted
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,                 # rediscounting is probably a good idea...
+        'tvf_loss_weighting': "advanced",   # these seem to help
+        'tvf_h_scale': "squared",
+        'tvf_return_mixing': 1,             # shown to be just as good
+    }
+
 
 
 def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
@@ -1002,8 +1035,8 @@ def setup_experiments_12():
             tvf_value_samples=128,
             tvf_value_distribution="constant",
             default_params=new_args,
-            epochs=20,  # just to get an idea for the moment...
-            priority=200,
+            epochs=30,  # just to get an idea for the moment...
+            priority=50,
         )
 
     # check samples in x/x/ mode with new settings
@@ -1015,9 +1048,37 @@ def setup_experiments_12():
             tvf_value_samples=samples,
             tvf_value_distribution="constant",
             default_params=new_args,
-            epochs=10,  # just to get an idea for the moment...
-            priority=0,
+            epochs=30,  # just to get an idea for the moment...
+            priority=50,
         )
+
+    for n_step in [1, 2, 4, 8, 16, 32, 64, 128]:
+        add_job(
+            f"TVF_12_Step",
+            run_name=f"n_step={n_step}",
+            tvf_lambda=-n_step,
+            tvf_horizon_samples=64,
+            tvf_value_samples=64,
+            tvf_value_distribution="constant",
+            default_params=new_args,
+            epochs=50,  # just to get an idea for the moment...
+            priority=50,
+        )
+
+    for td_lambda in [0.9, 0.95, 0.97]:
+        for lambda_samples in [-1, 16]:
+            add_job(
+                f"TVF_12_Lambda",
+                run_name=f"lambda={td_lambda} samples={lambda_samples}",
+                tvf_lambda=td_lambda,
+                tvf_lambda_samples=lambda_samples,
+                tvf_horizon_samples=64,
+                tvf_value_samples=64,
+                tvf_value_distribution="constant",
+                default_params=new_args,
+                epochs=50,
+                priority=100,
+            )
 
 def retired_experiments():
     pass

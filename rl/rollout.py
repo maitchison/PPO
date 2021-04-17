@@ -14,6 +14,7 @@ import gzip
 from collections import defaultdict
 from typing import Union
 import bisect
+import math
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models
@@ -545,85 +546,40 @@ class Runner():
         else:
             return self.model.forward(obs, **kwargs)
 
-    def calculate_sampled_returns(
+    def _calculate_n_step_sampled_returns(
             self,
-            value_sample_horizons: Union[list, np.ndarray],
-            required_horizons: Union[list, np.ndarray, int],
-            obs=None,
-            rewards=None,
-            dones=None,
-            gamma=None,
-            n_step=None,
-    ):
+            n_step:int,
+            gamma:float,
+            rewards: np.ndarray,
+            dones: np.ndarray,
+            required_horizons: np.ndarray,
+            value_sample_horizons: np.ndarray,
+            value_samples: np.ndarray,
+        ):
         """
-        Calculates and returns the n-step return estimates for given rollout.
-        Only supports n-step at the moment
+        This is a fancy n-step sampled reutrns calculation
 
-        prev_states: ndarray of dims [N+1, B, *state_shape] containing prev_states
-        rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
-        value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
-        required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
+        n_step: n-step to use in calculation
+        gamma: discount to use
+        reward: nd array of dims [N, A]
+        dones: nd array of dims [N, A]
+        requred_horizons: nd array of dims [K]
+
+
+        If n_step td_lambda is negative it is taken as
         """
 
-        assert args.tvf_lambda < 0, "Only n-step supported at the moment"
-
-        if type(value_sample_horizons) is list:
-            value_sample_horizons = np.asarray(value_sample_horizons)
-        if type(required_horizons) is list:
-            required_horizons = np.asarray(required_horizons)
-        if type(required_horizons) in [float, int]:
-            required_horizons = np.asarray([required_horizons])
-
-        # setup
-        obs = obs if obs is not None else self.all_obs
-        rewards = rewards if rewards is not None else self.ext_rewards
-        dones = dones if dones is not None else self.terminals
-        gamma = gamma if gamma is not None else args.tvf_gamma
-        n_step = n_step if n_step is not None else -int(args.tvf_lambda)
-
-        N, A, *state_shape = obs[:-1].shape
+        N, A = rewards.shape
         H = args.tvf_max_horizon
         K = len(required_horizons)
-
-        assert obs.shape == (N + 1, A, *state_shape)
-        assert rewards.shape == (N, A)
-        assert dones.shape == (N, A)
-
-        # step 1:
-        # use our model to generate the value estimates required
-        # for MC this is just an estimate at the end of the window
-        horizons = value_sample_horizons[None, None, :]
-        horizons = np.repeat(horizons, repeats=N + 1, axis=0)
-        horizons = np.repeat(horizons, repeats=A, axis=1)
-
-        with torch.no_grad():
-            model_out = self.forward(
-                obs=obs.reshape([(N + 1) * A, *state_shape]),
-                horizons=horizons.reshape([(N + 1) * A, -1]),
-                output="value",
-            )
-        value_samples = model_out["tvf_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
-
-        returns = np.zeros([N, A, K], dtype=np.float32)
 
         # this allows us to map to our 'sparse' returns table
         h_lookup = {}
         for index, h in enumerate(required_horizons):
             h_lookup[h] = index
 
-        # stub show value curve
-        def plot_debug_curve():
-            xs = []
-            ys = []
-            print(value_sample_horizons)
-            for h in range(args.tvf_max_horizon):
-                xs.append(h)
-                ys.append(_interplolate(value_sample_horizons, value_samples[0, 0], h))
-            import matplotlib.pyplot as plt
-            plt.plot(xs, ys)
-            plt.show()
+        returns = np.zeros([N, A, K], dtype=np.float32)
 
-        # step 2:
         # generate return estimates using n-step returns
         for t in range(N):
 
@@ -654,8 +610,151 @@ class Runner():
                 interpolated_value = _interplolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
                 bootstrap_estimate = discount * interpolated_value
                 returns[t, :, h_lookup[h]] = reward_sum + bootstrap_estimate
-
         return returns
+
+    def _calculate_lambda_sampled_returns(
+            self,
+            td_lambda: float,
+            gamma: float,
+            rewards: np.ndarray,
+            dones: np.ndarray,
+            required_horizons: np.ndarray,
+            value_sample_horizons: np.ndarray,
+            value_samples: np.ndarray,
+    ):
+        """
+        Calculate td_lambda returns using sampling
+        """
+
+        N, A = rewards.shape
+        K = len(required_horizons)
+
+        n_step_func = lambda x: self._calculate_n_step_sampled_returns(
+                n_step=x,
+                gamma=gamma,
+                rewards=rewards,
+                dones=dones,
+                required_horizons=required_horizons,
+                value_sample_horizons=value_sample_horizons,
+                value_samples=value_samples,
+            )
+
+        if td_lambda == 0:
+            return n_step_func(1)
+
+        if td_lambda == 1:
+            return n_step_func(N)
+
+        # first calculate the weight for each return
+        current_weight = (1-td_lambda)
+        weights = np.zeros([N], dtype=np.float32)
+        for n in range(N):
+            weights[n] = current_weight
+            current_weight *= td_lambda
+        # use last n-step for remaining weight
+        weights[-1] = 1.0 - np.sum(weights)
+
+        if args.tvf_lambda_samples == -1:
+            # if we have disabled sampling just generate them all and weight them accordingly
+            returns = np.zeros([N, A, K], dtype=np.float32)
+            for n, weight in zip(range(N), weights):
+                returns += weight * n_step_func(n+1)
+            return returns
+        else:
+            # otherwise sample randomly from n_steps with replacement, but always include last horizon
+            # as this will reduce variance a lot for small window lengths where most of the probability
+            # mass is on the final step
+            weights_missing_last = weights[:-1]
+            weights_missing_last /= np.sum(weights_missing_last) # just due to rounding error..
+            returns = weights[-1] * n_step_func(N)
+            for _ in range(args.tvf_lambda_samples-1):
+                sampled_n_step = np.random.choice(range(N-1), p=weights_missing_last) + 1
+                returns += n_step_func(sampled_n_step) / (args.tvf_lambda_samples-1) * (1-weights[-1])
+            return returns
+
+    def calculate_sampled_returns(
+            self,
+            value_sample_horizons: Union[list, np.ndarray],
+            required_horizons: Union[list, np.ndarray, int],
+            obs=None,
+            rewards=None,
+            dones=None,
+    ):
+        """
+        Calculates and returns the return estimates for given rollout.
+
+        prev_states: ndarray of dims [N+1, B, *state_shape] containing prev_states
+        rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
+        value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
+        required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
+        """
+
+        if type(value_sample_horizons) is list:
+            value_sample_horizons = np.asarray(value_sample_horizons)
+        if type(required_horizons) is list:
+            required_horizons = np.asarray(required_horizons)
+        if type(required_horizons) in [float, int]:
+            required_horizons = np.asarray([required_horizons])
+
+        # setup
+        obs = obs if obs is not None else self.all_obs
+        rewards = rewards if rewards is not None else self.ext_rewards
+        dones = dones if dones is not None else self.terminals
+
+        N, A, *state_shape = obs[:-1].shape
+
+        assert obs.shape == (N + 1, A, *state_shape)
+        assert rewards.shape == (N, A)
+        assert dones.shape == (N, A)
+
+        # step 1:
+        # use our model to generate the value estimates required
+        # for MC this is just an estimate at the end of the window
+        horizons = value_sample_horizons[None, None, :]
+        horizons = np.repeat(horizons, repeats=N + 1, axis=0)
+        horizons = np.repeat(horizons, repeats=A, axis=1)
+
+        with torch.no_grad():
+            model_out = self.forward(
+                obs=obs.reshape([(N + 1) * A, *state_shape]),
+                horizons=horizons.reshape([(N + 1) * A, -1]),
+                output="value",
+            )
+        value_samples = model_out["tvf_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
+
+        # stub show value curve
+        def plot_debug_curve():
+            xs = []
+            ys = []
+            print(value_sample_horizons)
+            for h in range(args.tvf_max_horizon):
+                xs.append(h)
+                ys.append(_interplolate(value_sample_horizons, value_samples[0, 0], h))
+            import matplotlib.pyplot as plt
+            plt.plot(xs, ys)
+            plt.show()
+
+        if args.tvf_lambda >= 0:
+            return self._calculate_lambda_sampled_returns(
+                td_lambda=args.tvf_lambda,
+                gamma=args.tvf_gamma,
+                rewards=rewards,
+                dones=dones,
+                required_horizons=required_horizons,
+                value_sample_horizons=value_sample_horizons,
+                value_samples=value_samples,
+            )
+        else:
+            return self._calculate_n_step_sampled_returns(
+                n_step=-int(args.tvf_lambda),
+                gamma=args.tvf_gamma,
+                rewards=rewards,
+                dones=dones,
+                required_horizons=required_horizons,
+                value_sample_horizons=value_sample_horizons,
+                value_samples=value_samples,
+            )
+
 
     @torch.no_grad()
     def export_movie(self, filename, include_rollout=False, include_video=True, max_frames=60 * 60 * 15):
@@ -957,21 +1056,27 @@ class Runner():
         if args.use_tvf:
             # if gamma's match we only need to generate the final horizon
             # if they don't we need to generate them all and rediscount
-
-            assert args.tvf_lambda < 0, "only n-step returns supported at the moment"
-
             if args.tvf_gamma == args.gamma:
                 ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
             else:
-                raise Exception("Not implemented yet")
-                # we could down sample this... but for the moment do them all
-                # this is easy just take the final value estimate for each horizon
-                # value_samples = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_value_samples, distribution=args.tvf_value_distribution)
-                # returns = self.calculate_sampled_returns(
-                #     n_step=-int(args.tvf_lambda),
-                #     value_sample_horizons=value_samples,
-                #     required_horizons=np.asarray([range(0, args.tvf_max_horizon+1)]),
-                # )
+                # note: we could down sample the value estimates and adjust the gamma calculations if
+                # this ends up being too slow..
+                step_skip = math.ceil(args.tvf_max_horizon / 100)
+
+                value_estimates = self.get_value_estimates(
+                    obs=self.all_obs,
+                    # going backwards makes sure that final horizon is always included
+                    horizons=np.asarray(range(args.tvf_max_horizon, 0, -step_skip))
+                )
+                # add h=0
+                value_estimates = np.concatenate((value_estimates, np.zeros_like(value_estimates[..., 0:1])), axis=-1)
+                value_estimates = value_estimates[..., ::-1].copy() # reverse order
+
+                ext_value_estimates = get_rediscounted_value_estimate(
+                    values=value_estimates.reshape([(N+1)*A, -1]),
+                    old_gamma=args.tvf_gamma**step_skip,
+                    new_gamma=args.gamma**step_skip
+                ).reshape([(N+1), A])
         else:
             # in this case just generate ext value estimates from model
             raise Exception("Not Implemented Yet")
@@ -1083,10 +1188,6 @@ class Runner():
 
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
-
-    def get_rediscounted_value_estimate(self, values: Union[np.ndarray, torch.Tensor], gamma: float):
-        # faster version used cached rediscount ratios
-        return get_rediscounted_value_estimate(values, old_gamma=args.tvf_gamma, new_gamma=gamma)
 
     def train_rnd_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
 
@@ -1235,7 +1336,7 @@ class Runner():
 
         return {}
 
-    def generate_horizon_sample(self, max_value: int, samples: int, distribution: str = "constant") -> np.ndarray:
+    def generate_horizon_sample(self, max_value: int, samples: int, distribution: str = "uniform") -> np.ndarray:
         """
         generates random samples from 0 to max (inclusive) using sampling with replacement
         and always including the first and last value
@@ -1245,7 +1346,7 @@ class Runner():
             return np.arange(0, max_value + 1)
         required = np.asarray([0, max_value], dtype=np.int32)
 
-        if distribution == "constant":
+        if distribution == "uniform":
             p = None
         elif distribution == "linear":
             p = np.asarray([max_value-h for h in range(max_value-1)], dtype=np.float32)
@@ -1278,6 +1379,9 @@ class Runner():
     def generate_return_sample(self):
         """
         Generates return estimates for current batch of data.
+
+        Note: could roll this into calculate_sampled_returns, and just have it return the horizions aswell?
+
         returns:
             returns: ndarray of dims [N,A,K] containing the return estimates
             horizon_samples: ndarray of dims [N,A,K] containing the horizons used
@@ -1289,8 +1393,6 @@ class Runner():
 
         value_samples = self.generate_horizon_sample(H, args.tvf_value_samples, distribution=args.tvf_value_distribution)
         horizon_samples = self.generate_horizon_sample(H, args.tvf_horizon_samples)
-
-        assert args.tvf_lambda < 0, "Only n-step supported at this point..."
 
         returns = self.calculate_sampled_returns(
             value_sample_horizons=value_samples,
@@ -1558,7 +1660,7 @@ def get_rediscounted_value_estimate(values: Union[np.ndarray, torch.Tensor], old
     Returns rediscounted return at horizon H
 
     values: float tensor of shape [B, H]
-    returns: float tensor of shape [B]
+    returns float tensor of shape [B]
     """
 
     B, H = values.shape

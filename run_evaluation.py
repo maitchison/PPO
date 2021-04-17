@@ -31,13 +31,55 @@ import matplotlib.colors
 import numpy.random
 from rl import atari, config, utils, models, hybridVecEnv
 from rl.config import args
+import lz4.frame as lib
 
-DEVICE = "cpu"
+DEVICE = "cuda:1"
 REWARD_SCALE = float()
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 
 GENERATE_EVAL = False
 GENERATE_MOVIES = True
+
+class CompressedStack():
+    """
+    A stack of nd arrays that are stored with compression
+
+    gzip-0 = 0.9ms
+    gzip-2 = 0.7ms
+    gzip-5 = 2.3ms
+    gzip-9 = 6.0ms
+
+    zlib-0 = 0.3ms # uncompressed?
+    zlib-1 = 0.8ms
+    zlib-5 = 1.5ms
+
+    lz4
+
+    """
+
+
+    def __init__(self):
+        self.buffer = []
+        self._uncompressed_size = 0
+        self._compressed_size = 0
+        self._compression_time = None
+
+    def append(self, x:np.ndarray):
+        start_time = time.time()
+        compressed_data = lib.compress(x.tobytes())
+        self.buffer.append((x.dtype, x.shape, compressed_data))
+        self._uncompressed_size += x.nbytes
+        self._compressed_size += len(compressed_data)
+        self._compression_time = self._compression_time or (time.time()-start_time)
+        self._compression_time = 0.999 * self._compression_time + 0.001 * (time.time()-start_time)
+
+    @property
+    def ratio(self):
+        return self._compressed_size / self._uncompressed_size
+
+    def get(self, index):
+        dtype, shape, data = self.buffer[index]
+        return np.frombuffer(lib.decompress(data), dtype=dtype).reshape(shape)
 
 def load_args(checkpoint_path):
     """
@@ -284,7 +326,7 @@ def generate_rollouts(
 
     frame_count = 0
 
-    buffers:List[Dict[str, Union[bool, list, np.ndarray]]] = []
+    buffers:List[Dict[str, Union[bool, list, np.ndarray, CompressedStack]]] = []
 
     for i in range(num_rollouts):
         buffers.append({
@@ -297,7 +339,7 @@ def generate_rollouts(
         })
 
         if include_video:
-            buffers[-1]['frames'] = []  # video frames
+            buffers[-1]['frames'] = CompressedStack()  # video frames
 
     if include_horizons and args.use_tvf:
         horizons = np.repeat(np.arange(args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
@@ -352,6 +394,8 @@ def generate_rollouts(
 
     for buffer in buffers:
         for k, v in buffer.items():
+            if k == "frames":
+                continue
             buffer[k] = np.asarray(v)
 
     return buffers
@@ -476,6 +520,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     buffer = generate_rollout(model, max_frames, include_video=True, temperature=temperature)
     rewards = buffer["rewards"]
+    print(f"ratio:{buffer['frames'].ratio:.2f} ", end='', flush=True)
     print(f"score:{int(sum(rewards)):,} ", end='', flush=True)
 
     # work out discounting values to make plotting a little faster
@@ -521,7 +566,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
         start_frame_time = time.time()
 
         # get frames
-        frame = buffer["frames"][t]
+        frame = buffer["frames"].get(t)
 
         if frame.shape[0] != width or frame.shape[1] != height:
             frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
@@ -568,7 +613,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
         # every 60 second print time
         if (time.time() - marker_time) > 60:
-            print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-100:]):.1f} FPS> ", end='')
+            print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-100:]):.1f} FPS> ", end='', flush=True)
             marker_time = time.time()
 
     video_out.release()
