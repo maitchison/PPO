@@ -681,7 +681,7 @@ class Runner():
             dones=None,
     ):
         """
-        Calculates and returns the return estimates for given rollout.
+        Calculates and returns the (tvf_gamma discounted) return estimates for given rollout.
 
         prev_states: ndarray of dims [N+1, B, *state_shape] containing prev_states
         rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
@@ -1346,7 +1346,7 @@ class Runner():
             return np.arange(0, max_value + 1)
         required = np.asarray([0, max_value], dtype=np.int32)
 
-        if distribution == "uniform":
+        if distribution in ["uniform", "constant"]: # constant was the old name for this
             p = None
         elif distribution == "linear":
             p = np.asarray([max_value-h for h in range(max_value-1)], dtype=np.float32)
@@ -1383,7 +1383,7 @@ class Runner():
         Note: could roll this into calculate_sampled_returns, and just have it return the horizions aswell?
 
         returns:
-            returns: ndarray of dims [N,A,K] containing the return estimates
+            returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
             horizon_samples: ndarray of dims [N,A,K] containing the horizons used
         """
 

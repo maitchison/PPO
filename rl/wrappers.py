@@ -59,10 +59,10 @@ class TimeAwareWrapper(gym.Wrapper):
         obs, reward, done, info = self.env.step(action)
         assert obs.dtype == np.uint8
         time_code = self.t / self.max_time
-        obs[..., -1, -3:, :] = int(time_code * 255)
-        obs[..., -1, 3, :] = int(time_code * 255)
-        obs[..., -1, -3:, :] = int(time_code * 255)
-        obs[..., -1, :3, :] = int(time_code * 255)
+        obs[..., 0, -3:, :] = int(time_code * 255)
+        obs[..., 0, :3, :] = int(time_code * 255)
+        obs[..., 0, :, -3:] = int(time_code * 255)
+        obs[..., 0, :, :3] = int(time_code * 255)
         self.t = self.t + 1
         return obs, reward, done, info
 

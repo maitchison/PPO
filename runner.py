@@ -155,16 +155,50 @@ optimized_args = {
 
         'use_tvf': True,
         'tvf_hidden_units': 128,            # big guess here
-        'tvf_value_samples': 64,            # reducing from 128 samples to 64 is fine, even 16 would work.
-        'tvf_horizon_samples': 64,
-        'tvf_lambda': -8,
+        'tvf_value_samples': 128,           # reducing from 128 samples to 64 is fine, even 16 would work.
+        'tvf_horizon_samples': 32,          # 32 has been shown to be better than 128
+        'tvf_return_mixing': 1,             # just makes things slowe to use more than 1
+        'tvf_lambda': -16,
+        'tvf_lambda_samples': 32,           # being cautious here...
         'tvf_coef': 0.01,                   # big guess
         'tvf_max_horizon': 3000,            # could be much higher if we wanted
         'gamma': 0.999,
         'tvf_gamma': 0.999,                 # rediscounting is probably a good idea...
         'tvf_loss_weighting': "advanced",   # these seem to help
         'tvf_h_scale': "squared",
-        'tvf_return_mixing': 1,             # shown to be just as good
+    }
+
+
+# this are based on the best model from PPO HPS at 10M
+best10_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'epochs': 50,
+        'max_grad_norm': 20.0,
+        'agents': 64,
+        'n_steps': 256,
+        'policy_mini_batch_size': 512,
+        'value_mini_batch_size': 512,
+        'value_epochs': 6,
+        'policy_epochs': 4,
+        'target_kl': 0.1,
+        'ppo_epsilon': 0.1,                 # hard to say if this is right...
+        'value_lr': 2.5e-4,                 # value should be 5e-4... but I don't want to do it for TVF
+        'policy_lr': 2.5e-4,
+
+        'use_tvf': True,
+        'tvf_hidden_units': 128,
+        'tvf_value_samples': 128,
+        'tvf_horizon_samples': 32,
+        'tvf_return_mixing': 1,
+        'tvf_lambda': -16,
+        'tvf_lambda_samples': 64,
+        'tvf_coef': 0.01,
+        'tvf_max_horizon': 3000,
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,
+        'tvf_loss_weighting': "advanced",
+        'tvf_h_scale': "squared",
     }
 
 
@@ -266,13 +300,13 @@ class Job:
         if status == "running":
             priority += 1000
 
-        if "search" in self.experiment_name.lower():
-            # with search we want to make sure we complete partial runs first
-            priority = priority + self.get_completed_epochs()
-        else:
-            priority = priority - self.get_completed_epochs()
+        # if "search" in self.experiment_name.lower():
+        #     # with search we want to make sure we complete partial runs first
+        #     priority = priority + self.get_completed_epochs()
+        # else:
+        #     priority = priority - self.get_completed_epochs()
 
-        # priority = priority - self.get_completed_epochs()
+        priority = priority - self.get_completed_epochs()
 
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
@@ -741,7 +775,7 @@ def random_search_11_ppo():
         'export_video': False, # save some space...
         'use_tvf': False,
         'gamma': 0.999,
-        'epochs': 10,
+        'epochs': 30,
         'priority': -20,
     }
 
@@ -766,7 +800,7 @@ def random_search_11_ppo():
         "TVF_11_Search_PPO",
         main_params,
         search_params,
-        count=64,
+        count=32,
         envs=['BattleZone', 'DemonAttack', 'Amidar'],
         score_thresholds=[5000, 500, 50],
     )
@@ -1048,8 +1082,8 @@ def setup_experiments_12():
             tvf_value_samples=samples,
             tvf_value_distribution="constant",
             default_params=new_args,
-            epochs=30,  # just to get an idea for the moment...
-            priority=50,
+            epochs=50,  # just to get an idea for the moment...
+            priority=0,
         )
 
     for n_step in [1, 2, 4, 8, 16, 32, 64, 128]:
@@ -1061,7 +1095,7 @@ def setup_experiments_12():
             tvf_value_samples=64,
             tvf_value_distribution="constant",
             default_params=new_args,
-            epochs=50,  # just to get an idea for the moment...
+            epochs=50,
             priority=50,
         )
 
@@ -1079,6 +1113,46 @@ def setup_experiments_12():
                 epochs=50,
                 priority=100,
             )
+
+    for tvf_gamma in [0.999, 0.9999, 1.0]:
+        for gamma in [0.999]:
+            add_job(
+                f"TVF_12_Rediscounting",
+                run_name=f"tvf_gamma={tvf_gamma} gamma={gamma}",
+                tvf_horizon_samples=64,
+                tvf_value_samples=64,
+                tvf_gamma=tvf_gamma,
+                gamma=gamma,
+                tvf_return_mixing=1,
+                tvf_value_distribution="constant",
+                default_params=new_args,
+                epochs=50,
+                priority=200,
+            )
+
+    # Long horizons :)
+    # this will just tell us if long horizons work out of the box,
+    # might need to increase all sampling, so maybe use
+    # we know 32/32 works so maybe 512/512
+    for gamma, horizon in zip([0.99, 0.999, 0.9999, 0.99999, 1], [300, 3000, 30000, 30000, 30000]):
+        add_job(
+            f"TVF_12_LongHorizon",
+            run_name=f"gamma={gamma} horizon={horizon}",
+            gamma=gamma,
+            tvf_gamma=gamma,
+            tvf_max_horizon=horizon,
+            default_params=optimized_args,
+            export_video=False,  # not needed
+            epochs=50,
+            priority=50,
+        )
+
+    # Long horizons take 2
+    # really try to make infinite horizon work well
+    # try tvf_lambda
+    # try increased sampling, perhaps grid search it with course grid [32, 128, 512]
+    # try rediscounting
+    pass
 
 def retired_experiments():
     pass
