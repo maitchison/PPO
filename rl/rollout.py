@@ -319,7 +319,7 @@ def calculate_tvf_td(
     return returns
 
 
-def _interplolate(horizons, values, target_horizon):
+def _interpolate(horizons, values, target_horizon):
     """
     Returns linearly interpolated value from source_values
 
@@ -555,6 +555,7 @@ class Runner():
             required_horizons: np.ndarray,
             value_sample_horizons: np.ndarray,
             value_samples: np.ndarray,
+            post_interpolation_transform: lambda x, y: x,
         ):
         """
         This is a fancy n-step sampled reutrns calculation
@@ -564,6 +565,9 @@ class Runner():
         reward: nd array of dims [N, A]
         dones: nd array of dims [N, A]
         requred_horizons: nd array of dims [K]
+
+        post_interpolation_transform: transform applied after linear interpolation of value samples with signature
+            (raw_values, horizions) -> values
 
 
         If n_step td_lambda is negative it is taken as
@@ -607,37 +611,24 @@ class Runner():
                 if h < steps_made + 1:
                     # these are just the accumulated sums and don't need horizon bootstrapping
                     continue
-                interpolated_value = _interplolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
+                interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
+                interpolated_value = post_interpolation_transform(interpolated_value, h-steps_made)
                 bootstrap_estimate = discount * interpolated_value
                 returns[t, :, h_lookup[h]] = reward_sum + bootstrap_estimate
+
         return returns
 
     def _calculate_lambda_sampled_returns(
             self,
+            dims:tuple,
             td_lambda: float,
-            gamma: float,
-            rewards: np.ndarray,
-            dones: np.ndarray,
-            required_horizons: np.ndarray,
-            value_sample_horizons: np.ndarray,
-            value_samples: np.ndarray,
+            n_step_func: callable,
     ):
         """
         Calculate td_lambda returns using sampling
         """
 
-        N, A = rewards.shape
-        K = len(required_horizons)
-
-        n_step_func = lambda x: self._calculate_n_step_sampled_returns(
-                n_step=x,
-                gamma=gamma,
-                rewards=rewards,
-                dones=dones,
-                required_horizons=required_horizons,
-                value_sample_horizons=value_sample_horizons,
-                value_samples=value_samples,
-            )
+        N, A, K = dims
 
         if td_lambda == 0:
             return n_step_func(1)
@@ -720,29 +711,67 @@ class Runner():
                 horizons=horizons.reshape([(N + 1) * A, -1]),
                 output="value",
             )
-        value_samples = model_out["tvf_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
+        value_samples = model_out["tvf_raw_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
 
-        # stub show value curve
-        def plot_debug_curve():
-            xs = []
-            ys = []
-            print(value_sample_horizons)
-            for h in range(args.tvf_max_horizon):
-                xs.append(h)
-                ys.append(_interplolate(value_sample_horizons, value_samples[0, 0], h))
+        def plot_true_value():
+            xs = np.arange(args.tvf_max_horizon+1)
+            horizons = xs[None, None, :]
+
+            with torch.no_grad():
+                model_out = self.forward(
+                    obs=obs[0, 0].reshape([1, *state_shape]),
+                    horizons=horizons.reshape([1, -1]),
+                    output="value",
+                )
+            ys = model_out["tvf_value"].reshape([1, 1, args.tvf_max_horizon+1]).cpu().numpy()[0,0]
             import matplotlib.pyplot as plt
             plt.plot(xs, ys)
             plt.show()
 
+
+        # stub show value curve
+        def plot_debug_curve(interpolate_before_scale=True):
+            xs = []
+            ys = []
+            print(value_sample_horizons)
+            for h in range(args.tvf_max_horizon+1):
+                xs.append(h)
+                if interpolate_before_scale:
+                    values = _interpolate(value_sample_horizons, value_samples[0, 0], h)
+                    values = self.model.value_net.apply_tvf_transform(values, h)
+                else:
+                    values = _interpolate(
+                        value_sample_horizons,
+                        self.model.value_net.apply_tvf_transform(value_samples[0, 0], value_sample_horizons),
+                        h
+                    )
+
+                ys.append(values)
+            import matplotlib.pyplot as plt
+
+            # show curve
+            plt.plot(xs, ys)
+            # show samples
+            plt.scatter(value_sample_horizons, [ys[x] for x in value_sample_horizons], marker='x')
+            plt.show()
+
         if args.tvf_lambda >= 0:
+
+            n_step_func = lambda x: self._calculate_n_step_sampled_returns(
+                    n_step=x,
+                    gamma=args.tvf_gamma,
+                    rewards=rewards,
+                    dones=dones,
+                    required_horizons=required_horizons,
+                    value_sample_horizons=value_sample_horizons,
+                    value_samples=value_samples,
+                    post_interpolation_transform=self.model.value_net.apply_tvf_transform,
+                )
+
             return self._calculate_lambda_sampled_returns(
+                dims=(N, A, required_horizons),
                 td_lambda=args.tvf_lambda,
-                gamma=args.tvf_gamma,
-                rewards=rewards,
-                dones=dones,
-                required_horizons=required_horizons,
-                value_sample_horizons=value_sample_horizons,
-                value_samples=value_samples,
+                n_step_func=n_step_func,
             )
         else:
             return self._calculate_n_step_sampled_returns(
@@ -753,6 +782,7 @@ class Runner():
                 required_horizons=required_horizons,
                 value_sample_horizons=value_sample_horizons,
                 value_samples=value_samples,
+                post_interpolation_transform=self.model.value_net.apply_tvf_transform,
             )
 
 
@@ -846,10 +876,6 @@ class Runner():
         assert self.vec_env is not None, "Please call create_envs first."
 
         max_h = self.current_max_horizon
-        all_horizons = np.repeat(np.arange(max_h + 1, dtype=np.int16)[None, :], repeats=self.A, axis=0)
-        # also include horizons for debugging
-        required_horizons = np.asarray([x for x in self.tvf_debug_horizons if x < max_h] + [max_h], dtype=np.int16)
-        far_horizons = np.repeat(required_horizons[None, :], repeats=self.A, axis=0)
 
         # calculate a good batch_size to use
 
@@ -1010,6 +1036,7 @@ class Runner():
                 args.tvf_value_samples,
                 distribution=args.tvf_value_distribution
             )
+
             targets = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=self.tvf_debug_horizons,
@@ -1030,6 +1057,29 @@ class Runner():
                 self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5),
                                     display_width=0)
                 self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
+
+            # do ev over random horizons
+            random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=False)
+
+            targets = self.calculate_sampled_returns(
+                value_sample_horizons=value_samples,
+                required_horizons=random_horizon_samples,
+                obs=self.all_obs[:, agent_filter],
+                rewards=self.ext_rewards[:, agent_filter],
+                dones=self.terminals[:, agent_filter],
+            )
+
+            values = self.get_value_estimates(
+                obs=self.prev_obs[:, agent_filter],
+                horizons=random_horizon_samples,
+            )
+
+            value = values.reshape(-1)
+            target = targets.reshape(-1)
+
+            self.log.watch_mean(f"ev_av", utils.explained_variance(value, target), display_width=8)
+            self.log.watch_mean(f"raw_av", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5), display_width=0)
+            self.log.watch_mean(f"mse_av", np.mean(np.square(value - target)), display_width=0)
         else:
             raise Exception("PPO not supported yet")
             # self.log.watch_mean("ev_ext", utils.explained_variance(self.ext_value.ravel(), self.ext_returns.ravel()))
@@ -1159,7 +1209,8 @@ class Runner():
 
         # this is a big slow as it recalculates values so it might be a good idea to only do it every so often
         # current time taken is 0.24 for 10k horizons
-        self.log_value_quality()
+        if self.batch_counter % 2 == 0:
+            self.log_value_quality()
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
@@ -1344,34 +1395,33 @@ class Runner():
         """
         if samples == -1 or samples >= (max_value + 1):
             return np.arange(0, max_value + 1)
-        required = np.asarray([0, max_value], dtype=np.int32)
+
+        # make sure first and last horizons are always included.
+        f_and_l = math.ceil(samples * args.tvf_first_and_last)
+        required = []
+        for i in range(f_and_l):
+            required.append(i)
+            required.append(max_value-i)
+        required = np.asarray(required, dtype=np.int32)
+
+        sample_range = range(f_and_l, max_value-f_and_l+1)
 
         if distribution in ["uniform", "constant"]: # constant was the old name for this
             p = None
         elif distribution == "linear":
-            p = np.asarray([max_value-h for h in range(max_value-1)], dtype=np.float32)
+            p = np.asarray([max_value-h for h in sample_range], dtype=np.float32)
             p /= np.sum(p)
         elif distribution == "hyperbolic":
-            p = np.asarray([1/(h+1) for h in range(max_value - 1)])
+            p = np.asarray([1/(h+1) for h in sample_range])
             p /= np.sum(p)
         elif distribution == "exponential":
             # adjust exponential so mean is half horizon
-            p = np.asarray([np.exp(-(2/max_value*h)) for h in range(max_value - 1)])
-            p /= np.sum(p)
-        elif distribution == "hyperbolic_100":
-            p = np.asarray([1 / (1+0.01*h) for h in range(max_value - 1)])
-            p /= np.sum(p)
-        elif distribution == "hyperbolic_10":
-            p = np.asarray([1 / (1+0.1*h) for h in range(max_value - 1)])
-            p /= np.sum(p)
-        elif distribution == "exponential_4":
-            # adjust exponential so mean is quarter horizon
-            p = np.asarray([np.exp(-(4 / max_value * h)) for h in range(max_value - 1)])
+            p = np.asarray([np.exp(-(2/max_value*h)) for h in sample_range])
             p /= np.sum(p)
         else:
             raise Exception("invalid distribution")
 
-        sampled = np.random.choice(range(1, max_value), samples - 2, replace=False, p=p)
+        sampled = np.random.choice(sample_range, samples-(f_and_l*2), replace=False, p=p)
         result = list(np.concatenate((required, sampled)))
         result.sort()
         return np.asarray(result)
@@ -1518,7 +1568,7 @@ class Runner():
         batch_data["log_policy"] = self.log_policy.reshape([B, *self.policy_shape])
 
         if args.normalize_advantages:
-            # we should normalize at the mini_batch level, but it's so much easyer to do this at the batch level.
+            # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
             advantages = self.advantage.reshape(B)
             batch_data["advantages"] = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         else:

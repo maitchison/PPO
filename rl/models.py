@@ -188,6 +188,26 @@ class ValueNet(nn.Module):
         self.value_net_hidden_aux = nn.Linear(1, self.tvf_hidden_units)
         self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
 
+    def apply_tvf_transform(self, tvf_values, horizons):
+        """
+        Applies the transform for tvf_values, i.e. are we predicting the average reward, the return or some
+        mixture in between.
+        """
+
+        transformed_horizons = self.horizon_transform(horizons)
+
+        if self.tvf_h_scale == "constant":
+            tvf_values = tvf_values
+        elif self.tvf_h_scale == "linear":
+            tvf_values = tvf_values * transformed_horizons
+        elif self.tvf_h_scale == "squared":
+            # this is a linear interpolation between constant and squared
+            tvf_values = tvf_values * (2 * transformed_horizons - transformed_horizons ** 2)
+        else:
+            # todo: implement the linear then constant version
+            raise ValueError(f"invalid h_scale: {self.tvf_h_scale}")
+        return tvf_values
+
     def forward(self, x, horizons=None):
 
         result = {}
@@ -228,16 +248,9 @@ class ValueNet(nn.Module):
 
             tvf_values = self.value_net_tvf(tvf_h)[..., 0]
 
-            if self.tvf_h_scale == "constant":
-                tvf_values = tvf_values
-            elif self.tvf_h_scale == "linear":
-                tvf_values = tvf_values * transformed_horizons
-            elif self.tvf_h_scale == "squared":
-                # this is a linear interpolation between constant and squared
-                tvf_values = tvf_values * (2 * transformed_horizons - transformed_horizons ** 2)
-            else:
-                # todo: implement the linear then constant version
-                raise ValueError(f"invalid h_scale: {self.tvf_h_scale}")
+            result['tvf_raw_value'] = tvf_values.clone()
+
+            tvf_values = self.apply_tvf_transform(tvf_values, horizons)
 
             result['tvf_value'] = tvf_values
 

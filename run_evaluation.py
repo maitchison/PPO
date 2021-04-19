@@ -418,12 +418,17 @@ class QuickPlot():
         self.buffer = self._background.copy()
 
     def _generate_background(self):
+        plt.style.use('dark_background')
         fig = plt.figure(figsize=(7, 4), dpi=100)
-        plt.plot([1], [0], label="True", c="red")
-        plt.plot([1], [0], label="Pred", c="green")
+        ax = plt.gca()
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+
+        plt.plot([1], [0], label="True", c="lightcoral")
+        plt.plot([1], [0], label="Pred", c="greenyellow")
 
         plt.ylim(self._y_min, self._y_max)
-        plt.grid(True)
+        plt.grid(alpha=0.2)
         if self.log_scale:
             plt.xlabel("log_10(10+h)")
             plt.xlim(1, np.log10(args.tvf_max_horizon + 10))
@@ -588,16 +593,16 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
         xs = list(range(len(true_returns)))
         ys = true_returns
-        log_fig.plot(xs, ys, 'red')
-        linear_fig.plot(xs, ys, 'red')
+        log_fig.plot(xs, ys, 'lightcoral')
+        linear_fig.plot(xs, ys, 'lightcoral')
 
         # plot predicted values...
         if args.use_tvf:
             values = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
             ys = values
             xs = list(range(len(ys)))
-            log_fig.plot(xs, ys, 'green')
-            linear_fig.plot(xs, ys, 'green')
+            log_fig.plot(xs, ys, 'greenyellow')
+            linear_fig.plot(xs, ys, 'greenyellow')
 
         frame[:plot_height, -plot_width:] = log_fig.buffer
         frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer

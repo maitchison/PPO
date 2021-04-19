@@ -68,6 +68,7 @@ class Config:
         self.tvf_activation     = str()
         self.tvf_loss_weighting = str()
         self.tvf_return_mixing  = int()
+        self.tvf_first_and_last = float()
 
     
         self.time_aware = bool()
@@ -202,6 +203,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
     parser.add_argument("--tvf_return_mixing", type=int, default=1, help="Number of times to generate returns before random sampling. Helps make data IID.")
+    parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")

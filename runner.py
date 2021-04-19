@@ -1143,9 +1143,77 @@ def setup_experiments_12():
             tvf_max_horizon=horizon,
             default_params=optimized_args,
             export_video=False,  # not needed
-            epochs=50,
+            epochs=100,
             priority=50,
         )
+
+    # Retake on sampling
+    for samples in [32, 64, 128, 256, 512, 1024]:
+        add_job(
+            f"TVF_12_FixedHorizonSamples",
+            run_name=f"samples={samples}",
+            tvf_horizon_samples=samples,
+            default_params=optimized_args,
+            export_video=False,  # not needed
+            epochs=30,
+            priority=50,
+        )
+
+
+    # Hidden units
+    # for hidden_units in [1, 4, 16, 64, 512]:
+    #     add_job(
+    #         f"TVF_12_HiddenUnits",
+    #         run_name=f"hidden_units={hidden_units}",
+    #         tvf_hidden_units=hidden_units,
+    #         default_params=optimized_args,
+    #         export_video=False,  # not needed
+    #         epochs=10,
+    #         priority=50,
+    #     )
+
+    # # Hidden units on game where rewards come all at once
+    # for hidden_units in [1, 4, 16, 64]:
+    #     add_job(
+    #         f"TVF_12_Breakout_HiddenUnits",
+    #         run_name=f"hidden_units={hidden_units}",
+    #         env_name="Breakout",
+    #         tvf_hidden_units=hidden_units,
+    #         default_params=optimized_args,
+    #         export_video=False,  # not needed
+    #         epochs=10,
+    #         priority=50,
+    #     )
+    #
+    # # Check if lower tvf_loss helps with higher samples
+    # for tvf_loss in [0.1, 0.01, 0.001]:
+    #     add_job(
+    #         f"TVF_12_TVFLoss",
+    #         run_name=f"tvf_loss={tvf_loss}",
+    #         env_name="DemonAttack",
+    #         default_params=optimized_args,
+    #         tvf_loss=tvf_loss,
+    #         tvf_horizon_samples=256,
+    #         export_video=False,
+    #         epochs=10,
+    #         priority=50,
+    #     )
+    #
+    # # just want to see if this is a problem
+    # for env_name in ['Breakout', 'DemonAttack']:
+    #     for h_scale in ['constant', 'linear', 'squared']:
+    #         for loss_weighting in ['default', 'advanced']:
+    #             add_job(
+    #                 f"TVF_12_{env_name}_Curve",
+    #                 env_name=env_name,
+    #                 run_name=f"h_scale={h_scale} loss_weighting={loss_weighting}",
+    #                 tvf_h_scale=h_scale,
+    #                 tvf_loss_weighting=loss_weighting,
+    #                 default_params=optimized_args,
+    #                 export_video=False,  # not needed
+    #                 epochs=10,
+    #                 priority=50,
+    #             )
 
     # Long horizons take 2
     # really try to make infinite horizon work well
