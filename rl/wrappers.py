@@ -45,25 +45,21 @@ class TimeAwareWrapper(gym.Wrapper):
     [..., C, H, W]
     """
 
-    def __init__(self, env: gym.Env, max_time):
+    def __init__(self, env: gym.Env):
         super().__init__(env)
         self.env = env
-        self.t = 0
-        self.max_time = max_time
-
-    def reset(self):
-        self.t = 0
-        return self.env.reset()
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         assert obs.dtype == np.uint8
-        time_code = self.t / self.max_time
-        obs[..., 0, -3:, :] = int(time_code * 255)
-        obs[..., 0, :3, :] = int(time_code * 255)
-        obs[..., 0, :, -3:] = int(time_code * 255)
-        obs[..., 0, :, :3] = int(time_code * 255)
-        self.t = self.t + 1
+        assert "time_frac" in info, "Must use TimeLimitWrapper."
+        for i in [2,1,0]:
+            # this increased the precision 3x which can be useful.
+            time_code = int(np.clip(info["time_frac"]+(i/3)*(1/255), 0, 1) * 255)
+            obs[..., 0, -(i+1):, :] = time_code
+            obs[..., 0, :(i+1), :] = time_code
+            obs[..., 0, :, -(i+1):] = time_code
+            obs[..., 0, :, :(i+1)] = time_code
         return obs, reward, done, info
 
 
@@ -273,7 +269,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     Also clips rewards
     """
 
-    def __init__(self, env:VectorEnv, initial_state=None, clip=10):
+    def __init__(self, env:VectorEnv, initial_state=None, gamma=1, clip=10):
         """
         Normalizes returns
         """
@@ -286,13 +282,16 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.ret_rms = utils.RunningMeanStd(shape=())
         self.mean = 0.0
         self.std = 0.0
+        self.gamma = gamma
         if initial_state is not None:
             self.ret_rms.restore_state(initial_state)
 
     def step(self, actions):
         obs, rewards, dones, infos = self.env.step(actions)
 
-        self.current_returns = rewards + self.current_returns * (1-dones)
+        # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
+        # but it is what OpenAI does...
+        self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
 
         self.ret_rms.update(self.current_returns)
         self.mean = self.ret_rms.mean
@@ -416,12 +415,11 @@ class TimeLimitWrapper(gym.Wrapper):
 
     def step(self, ac):
         observation, reward, done, info = self.env.step(ac)
-        # stub:
-        #print(self._elapsed_steps, hash(observation.data.tobytes()), reward, done)
         self._elapsed_steps += 1
         if self._elapsed_steps >= self._max_episode_steps:
             done = True
             info['TimeLimit.truncated'] = True
+        info['time_frac'] = self._elapsed_steps / self._max_episode_steps
         return observation, reward, done, info
 
     def reset(self, **kwargs):

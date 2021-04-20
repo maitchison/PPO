@@ -44,7 +44,8 @@ def make(non_determinism=None, monitor_video=False, seed=None):
 
         assert "NoFrameskip" in env_name
 
-        env = wrappers.TimeLimitWrapper(env, 60 * 60 * 30)
+        if args.timeout > 0:
+            env = wrappers.TimeLimitWrapper(env, args.timeout)
 
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":
@@ -97,7 +98,7 @@ def make(non_determinism=None, monitor_video=False, seed=None):
 
         if args.time_aware:
             # must come after frame_stack
-            env = wrappers.TimeAwareWrapper(env, max_time=60 * 60 * 30)
+            env = wrappers.TimeAwareWrapper(env)
 
         env = wrappers.NullActionWrapper(env)
 

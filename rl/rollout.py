@@ -426,7 +426,8 @@ class Runner():
         if args.reward_normalization:
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
-                initial_state=atari.get_env_state("returns_norm_state")
+                initial_state=atari.get_env_state("returns_norm_state"),
+                gamma=args.gamma
             )
 
         self.log.important("Generated {} agents ({}) using {} ({}) model.".
@@ -612,9 +613,8 @@ class Runner():
                     # these are just the accumulated sums and don't need horizon bootstrapping
                     continue
                 interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
-                interpolated_value = post_interpolation_transform(interpolated_value, h-steps_made)
-                bootstrap_estimate = discount * interpolated_value
-                returns[t, :, h_lookup[h]] = reward_sum + bootstrap_estimate
+                interpolated_value = post_interpolation_transform(interpolated_value, h - steps_made)
+                returns[t, :, h_lookup[h]] = reward_sum + interpolated_value * discount
 
         return returns
 
@@ -723,7 +723,7 @@ class Runner():
                     horizons=horizons.reshape([1, -1]),
                     output="value",
                 )
-            ys = model_out["tvf_value"].reshape([1, 1, args.tvf_max_horizon+1]).cpu().numpy()[0,0]
+            ys = model_out["tvf_value"].reshape([1, 1, args.tvf_max_horizon+1]).cpu().numpy()[0, 0]
             import matplotlib.pyplot as plt
             plt.plot(xs, ys)
             plt.show()
@@ -1059,7 +1059,7 @@ class Runner():
                 self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
 
             # do ev over random horizons
-            random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=False)
+            random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=True)
 
             targets = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
@@ -1600,21 +1600,6 @@ class Runner():
         # ----------------------------------------------------
         # value phase
 
-        if args.use_tvf:
-            # we do this once at the start, generate one returns estimate for each epoch on different horizons then
-            # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
-            # we don't drift, as the updates will modify our model and change the value estimates.
-            # it is possible that instead we should be updating our return estimates as we go though
-            all_returns = np.zeros([args.tvf_return_mixing, B, args.tvf_horizon_samples], dtype=np.float32)
-            all_horizons = np.zeros([args.tvf_return_mixing, B, args.tvf_horizon_samples], dtype=np.int16)
-            for i in range(args.tvf_return_mixing):
-                returns, horizons = self.generate_return_sample()
-                all_returns[i] = returns.reshape([B, -1])
-                all_horizons[i] = horizons.reshape([B, -1])
-        else:
-            all_returns = None
-            all_horizons = None
-
         batch_data = {}
         batch_data["prev_state"] = self.prev_obs.reshape([B, *self.state_shape])
         batch_data["ext_returns"] = self.ext_returns.reshape(B)
@@ -1625,11 +1610,14 @@ class Runner():
 
         for _ in range(args.value_epochs):
 
-            # sample from our returns buffer, this way we get something slightly different every epoch
             if args.use_tvf:
-                sample = np.random.randint(0, args.tvf_return_mixing, size=(1, B, args.tvf_horizon_samples))
-                batch_data["tvf_returns"] = np.take_along_axis(all_returns, sample, axis=0)[0]
-                batch_data["tvf_horizons"] = np.take_along_axis(all_horizons, sample, axis=0)[0]
+                # we do this once at the start, generate one returns estimate for each epoch on different horizons then
+                # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
+                # we don't drift, as the updates will modify our model and change the value estimates.
+                # it is possible that instead we should be updating our return estimates as we go though
+                returns, horizons = self.generate_return_sample()
+                batch_data["tvf_returns"] = returns.reshape([B, -1])
+                batch_data["tvf_horizons"] =  horizons.reshape([B, -1])
 
             self.train_batch(
                 batch_data=batch_data,

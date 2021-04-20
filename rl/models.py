@@ -188,6 +188,13 @@ class ValueNet(nn.Module):
         self.value_net_hidden_aux = nn.Linear(1, self.tvf_hidden_units)
         self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
 
+        # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
+        torch.nn.init.uniform_(
+            self.value_net_hidden_aux.weight,
+            -1/(self.value_encoder.hidden_units**0.5),
+             1/(self.value_encoder.hidden_units**0.5)
+        )
+
     def apply_tvf_transform(self, tvf_values, horizons):
         """
         Applies the transform for tvf_values, i.e. are we predicting the average reward, the return or some

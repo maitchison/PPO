@@ -32,10 +32,12 @@ import numpy.random
 from rl import atari, config, utils, models, hybridVecEnv
 from rl.config import args
 import lz4.frame as lib
+import os
 
 DEVICE = "cuda:1"
 REWARD_SCALE = float()
 PARALLEL_ENVS = 64 # number of environments to run in parallel
+TEMP_LOCATION = os.path.expanduser("~/.cache/")
 
 GENERATE_EVAL = False
 GENERATE_MOVIES = True
@@ -298,6 +300,7 @@ def generate_fake_rollout(num_frames = 30*60):
     """
     return {
         'values': np.zeros([num_frames, args.tvf_n_horizons], dtype=np.float32),
+        'raw_values': np.zeros([num_frames, args.tvf_n_horizons], dtype=np.float32),
         'model_values': np.zeros([num_frames], dtype=np.float32),
         'rewards': np.zeros([num_frames], dtype=np.float32),
         'raw_rewards': np.zeros([num_frames], dtype=np.float32),
@@ -331,18 +334,18 @@ def generate_rollouts(
     for i in range(num_rollouts):
         buffers.append({
             'values': [],   # values for each horizon of dims [K]
+            'raw_values': [],  # values for each horizon of dims [K] (unscaled)
             'errors': [],   # std error estimates for each horizon of dims [K]
             'model_values': [], # models predicted value (float)
-            'rewards': [],   # normalized reward (which value predicts)
+            'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
             'raw_rewards': [], # raw unscaled reward from the atari environment
-            'game_was_reset': False,
         })
 
         if include_video:
             buffers[-1]['frames'] = CompressedStack()  # video frames
 
     if include_horizons and args.use_tvf:
-        horizons = np.repeat(np.arange(args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
+        horizons = np.repeat(np.arange(int(args.tvf_max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
     else:
         horizons = None
 
@@ -379,24 +382,29 @@ def generate_rollouts(
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 buffers[i]['frames'].append(frame)
 
-            game_reset = "game_freeze" in infos[i]
-
             if horizons is not None:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
                 buffers[i]['values'].append(values)
+                if "tvf_raw_value" in model_out:
+                    raw_values = model_out["tvf_raw_value"][i, :].detach().cpu().numpy()
+                    buffers[i]['raw_values'].append(raw_values)
 
             buffers[i]['model_values'].append(model_value)
             buffers[i]['rewards'].append(rewards[i])
             buffers[i]['raw_rewards'].append(raw_reward)
-            buffers[i]['game_was_reset'] = buffers[i]['game_was_reset'] or game_reset
 
         frame_count += 1
 
+    # turn lists into np arrays
     for buffer in buffers:
-        for k, v in buffer.items():
-            if k == "frames":
+        keys = list(buffer.keys())
+        for key in keys:
+            if key == "frames":
                 continue
-            buffer[k] = np.asarray(v)
+            if len(buffer[key]) == 0:
+                del buffer[key]
+            else:
+                buffer[key] = np.asarray(buffer[key])
 
     return buffers
 
@@ -426,6 +434,7 @@ class QuickPlot():
 
         plt.plot([1], [0], label="True", c="lightcoral")
         plt.plot([1], [0], label="Pred", c="greenyellow")
+        plt.plot([1], [0], label="Raw", c="darkturquoise")
 
         plt.ylim(self._y_min, self._y_max)
         plt.grid(alpha=0.2)
@@ -525,8 +534,9 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     buffer = generate_rollout(model, max_frames, include_video=True, temperature=temperature)
     rewards = buffer["rewards"]
+    raw_rewards = buffer["raw_rewards"]
     print(f"ratio:{buffer['frames'].ratio:.2f} ", end='', flush=True)
-    print(f"score:{int(sum(rewards)):,} ", end='', flush=True)
+    print(f"score:{int(sum(raw_rewards)):,} ", end='', flush=True)
 
     # work out discounting values to make plotting a little faster
     discount_weights = args.gamma ** np.arange(0, args.tvf_max_horizon+1)
@@ -550,11 +560,11 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
     plot_height, plot_width = log_fig.buffer.shape[:2]
 
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-    final_score = sum(rewards)
+    final_score = sum(raw_rewards)
     postfix = f" [{int(final_score):,}].mp4" if include_score_in_filename else ".mp4"
     video_filename = filename_base + postfix
     parts = os.path.split(video_filename)
-    temp_filename = os.path.join(parts[0], "_"+parts[1])
+    temp_filename = os.path.join(TEMP_LOCATION, "_"+parts[1])
 
     video_out = cv2.VideoWriter(temp_filename, cv2.VideoWriter_fourcc(*'mp4v'), 30, (width+plot_width, height), isColor=True)
 
@@ -598,11 +608,15 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
         # plot predicted values...
         if args.use_tvf:
-            values = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
-            ys = values
-            xs = list(range(len(ys)))
+            xs = list(range(len(buffer["values"][t])))
+            if "raw_values" in buffer:
+                ys = buffer["raw_values"][t] * REWARD_SCALE
+                log_fig.plot(xs, ys, 'darkturquoise')
+                linear_fig.plot(xs, ys, 'darkturquoise')
+            ys = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
             log_fig.plot(xs, ys, 'greenyellow')
             linear_fig.plot(xs, ys, 'greenyellow')
+
 
         frame[:plot_height, -plot_width:] = log_fig.buffer
         frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer

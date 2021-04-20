@@ -67,7 +67,6 @@ class Config:
         self.tvf_h_scale        = str()
         self.tvf_activation     = str()
         self.tvf_loss_weighting = str()
-        self.tvf_return_mixing  = int()
         self.tvf_first_and_last = float()
 
     
@@ -99,6 +98,7 @@ class Config:
         self.deferred_rewards   = bool()
 
         self.frame_stack        = int()
+        self.timeout = int()
 
         self.normalize_advantages = bool()
 
@@ -187,6 +187,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Loss multiplier for default value loss.")
+    parser.add_argument("--timeout", type=int, default=60*60*30, help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
 
     parser.add_argument("--use_tvf", type=str2bool, default=True, help="Use truncated value function.")
     parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
@@ -202,7 +203,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_h_scale", type=str, default='constant', help="[constant|linear|squared]")
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
-    parser.add_argument("--tvf_return_mixing", type=int, default=1, help="Number of times to generate returns before random sampling. Helps make data IID.")
     parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
 
     # phasic inspired stuff
