@@ -1391,7 +1391,6 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     random_search_11_ppo()
-    #setup_experiments_12()
     setup_experiments_13()
 
     if len(sys.argv) == 1:

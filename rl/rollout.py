@@ -713,36 +713,37 @@ class Runner():
             )
         value_samples = model_out["tvf_raw_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
 
-        def plot_true_value():
+        def plot_true_value(n, a):
             xs = np.arange(args.tvf_max_horizon+1)
             horizons = xs[None, None, :]
 
             with torch.no_grad():
                 model_out = self.forward(
-                    obs=obs[0, 0].reshape([1, *state_shape]),
+                    obs=obs[n, a].reshape([1, *state_shape]),
                     horizons=horizons.reshape([1, -1]),
                     output="value",
                 )
             ys = model_out["tvf_value"].reshape([1, 1, args.tvf_max_horizon+1]).cpu().numpy()[0, 0]
             import matplotlib.pyplot as plt
+            print(ys)
             plt.plot(xs, ys)
             plt.show()
 
 
         # stub show value curve
-        def plot_debug_curve(interpolate_before_scale=True):
+        def plot_debug_curve(n,a, interpolate_before_scale=True):
             xs = []
             ys = []
             print(value_sample_horizons)
             for h in range(args.tvf_max_horizon+1):
                 xs.append(h)
                 if interpolate_before_scale:
-                    values = _interpolate(value_sample_horizons, value_samples[0, 0], h)
+                    values = _interpolate(value_sample_horizons, value_samples[n, a], h)
                     values = self.model.value_net.apply_tvf_transform(values, h)
                 else:
                     values = _interpolate(
                         value_sample_horizons,
-                        self.model.value_net.apply_tvf_transform(value_samples[0, 0], value_sample_horizons),
+                        self.model.value_net.apply_tvf_transform(value_samples[n, a], value_sample_horizons),
                         h
                     )
 
@@ -1307,8 +1308,8 @@ class Runner():
         # -------------------------------------------------------------------------
 
         if args.use_tvf:
-            # targets "tvf_returns" are [N, A, K]
-            # predictions "tvf_value" are [N, A, K]
+            # targets "tvf_returns" are [B, K]
+            # predictions "tvf_value" are [B, K]
             # predictions need to be generated... this could take a lot of time so just sample a few..
             targets = data["tvf_returns"]
             value_predictions = model_out["tvf_value"]
@@ -1332,6 +1333,12 @@ class Runner():
                 weighting = weighting / weighting.mean()
             else:
                 raise ValueError("Invalid tvf_loss_weighting value.")
+
+            if args.tvf_soft_anchor != 0:
+                assert torch.all(data["tvf_horizons"][:, 0] == 0)
+                anchor_loss = args.tvf_soft_anchor * torch.sum(torch.square(value_predictions[:,  0]))
+                self.log.watch_mean("anchor_loss", loss, display_width=8)
+                loss = loss + anchor_loss
 
             # MSE loss
             tvf_loss = 0.5 * weighting * args.tvf_coef * torch.square(targets - value_predictions)
@@ -1617,7 +1624,7 @@ class Runner():
                 # it is possible that instead we should be updating our return estimates as we go though
                 returns, horizons = self.generate_return_sample()
                 batch_data["tvf_returns"] = returns.reshape([B, -1])
-                batch_data["tvf_horizons"] =  horizons.reshape([B, -1])
+                batch_data["tvf_horizons"] = horizons.reshape([B, -1])
 
             self.train_batch(
                 batch_data=batch_data,
