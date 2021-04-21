@@ -838,245 +838,6 @@ def random_search_11_ppo():
     )
 
 
-def setup_old_regression_experiments():
-    add_job(
-        f"TVF_12_Regression",
-        run_name=f"tvf_16",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_horizon_samples=32,
-        tvf_value_samples=32,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression",
-        run_name=f"tvf_16_v2",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_horizon_samples=128,  # should be the same as previously
-        tvf_value_samples=-1,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression2",
-        run_name=f"tvf_16_v3",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_horizon_samples=64,
-        tvf_value_samples=64,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression3",
-        run_name=f"tvf_16_v4",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_value_samples=128,
-        tvf_horizon_samples=128,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    # reset kl back to approx kl... (which is what we tuned for)
-
-    add_job(
-        f"TVF_12_Regression5",
-        run_name=f"tvf_16_v5",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_value_samples=128,
-        tvf_horizon_samples=128,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression6",
-        run_name=f"tvf_16_v1_dup",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_horizon_samples=32,
-        tvf_value_samples=32,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression6",
-        run_name=f"tvf_16_v6",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_value_samples=128,
-        tvf_horizon_samples=128,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression6",
-        run_name=f"tvf_16_v2_dup",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_horizon_samples=128,  # should be the same as previously
-        tvf_value_samples=-1,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression7",
-        run_name=f"tvf_16_v7",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        value_lr=2.5e-4,
-
-        tvf_value_samples=128,
-        tvf_horizon_samples=128,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-    add_job(
-        f"TVF_12_Regression8",
-        run_name=f"tvf_16_v8",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-
-        tvf_horizon_samples=128,
-        tvf_value_samples=128,
-
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        # required due to bug fix
-        value_lr=2.5e-4,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=200,
-    )
-
-
 def setup_experiments_13():
 
     for tvf_h_scale in ['constant', 'linear', 'squared']:
@@ -1100,287 +861,51 @@ def setup_experiments_13():
                 tvf_gamma=gamma,
                 gamma=gamma,
                 default_params=v13_args,
-                epochs=20,
+                epochs=20 if timeout == 400 else 40,
                 priority=50,
             )
 
-
-def setup_experiments_12():
-
-    # for tvf_value_distribution in ["constant", "linear", "hyperbolic", "exponential"]:
-    #     for tvf_value_samples in [4, 8, 16, 64, 256]:
-    #         add_job(
-    #             f"TVF_12_ValueSamples_{tvf_value_distribution.capitalize()}",
-    #             run_name=f"samples={tvf_value_samples}",
-    #             tvf_value_samples=tvf_value_samples,
-    #             tvf_value_distribution=tvf_value_distribution,
-    #             default_params=new_args,
-    #             epochs=50 if tvf_value_distribution == "constant" else 30,
-    #             priority=50,
-    #         )
-
-    # # check return mixing
-    # for return_mixing in [1, 2, 4, 8, 16]:
-    #     add_job(
-    #         f"TVF_12_ReturnMixing",
-    #         run_name=f"return_mixing={return_mixing}",
-    #         tvf_return_mixing=return_mixing,
-    #         tvf_horizon_samples=128,
-    #         tvf_value_samples=128,
-    #         tvf_value_distribution="constant",
-    #         default_params=new_args,
-    #         epochs=30,  # just to get an idea for the moment...
-    #         priority=50,
-    #     )
-
-    # check samples in x/x/ mode with new settings
-    for samples in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
+    for soft_anchor in [0, 1, 10]:
         add_job(
-            f"TVF_12_Sampling",
-            run_name=f"samples={samples}",
-            tvf_horizon_samples=samples,
-            tvf_value_samples=samples,
-            tvf_value_distribution="constant",
-            default_params=new_args,
-            epochs=50,  # just to get an idea for the moment...
-            priority=0,
+            f"TVF_13_SoftAnchor",
+            env_name="DemonAttack",
+            timeout=100*4,
+            run_name=f"soft_anchor={soft_anchor}",
+            tvf_soft_anchor=soft_anchor,
+            default_params=v13_args,
+            epochs=10,
+            priority=250,
         )
 
-    # for n_step in [1, 2, 4, 8, 16, 32, 64, 128]:
-    #     add_job(
-    #         f"TVF_12_Step",
-    #         run_name=f"n_step={n_step}",
-    #         tvf_lambda=-n_step,
-    #         tvf_horizon_samples=64,
-    #         tvf_value_samples=64,
-    #         tvf_value_distribution="constant",
-    #         default_params=new_args,
-    #         epochs=50,
-    #         priority=50,
-    #     )
-
-    # for td_lambda in [0.9, 0.95, 0.97]:
-    #     for lambda_samples in [-1, 16]:
-    #         add_job(
-    #             f"TVF_12_Lambda",
-    #             run_name=f"lambda={td_lambda} samples={lambda_samples}",
-    #             tvf_lambda=td_lambda,
-    #             tvf_lambda_samples=lambda_samples,
-    #             tvf_horizon_samples=64,
-    #             tvf_value_samples=64,
-    #             tvf_value_distribution="constant",
-    #             default_params=new_args,
-    #             epochs=50,
-    #             priority=100,
-    #         )
-
-    # for tvf_gamma in [0.999, 0.9999, 1.0]:
-    #     for gamma in [0.999]:
-    #         add_job(
-    #             f"TVF_12_Rediscounting",
-    #             run_name=f"tvf_gamma={tvf_gamma} gamma={gamma}",
-    #             tvf_horizon_samples=64,
-    #             tvf_value_samples=64,
-    #             tvf_gamma=tvf_gamma,
-    #             gamma=gamma,
-    #             tvf_return_mixing=1,
-    #             tvf_value_distribution="constant",
-    #             default_params=new_args,
-    #             epochs=50,
-    #             priority=200,
-    #         )
-
-    # Long horizons :)
-    # this will just tell us if long horizons work out of the box,
-    # might need to increase all sampling, so maybe use
-    # we know 32/32 works so maybe 512/512
-    for gamma, horizon in zip([0.99, 0.999, 0.999, 0.9999, 0.99999, 1], [300, 3000, 30000, 30000, 30000, 30000]):
+    for weighting in ["default", "advanced"]:
         add_job(
-            f"TVF_12_LongHorizon",
-            run_name=f"gamma={gamma} horizon={horizon}",
-            gamma=gamma,
-            tvf_gamma=gamma,
-            tvf_max_horizon=horizon,
-            default_params=optimized_args,
-            export_video=False,  # not needed
-            epochs=100,
-            priority=200,
-        )
-    add_job(
-        f"TVF_12_LongHorizon",
-        run_name=f"gamma={1.0} horizon={30000} (v2)",
-        gamma=1.0,
-        tvf_gamma=1.0,
-        tvf_max_horizon=30000,
-        tvf_value_samples=512,
-        tvf_horizon_samples=512,
-        default_params=optimized_args,
-        export_video=False,
-        epochs=100,
-        priority=0,
-    )
-
-    # Retake on sampling
-    # Kind of wish I have av_ev here...
-    for samples in [32, 64, 128, 256, 512, 1024]:
-        add_job(
-            f"TVF_12_FixedHorizonSamples",
-            run_name=f"samples={samples}",
-            tvf_horizon_samples=samples,
-            default_params=optimized_args,
-            export_video=False,
-            epochs=20,
-            priority=50,
+            f"TVF_13_SoftAnchor",
+            env_name="DemonAttack",
+            timeout=100 * 4,
+            run_name=f"samples=512 weighting={weighting}",
+            tvf_loss_weighting=weighting,
+            tvf_horizon_samples=512,
+            tvf_value_samples=512,
+            default_params=v13_args,
+            epochs=10,
+            priority=250,
         )
 
-    # Hidden units
-    for hidden_units in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
+    for weighting in ["default", "advanced"]:
         add_job(
-            f"TVF_12_HiddenUnits",
-            run_name=f"hidden_units={hidden_units}",
-            tvf_hidden_units=hidden_units,
-            default_params=optimized_args,
-            export_video=False,
-            epochs=20,
-            priority=20,
-        )
-
-    # Hidden units on game where rewards come all at once
-    for hidden_units in [16, 64]:
-        add_job(
-            f"TVF_12_HiddenUnits_Breakout",
-            run_name=f"hidden_units={hidden_units}",
-            env_name="Breakout",
-            tvf_hidden_units=hidden_units,
-            default_params=optimized_args,
-            export_video=False,
-            epochs=20,
-            priority=200,
-        )
-
-    # Hidden units on game where rewards come all at once
-    for first_and_last in [0, 1/128, 2/128, 4/128]:
-        add_job(
-            f"TVF_12_FirstAndLast",
-            run_name=f"f_and_l={first_and_last} h_samples=128",
-            tvf_horizon_samples=128,
-            tvf_first_and_last=first_and_last,
-            default_params=optimized_args,
-            export_video=False,
-            epochs=30,
-            priority=50,
-        )
-
-    # # just want to see if this is a problem
-    for env_name in ['Breakout', 'DemonAttack']:
-        for h_scale in ['constant', 'linear', 'squared']:
-            for loss_weighting in ['default', 'advanced']:
-                add_job(
-                    f"TVF_12_Curve_{env_name}",
-                    env_name=env_name,
-                    run_name=f"h_scale={h_scale} loss_weighting={loss_weighting}",
-                    tvf_h_scale=h_scale,
-                    tvf_loss_weighting=loss_weighting,
-                    default_params=optimized_args,
-                    export_video=False,
-                    epochs=30,
-                    priority=150,
-                )
-
-    # Long horizons take 2
-    # really try to make infinite horizon work well
-    # try tvf_lambda, and increased samples
-    for ed_type in ['none', 'geometric', 'hyperbolic']:
-        add_job(
-            f"TVF_12_LongerHorizon",
-            run_name=f"tvf_lambda=0.97 ed_type={ed_type}",
-            gamma=1.0,
-            tvf_gamma=1.0,
-            tvf_lambda=0.97,
-            tvf_lambda_samples=32,
-            tvf_max_horizon=30000,
-            tvf_value_samples=256,
-            tvf_horizon_samples=256,
-            ed_type=ed_type,
-            ed_gamma=0.9999,
-            default_params=optimized_args,
-            export_video=False,
-            epochs=30,
-            priority=20,
-        )
-
-    # Make sure timeout isn't broken
-    for timeout in [100*4, 1000*4, 10000*4]:
-        add_job(
-            f"TVF_12_Timeout",
-            run_name=f"timeout={timeout}",
-            timeout=timeout,
-            default_params=optimized_args,
-            export_video=False,
-            epochs=20,
-            priority=200,
-        )
-
-    # Make sure timeout isn't broken
-    for timeout in [100*4, 1000*4, 10000*4]:
-        add_job(
-            f"TVF_12_Timeout_Linear",
-            run_name=f"timeout={timeout}",
-            timeout=timeout,
-            default_params=optimized_args,
-            tvf_h_scale="constant",
-            export_video=False,
-            epochs=20,
+            f"TVF_13_SoftAnchor",
+            env_name="DemonAttack",
+            timeout=100 * 4,
+            run_name=f"samples=128-64 weighting={weighting}",
+            tvf_loss_weighting=weighting,
+            default_params=v13_args,
+            epochs=10,
             priority=250,
         )
 
 
-def retired_experiments():
-    pass
-    # decided to use new as much as I could
 
-    # # just trying to get lower samples to work
-    # for tvf_value_distribution in ["hyperbolic_100", "hyperbolic_10", "exponential_4"]:
-    #     for tvf_value_samples in [4, 8, 16]:
-    #         add_job(
-    #             f"TVF_12_VS2",
-    #             run_name=f"samples={tvf_value_samples} dist={tvf_value_distribution}",
-    #             tvf_value_samples=tvf_value_samples,
-    #             tvf_value_distribution=tvf_value_distribution,
-    #             default_params=v8_args,
-    #             epochs=30,  # just to get an idea for the moment...
-    #             priority=30,
-    #         )
 
-    # check how many value samples are required
-    # for tvf_horizon_samples in [4, 8, 16, 32, 64, 256, 1024]:
-    #     add_job(
-    #         f"TVF_12_HS",
-    #         run_name=f"h_samples={tvf_horizon_samples}",
-    #         tvf_horizon_samples=tvf_horizon_samples,
-    #         tvf_value_samples=256,
-    #         tvf_value_distribution="constant",
-    #         default_params=v8_args,
-    #         epochs=20,  # just to get an idea for the moment...
-    #         priority=0,
-    #     )
-
-    # check how many value samples are required
-    # this uses v8
-    # for tvf_value_distribution in ["constant", "linear", "hyperbolic", "exponential"]:
-    #     for tvf_value_samples in [4, 8, 16, 64, 256, -1]:
-    #         # only want these high ones for constant, they are just to get an idea of what optimal performance looks like.
-    #         if tvf_value_samples == -1 and tvf_value_distribution != "constant":
-    #             continue
-    #         add_job(
-    #             f"TVF_12_VS",
-    #             run_name=f"samples={tvf_value_samples} dist={tvf_value_distribution}",
-    #             tvf_value_samples=tvf_value_samples,
-    #             tvf_value_distribution=tvf_value_distribution,
-    #             default_params=v8_args,
-    #             epochs=30,  # just to get an idea for the moment...
-    #             priority=40,
-    #         )
 
 
 if __name__ == "__main__":

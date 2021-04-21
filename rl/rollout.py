@@ -373,8 +373,10 @@ class Runner():
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
+        self.time = np.zeros([A], dtype=np.float32)
         # includes final state as well, which is needed for final value estimate
         self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
+        self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         self.actions = np.zeros([N, A], dtype=np.int64)
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
@@ -518,25 +520,35 @@ class Runner():
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
-    def forward(self, obs, max_batch_size=None, **kwargs):
+    def forward(self, obs, aux_features=None, max_batch_size=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
         """
 
         max_batch_size = max_batch_size or args.max_micro_batch_size
 
-        # break large forwards into batches
-        if len(obs) > max_batch_size:
+        B, *state_shape = obs.shape
+        assert tuple(state_shape) == tuple(self.state_shape)
 
-            mid_point = len(obs) // 2
+        # break large forwards into batches (note: would be better to just run multiple max_size batches + one last
+        # small one than to subdivide)
+        if B > max_batch_size:
 
-            if 'horizons' in kwargs:
-                horizons = kwargs["horizons"]
-                del kwargs["horizons"]
-                a = self.forward(obs[:mid_point], horizons=horizons[:mid_point], max_batch_size=max_batch_size,
-                                 **kwargs)
-                b = self.forward(obs[mid_point:], horizons=horizons[mid_point:], max_batch_size=max_batch_size,
-                                 **kwargs)
+            mid_point = B // 2
+
+            if aux_features is not None:
+                a = self.forward(
+                    obs[:mid_point],
+                    aux_features=aux_features[:mid_point],
+                    max_batch_size=max_batch_size,
+                    **kwargs
+                )
+                b = self.forward(
+                    obs[mid_point:],
+                    aux_features=aux_features[mid_point:],
+                    max_batch_size=max_batch_size,
+                    **kwargs
+                )
             else:
                 a = self.forward(obs[:mid_point], max_batch_size=max_batch_size, **kwargs)
                 b = self.forward(obs[mid_point:], max_batch_size=max_batch_size, **kwargs)
@@ -545,7 +557,7 @@ class Runner():
                 result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
             return result
         else:
-            return self.model.forward(obs, **kwargs)
+            return self.model.forward(obs, aux_features=aux_features, **kwargs)
 
     def _calculate_n_step_sampled_returns(
             self,
@@ -556,7 +568,6 @@ class Runner():
             required_horizons: np.ndarray,
             value_sample_horizons: np.ndarray,
             value_samples: np.ndarray,
-            post_interpolation_transform: lambda x, y: x,
         ):
         """
         This is a fancy n-step sampled reutrns calculation
@@ -566,9 +577,6 @@ class Runner():
         reward: nd array of dims [N, A]
         dones: nd array of dims [N, A]
         requred_horizons: nd array of dims [K]
-
-        post_interpolation_transform: transform applied after linear interpolation of value samples with signature
-            (raw_values, horizions) -> values
 
 
         If n_step td_lambda is negative it is taken as
@@ -596,7 +604,7 @@ class Runner():
             for n in range(1, n_step + 1):
                 if (t + n - 1) >= N:
                     break
-                # n_step is longer that horizon required
+                # n_step is longer than horizon required
                 if n >= H:
                     break
                 this_reward = rewards[t + n - 1]
@@ -613,7 +621,6 @@ class Runner():
                     # these are just the accumulated sums and don't need horizon bootstrapping
                     continue
                 interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
-                interpolated_value = post_interpolation_transform(interpolated_value, h - steps_made)
                 returns[t, :, h_lookup[h]] = reward_sum + interpolated_value * discount
 
         return returns
@@ -668,6 +675,7 @@ class Runner():
             value_sample_horizons: Union[list, np.ndarray],
             required_horizons: Union[list, np.ndarray, int],
             obs=None,
+            time=None,
             rewards=None,
             dones=None,
     ):
@@ -689,6 +697,7 @@ class Runner():
 
         # setup
         obs = obs if obs is not None else self.all_obs
+        time = time if time is not None else self.all_time
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
 
@@ -704,14 +713,16 @@ class Runner():
         horizons = value_sample_horizons[None, None, :]
         horizons = np.repeat(horizons, repeats=N + 1, axis=0)
         horizons = np.repeat(horizons, repeats=A, axis=1)
+        horizons = horizons.reshape([(N + 1) * A, -1])
+        time = time.reshape([(N + 1) * A])
 
         with torch.no_grad():
             model_out = self.forward(
                 obs=obs.reshape([(N + 1) * A, *state_shape]),
-                horizons=horizons.reshape([(N + 1) * A, -1]),
+                aux_features=self.package_aux_features(horizons, time),
                 output="value",
             )
-        value_samples = model_out["tvf_raw_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
+        value_samples = model_out["tvf_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
 
         def plot_true_value(n, a):
             xs = np.arange(args.tvf_max_horizon+1)
@@ -766,7 +777,6 @@ class Runner():
                     required_horizons=required_horizons,
                     value_sample_horizons=value_sample_horizons,
                     value_samples=value_samples,
-                    post_interpolation_transform=self.model.value_net.apply_tvf_transform,
                 )
 
             return self._calculate_lambda_sampled_returns(
@@ -783,7 +793,6 @@ class Runner():
                 required_horizons=required_horizons,
                 value_sample_horizons=value_sample_horizons,
                 value_samples=value_samples,
-                post_interpolation_transform=self.model.value_net.apply_tvf_transform,
             )
 
 
@@ -818,7 +827,7 @@ class Runner():
 
         frame_count = 0
 
-        history = defaultdict(Union[list, np.ndarray])
+        history = defaultdict(list)
 
         # play the game...
         while not done:
@@ -863,9 +872,10 @@ class Runner():
             video_out.release()
 
         if include_rollout:
+            np_history = {}
             for k, v in history.items():
-                history[k] = np.asarray(v)
-            pickle.dump(history, gzip.open(filename + ".hst.gz", "wb", compresslevel=9))
+                np_history[k] = np.asarray(v)
+            pickle.dump(np_history, gzip.open(filename + ".hst.gz", "wb", compresslevel=9))
 
     @property
     def tvf_requires_full_horizon_at_rollout(self):
@@ -894,6 +904,7 @@ class Runner():
         for t in range(self.N):
 
             prev_obs = self.obs.copy()
+            prev_time = self.time.copy()
 
             # forward state through model, then detach the result and convert to numpy.
             model_out = self.forward(self.obs, output="policy")
@@ -908,6 +919,9 @@ class Runner():
                 actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
+
+            # time fraction
+            self.time = np.asarray([info["time_frac"] for info in infos])
 
             # per step reward
             ext_rewards += args.per_step_reward
@@ -954,6 +968,7 @@ class Runner():
                     self.episode_len[i] = 0
 
             self.all_obs[t] = prev_obs
+            self.all_time[t] = prev_time
             self.actions[t] = actions
 
             self.ext_rewards[t] = ext_rewards
@@ -962,6 +977,7 @@ class Runner():
 
         # save the last state
         self.all_obs[-1] = self.obs
+        self.all_time[-1] = self.time
 
         #  save a copy of the observation normalization statistics.
         if args.normalize_observations:
@@ -975,12 +991,46 @@ class Runner():
             self.log.watch("returns_norm_mu", norm_mean, display_width=0)
             self.log.watch("returns_norm_std", norm_var ** 0.5, display_width=0)
 
+    def package_aux_features(self, horizons: np.ndarray, time: np.ndarray):
+        """
+        Return aux features for given horizons and time fraction.
+
+        horizons: [B, H]
+        time: [B]
+
+        """
+
+        B, H = horizons.shape
+        assert time.shape == (B,)
+
+        # horizons might be int16, so cast it to float.
+        if type(horizons) is np.ndarray:
+            assert type(time) == np.ndarray
+            horizons = horizons.astype(np.float32)
+            aux_features = np.concatenate([
+                horizons.reshape([B, H, 1]),
+                np.repeat(time.reshape([B, 1, 1]), H, axis=1)
+            ], axis=-1)
+        elif type(horizons) is torch.Tensor:
+            assert type(time) == torch.Tensor
+            horizons = horizons.to(dtype=torch.float32)
+            aux_features = torch.cat([
+                horizons.reshape([B, H, 1]),
+                torch.repeat_interleave(time.reshape([B, 1, 1]), H, dim=1)
+            ], dim=-1)
+        else:
+            raise TypeError("Input must be of type np.ndarray or torch.Tensor")
+
+        return aux_features
+
+
     @torch.no_grad()
-    def get_value_estimates(self, obs: np.ndarray, horizons: Union[None, np.ndarray, int] = None):
+    def get_value_estimates(self, obs: np.ndarray, time: np.ndarray, horizons: Union[None, np.ndarray, int] = None):
         """
         Returns value estimates for each given observation
         If horizons is none max_horizon is used.
-        obs: ndarray of dims [N, A, *state_shape]
+        obs: np array of dims [N, A, *state_shape]
+        time: np array of dims [N, A]
         horizons: ndarray of dims [K]
 
         returns: ndarray of dims [N, A, K] of horizons was array else [N, A]
@@ -998,10 +1048,12 @@ class Runner():
                 scalar_output = False
 
             horizons = np.repeat(horizons[None, :], N * A, axis=0)
+            time = time.reshape(N*A)
+
             model_out = self.forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 output="value",
-                horizons=horizons
+                aux_features=self.package_aux_features(horizons, time),
             )
 
             values = model_out["tvf_value"]
@@ -1029,6 +1081,7 @@ class Runner():
 
             values = self.get_value_estimates(
                 obs=self.prev_obs[:, agent_filter],
+                time=self.prev_time[:, agent_filter],
                 horizons=np.asarray(self.tvf_debug_horizons)
             )
 
@@ -1042,6 +1095,7 @@ class Runner():
                 value_sample_horizons=value_samples,
                 required_horizons=self.tvf_debug_horizons,
                 obs=self.all_obs[:, agent_filter],
+                time=self.all_time[:, agent_filter],
                 rewards=self.ext_rewards[:, agent_filter],
                 dones=self.terminals[:, agent_filter],
             )
@@ -1066,12 +1120,14 @@ class Runner():
                 value_sample_horizons=value_samples,
                 required_horizons=random_horizon_samples,
                 obs=self.all_obs[:, agent_filter],
+                time=self.all_time[:, agent_filter],
                 rewards=self.ext_rewards[:, agent_filter],
                 dones=self.terminals[:, agent_filter],
             )
 
             values = self.get_value_estimates(
                 obs=self.prev_obs[:, agent_filter],
+                time=self.prev_time[:, agent_filter],
                 horizons=random_horizon_samples,
             )
 
@@ -1088,7 +1144,7 @@ class Runner():
     @property
     def prev_obs(self):
         """
-        Returns prev_obs if size [N,A] (i.e. missing final state)
+        Returns prev_obs with size [N,A] (i.e. missing final state)
         """
         return self.all_obs[:-1]
 
@@ -1097,6 +1153,19 @@ class Runner():
         Returns final observation
         """
         return self.all_obs[-1]
+
+    @property
+    def prev_time(self):
+        """
+        Returns prev_time with size [N,A] (i.e. missing final state)
+        """
+        return self.all_time[:-1]
+
+    def final_time(self):
+        """
+        Returns final time
+        """
+        return self.all_time[-1]
 
     def calculate_returns(self):
 
@@ -1108,7 +1177,7 @@ class Runner():
             # if gamma's match we only need to generate the final horizon
             # if they don't we need to generate them all and rediscount
             if args.tvf_gamma == args.gamma:
-                ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
+                ext_value_estimates = self.get_value_estimates(obs=self.all_obs, time=self.all_time)
             else:
                 # note: we could down sample the value estimates and adjust the gamma calculations if
                 # this ends up being too slow..
@@ -1116,6 +1185,7 @@ class Runner():
 
                 value_estimates = self.get_value_estimates(
                     obs=self.all_obs,
+                    time=self.all_time,
                     # going backwards makes sure that final horizon is always included
                     horizons=np.asarray(range(args.tvf_max_horizon, 0, -step_skip))
                 )
@@ -1299,7 +1369,11 @@ class Runner():
         # create additional args if needed
         kwargs = {}
         if args.use_tvf:
-            kwargs['horizons'] = data["tvf_horizons"]
+            # horizons are B, H, and times is B so we need to adjust them
+            kwargs['aux_features'] = self.package_aux_features(
+                data["tvf_horizons"],
+                data["tvf_time"]
+            )
 
         model_out = self.forward(prev_states, output="value", **kwargs)
 
@@ -1625,6 +1699,7 @@ class Runner():
                 returns, horizons = self.generate_return_sample()
                 batch_data["tvf_returns"] = returns.reshape([B, -1])
                 batch_data["tvf_horizons"] = horizons.reshape([B, -1])
+                batch_data["tvf_time"] = self.prev_time.reshape([B])
 
             self.train_batch(
                 batch_data=batch_data,

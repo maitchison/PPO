@@ -172,7 +172,7 @@ class PolicyNet(nn.Module):
 
 class ValueNet(nn.Module):
 
-    def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_h_scale, tvf_horizon_transform, **kwargs):
+    def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_horizon_transform, **kwargs):
         super().__init__()
 
         self.value_encoder = construct_network(network, input_dims, **kwargs)
@@ -180,12 +180,11 @@ class ValueNet(nn.Module):
         self.tvf_activation = tvf_activation
         self.tvf_hidden_units = int(tvf_hidden_units)
         self.horizon_transform = tvf_horizon_transform
-        self.tvf_h_scale = tvf_h_scale
 
         # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
         self.value_net_value = nn.Linear(self.value_encoder.hidden_units, 2)
         self.value_net_hidden = nn.Linear(self.value_encoder.hidden_units, self.tvf_hidden_units)
-        self.value_net_hidden_aux = nn.Linear(1, self.tvf_hidden_units)
+        self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units)
         self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
 
         # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
@@ -195,27 +194,11 @@ class ValueNet(nn.Module):
              1/(self.value_encoder.hidden_units**0.5)
         )
 
-    def apply_tvf_transform(self, tvf_values, horizons):
+    def forward(self, x, aux_features=None):
         """
-        Applies the transform for tvf_values, i.e. are we predicting the average reward, the return or some
-        mixture in between.
+        x is [B, *state_shape]
+        aux_features, if given are [B, H, 2] where [...,0] are horizons and [...,1] are fractions of remaining time
         """
-
-        transformed_horizons = self.horizon_transform(horizons)
-
-        if self.tvf_h_scale == "constant":
-            tvf_values = tvf_values
-        elif self.tvf_h_scale == "linear":
-            tvf_values = tvf_values * transformed_horizons
-        elif self.tvf_h_scale == "squared":
-            # this is a linear interpolation between constant and squared
-            tvf_values = tvf_values * (2 * transformed_horizons - transformed_horizons ** 2)
-        else:
-            # todo: implement the linear then constant version
-            raise ValueError(f"invalid h_scale: {self.tvf_h_scale}")
-        return tvf_values
-
-    def forward(self, x, horizons=None):
 
         result = {}
 
@@ -224,18 +207,19 @@ class ValueNet(nn.Module):
         result['ext_value'] = value_values[:, 0]
         result['int_value'] = value_values[:, 1]
 
-        # horizon generation
-        if horizons is not None:
+        # auxiliary features
+        if aux_features is not None:
 
-            # upload horizons to GPU and cast to float
-            if type(horizons) is np.ndarray:
-                horizons = torch.from_numpy(horizons)
+            # upload aux_features to GPU and cast to float
+            if type(aux_features) is np.ndarray:
+                aux_features = torch.from_numpy(aux_features)
 
-            horizons = horizons.to(device=value_values.device, dtype=torch.float32)
+            aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
 
-            _, H = horizons.shape
+            _, H, _ = aux_features.shape
 
-            transformed_horizons = self.horizon_transform(horizons)
+            # apply horizon transform (usually just normalize them between 0 and 1)
+            aux_features[:, 0] = self.horizon_transform(aux_features[:, 0])
 
             if self.tvf_activation == "relu":
                 activation = F.relu
@@ -246,18 +230,16 @@ class ValueNet(nn.Module):
             else:
                 raise Exception("invalid activation")
 
-            # calculate horizons the fast way
+            # combine aux features the fast way
+
+            # features_part will be [B, Hidden]
             features_part = self.value_net_hidden(value_features)
-            # aux part will be [B, H, 128]
-            aux_part = self.value_net_hidden_aux(transformed_horizons[:, :, None])
+            # aux part will be [B, H, Hidden]
+            aux_part = self.value_net_hidden_aux(aux_features)
             # features will be [B, 128], but needs to be [B, 1, 128]
             tvf_h = activation(features_part[:, None, :] + aux_part)
 
             tvf_values = self.value_net_tvf(tvf_h)[..., 0]
-
-            result['tvf_raw_value'] = tvf_values.clone()
-
-            tvf_values = self.apply_tvf_transform(tvf_values, horizons)
 
             result['tvf_value'] = tvf_values
 
@@ -281,7 +263,6 @@ class TVFModel(nn.Module):
     tvf_horizon_transform: transform to use on horizons before input.
     tvf_hidden_units: number of hidden units to use on FC layer before output
     tvf_activation: activation to use on TVF FC layer
-    tvf_h_scale: scales horizon output [constant|linear|square], where linear predicts average reward
 
     network_args: dict containing arguments for network
 
@@ -300,7 +281,6 @@ class TVFModel(nn.Module):
             tvf_horizon_transform = lambda x : x / 1000,
             tvf_hidden_units:int = 512,
             tvf_activation:str = "relu",
-            tvf_h_scale:str = 'constant',
             network_args:Union[dict, None] = None,
     ):
 
@@ -323,7 +303,6 @@ class TVFModel(nn.Module):
             input_dims=input_dims,
             tvf_activation=tvf_activation,
             tvf_hidden_units=tvf_hidden_units,
-            tvf_h_scale=tvf_h_scale,
             tvf_horizon_transform=tvf_horizon_transform,
             **(network_args or {})
         )
@@ -405,7 +384,7 @@ class TVFModel(nn.Module):
 
         return errors
 
-    def forward(self, x, horizons=None, output:str = "both", policy_temperature: float = 1.0):
+    def forward(self, x, aux_features=None, output:str = "both", policy_temperature: float = 1.0):
         """
 
         Forward input through model and return dictionary containing
@@ -419,7 +398,7 @@ class TVFModel(nn.Module):
             tvf_value: (if horizons given) truncated horizon value estimates
 
         x: tensor of dims [B, *obs_shape]
-        horizons: (optional) int32 tensor of dims [B, H]
+        aux_features: (optional) int32 tensor of dims [B, H]
         output: which network(s) to run ["both", "policy", "value"]
         """
 
@@ -432,7 +411,7 @@ class TVFModel(nn.Module):
             result.update(self.policy_net(x, policy_temperature=policy_temperature))
 
         if output in ["both", "value"]:
-            result.update(self.value_net(x, horizons=horizons))
+            result.update(self.value_net(x, aux_features=aux_features))
 
         return result
 

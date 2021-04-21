@@ -133,7 +133,6 @@ if __name__ == "__main__":
             tvf_horizon_transform=lambda x: x / args.tvf_max_horizon,
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
-            tvf_h_scale=args.tvf_h_scale,
         )
         ppo.train(actor_critic_model, log)
 

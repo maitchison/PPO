@@ -127,7 +127,6 @@ def make_model(env):
     additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
     additional_args['tvf_hidden_units'] = args.tvf_hidden_units
     additional_args['tvf_activation'] = args.tvf_activation
-    additional_args['tvf_h_scale'] = args.tvf_h_scale
 
     additional_args['head'] = "Nature"
     additional_args['network'] = "Nature"
@@ -434,7 +433,6 @@ class QuickPlot():
 
         plt.plot([1], [0], label="True", c="lightcoral")
         plt.plot([1], [0], label="Pred", c="greenyellow")
-        plt.plot([1], [0], label="Raw", c="darkturquoise")
 
         plt.ylim(self._y_min, self._y_max)
         plt.grid(alpha=0.2)
@@ -446,6 +444,7 @@ class QuickPlot():
             plt.xlim(0, args.tvf_max_horizon)
         plt.ylabel("Score")
         plt.legend(loc="upper left")
+        #plt.legend(loc="lower right")
         fig.canvas.draw()
         data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
         data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
@@ -516,6 +515,8 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
     In order to show the true discounted returns we write all observations to a buffer, which may take
     a lot of memory.
     """
+
+    assert args.tvf_gamma == args.gamma, "Rediscounting not supported yet"
 
     scale = 4
 
@@ -607,12 +608,9 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
         linear_fig.plot(xs, ys, 'lightcoral')
 
         # plot predicted values...
+        # note: these are the TVF discounted values, so this will not be right if gamma=tvf_gamma
         if args.use_tvf:
             xs = list(range(len(buffer["values"][t])))
-            if "raw_values" in buffer:
-                ys = buffer["raw_values"][t] * REWARD_SCALE
-                log_fig.plot(xs, ys, 'darkturquoise')
-                linear_fig.plot(xs, ys, 'darkturquoise')
             ys = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
             log_fig.plot(xs, ys, 'greenyellow')
             linear_fig.plot(xs, ys, 'greenyellow')
