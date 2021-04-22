@@ -719,7 +719,7 @@ class Runner():
         with torch.no_grad():
             model_out = self.forward(
                 obs=obs.reshape([(N + 1) * A, *state_shape]),
-                aux_features=self.package_aux_features(horizons, time),
+                aux_features=package_aux_features(horizons, time),
                 output="value",
             )
         value_samples = model_out["tvf_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
@@ -881,6 +881,26 @@ class Runner():
     def tvf_requires_full_horizon_at_rollout(self):
         return args.tvf_gamma != args.gamma
 
+    def export_debug_frames(self, filename, obs, marker=None):
+        # obs will be [N, 4, 84, 84]
+        if type(obs) is torch.Tensor:
+            obs = obs.cpu().detach().numpy()
+        N, C, H, W = obs.shape
+        import matplotlib.pyplot as plt
+        obs = np.concatenate([obs[:, i] for i in range(4)], axis=-2)
+        # obs will be [N, 4*84, 84]
+        obs = np.concatenate([obs[i] for i in range(N)], axis=-1)
+        # obs will be [4*84, N*84]
+        if marker is not None:
+            obs[:, marker*W] = 255
+        plt.figure(figsize=(N, 4), dpi=84*2)
+        plt.imshow(obs, interpolation='nearest')
+        plt.savefig(filename)
+        plt.close()
+
+    def export_debug_value(self, filename, value):
+        pass
+
     @torch.no_grad()
     def generate_rollout(self, is_warmup=False):
 
@@ -964,6 +984,7 @@ class Runner():
                         self.log.watch_mean("ep_count", self.ep_count, history_length=1)
                         if "game_freeze" in infos[i]:
                             self.game_crashes += 1
+
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
 
@@ -991,38 +1012,20 @@ class Runner():
             self.log.watch("returns_norm_mu", norm_mean, display_width=0)
             self.log.watch("returns_norm_std", norm_var ** 0.5, display_width=0)
 
-    def package_aux_features(self, horizons: np.ndarray, time: np.ndarray):
-        """
-        Return aux features for given horizons and time fraction.
+        if args.debug_terminal_logging:
+            for t in range(self.N):
 
-        horizons: [B, H]
-        time: [B]
-
-        """
-
-        B, H = horizons.shape
-        assert time.shape == (B,)
-
-        # horizons might be int16, so cast it to float.
-        if type(horizons) is np.ndarray:
-            assert type(time) == np.ndarray
-            horizons = horizons.astype(np.float32)
-            aux_features = np.concatenate([
-                horizons.reshape([B, H, 1]),
-                np.repeat(time.reshape([B, 1, 1]), H, axis=1)
-            ], axis=-1)
-        elif type(horizons) is torch.Tensor:
-            assert type(time) == torch.Tensor
-            horizons = horizons.to(dtype=torch.float32)
-            aux_features = torch.cat([
-                horizons.reshape([B, H, 1]),
-                torch.repeat_interleave(time.reshape([B, 1, 1]), H, dim=1)
-            ], dim=-1)
-        else:
-            raise TypeError("Input must be of type np.ndarray or torch.Tensor")
-
-        return aux_features
-
+                first_frame = max(t-2, 0)
+                last_frame = t+2
+                for i in range(self.A):
+                    if self.terminals[t, i]:
+                        time_1 = round(self.all_time[t, i]*args.timeout)
+                        time_2 = round(self.all_time[t+1, i] * args.timeout)
+                        self.export_debug_frames(
+                            f"{args.log_folder}/{self.batch_counter:04}-{i:04}-{t:03} [{time_1:04}-{time_2:04}].png",
+                            self.all_obs[first_frame:last_frame+1, i],
+                            marker=t-first_frame+1
+                        )
 
     @torch.no_grad()
     def get_value_estimates(self, obs: np.ndarray, time: np.ndarray, horizons: Union[None, np.ndarray, int] = None):
@@ -1053,7 +1056,7 @@ class Runner():
             model_out = self.forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 output="value",
-                aux_features=self.package_aux_features(horizons, time),
+                aux_features=package_aux_features(horizons, time),
             )
 
             values = model_out["tvf_value"]
@@ -1113,7 +1116,7 @@ class Runner():
                                     display_width=0)
                 self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
 
-            # do ev over random horizons
+            # do ev over random horizons, 100 samples, uniform with replacement
             random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=True)
 
             targets = self.calculate_sampled_returns(
@@ -1370,7 +1373,7 @@ class Runner():
         kwargs = {}
         if args.use_tvf:
             # horizons are B, H, and times is B so we need to adjust them
-            kwargs['aux_features'] = self.package_aux_features(
+            kwargs['aux_features'] = package_aux_features(
                 data["tvf_horizons"],
                 data["tvf_time"]
             )
@@ -1388,26 +1391,6 @@ class Runner():
             targets = data["tvf_returns"]
             value_predictions = model_out["tvf_value"]
 
-            if args.tvf_loss_weighting == "default":
-                weighting = 1
-            elif args.tvf_loss_weighting == "advanced":
-                if args.tvf_lambda < 0:
-                    # n step returns
-                    effective_n_step = -args.tvf_lambda
-                    # td updates
-                elif args.tvf_lambda == 0:
-                    effective_n_step = 1
-                elif args.tvf_lambda == 1:
-                    # MC style
-                    effective_n_step = args.n_steps / 2
-                else:
-                    effective_n_step = min(1 / (1 - args.tvf_lambda), args.n_steps)
-                weighting = (self.current_max_horizon - data["tvf_horizons"] + effective_n_step) / effective_n_step
-                # normalize so weights average out to be 1
-                weighting = weighting / weighting.mean()
-            else:
-                raise ValueError("Invalid tvf_loss_weighting value.")
-
             if args.tvf_soft_anchor != 0:
                 assert torch.all(data["tvf_horizons"][:, 0] == 0)
                 anchor_loss = args.tvf_soft_anchor * torch.sum(torch.square(value_predictions[:,  0]))
@@ -1415,7 +1398,7 @@ class Runner():
                 loss = loss + anchor_loss
 
             # MSE loss
-            tvf_loss = 0.5 * weighting * args.tvf_coef * torch.square(targets - value_predictions)
+            tvf_loss = 0.5 * args.tvf_coef * torch.square(targets - value_predictions)
             tvf_loss = tvf_loss.sum() / mini_batch_size
             loss = loss + tvf_loss
 
@@ -1468,6 +1451,7 @@ class Runner():
 
         return {}
 
+
     def generate_horizon_sample(self, max_value: int, samples: int, distribution: str = "uniform") -> np.ndarray:
         """
         generates random samples from 0 to max (inclusive) using sampling with replacement
@@ -1487,13 +1471,30 @@ class Runner():
 
         sample_range = range(f_and_l, max_value-f_and_l+1)
 
-        if distribution in ["uniform", "constant"]: # constant was the old name for this
+        if distribution in ["uniform", "constant"]:
+            # constant was the old name for this
             p = None
         elif distribution == "linear":
             p = np.asarray([max_value-h for h in sample_range], dtype=np.float32)
             p /= np.sum(p)
         elif distribution == "hyperbolic":
             p = np.asarray([1/(h+1) for h in sample_range])
+            p /= np.sum(p)
+        elif distribution == "advanced":
+            # this uses the number of times a horizon will (on average) be copied)
+
+            if args.tvf_lambda < 0:
+                # n step returns
+                effective_n_step = -args.tvf_lambda
+                # td updates
+            elif args.tvf_lambda == 0:
+                effective_n_step = 1
+            elif args.tvf_lambda == 1:
+                # MC style
+                effective_n_step = args.n_steps / 2
+            else:
+                effective_n_step = min(1 / (1 - args.tvf_lambda), args.n_steps)
+            p = [(self.current_max_horizon - h + effective_n_step) / effective_n_step for h in sample_range]
             p /= np.sum(p)
         elif distribution == "exponential":
             # adjust exponential so mean is half horizon
@@ -1523,7 +1524,7 @@ class Runner():
         N, A, *state_shape = self.prev_obs.shape
 
         value_samples = self.generate_horizon_sample(H, args.tvf_value_samples, distribution=args.tvf_value_distribution)
-        horizon_samples = self.generate_horizon_sample(H, args.tvf_horizon_samples)
+        horizon_samples = self.generate_horizon_sample(H, args.tvf_horizon_samples, distribution=args.tvf_horizon_distribution)
 
         returns = self.calculate_sampled_returns(
             value_sample_horizons=value_samples,
@@ -1807,3 +1808,47 @@ def get_rediscounted_value_estimate(values: Union[np.ndarray, torch.Tensor], old
         discount *= new_gamma
 
     return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
+
+def package_aux_features(horizons: np.ndarray, time: np.ndarray):
+    """
+    Return aux features for given horizons and time fraction.
+
+    horizons: [B, H]
+    time: [B]
+
+    """
+
+    B, H = horizons.shape
+    assert time.shape == (B,)
+
+    # horizons might be int16, so cast it to float.
+    if type(horizons) is np.ndarray:
+        assert type(time) == np.ndarray
+        horizons = horizons.astype(np.float32)
+        aux_features = np.concatenate([
+            horizons.reshape([B, H, 1]),
+            np.repeat(time.reshape([B, 1, 1]), H, axis=1)
+        ], axis=-1)
+    elif type(horizons) is torch.Tensor:
+        assert type(time) == torch.Tensor
+        horizons = horizons.to(dtype=torch.float32)
+        aux_features = torch.cat([
+            horizons.reshape([B, H, 1]),
+            torch.repeat_interleave(time.reshape([B, 1, 1]), H, dim=1)
+        ], dim=-1)
+    else:
+        raise TypeError("Input must be of type np.ndarray or torch.Tensor")
+
+    return aux_features
+
+
+def horizon_scale_function(x):
+    if args.tvf_horizon_scale == "default":
+        return x / args.tvf_max_horizon
+    elif args.tvf_horizon_scale == "unscaled":
+        return x
+    elif args.tvf_horizon_scale == "centered":
+        # this will be roughly unit normal
+        return ((x / args.tvf_max_horizon) - 0.5) * 3.0
+    else:
+        raise ValueError("Invalid args.tvf_horizon_scale.")

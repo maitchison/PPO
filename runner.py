@@ -184,6 +184,7 @@ v13_args = {
         'ppo_epsilon': 0.1,                 # hard to say if this is right...
         'value_lr': 2.5e-4,                 # slow and steady wins the race
         'policy_lr': 2.5e-4,
+        'export_video': False,               # in general not needed
 
         'use_tvf': True,
         'tvf_hidden_units': 128,            # big guess here
@@ -200,6 +201,13 @@ v13_args = {
     }
 
 
+# tweaked optimized settings from regression run
+v13plus_args = v13_args.copy().update({
+    'tvf_coef': 0.01,
+    'tvf_horizion_sampling': 'advanced',
+    'tvf_horizon_scale': 'centered',
+}
+)
 
 # this are based on the best model from PPO HPS at 10M
 best10_args = {
@@ -610,138 +618,6 @@ def nice_format(x):
 
 # ---------------------------------------------------------------------------------------------------------
 
-def setup_experiments_11():
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"ppo (tuned)",
-        default_params=tuned_args,
-        priority=100,
-    )
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"ppo (better)",
-        default_params=better_args,
-        priority=100,
-    )
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"tvf (tuned)",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-        tvf_n_horizons=128,
-        tvf_lambda=1.0,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        default_params=tuned_args,
-        priority=100,
-    )
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"tvf (better)",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-        tvf_n_horizons=128,
-        tvf_lambda=1.0,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        default_params=better_args,
-        priority=100,
-    )
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"tvf (tuned_adv)",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-        tvf_n_horizons=128,
-        tvf_lambda=1.0,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=100,
-    )
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"tvf_16 (tuned_adv)",
-
-        use_tvf=True,
-        tvf_hidden_units=128,
-        tvf_n_horizons=128,
-        tvf_lambda=-16,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=tuned_args,
-        priority=100,
-    )
-
-    add_job(
-        f"TVF_11_Regression",
-        run_name=f"tvf (better_adv)",
-
-        use_tvf=True,
-        tvf_hidden_units=128,  # mostly a performance optimization
-        tvf_n_horizons=128,
-        tvf_lambda=1.0,
-        tvf_coef=0.01,
-        tvf_max_horizon=3000,
-        gamma=0.999,
-        tvf_gamma=0.999,
-
-        tvf_loss_weighting="advanced",
-        tvf_h_scale="squared",
-
-        default_params=better_args,
-        priority=100,
-    )
-
-    for chunk_size in [5, 10, 20, 50]:
-        add_job(
-            f"TVF_11_Chunking",
-            run_name=f"chunk={chunk_size}",
-            epochs=50,
-            chunk_size=chunk_size,
-
-            default_params=tvf_tuned_adv_args,
-            priority=-100,
-        )
-
-    for tvf_n_horizons in [2, 4, 8, 16, 32, 64, 128]:
-        add_job(
-            f"TVF_11_n_horizons",
-            run_name=f"tvf_n_horizons={tvf_n_horizons}",
-            epochs=50,
-            tvf_n_horizons=tvf_n_horizons,
-            default_params=tvf_tuned_adv_args,
-            priority=20,
-        )
-
-
 def setup_experiments_11_eval():
 
     for env_name in ["Alien", "BankHeist", "CrazyClimber"]:
@@ -807,7 +683,7 @@ def random_search_11_ppo():
         'export_video': False, # save some space...
         'use_tvf': False,
         'gamma': 0.999,
-        'epochs': 30,
+        'epochs': 50,
         'priority': -20,
     }
 
@@ -834,22 +710,27 @@ def random_search_11_ppo():
         search_params,
         count=32,
         envs=['BattleZone', 'DemonAttack', 'Amidar'],
-        score_thresholds=[5000, 500, 50],
+        # set roughtly to 2x random
+        score_thresholds=[4000, 300, 10],
     )
 
 
 def setup_experiments_13():
 
-    for tvf_h_scale in ['constant', 'linear', 'squared']:
-        add_job(
-            f"TVF_13_Regression",
-            env_name="DemonAttack",
-            run_name=f"h_scale={tvf_h_scale}",
-            tvf_h_scale=tvf_h_scale,
-            default_params=v13_args,
-            epochs=50,
-            priority=250,
-        )
+    for scale in ["centered"]:
+        for tvf_ceof in [0.1, 0.01]:
+            for distribution in ["uniform", "advanced"]:
+                add_job(
+                    f"TVF_13_Regression",
+                    env_name="DemonAttack",
+                    run_name=f"tvf_ceof={tvf_ceof} distribution={distribution} scale={scale}",
+                    tvf_horizon_scale=scale,
+                    tvf_horizon_distribution=distribution,
+                    tvf_coef=tvf_ceof,
+                    default_params=v13_args,
+                    epochs=50,
+                    priority=1000,
+                )
 
     for gamma in [0.9, 0.99, 0.999, 0.9999, 1.0]:
         for timeout in [100*4, 1000*4]:
@@ -861,7 +742,7 @@ def setup_experiments_13():
                 tvf_gamma=gamma,
                 gamma=gamma,
                 default_params=v13_args,
-                epochs=20 if timeout == 400 else 40,
+                epochs=20 if timeout == 400 else 30,
                 priority=50,
             )
 
@@ -903,9 +784,131 @@ def setup_experiments_13():
             priority=250,
         )
 
+    for horizon_scale in ["default", "unscaled", "centered"]:
+        add_job(
+            f"TVF_13_ImprovedTimeAware",
+            env_name="DemonAttack",
+            timeout=300*4,
+            run_name=f"scale={horizon_scale} (300 step)",
+            tvf_horizon_scale=horizon_scale,
+            default_params=v13_args,
+            epochs=10,
+            priority=450,
+        )
+
+        add_job(
+            f"TVF_13_ImprovedTimeAware",
+            env_name="DemonAttack",
+            timeout=1000 * 4,
+            run_name=f"scale={horizon_scale} (10k step)",
+            tvf_horizon_scale=horizon_scale,
+            default_params=v13_args,
+            epochs=10,
+            priority=50,
+        )
+
+    # interested in ev and horizon quality among other things..
+    for samples in [16, 32, 64, 128, 256, 512]:
+        for distribution in ["uniform", "advanced"]:
+            add_job(
+                f"TVF_13_HorizonSampling",
+                env_name="DemonAttack",
+                timeout=300*4,
+                run_name=f"distribution={distribution} samples={samples} (300 step)",
+                tvf_horizon_distribution=distribution,
+                tvf_horizon_samples=samples,
+                default_params=v13_args,
+                epochs=20,
+                priority=50,
+            )
+
+    # these are my horizon quality experiments, want to get to the bottom of this
+    # is there a bug with timeout terminals?
+    for samples in [16, 256]:
+        add_job(
+            f"TVF_13_HQ_1000_Breakout",
+            env_name="Breakout",
+            timeout=1000 * 4,
+            run_name=f"samples={samples}",
+            tvf_horizon_distribution="advanced",
+            tvf_horizon_samples=samples,
+            tvf_horizon_scale="centered",
+            default_params=v13_args,
+            epochs=20,
+            priority=0,
+        )
+
+        add_job(
+            f"TVF_13_HQ_1000_Deferred",
+            env_name="DemonAttack",
+            timeout=1000 * 4,
+            run_name=f"samples={samples}",
+            tvf_horizon_distribution="advanced",
+            tvf_horizon_samples=samples,
+            deferred_rewards=True,
+            tvf_horizon_scale="centered",
+            default_params=v13_args,
+            epochs=20,
+            priority=0,
+        )
+
+        add_job(
+            f"TVF_13_HQ_1000_NoNoop",
+            env_name="DemonAttack",
+            timeout=1000 * 4,
+            run_name=f"samples={samples}",
+            tvf_horizon_distribution="advanced",
+            tvf_horizon_samples=samples,
+            noop_start=False,
+            tvf_horizon_scale="centered",
+            default_params=v13_args,
+            epochs=20,
+            priority=0,
+        )
+
+    for noop_duration in [0, 15, 30, 60, 120]:
+        add_job(
+            f"TVF_13_HQ_1000_Noop",
+            env_name="DemonAttack",
+            timeout=1000 * 4,
+            run_name=f"noop_duration={noop_duration}",
+            tvf_horizon_distribution="advanced",
+            noop_duration=noop_duration,
+            tvf_horizon_scale="centered",
+            default_params=v13_args,
+            epochs=10,
+            priority=50,
+        )
 
 
+    # finally fixed the horizon bugs, want to see if it helps?
+    for samples in [16, 256]:
+        add_job(
+            f"TVF_13_BugFix_Breakout",
+            env_name="Breakout",
+            timeout=1000 * 4,
+            run_name=f"samples={samples}",
+            tvf_horizon_distribution="advanced",
+            tvf_horizon_samples=samples,
+            tvf_horizon_scale="centered",
+            default_params=v13_args,
+            epochs=20,
+            priority=50,
+        )
 
+        add_job(
+            f"TVF_13_BugFix_Deferred",
+            env_name="DemonAttack",
+            timeout=1000 * 4,
+            run_name=f"samples={samples}",
+            tvf_horizon_distribution="advanced",
+            tvf_horizon_samples=samples,
+            deferred_rewards=True,
+            tvf_horizon_scale="centered",
+            default_params=v13_args,
+            epochs=20,
+            priority=50,
+        )
 
 
 if __name__ == "__main__":

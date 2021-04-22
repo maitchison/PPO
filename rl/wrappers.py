@@ -49,18 +49,27 @@ class TimeAwareWrapper(gym.Wrapper):
         super().__init__(env)
         self.env = env
 
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        return self._process_obs(obs, 0)
+
+    def _process_obs(self, obs, time_frac):
+        assert obs.dtype == np.uint8
+        *_, C, H, W = obs.shape
+
+        x_point = 3 + (W-6) * time_frac
+
+        obs[..., 0, -4:, :] = 0
+        obs[..., 0, -3:-1, 3:-3] = 64
+        obs[..., 0, -3:-1, 3:math.floor(x_point)] = 255
+        obs[..., 0, -3:-1, math.floor(x_point)] = 64+int((x_point % 1) * (255-64))
+        return obs
+
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        assert obs.dtype == np.uint8
         assert "time_frac" in info, "Must use TimeLimitWrapper."
-        for i in [2,1,0]:
-            # this increased the precision 3x which can be useful.
-            time_code = int(np.clip(info["time_frac"]+(i/3)*(1/255), 0, 1) * 255)
-            obs[..., 0, -(i+1):, :] = time_code
-            obs[..., 0, :(i+1), :] = time_code
-            obs[..., 0, :, -(i+1):] = time_code
-            obs[..., 0, :, :(i+1)] = time_code
-        return obs, reward, done, info
+        time_frac = np.clip(info["time_frac"], 0, 1)
+        return self._process_obs(obs, time_frac), reward, done, info
 
 
 class HashWrapper(gym.Wrapper):
@@ -419,7 +428,10 @@ class TimeLimitWrapper(gym.Wrapper):
         if self._elapsed_steps >= self._max_episode_steps:
             done = True
             info['TimeLimit.truncated'] = True
-        info['time_frac'] = self._elapsed_steps / self._max_episode_steps
+        # when a done occurs we will reset and the observation retured will be the first frame of a new
+        # espisode, so time_frac should be 0. Remember time_frac is the time of the state we *land in* not
+        # of the state we started from.
+        info['time_frac'] = (self._elapsed_steps / self._max_episode_steps) if not done else 0
         return observation, reward, done, info
 
     def reset(self, **kwargs):
@@ -636,8 +648,6 @@ class AtariWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         info["channels"] = ["Gray"] if self.grayscale else ["ColorR", "ColorG", "ColorB"]
-        # stub
-        #print(hash(obs.data.tobytes()), reward, done)
         return self._process_frame(obs), reward, done, info
 
     def reset(self):
@@ -714,14 +724,19 @@ class NoopResetWrapper(gym.Wrapper):
         """ Do no-op action for up to noop_max steps.
             Note: this differs from openAI's implementation in that theirs  would perform at least one noop, but
             this one may sometimes perform 0. This means a noop trained agent will do well if tested on no noop.
+
+            Actually: if we don't do at least 1 the obs will be wrong, as obs on reset is incorrect for some reason...
+            one of the wrappers makes a note of this (the stacking one I think). Because of this I always noop for
+            atleast one action.
+
         """
         obs = self.env.reset(**kwargs)
         if self.override_num_noops is not None:
-            # stub:
             noops = self.override_num_noops
             print(f"Forcing {noops} NOOPs.")
         else:
-            noops = self.unwrapped.np_random.randint(0, self.noop_max)
+            noops = self.unwrapped.np_random.randint(1, self.noop_max+1)
+
         assert noops >= 0
         for _ in range(noops):
             obs, _, done, _ = self.env.step(self.noop_action)

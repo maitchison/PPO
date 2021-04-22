@@ -121,18 +121,17 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
                 )
 
 
-def monitor(path, run_filter=None):
+def monitor(path, experiment_filter=None, max_epoch=200):
 
     folders = [x[0] for x in os.walk(path)]
     for folder in folders:
-        if run_filter is not None and not run_filter(folder):
+        if experiment_filter is not None and not experiment_filter(folder):
             continue
         if os.path.split(folder)[-1] == "rl":
             continue
         try:
-            for max_epoch in range(0, 201, 5):
-                for temperature in temperatures:
-                    evaluate_run(folder, temperature=temperature, max_epoch=max_epoch)
+            for temperature in temperatures:
+                evaluate_run(folder, temperature=temperature, max_epoch=max_epoch)
         except Exception as e:
             print("Error:"+str(e))
 
@@ -140,8 +139,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Generates videos and evaluation results")
     parser.add_argument("mode", help="[video|eval]")
-    parser.add_argument("--run_filter", type=str, default="", help="Filter for runs.")
-    parser.add_argument("--experiment_filter", type=str, default="", help="Filter for experiments.")
+    parser.add_argument("run_filter", type=str, default="", help="Filter for runs.")
     parser.add_argument("--temperatures", type=str, default="[None]", help="Temperatures to generate.")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
     eval_args = parser.parse_args()
@@ -153,9 +151,11 @@ if __name__ == "__main__":
         temperatures = [temperatures]
 
     folders = [name for name in os.listdir("./Run/") if os.path.isdir(os.path.join('./Run',name))]
-    for folder in folders:
-        if eval_args.run_filter in folder:
-            monitor(
-                os.path.join('./Run', folder),
-                run_filter=lambda x: eval_args.experiment_filter in x,
-            )
+
+    for max_epoch in range(0, 201, 5):
+        for folder in folders:
+            if eval_args.run_filter in folder:
+                monitor(
+                    os.path.join('./Run', folder),
+                    max_epoch=max_epoch,
+                )

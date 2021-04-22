@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms
 import matplotlib.colors
 import numpy.random
-from rl import atari, config, utils, models, hybridVecEnv
+from rl import atari, config, utils, models, hybridVecEnv, rollout
 from rl.config import args
 import lz4.frame as lib
 import os
@@ -124,7 +124,13 @@ def make_model(env):
 
     additional_args['use_rnd'] = args.use_rnd
     additional_args['use_rnn'] = False
-    additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
+
+    try:
+        additional_args['tvf_horizon_transform'] = rollout.horizon_scale_function
+    except:
+        # this was the old method
+        additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
+
     additional_args['tvf_hidden_units'] = args.tvf_hidden_units
     additional_args['tvf_activation'] = args.tvf_activation
 
@@ -299,7 +305,7 @@ def generate_fake_rollout(num_frames = 30*60):
     """
     return {
         'values': np.zeros([num_frames, args.tvf_n_horizons], dtype=np.float32),
-        'raw_values': np.zeros([num_frames, args.tvf_n_horizons], dtype=np.float32),
+        'time': np.zeros([num_frames], dtype=np.float32),
         'model_values': np.zeros([num_frames], dtype=np.float32),
         'rewards': np.zeros([num_frames], dtype=np.float32),
         'raw_rewards': np.zeros([num_frames], dtype=np.float32),
@@ -333,6 +339,7 @@ def generate_rollouts(
     for i in range(num_rollouts):
         buffers.append({
             'values': [],   # values for each horizon of dims [K]
+            'times': [],  # normalized time step
             'raw_values': [],  # values for each horizon of dims [K] (unscaled)
             'errors': [],   # std error estimates for each horizon of dims [K]
             'model_values': [], # models predicted value (float)
@@ -348,11 +355,29 @@ def generate_rollouts(
     else:
         horizons = None
 
+    times = np.zeros([num_rollouts])
+
     while any(is_running) and frame_count < max_frames:
+
+        kwargs = {}
+
+        # not sure how best to do this
+        try:
+            _ = rollout.package_aux_features
+            is_old_code = False
+        except:
+            is_old_code = True
+
+        if is_old_code:
+            # old method
+            kwargs['horizons'] = horizons
+        else:
+            # new method
+            kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
 
         model_out = model.forward(
             states,
-            horizons=horizons,
+            **kwargs,
             **({'policy_temperature':temperature} if temperature is not None else {})
         )
 
@@ -363,21 +388,28 @@ def generate_rollouts(
 
         action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
+        prev_states = states.copy()
+        prev_times = times.copy()
+
         states, rewards, dones, infos = env.step(action)
 
         for i in range(len(states)):
-            if dones[i]:
-                is_running[i] = False
+
             if not is_running[i]:
                 continue
 
+            # make sure to include last state
+            if dones[i]:
+                is_running[i] = False
+
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
+            times[i] = infos[i]["time_frac"]
 
             if 'frames' in buffers[i]:
-                agent_layers = states[i]
+                agent_layers = prev_states[i]
                 channels = infos[i].get("channels", None)
-                rendered_frame = infos[i].get("monitor_obs", states[i])
+                rendered_frame = infos[i].get("monitor_obs", prev_states[i])
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 buffers[i]['frames'].append(frame)
 
@@ -390,6 +422,7 @@ def generate_rollouts(
 
             buffers[i]['model_values'].append(model_value)
             buffers[i]['rewards'].append(rewards[i])
+            buffers[i]['times'].append(prev_times[i])
             buffers[i]['raw_rewards'].append(raw_reward)
 
         frame_count += 1
@@ -456,23 +489,40 @@ class QuickPlot():
     def clear(self):
         self.buffer = self._background.copy()
 
-    def plot_pixel(self, x, y, c):
-        # plots pixel at given co-ords, if out of bounds uses black color
+    def plot_pixel(self, x:int, y:int, c):
+        # plots pixel at given co-ords
         h, w, channels = self.buffer.shape
-        out_of_bounds = False
         if y < 0:
-            y = 0
-            out_of_bounds = True
+            return
         if y >= h:
-            y = h - 1
-            out_of_bounds = True
+            return
         if x < 0:
-            x = 0
-            out_of_bounds = True
+            return
         if x >= w:
-            x = w - 1
-            out_of_bounds = True
-        self.buffer[-y, x] = (0,0,0) if out_of_bounds else c
+            return
+        self.buffer[-y, x] = c
+
+    def h_line(self, x1:int, x2:int, y:int, c):
+        h, w, channels = self.buffer.shape
+        if y < 0 or y >= h:
+            return
+        if x1 < 0:
+            x1 = 0
+        if x2 >= w:
+            x2 = w
+        x1, x2 = min(x1,x2), max(x1, x2)
+        self.buffer[-y, x1:x2+1] = c
+
+    def v_line(self, x:int, y1:int, y2:int, c):
+        h, w, channels = self.buffer.shape
+        if x < 0 or x >= w:
+            return
+        if y1 < 0:
+            y1 = 0
+        if y2 >= h:
+            y2 = h
+        y1, y2 = min(y1, y2), max(y1, y2)
+        self.buffer[-y2:-y1, x] = c
 
     def plot(self, xs, ys, color):
         """
@@ -497,15 +547,13 @@ class QuickPlot():
         for x, y in zip(tx, ty):
             x = int(x)
             y = int(y)
-            if x == old_x:
+            if x == old_x and y == old_y:
                 # don't plot pixels twice
                 continue
             new_x = x
             new_y = y
-            for x in range(old_x, new_x+1):
-                self.plot_pixel(x, old_y, c)
-            for y in range(old_y, new_y+1):
-                self.plot_pixel(new_x, y, c)
+            self.h_line(old_x, new_x, old_y, c)
+            self.v_line(new_x, old_y, new_y, c)
             old_x = new_x
             old_y = new_y
 
@@ -602,6 +650,10 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
         log_fig.clear()
         linear_fig.clear()
 
+        if len(true_returns) < args.tvf_max_horizon+1:
+            padded_true_returns = np.zeros([args.tvf_max_horizon+1], dtype=np.float32) + true_returns[-1]
+            padded_true_returns[:len(true_returns)] = true_returns
+            true_returns = padded_true_returns
         xs = list(range(len(true_returns)))
         ys = true_returns
         log_fig.plot(xs, ys, 'lightcoral')
@@ -641,8 +693,8 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
     # rename temp file...
     try:
         os.rename(temp_filename, video_filename)
-    except:
-        print(f"Warning: failed to rename {temp_filename} to {video_filename}")
+    except Exception as e:
+        print(f"Warning: failed to rename {temp_filename} to {video_filename}: {e}")
 
     return video_filename
 

@@ -33,26 +33,25 @@ def make(non_determinism=None, monitor_video=False, seed=None):
         np.random.seed(seed)
         env.seed(seed)
 
-
     if env_name == "MemorizeNoFrameskip-v4":
         env.set_number_of_actions_and_cards(args.memorize_actions, args.memorize_cards)
 
     # default non-determinism
     non_determinism = non_determinism or ("noop" if args.noop_start else "none")
 
+    if args.timeout > 0:
+        env = wrappers.TimeLimitWrapper(env, args.timeout)
+
     if env_type == "atari":
 
         assert "NoFrameskip" in env_name
 
-        if args.timeout > 0:
-            env = wrappers.TimeLimitWrapper(env, args.timeout)
-
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":
-            env = wrappers.NoopResetWrapper(env, noop_max=30)
+            env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
             env = wrappers.FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
         elif non_determinism == "frame-skip":
-            env = wrappers.NoopResetWrapper(env, noop_max=30)
+            env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
             env = wrappers.FrameSkipWrapper(env, min_skip=2, max_skip=5, reduce_op=np.max)
         elif non_determinism == "none":
             env = wrappers.FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)

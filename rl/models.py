@@ -219,7 +219,7 @@ class ValueNet(nn.Module):
             _, H, _ = aux_features.shape
 
             # apply horizon transform (usually just normalize them between 0 and 1)
-            aux_features[:, 0] = self.horizon_transform(aux_features[:, 0])
+            aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
 
             if self.tvf_activation == "relu":
                 activation = F.relu

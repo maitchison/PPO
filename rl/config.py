@@ -57,6 +57,7 @@ class Config:
         self.tvf_value_samples  = int()
         self.tvf_horizon_samples= int()
         self.tvf_value_distribution = str()
+        self.tvf_value_distribution = str()
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_lambda_samples = int()
@@ -65,9 +66,9 @@ class Config:
         self.tvf_hidden_units   = int()
         self.tvf_model          = str()
         self.tvf_activation     = str()
-        self.tvf_loss_weighting = str()
         self.tvf_first_and_last = float()
         self.tvf_soft_anchor    = float()
+        self.tvf_horizon_scale  = str()
 
     
         self.time_aware = bool()
@@ -93,7 +94,7 @@ class Config:
 
         self.debug_print_freq   = int()
         self.debug_log_freq     = int()
-        self.noop_start         = bool()
+        self.noop_duration      = int()
 
         self.deferred_rewards   = bool()
 
@@ -112,6 +113,7 @@ class Config:
         self.use_rnd            = bool()
 
         self.per_step_reward    = float()
+        self.debug_terminal_logging = bool()
 
         self.__dict__.update(kwargs)
 
@@ -133,6 +135,10 @@ class Config:
     @property
     def normalize_observations(self):
         return self.use_rnd
+
+    @property
+    def noop_start(self):
+        return self.noop_duration > 0
 
     @property
     def batch_size(self):
@@ -198,12 +204,15 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_value_samples", type=int, default=64, help="Number of values to sample during training.")
     parser.add_argument("--tvf_horizon_samples", type=int, default=64, help="Number of horizons to sample during training. (-1 = all)")
     parser.add_argument("--tvf_value_distribution", type=str, default="uniform", help="Sampling distribution to use when generating value samples.")
+    parser.add_argument("--tvf_horizon_distribution", type=str, default="uniform", help="Sampling distribution to use when generating horizon samples.")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
     parser.add_argument("--tvf_hidden_units", type=float, default=512)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
-    parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="[default|advanced]")
+    parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="IGNORED")
     parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
-    parser.add_argument("--tvf_soft_anchor", type=float, default=10, help="MSE loss for V(*,0) being non-zero.")
+    parser.add_argument("--tvf_soft_anchor", type=float, default=1.0, help="MSE loss for V(*,0) being non-zero.")
+    parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered]")
+    parser.add_argument("--tvf_h_scale", type=str, default="", help="IGNORED")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
@@ -219,7 +228,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--policy_lr", type=float, default=1e-4, help="Learning rate for Adam optimizer")
     
     # -----------------
-    
+
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
@@ -242,7 +251,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
-    parser.add_argument("--noop_start", type=str2bool, default=True)
+    parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
     parser.add_argument("--per_step_reward", type=float, default=0.0)
     parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
@@ -266,7 +275,7 @@ def parse_args(no_env=False, args_override=None):
                         help="How much to weight intrinsic rewards in ICM.")
 
     parser.add_argument("--use_rnd", type=str2bool, default=False,
-                        help="Enables the Random Network Distilation (RND) module.")
+                        help="Enables the Random Network Distillation (RND) module.")
 
     parser.add_argument("--normalize_advantages", type=str2bool, default=True)
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
@@ -276,7 +285,10 @@ def parse_args(no_env=False, args_override=None):
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
-    parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
+    parser.add_argument("--debug_terminal_logging", type=str2bool, default=False,
+                        help="Log information around terminals.")
+    parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
+                        help="Number of environment steps between checkpoints.")
 
     # model
     parser.add_argument("--model", type=str, default="cnn", help="['cnn']")

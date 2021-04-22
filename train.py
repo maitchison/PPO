@@ -4,7 +4,7 @@ import torch
 import uuid
 import multiprocessing
 
-from rl import utils, models, atari, config, logger
+from rl import utils, models, atari, config, logger, rollout
 from rl import ppo
 from rl.config import args
 
@@ -130,7 +130,8 @@ if __name__ == "__main__":
 
             use_rnd=args.use_rnd,
             use_rnn=False,
-            tvf_horizon_transform=lambda x: x / args.tvf_max_horizon,
+            tvf_horizon_transform=rollout.horizon_scale_function,
+
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
         )
