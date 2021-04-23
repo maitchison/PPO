@@ -1690,17 +1690,22 @@ class Runner():
             batch_data["int_returns"] = self.int_returns.reshape(B)
             batch_data["int_value"] = self.int_value.reshape(B)
 
-        for _ in range(args.value_epochs):
+        for value_epoch in range(args.value_epochs):
 
             if args.use_tvf:
                 # we do this once at the start, generate one returns estimate for each epoch on different horizons then
                 # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
                 # we don't drift, as the updates will modify our model and change the value estimates.
                 # it is possible that instead we should be updating our return estimates as we go though
-                returns, horizons = self.generate_return_sample()
-                batch_data["tvf_returns"] = returns.reshape([B, -1])
-                batch_data["tvf_horizons"] = horizons.reshape([B, -1])
-                batch_data["tvf_time"] = self.prev_time.reshape([B])
+                if value_epoch % args.tvf_update_return_freq == 0:
+                    # updating returns allows values to propagate through the horizons more quickly.
+                    # e.g. if an improvement is made at horizon x, only horizon x+tvf_n_step can benefit,
+                    # but with horizon updating we get x+(tvf_n_step*value_epochs) which could be important
+                    # for very long horizons.
+                    returns, horizons = self.generate_return_sample()
+                    batch_data["tvf_returns"] = returns.reshape([B, -1])
+                    batch_data["tvf_horizons"] = horizons.reshape([B, -1])
+                    batch_data["tvf_time"] = self.prev_time.reshape([B])
 
             self.train_batch(
                 batch_data=batch_data,

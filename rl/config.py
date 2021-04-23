@@ -69,6 +69,7 @@ class Config:
         self.tvf_first_and_last = float()
         self.tvf_soft_anchor    = float()
         self.tvf_horizon_scale  = str()
+        self.tvf_update_return_freq = int()
 
     
         self.time_aware = bool()
@@ -208,11 +209,16 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
     parser.add_argument("--tvf_hidden_units", type=float, default=512)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
-    parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="IGNORED")
     parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
     parser.add_argument("--tvf_soft_anchor", type=float, default=1.0, help="MSE loss for V(*,0) being non-zero.")
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered]")
+    # remove once we get to v14
     parser.add_argument("--tvf_h_scale", type=str, default="", help="IGNORED")
+    parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="IGNORED")
+
+
+    parser.add_argument("--tvf_update_return_freq", type=int, default=1, help="How often to update returns")
+
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")

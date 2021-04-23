@@ -202,10 +202,11 @@ v13_args = {
 
 
 # tweaked optimized settings from regression run
-v13plus_args = v13_args.copy().update({
-    'tvf_coef': 0.01,
-    'tvf_horizion_sampling': 'advanced',
+v14_args = v13_args.copy()
+v14_args.update({
+    'tvf_horizon_distribution': 'advanced',
     'tvf_horizon_scale': 'centered',
+    'tvf_update_return_freq': 1,
 }
 )
 
@@ -240,7 +241,6 @@ best10_args = {
         'tvf_loss_weighting': "advanced",
         'tvf_h_scale': "squared",
     }
-
 
 
 def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
@@ -618,62 +618,99 @@ def nice_format(x):
 
 # ---------------------------------------------------------------------------------------------------------
 
-def setup_experiments_11_eval():
+def setup_experiments_13_eval():
 
     for env_name in ["Alien", "BankHeist", "CrazyClimber"]:
         add_job(
-            f"TVF_11_Test_PPO_tuned",
+            f"TVF_13_Test_64",
             run_name=f"{env_name}",
             env_name=env_name,
-            use_tvf=False,
             epochs=50,
-            default_params=tuned_args,
+            tvf_horizon_samples=64,
+            default_params=v14_args, # v14 are just the tuned v13
             priority=0,
         )
-
         add_job(
-            f"TVF_11_Test_TVF_tuned_adv",
+            f"TVF_13_Test_256",
             run_name=f"{env_name}",
             env_name=env_name,
+            tvf_horizon_samples=256,
             epochs=50,
-
-            use_tvf=True,
-            tvf_hidden_units=128,  # mostly a performance optimization
-            tvf_n_horizons=128,
-            tvf_lambda=1.0,
-            tvf_coef=0.01,
-            tvf_max_horizon=3000,
-            gamma=0.999,
-            tvf_gamma=0.999,
-
-            tvf_loss_weighting="advanced",
-            tvf_h_scale="squared",
-
-            default_params=tuned_args,
+            default_params=v14_args,  # v14 are just the tuned v13
             priority=0,
         )
-
         add_job(
-            f"TVF_11_Test_TVF_16_tuned_adv",
+            # why not give it a try...
+            f"TVF_13_Test_512_LH",
             run_name=f"{env_name}",
             env_name=env_name,
+            tvf_horizon_samples=512,
+            gamma=1.0,
+            tvf_gamma=1.0,
             epochs=50,
-
-            use_tvf=True,
-            tvf_hidden_units=128,
-            tvf_n_horizons=128,
-            tvf_lambda=-16,
-            tvf_coef=0.01,
-            tvf_max_horizon=3000,
-            gamma=0.999,
-            tvf_gamma=0.999,
-
-            tvf_loss_weighting="advanced",
-            tvf_h_scale="squared",
-
-            default_params=tuned_args,
+            default_params=v14_args,  # v14 are just the tuned v13
             priority=0,
         )
+
+
+def random_search_13_tvf():
+
+    main_params = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'export_video': False, # save some space...
+        'use_tvf': True,
+        'gamma': 0.999,
+        'epochs': 50,
+        'priority': -100,
+        'tvf_lambda_samples': 64,
+    }
+
+    search_params = {
+
+        # ppo params
+        'max_grad_norm': [10, 20, 50],  # should have little to no effect
+        'agents': [128, 256, 512],      # I expect more is better
+        'n_steps': [64, 128, 256],  # I expect more is better
+
+        'policy_mini_batch_size': [256, 512, 1024],
+        'value_mini_batch_size': [256, 512, 1024],  # I expect lower is better
+
+        'value_epochs': [2, 4, 6],
+        'policy_epochs': [2, 4, 6],
+        'target_kl': [0.01, 0.03, 0.1],  # 1.0 is effectively off
+        'ppo_epsilon': [0.05, 0.1, 0.2], # I have only gotten <= 0.1 to work so far
+        'value_lr': [1e-4, 2.5e-4, 5e-4],
+        'policy_lr': [1e-4, 2.5e-4, 5e-4],
+        'entropy_bonus': [0.01],  # I think this is optimal
+
+        # tvf params
+        'tvf_coef': [0.3, 0.1, 0.03, 0.01],  # really don't know on this one
+        'tvf_gamma': [0.999, 0.9999, 1.0], # have a look at rediscounting...
+        'tvf_lambda': [-8, -16, -32, 0.97], # lambda will be super slow
+
+        'tvf_max_horizon': [1000, 3000, 9000],
+        'tvf_value_samples': [64, 128, 256],
+        'tvf_horizon_samples': [64, 128, 256],
+        'tvf_value_distribution': ["uniform"],
+        'tvf_horizon_distribution': ["advanced"],
+        'tvf_hidden_units': [64, 128, 256],
+        'tvf_soft_anchor': [0.3, 1.0, 3.0],
+        'tvf_update_return_freq': [1, 2, 4],
+        'tvf_horizon_scale': ["centered", "default"],
+
+    }
+
+    # score threshold should be 200, but I want some early good results...
+    random_search(
+        "TVF_13_Search_999",
+        main_params,
+        search_params,
+        count=32,
+        envs=['BattleZone', 'DemonAttack', 'Amidar'],
+        # set roughly to 2x random
+        score_thresholds=[4000, 300, 10],
+    )
 
 
 def random_search_11_ppo():
@@ -710,10 +747,9 @@ def random_search_11_ppo():
         search_params,
         count=32,
         envs=['BattleZone', 'DemonAttack', 'Amidar'],
-        # set roughtly to 2x random
+        # set roughty to 2x random
         score_thresholds=[4000, 300, 10],
     )
-
 
 def setup_experiments_13():
 
@@ -910,6 +946,18 @@ def setup_experiments_13():
             priority=50,
         )
 
+def setup_experiments_14():
+    for tvf_update_return_freq in [1, 2, 4]:
+        add_job(
+            f"TVF_14_Regression",
+            env_name="DemonAttack",
+            run_name=f"update_return_freq={tvf_update_return_freq}",
+            tvf_update_return_freq=tvf_update_return_freq,
+            default_params=v14_args,
+            epochs=50,
+            priority=250,
+        )
+
 
 if __name__ == "__main__":
 
@@ -920,6 +968,10 @@ if __name__ == "__main__":
     job_list = []
     random_search_11_ppo()
     setup_experiments_13()
+    setup_experiments_14()
+
+    random_search_13_tvf()
+    setup_experiments_13_eval()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
