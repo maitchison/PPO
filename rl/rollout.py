@@ -1521,7 +1521,7 @@ class Runner():
     def train_distill_minibatch(self, data, loss_scale=1.0):
 
         # method 1. try to learn entire curve...
-        assert args.use_tvf==True, "only tvf supported with distillation at the moment..."
+        assert args.use_tvf, "only tvf supported with distillation at the moment..."
 
         mini_batch_size = len(data["prev_state"])
 
@@ -1532,7 +1532,7 @@ class Runner():
             data["tvf_time"]
         )
 
-        model_out = self.model.forward(data["prev_state"], output="all", aux_features=aux_features)
+        model_out = self.model.forward(data["prev_state"], output="full", aux_features=aux_features)
 
         targets = model_out["value_tvf_value"].detach()
         predictions = model_out["policy_tvf_value"]
@@ -1540,13 +1540,20 @@ class Runner():
         logps = model_out["policy_log_policy"]
 
         # MSE loss
-        target_loss = 0.5 * args.tvf_coef * torch.square(targets - predictions)
-        target_loss = target_loss.sum() / mini_batch_size
+        target_loss = torch.square(targets - predictions)
+        target_loss = 0.5 * args.tvf_coef * target_loss.mean()
         loss = loss + target_loss
 
         # KL loss
         kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
         loss = loss + args.distill_beta * kl_true
+
+        # -------------------------------------------------------------------------
+        # Generate Gradient
+        # -------------------------------------------------------------------------
+
+        opt_loss = loss * loss_scale
+        opt_loss.backward()
 
         self.log.watch_mean("loss_distill", loss, history_length=64, display_width=8)
 
@@ -1582,13 +1589,13 @@ class Runner():
                 assert torch.all(data["tvf_horizons"][:, 0] == 0)
                 # I forgot to divide by mini_batch_size before so I've added that back in but scaled by 256
                 # so that tvf_soft_anchor=1 is about right.
-                anchor_loss = args.tvf_soft_anchor * 0.5 * torch.sum(torch.square(value_predictions[:,  0])) / mini_batch_size * 256
+                anchor_loss = 0.5 * args.tvf_soft_anchor * torch.mean(torch.square(value_predictions[:,  0]))
                 self.log.watch_mean("loss_anchor", anchor_loss, display_width=8)
                 loss = loss + anchor_loss
 
             # MSE loss
-            tvf_loss = 0.5 * args.tvf_coef * torch.square(targets - value_predictions)
-            tvf_loss = tvf_loss.sum() / mini_batch_size
+            tvf_loss = torch.square(targets - value_predictions)
+            tvf_loss = 0.5 * args.tvf_coef * tvf_loss.mean()
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss, history_length=64, display_width=8)
@@ -1960,13 +1967,14 @@ class Runner():
             batch_data = {}
             batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
             horizons = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_horizon_samples, args.tvf_horizon_distribution)
+            H = len(horizons)
             target_values = self.get_value_estimates(
-                obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape(B, len(horizons))
+                obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape(B, H)
 
-            batch_data["tvf_value"] = target_values
-            batch_data["tvf_horizons"] = expand_to_na(N, A, horizons)
-            batch_data["tvf_time"] = expand_to_h(len(horizons), self.prev_time)
-            batch_data["log_policy"] = self.log_policy
+            batch_data["tvf_value"] = target_values.reshape([B, H])
+            batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
+            batch_data["tvf_time"] = self.prev_time.reshape([B])
+            batch_data["log_policy"] = self.log_policy.reshape([B, -1])
 
             self.train_batch(
                 batch_data=batch_data,

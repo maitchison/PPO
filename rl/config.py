@@ -203,7 +203,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--timeout", type=int, default=60*60*30, help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
 
     parser.add_argument("--use_tvf", type=str2bool, default=True, help="Use truncated value function.")
-    parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
+    parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
     parser.add_argument("--tvf_lambda", type=str, default="1.0", help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
     parser.add_argument("--tvf_lambda_samples", type=int, default=16, help="Number of n-step samples to use for tvf_lambda calculation")
@@ -216,10 +216,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_hidden_units", type=int, default=512)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
-    parser.add_argument("--tvf_soft_anchor", type=float, default=1.0, help="MSE loss for V(*,0) being non-zero.")
+    parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|zero]")
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|zero]")
-    parser.add_argument("--tvf_update_return_freq", type=int, default=1, help="How often to update returns")
+    parser.add_argument("--tvf_update_return_freq", type=int, default=8, help="How often to update returns")
     parser.add_argument("--tvf_adaptive_ratio", type=float, default=0.1, help="Ratio between max n_step and horizon")
 
     # phasic inspired stuff

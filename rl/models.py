@@ -422,7 +422,7 @@ class TVFModel(nn.Module):
             full: policy->policy, value->value, value->policy, policy->value (with prefix)
         """
 
-        assert output in ["default", "all", "policy", "value"]
+        assert output in ["default", "full", "policy", "value"]
 
         result = {}
         x = self.prep_for_model(x)
@@ -431,11 +431,11 @@ class TVFModel(nn.Module):
             # this is a special case where we return all heads from both networks
             # required for distillation.
             policy_part = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
-            value_part = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
+            value_part = self.value_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
             result = {}
-            for k,v in policy_part:
+            for k,v in policy_part.items():
                 result["policy_" + k] = v
-            for k, v in value_part:
+            for k, v in value_part.items():
                 result["value_" + k] = v
             return result
 
