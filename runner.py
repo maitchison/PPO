@@ -218,38 +218,42 @@ v14_fast.update({
 }
 )
 
-# this are based on the best model from PPO HPS at 10M
-best10_args = {
-        'checkpoint_every': int(5e6),
-        'workers': WORKERS,
-        'epochs': 50,
-        'max_grad_norm': 20.0,
-        'agents': 64,
-        'n_steps': 256,
-        'policy_mini_batch_size': 512,
-        'value_mini_batch_size': 512,
-        'value_epochs': 6,
-        'policy_epochs': 4,
-        'target_kl': 0.1,
-        'ppo_epsilon': 0.1,                 # hard to say if this is right...
-        'value_lr': 2.5e-4,                 # value should be 5e-4... but I don't want to do it for TVF
-        'policy_lr': 2.5e-4,
+# adjusted for new tvf_coef etc
+v14_adjusted = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'epochs': 50,
+    'max_grad_norm': 20.0,
+    'agents': 256,  # more is probably better
+    'n_steps': 128,  # hard to know, but at least we are now free the MC algorithm
+    'policy_mini_batch_size': 1024,
+    'value_mini_batch_size': 256,  # smaller is probably better
+    'value_epochs': 2,  # I probably want 4 with early stopping
+    'policy_epochs': 4,
+    'target_kl': 0.01,  # need to search more around this
+    'ppo_epsilon': 0.1,  # hard to say if this is right...
+    'value_lr': 2.5e-4,  # slow and steady wins the race
+    'policy_lr': 2.5e-4,
+    'export_video': False,  # in general not needed
 
-        'use_tvf': True,
-        'tvf_hidden_units': 128,
-        'tvf_value_samples': 128,
-        'tvf_horizon_samples': 32,
-        'tvf_return_mixing': 1,
-        'tvf_lambda': -16,
-        'tvf_lambda_samples': 64,
-        'tvf_coef': 0.01,
-        'tvf_max_horizon': 3000,
-        'gamma': 0.999,
-        'tvf_gamma': 0.999,
-        'tvf_loss_weighting': "advanced",
-        'tvf_h_scale': "squared",
-    }
+    'tvf_horizon_distribution': 'advanced',
+    'tvf_horizon_scale': 'centered',
+    'tvf_update_return_freq': 4,
 
+    'use_tvf': True,
+    'tvf_hidden_units': 128,  # big guess here
+    'tvf_value_samples': 128,  # reducing from 128 samples to 64 is fine, even 16 would work.
+    'tvf_horizon_samples': 64,  # 32 has been shown to be better than 128 (this might have been due to loss scaling)
+    'tvf_lambda': -16,
+    'tvf_lambda_samples': 32,
+
+    'tvf_coef': 6.4, # due to scaling
+    'tvf_soft_anchor': 1.0,
+
+    'tvf_max_horizon': 3000,
+    'gamma': 0.999,
+    'tvf_gamma': 0.999,
+}
 
 def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
 
@@ -747,6 +751,8 @@ def random_search_14_tvf():
 
         'value_epochs':     Categorical(2, 3, 4, 6),
         'policy_epochs':    Categorical(2, 3, 4, 6),
+        'distill_epochs':   Categorical(0, 1, 2),
+        'distill_beta':     LogUniform(0.3, 3), # only used when distill=1
         'target_kl':        LogUniform(0.01, 1.0),
         'ppo_epsilon':      Uniform(0.03, 0.3),
         'value_lr':         LogUniform(1e-4, 5e-4),
@@ -754,7 +760,7 @@ def random_search_14_tvf():
         'entropy_bonus':    LogUniform(0.003, 0.03),
 
         # tvf params
-        'tvf_coef':         LogUniform(0.01, 0.3),
+        'tvf_coef':         LogUniform(0.1, 10),
         'tvf_gamma':        Categorical(0.999, 0.9999, 1.0),
         'tvf_lambda':       Categorical(-8, -16, -32, "exp", "adaptive"),
         'tvf_adaptive_ratio': LogUniform(0.01, 1.0), # only used with adaptive
@@ -766,7 +772,7 @@ def random_search_14_tvf():
         'tvf_value_distribution': Categorical("uniform", "advanced"),
         'tvf_horizon_distribution': Categorical("uniform", "advanced"),
         'tvf_hidden_units': LogUniform(32, 1024, force_int=True),
-        'tvf_soft_anchor': LogUniform(0.03, 3.0),
+        'tvf_soft_anchor': LogUniform(0.3, 3),
         'tvf_update_return_freq': Categorical(1, 2, 4),
         'tvf_horizon_scale': Categorical("default", "centered", "wide"),
         'tvf_time_scale': Categorical("default", "centered", "wide", "zero"),
@@ -878,7 +884,8 @@ def setup_experiments_14():
     # note: another wwy to do this is to run MC over the entire window, then select horizons
     # based on the actual n_step, i.e. transitions at end of window get short horizons, but ones at beginning get
     # long ones. This would give a uniform distribution of horizons though.
-    for ratio in [0.01, 0.1, 1.0]: # 1.0 is effectively off (i.e. MC returns)
+    # we found 0.03 is a good reference
+    for ratio in [0, 0.001, 0.003, 0.01, 0.03, 0.1, 1.0]: # 1.0 is effectively off (i.e. MC returns), 0.0 is td
         add_job(
             f"TVF_14_Adaptive",
             env_name="DemonAttack",
@@ -889,6 +896,65 @@ def setup_experiments_14():
             epochs=50,
             priority=200,
         )
+    add_job(
+        f"TVF_14_Adaptive",
+        env_name="DemonAttack",
+        run_name=f"ratio=off",
+        default_params=v14_fast,
+        epochs=50,
+        priority=200,
+    )
+
+    # testing distilation
+    # also making sure new value coef are correct
+    for beta in [0.1, 1.0, 10, 100, 1000]:
+        add_job(
+            f"TVF_14_Distill3",
+            env_name="DemonAttack",
+            run_name=f"beta={beta}",
+            default_params=v14_adjusted,
+            distill_beta=beta,
+            distill_epochs=1,
+            epochs=50,
+            priority=200,
+        )
+
+        # this just complicated things, probably a good idea to reduce tvf_coef, but best to keep everything the same
+        # for now... plus tvf_coef interfares with beta on this version (fixed in future versions)
+        add_job(
+            f"TVF_14_Distill3",
+            env_name="DemonAttack",
+            run_name=f"beta={beta} tvf_coef=1.0",
+            default_params=v14_adjusted,
+            tvf_coef=1.0,
+            distill_beta=beta,
+            distill_epochs=1,
+            epochs=50,
+            priority=0,
+        )
+
+    add_job(
+        f"TVF_14_Distill3",
+        env_name="DemonAttack",
+        run_name=f"beta=off",
+        default_params=v14_adjusted,
+        distill_epochs=0,
+        epochs=50,
+        priority=200,
+    )
+
+    add_job(
+        f"TVF_14_Distill3",
+        env_name="DemonAttack",
+        run_name=f"beta=off tvf_coef=1.0",
+        default_params=v14_adjusted,
+        distill_epochs=0,
+        tvf_coef=1.0,
+        epochs=50,
+        priority=200,
+    )
+
+    return
 
     # another go at this...
     # kind of wish we were using 2 value updates again...
@@ -905,7 +971,7 @@ def setup_experiments_14():
             gamma=0.999,
             tvf_gamma=0.999,
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -919,7 +985,7 @@ def setup_experiments_14():
             gamma=1.0,
             tvf_gamma=1.0,
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -934,7 +1000,7 @@ def setup_experiments_14():
             tvf_gamma=0.999,
             tvf_max_horizon=3000,
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -949,7 +1015,7 @@ def setup_experiments_14():
             tvf_gamma=1.0,
             tvf_max_horizon=30000,
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -965,7 +1031,7 @@ def setup_experiments_14():
             tvf_max_horizon=30000,
             tvf_lambda="exp",
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -983,7 +1049,7 @@ def setup_experiments_14():
             tvf_lambda="exp",
             tvf_max_horizon=30000,
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -1002,7 +1068,7 @@ def setup_experiments_14():
             tvf_lambda="exp",
             tvf_max_horizon=30000,
 
-            default_params=v14_fast,
+            default_params=v14_adjusted,
             epochs=epochs,
             priority=100,
         )
@@ -1054,7 +1120,7 @@ if __name__ == "__main__":
     # setup_experiments_13()
     # setup_experiments_13_eval()
     setup_experiments_14()
-    random_search_14_tvf()
+    #random_search_14_tvf()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

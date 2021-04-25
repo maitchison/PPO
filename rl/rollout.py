@@ -354,6 +354,9 @@ class Runner():
 
         self.policy_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=args.policy_lr, eps=args.adam_epsilon)
         self.value_optimizer = torch.optim.Adam(model.value_net.parameters(), lr=args.value_lr, eps=args.adam_epsilon)
+        if args.distill_epochs > 0:
+            self.distill_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=args.value_lr,
+                                                    eps=args.adam_epsilon)
 
         if args.use_rnd:
             self.rnd_optimizer = torch.optim.Adam(model.prediction_net.parameters(), lr=args.value_lr, eps=args.adam_epsilon)
@@ -1523,8 +1526,6 @@ class Runner():
         # method 1. try to learn entire curve...
         assert args.use_tvf, "only tvf supported with distillation at the moment..."
 
-        mini_batch_size = len(data["prev_state"])
-
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
         aux_features = package_aux_features(
@@ -1534,14 +1535,17 @@ class Runner():
 
         model_out = self.model.forward(data["prev_state"], output="full", aux_features=aux_features)
 
+        # note, we could generate the value targets once per batch update if we wanted rather than doing them
+        # multiple times (for distill_epochs=1 this won't matter)
+        # if we used same horizon sampling we'd even get this for free...
         targets = model_out["value_tvf_value"].detach()
         predictions = model_out["policy_tvf_value"]
-        old_policy_logprobs = data["log_policy"]
+        old_policy_logprobs = data["old_log_policy"]
         logps = model_out["policy_log_policy"]
 
         # MSE loss
         target_loss = torch.square(targets - predictions)
-        target_loss = 0.5 * args.tvf_coef * target_loss.mean()
+        target_loss = 0.5 * target_loss.mean()
         loss = loss + target_loss
 
         # KL loss
@@ -1587,8 +1591,6 @@ class Runner():
 
             if args.tvf_soft_anchor != 0:
                 assert torch.all(data["tvf_horizons"][:, 0] == 0)
-                # I forgot to divide by mini_batch_size before so I've added that back in but scaled by 256
-                # so that tvf_soft_anchor=1 is about right.
                 anchor_loss = 0.5 * args.tvf_soft_anchor * torch.mean(torch.square(value_predictions[:,  0]))
                 self.log.watch_mean("loss_anchor", anchor_loss, display_width=8)
                 loss = loss + anchor_loss
@@ -1961,12 +1963,11 @@ class Runner():
         # distill phase
 
 
-        for distill_epoch in range(args.distill_epochs):
-            # we do this here so it is only run if there is at least one epoch
-            # also regenerating targets each epoch is a good idea.
+        if args.distill_epochs > 0:
             batch_data = {}
             batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
-            horizons = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_horizon_samples, args.tvf_horizon_distribution)
+            horizons = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_horizon_samples,
+                                                    args.tvf_horizon_distribution)
             H = len(horizons)
             target_values = self.get_value_estimates(
                 obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape(B, H)
@@ -1974,13 +1975,24 @@ class Runner():
             batch_data["tvf_value"] = target_values.reshape([B, H])
             batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
             batch_data["tvf_time"] = self.prev_time.reshape([B])
-            batch_data["log_policy"] = self.log_policy.reshape([B, -1])
+
+            # need to update these after the policy updates
+            with torch.no_grad():
+                model_out = self.forward(
+                    obs=self.prev_obs.reshape([B, *state_shape]), output="policy"
+                )
+            old_log_policy = model_out["log_policy"].detach().cpu().numpy()
+            batch_data["old_log_policy"] = old_log_policy
+
+        for distill_epoch in range(args.distill_epochs):
+            # we do this here so it is only run if there is at least one epoch
+            # also regenerating targets each epoch is a good idea.
 
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distill_minibatch,
                 mini_batch_size=args.value_mini_batch_size,
-                optimizer=self.policy_optimizer,
+                optimizer=self.distill_optimizer,
                 label="distill",
             )
 
