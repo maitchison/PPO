@@ -75,9 +75,6 @@ def make(non_determinism=None, monitor_video=False, seed=None):
                 raise ValueError("reward_clipping should be off, sqrt, or a float")
             env = wrappers.ClipRewardWrapper(env, clip)
 
-        if args.deferred_rewards:
-            env = wrappers.DeferredRewardWrapper(env)
-
         # apply filter
         if args.filter == "none":
             pass
@@ -92,6 +89,9 @@ def make(non_determinism=None, monitor_video=False, seed=None):
 
         if args.ed_type != "none":
             env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
+
+        if args.deferred_rewards != 0:
+            env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
 
         env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
 

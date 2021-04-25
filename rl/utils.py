@@ -286,6 +286,8 @@ def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, 
 
     return new_mean, new_var, new_count
 
+def is_sorted(x):
+    return all(a <= b for a, b in zip(x, x[1:]))
 
 def explained_variance(ypred, y):
     """

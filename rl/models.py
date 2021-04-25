@@ -22,7 +22,7 @@ class NatureCNN_Net(Base_Net):
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
     """
 
-    def __init__(self, input_dims, hidden_units=512):
+    def __init__(self, input_dims, hidden_units=512, norm_layer=None):
 
         super().__init__(input_dims, hidden_units)
 
@@ -172,7 +172,8 @@ class PolicyNet(nn.Module):
 
 class ValueNet(nn.Module):
 
-    def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_horizon_transform, **kwargs):
+    def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_horizon_transform, tvf_time_transform,
+                 **kwargs):
         super().__init__()
 
         self.value_encoder = construct_network(network, input_dims, **kwargs)
@@ -180,6 +181,7 @@ class ValueNet(nn.Module):
         self.tvf_activation = tvf_activation
         self.tvf_hidden_units = int(tvf_hidden_units)
         self.horizon_transform = tvf_horizon_transform
+        self.time_transform = tvf_time_transform
 
         # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
         self.value_net_value = nn.Linear(self.value_encoder.hidden_units, 2)
@@ -190,8 +192,13 @@ class ValueNet(nn.Module):
         # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
         torch.nn.init.uniform_(
             self.value_net_hidden_aux.weight,
-            -1/(self.value_encoder.hidden_units**0.5),
-             1/(self.value_encoder.hidden_units**0.5)
+            -1/(self.value_encoder.hidden_units ** 0.5),
+             1/(self.value_encoder.hidden_units ** 0.5)
+        )
+        torch.nn.init.uniform_(
+            self.value_net_hidden_aux.bias,
+            -1 / (self.value_encoder.hidden_units ** 0.5),
+            1 / (self.value_encoder.hidden_units ** 0.5)
         )
 
     def forward(self, x, aux_features=None):
@@ -219,7 +226,9 @@ class ValueNet(nn.Module):
             _, H, _ = aux_features.shape
 
             # apply horizon transform (usually just normalize them between 0 and 1)
-            aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
+            transformed_aux_features = torch.zeros_like(aux_features)
+            transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
+            transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
 
             if self.tvf_activation == "relu":
                 activation = F.relu
@@ -235,7 +244,7 @@ class ValueNet(nn.Module):
             # features_part will be [B, Hidden]
             features_part = self.value_net_hidden(value_features)
             # aux part will be [B, H, Hidden]
-            aux_part = self.value_net_hidden_aux(aux_features)
+            aux_part = self.value_net_hidden_aux(transformed_aux_features)
             # features will be [B, 128], but needs to be [B, 1, 128]
             tvf_h = activation(features_part[:, None, :] + aux_part)
 
@@ -279,6 +288,7 @@ class TVFModel(nn.Module):
             use_rnn:bool = False,
 
             tvf_horizon_transform = lambda x : x / 1000,
+            tvf_time_transform=lambda x: x,
             tvf_hidden_units:int = 512,
             tvf_activation:str = "relu",
             network_args:Union[dict, None] = None,
@@ -304,6 +314,7 @@ class TVFModel(nn.Module):
             tvf_activation=tvf_activation,
             tvf_hidden_units=tvf_hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
+            tvf_time_transform=tvf_time_transform,
             **(network_args or {})
         )
 

@@ -204,23 +204,41 @@ class ClipRewardWrapper(gym.Wrapper):
 
 class DeferredRewardWrapper(gym.Wrapper):
     """
-    All rewards are delayed until terminal state.
-    Note: this is also a good test to see if terminal states are being used properly.
+    All rewards are delayed until given frame. If frame is -1 then uses terminal state
+
     """
 
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, time_limit=-1):
         super().__init__(env)
         self.env = env
+        self.t = 0
         self.episode_reward = 0
+        self.time_limit = time_limit
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
+        self.t += 1
+
+        # drop a hint in observation
+        # stub:
+        # if self.t+1 == self.time_limit:
+        #     # obs will be 1, H, W (I think)
+        #     obs *= 0
+
+        give_rewards = (self.t == self.time_limit) or ((self.time_limit == - 1) and done)
+
         self.episode_reward += reward
-        new_reward = self.episode_reward if done else 0
+
+        if give_rewards:
+            new_reward = self.episode_reward
+            self.episode_reward = 0
+        else:
+            new_reward = 0
         return obs, new_reward, done, info
 
     def reset(self):
         obs = self.env.reset()
+        self.t = 0
         self.episode_reward = 0
         return obs
 

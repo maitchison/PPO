@@ -131,6 +131,11 @@ def make_model(env):
         # this was the old method
         additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
 
+    try:
+        additional_args['tvf_time_transform'] = rollout.time_scale_function
+    except:
+        pass
+
     additional_args['tvf_hidden_units'] = args.tvf_hidden_units
     additional_args['tvf_activation'] = args.tvf_activation
 

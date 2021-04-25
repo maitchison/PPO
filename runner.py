@@ -4,6 +4,7 @@ import json
 import time
 import random
 import platform
+import math
 
 import socket
 HOST_NAME = socket.gethostname()
@@ -196,8 +197,6 @@ v13_args = {
         'tvf_max_horizon': 3000,
         'gamma': 0.999,
         'tvf_gamma': 0.999,
-        'tvf_loss_weighting': "advanced",
-        'tvf_h_scale': "constant",
     }
 
 
@@ -206,7 +205,16 @@ v14_args = v13_args.copy()
 v14_args.update({
     'tvf_horizon_distribution': 'advanced',
     'tvf_horizon_scale': 'centered',
-    'tvf_update_return_freq': 1,
+    'tvf_update_return_freq': 4,
+}
+)
+
+v14_fast = v13_args.copy()
+v14_fast.update({
+    'tvf_horizon_distribution': 'advanced',
+    'tvf_horizon_scale': 'centered',
+    'tvf_update_return_freq': 4,
+    'value_epochs': 2,
 }
 )
 
@@ -581,7 +589,9 @@ def show_fps(filter_jobs=None):
         print(f"{k:<20} {v:,.0f} FPS")
 
 
-def random_search(run:str, main_params:dict, search_params:dict, envs:list, score_thresholds:list, count:int=128):
+def random_search_old(run:str, main_params: dict, search_params:dict, envs: list, score_thresholds: list, count: int = 128,
+                  max_batch_size=None
+                  ):
 
     assert len(envs) == len(score_thresholds)
 
@@ -592,8 +602,10 @@ def random_search(run:str, main_params:dict, search_params:dict, envs:list, scor
             params[k] = random.choice(v)
 
         # make sure params aren't too high (due to memory)
-        while params["agents"] * params["n_steps"] > 64*1024:
-            params["agents"] //= 2
+        # todo: remove this constraint...
+        if max_batch_size is not None:
+            while params["agents"] * params["n_steps"] > max_batch_size:
+                params["agents"] //= 2
 
         while params["agents"] * params["n_steps"] < params["policy_mini_batch_size"]:
             params["policy_mini_batch_size"] //= 2
@@ -604,6 +616,34 @@ def random_search(run:str, main_params:dict, search_params:dict, envs:list, scor
         for env_name, score_threshold in zip(envs, score_thresholds):
             main_params['env_name'] = env_name
             add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
+
+
+def random_search(run:str, main_params: dict, search_params:dict, envs: list, score_thresholds: list, count: int = 128,
+                  max_batch_size=64*1024
+                  ):
+
+    assert len(envs) == len(score_thresholds)
+
+    for i in range(count):
+        params = {}
+        random.seed(i)
+        for k, v in search_params.items():
+            params[k] = v.sample()
+
+        # enabled compression if batch_size is large than some limit
+        if max_batch_size is not None and params["agents"] * params["n_steps"] >= max_batch_size:
+                params["use_compression"] = True
+
+        while params["agents"] * params["n_steps"] < params["policy_mini_batch_size"]:
+            params["policy_mini_batch_size"] //= 2
+
+        while params["agents"] * params["n_steps"] < params["value_mini_batch_size"]:
+            params["value_mini_batch_size"] //= 2
+
+        for env_name, score_threshold in zip(envs, score_thresholds):
+            main_params['env_name'] = env_name
+            add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
+
 
 
 def nice_format(x):
@@ -652,8 +692,38 @@ def setup_experiments_13_eval():
             priority=0,
         )
 
+class Categorical():
 
-def random_search_13_tvf():
+    def __init__(self, *args):
+        self._values = args
+
+    def sample(self):
+        return random.choice(self._values)
+
+
+class Uniform():
+    def __init__(self, min, max):
+        self._min = min
+        self._max = max
+
+    def sample(self):
+        r = (self._max-self._min)
+        a = self._min
+        return a + random.random() * r
+
+class LogUniform():
+    def __init__(self, min, max, force_int=False):
+        self._min = math.log(min)
+        self._max = math.log(max)
+        self._force_int = force_int
+
+    def sample(self):
+        r = (self._max - self._min)
+        a = self._min
+        result = math.exp(a + random.random() * r)
+        return int(result) if self._force_int else result
+
+def random_search_14_tvf():
 
     main_params = {
         'checkpoint_every': int(5e6),
@@ -663,47 +733,48 @@ def random_search_13_tvf():
         'gamma': 0.999,
         'epochs': 50,
         'priority': -100,
-        'tvf_lambda_samples': 64,
     }
 
     search_params = {
 
         # ppo params
-        'max_grad_norm': [10, 20, 50],  # should have little to no effect
-        'agents': [128, 256, 512],      # I expect more is better
-        'n_steps': [64, 128, 256],  # I expect more is better
+        'max_grad_norm':    LogUniform(10, 50),
+        'agents':           LogUniform(128, 1024, force_int=True),
+        'n_steps':          LogUniform(128, 1024, force_int=True),
 
-        'policy_mini_batch_size': [256, 512, 1024],
-        'value_mini_batch_size': [256, 512, 1024],  # I expect lower is better
+        'policy_mini_batch_size': LogUniform(256, 1024, force_int=True),
+        'value_mini_batch_size': LogUniform(256, 1024, force_int=True),
 
-        'value_epochs': [2, 4, 6],
-        'policy_epochs': [2, 4, 6],
-        'target_kl': [0.01, 0.03, 0.1],  # 1.0 is effectively off
-        'ppo_epsilon': [0.05, 0.1, 0.2], # I have only gotten <= 0.1 to work so far
-        'value_lr': [1e-4, 2.5e-4, 5e-4],
-        'policy_lr': [1e-4, 2.5e-4, 5e-4],
-        'entropy_bonus': [0.01],  # I think this is optimal
+        'value_epochs':     Categorical(2, 3, 4, 6),
+        'policy_epochs':    Categorical(2, 3, 4, 6),
+        'target_kl':        LogUniform(0.01, 1.0),
+        'ppo_epsilon':      Uniform(0.03, 0.3),
+        'value_lr':         LogUniform(1e-4, 5e-4),
+        'policy_lr':        LogUniform(1e-4, 5e-4),
+        'entropy_bonus':    LogUniform(0.003, 0.03),
 
         # tvf params
-        'tvf_coef': [0.3, 0.1, 0.03, 0.01],  # really don't know on this one
-        'tvf_gamma': [0.999, 0.9999, 1.0], # have a look at rediscounting...
-        'tvf_lambda': [-8, -16, -32, 0.97], # lambda will be super slow
+        'tvf_coef':         LogUniform(0.01, 0.3),
+        'tvf_gamma':        Categorical(0.999, 0.9999, 1.0),
+        'tvf_lambda':       Categorical(-8, -16, -32, "exp", "adaptive"),
+        'tvf_adaptive_ratio': LogUniform(0.01, 1.0), # only used with adaptive
 
-        'tvf_max_horizon': [1000, 3000, 9000],
-        'tvf_value_samples': [64, 128, 256],
-        'tvf_horizon_samples': [64, 128, 256],
-        'tvf_value_distribution': ["uniform"],
-        'tvf_horizon_distribution': ["advanced"],
-        'tvf_hidden_units': [64, 128, 256],
-        'tvf_soft_anchor': [0.3, 1.0, 3.0],
-        'tvf_update_return_freq': [1, 2, 4],
-        'tvf_horizon_scale': ["centered", "default"],
-
+        'time_aware':       Categorical(True, False),
+        'tvf_max_horizon':  LogUniform(1000, 9000, force_int=True),
+        'tvf_value_samples': LogUniform(32, 256, force_int=True),
+        'tvf_horizon_samples': LogUniform(32, 256, force_int=True),
+        'tvf_value_distribution': Categorical("uniform", "advanced"),
+        'tvf_horizon_distribution': Categorical("uniform", "advanced"),
+        'tvf_hidden_units': LogUniform(32, 1024, force_int=True),
+        'tvf_soft_anchor': LogUniform(0.03, 3.0),
+        'tvf_update_return_freq': Categorical(1, 2, 4),
+        'tvf_horizon_scale': Categorical("default", "centered", "wide"),
+        'tvf_time_scale': Categorical("default", "centered", "wide", "zero"),
     }
 
     # score threshold should be 200, but I want some early good results...
     random_search(
-        "TVF_13_Search_999",
+        "TVF_14_Search_999",
         main_params,
         search_params,
         count=32,
@@ -741,7 +812,7 @@ def random_search_11_ppo():
     }
 
     # score threshold should be 200, but I want some early good results...
-    random_search(
+    random_search_old(
         "TVF_11_Search_PPO",
         main_params,
         search_params,
@@ -749,6 +820,7 @@ def random_search_11_ppo():
         envs=['BattleZone', 'DemonAttack', 'Amidar'],
         # set roughty to 2x random
         score_thresholds=[4000, 300, 10],
+        max_batch_size=64*1024,
     )
 
 def setup_experiments_13():
@@ -917,34 +989,368 @@ def setup_experiments_13():
         )
 
 
-    # finally fixed the horizon bugs, want to see if it helps?
-    for samples in [16, 256]:
+    # # finally fixed the horizon bugs, want to see if it helps?
+    # for samples in [256]:
+    #     add_job(
+    #         f"TVF_13_BugFix_Breakout",
+    #         env_name="Breakout",
+    #         timeout=1000 * 4,
+    #         run_name=f"samples={samples}",
+    #         tvf_horizon_distribution="advanced",
+    #         tvf_horizon_samples=samples,
+    #         tvf_horizon_scale="centered",
+    #         default_params=v13_args,
+    #         epochs=20,
+    #         priority=50,
+    #     )
+
+        # add_job(
+        #     f"TVF_13_BugFix_Breakout",
+        #     env_name="Breakout",
+        #     timeout=1000 * 4,
+        #     run_name=f"samples={samples} horizon=1000",
+        #     tvf_max_horizon=1000,
+        #     tvf_horizon_distribution="advanced",
+        #     tvf_horizon_samples=samples,
+        #     tvf_horizon_scale="centered",
+        #     default_params=v13_args,
+        #     epochs=20,
+        #     priority=50,
+        # )
+
+    # add_job(
+    #     f"TVF_13_BugFix_Deferred",
+    #     env_name="DemonAttack",
+    #     timeout=1000 * 4,
+    #     run_name=f"samples={samples}",
+    #     tvf_horizon_distribution="advanced",
+    #     tvf_horizon_samples=samples,
+    #     deferred_rewards=True,
+    #     tvf_horizon_scale="centered",
+    #     default_params=v13_args,
+    #     epochs=20,
+    #     priority=50,
+    # )
+    #
+    # add_job(
+    #     f"TVF_13_BugFix_Deferred",
+    #     env_name="DemonAttack",
+    #     timeout=1000 * 4,
+    #     run_name=f"samples={samples} horizon=1000",
+    #     tvf_max_horizon=1000,
+    #     tvf_horizon_distribution="advanced",
+    #     tvf_horizon_samples=samples,
+    #     deferred_rewards=True,
+    #     tvf_horizon_scale="centered",
+    #     default_params=v13_args,
+    #     epochs=20,
+    #     priority=50,
+    # )
+    #
+    # add_job(
+    #     f"TVF_13_BugFix_Deferred",
+    #     env_name="DemonAttack",
+    #     timeout=1000 * 4,
+    #     run_name=f"h_samples=512 v_samples=512 horizon=1000",
+    #     tvf_max_horizon=1000,
+    #     tvf_horizon_distribution="advanced",
+    #     tvf_horizon_samples=512,
+    #     tvf_value_samples=512,
+    #     deferred_rewards=True,
+    #     tvf_horizon_scale="centered",
+    #     default_params=v13_args,
+    #     epochs=20,
+    #     priority=50,
+    # )
+
+    for ta in [True, False]:
+        for h_in in [True, False]:
+            add_job(
+                # with better weight initialization
+                f"TVF_13_BugFix_Deferred3",
+                env_name="DemonAttack",
+                timeout=500 * 4,
+                run_name=f"ta={ta} hin={h_in}",
+                tvf_horizon_distribution="advanced",
+                tvf_horizon_samples=128,
+                tvf_value_samples=128,
+                tvf_max_horizon=1000,
+                deferred_rewards=True,
+                tvf_horizon_scale="centered",
+
+                default_params=v14_args,
+
+                time_aware=ta,
+                tvf_time_scale="centered" if h_in else "zero",
+
+                epochs=10,
+                priority=100,
+            )
+
+    add_job(
+        f"TVF_13_BugFix_Deferred4",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"halfway",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+
+        default_params=v14_args,
+
+        time_aware=True,
+        tvf_time_scale="centered",
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        f"TVF_13_BugFix_Deferred4",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"halfway no_anchor",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=0,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+
+        default_params=v14_args,
+
+        time_aware=True,
+        tvf_time_scale="centered",
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        f"TVF_13_BugFix_Deferred4",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"halfway nodesync",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=0,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+
+        default_params=v14_args,
+        env_desync=False,
+
+        time_aware=True,
+        tvf_time_scale="centered",
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        f"TVF_13_BugFix_Deferred4",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"halfway no_v_update",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=0,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+
+        default_params=v14_args,
+        tvf_update_return_freq=4,
+
+        time_aware=True,
+        tvf_time_scale="centered",
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        # now copy aux_features (just in case...)
+        f"TVF_13_BugFix_Deferred5",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"sampled",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=1,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+        tvf_time_scale="centered",
+
+        default_params=v14_args,
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        f"TVF_13_BugFix_Deferred6",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"hint",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=1,
+        deferred_rewards=250,
+        tvf_horizon_scale="wide",
+        tvf_time_scale="wide",
+
+        default_params=v14_args,
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        # now copy aux_features (just in case...)
+        f"TVF_13_BugFix_Deferred5",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"not sampled",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=-1,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=1,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+        tvf_time_scale="centered",
+
+        default_params=v14_args,
+
+        epochs=10,
+        priority=100,
+    )
+
+
+    add_job(
+        # now copy aux_features (just in case...)
+        f"TVF_13_BugFix_Deferred5",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"wide",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        tvf_soft_anchor=1,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+        tvf_time_scale="wide",
+
+        default_params=v14_args,
+
+        epochs=10,
+        priority=100,
+    )
+
+    add_job(
+        # now copy aux_features (just in case...)
+        f"TVF_13_BugFix_Deferred7",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"512",
+        tvf_horizon_distribution="advanced",
+        tvf_max_horizon=1000,
+        deferred_rewards=250,
+        tvf_lambda="exp",
+        n_step=512,
+
+        default_params=v14_fast,
+
+        epochs=10,
+        priority=400,
+    )
+
+    for n_step in [2, 16, 64, 128]:
         add_job(
-            f"TVF_13_BugFix_Breakout",
-            env_name="Breakout",
-            timeout=1000 * 4,
-            run_name=f"samples={samples}",
+            # with better weight initialization
+            f"TVF_13_BugFix_Deferred_NStep",
+            env_name="DemonAttack",
+            timeout=500 * 4,
+            run_name=f"n_step={n_step}",
             tvf_horizon_distribution="advanced",
-            tvf_horizon_samples=samples,
+            tvf_horizon_samples=128,
+            tvf_value_samples=128,
+            tvf_max_horizon=1000,
+            deferred_rewards=250,
             tvf_horizon_scale="centered",
-            default_params=v13_args,
+
+            default_params=v14_args,
+            tvf_lambda=-n_step,
+
+            time_aware=True,
+            tvf_time_scale="centered",
+
             epochs=20,
-            priority=50,
+            priority=100,
         )
 
+
+    for hu in [2, 4, 5, 8]:
         add_job(
-            f"TVF_13_BugFix_Deferred",
+            # with better weight initialization
+            f"TVF_13_BugFix_Deferred_HU",
             env_name="DemonAttack",
-            timeout=1000 * 4,
-            run_name=f"samples={samples}",
+            timeout=500 * 4,
+            run_name=f"hu={hu}",
             tvf_horizon_distribution="advanced",
-            tvf_horizon_samples=samples,
-            deferred_rewards=True,
+            tvf_horizon_samples=128,
+            tvf_value_samples=128,
+            tvf_max_horizon=1000,
+            deferred_rewards=250,
+            tvf_hidden_units=hu,
             tvf_horizon_scale="centered",
-            default_params=v13_args,
+
+            default_params=v14_args,
+            tvf_lambda=-n_step,
+
+            time_aware=True,
+            tvf_time_scale="centered",
+
             epochs=20,
-            priority=50,
+            priority=100,
         )
+
+    add_job(
+        # with better weight initialization
+        f"TVF_13_BugFix_Deferred_NStep",
+        env_name="DemonAttack",
+        timeout=500 * 4,
+        run_name=f"lambda={0.97}",
+        tvf_horizon_distribution="advanced",
+        tvf_horizon_samples=128,
+        tvf_value_samples=128,
+        tvf_max_horizon=1000,
+        deferred_rewards=250,
+        tvf_horizon_scale="centered",
+
+        default_params=v14_args,
+        tvf_lambda=0.97,
+
+        time_aware=True,
+        tvf_time_scale="centered",
+
+        epochs=20,
+        priority=100,
+    )
+
 
 def setup_experiments_14():
     for tvf_update_return_freq in [1, 2, 4]:
@@ -958,6 +1364,212 @@ def setup_experiments_14():
             priority=250,
         )
 
+    # this was also done with compression system in (but turned off)
+    for tvf_lambda_samples in [2, 4, 8, 16, 32, 64]:
+        add_job(
+            f"TVF_14_Lambda",
+            env_name="DemonAttack",
+            run_name=f"tvf_lambda_samples={tvf_lambda_samples} lambda=0.98",
+            tvf_lambda=0.98,
+            tvf_lambda_samples=tvf_lambda_samples,
+            default_params=v14_args,
+            epochs=30,
+            priority=100,
+        )
+
+    # this was also done with compression system in (but turned off)
+    for compression in [True, False]:
+        add_job(
+            f"TVF_14_Compression",
+            env_name="DemonAttack",
+            run_name=f"compression={compression}",
+            use_compression=compression,
+            default_params=v14_args,
+            epochs=30,
+            priority=100,
+        )
+
+    # this was also done with compression system in (but turned off)
+    for n_step in [64, 128, 256, 512, 1024]:
+        add_job(
+            f"TVF_14_Exp",
+            env_name="DemonAttack",
+            run_name=f"n_step={n_step}",
+            n_step=n_step,
+            tvf_lambda="exp",
+            default_params=v14_args,
+            epochs=50,
+            priority=100,
+        )
+
+    # this was also done with compression system in (but turned off)
+    # note: another wwy to do this is to run MC over the entire window, then select horizons
+    # based on the actual n_step, i.e. transitions at end of window get short horizons, but ones at beginning get
+    # long ones. This would give a uniform distribution of horizons though.
+    for ratio in [0.01, 0.1, 1.0]: # 1.0 is effectively off (i.e. MC returns)
+        add_job(
+            f"TVF_14_Adaptive",
+            env_name="DemonAttack",
+            run_name=f"ratio={ratio}",
+            tvf_adaptive_ratio=ratio,
+            tvf_lambda="adaptive",
+            default_params=v14_fast,
+            epochs=50,
+            priority=200,
+        )
+
+    # another go at this...
+    # kind of wish we were using 2 value updates again...
+    for env in ['DemonAttack', 'Skiing', 'Seaquest']:
+
+        epochs = 20
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"ppo_999",
+
+            use_tvf=False,
+            gamma=0.999,
+            tvf_gamma=0.999,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"ppo_1",
+
+            use_tvf=False,
+            gamma=1.0,
+            tvf_gamma=1.0,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"tvf_default (999_3k_128)",
+
+            use_tvf=True,
+            gamma=0.999,
+            tvf_gamma=0.999,
+            tvf_max_horizon=3000,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"tvf_default (1_30k_128)",
+
+            use_tvf=True,
+            gamma=1.0,
+            tvf_gamma=1.0,
+            tvf_max_horizon=30000,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"tvf_exp (1_30k_128)",
+
+            use_tvf=True,
+            gamma=1.0,
+            tvf_gamma=1.0,
+            tvf_max_horizon=30000,
+            tvf_lambda="exp",
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"tvf_exp (1_30k_512)",
+
+            use_tvf=True,
+            n_step=512,
+            use_compression=True,
+            gamma=1.0,
+            tvf_gamma=1.0,
+            tvf_lambda="exp",
+            tvf_max_horizon=30000,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"tvf_super (1_30k_1024)",
+
+            use_tvf=True,
+            n_step=1024,
+            agents=1024,
+            use_compression=True,
+            gamma=1.0,
+            tvf_gamma=1.0,
+            tvf_lambda="exp",
+            tvf_max_horizon=30000,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+
+    # just run exp 512 on some interesting environments
+    for env in ["Breakout", "MontezumaRevenge", "Pitfall", "PrivateEye"]:
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"ppo_999",
+
+            use_tvf=False,
+            gamma=0.999,
+            tvf_gamma=0.999,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_14_LongHorizon_{env}",
+            env_name=env,
+            run_name=f"tvf_1_exp (512)",
+
+            use_tvf=True,
+            n_step=512,
+            use_compression=True,
+            gamma=1.0,
+            tvf_gamma=1.0,
+            tvf_lambda="exp",
+            tvf_max_horizon=30000,
+
+            default_params=v14_fast,
+            epochs=epochs,
+            priority=100,
+        )
+
 
 if __name__ == "__main__":
 
@@ -966,12 +1578,11 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    random_search_11_ppo()
-    setup_experiments_13()
+    # random_search_11_ppo()
+    # setup_experiments_13()
+    # setup_experiments_13_eval()
     setup_experiments_14()
-
-    random_search_13_tvf()
-    setup_experiments_13_eval()
+    random_search_14_tvf()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

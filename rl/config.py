@@ -26,7 +26,6 @@ class Config:
         self.workers            = int()
         self.epochs             = int()
         self.limit_epochs       = int()
-        self.batch_epochs       = int()
 
         self.observation_normalization = bool()
         self.intrinsic_reward_scale = float()
@@ -69,7 +68,9 @@ class Config:
         self.tvf_first_and_last = float()
         self.tvf_soft_anchor    = float()
         self.tvf_horizon_scale  = str()
+        self.tvf_time_scale = str()
         self.tvf_update_return_freq = int()
+        self.tvf_adaptive_ratio = float()
 
     
         self.time_aware = bool()
@@ -78,7 +79,8 @@ class Config:
 
         # phasic
         self.policy_epochs = int()                            
-        self.value_epochs = int()                            
+        self.value_epochs = int()
+        self.distill_epochs = int()
         self.target_kl = float()                            
         self.ppo_epsilon =float()
         self.agents = int()
@@ -97,7 +99,7 @@ class Config:
         self.debug_log_freq     = int()
         self.noop_duration      = int()
 
-        self.deferred_rewards   = bool()
+        self.deferred_rewards   = int()
 
         self.frame_stack        = int()
         self.timeout = int()
@@ -115,6 +117,9 @@ class Config:
 
         self.per_step_reward    = float()
         self.debug_terminal_logging = bool()
+        self.debug_value_logging = bool()
+
+        self.use_compression = bool()
 
         self.__dict__.update(kwargs)
 
@@ -199,7 +204,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--use_tvf", type=str2bool, default=True, help="Use truncated value function.")
     parser.add_argument("--tvf_coef", type=float, default=0.1, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
-    parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
+    parser.add_argument("--tvf_lambda", type=str, default="1.0", help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
     parser.add_argument("--tvf_lambda_samples", type=int, default=16, help="Number of n-step samples to use for tvf_lambda calculation")
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
     parser.add_argument("--tvf_value_samples", type=int, default=64, help="Number of values to sample during training.")
@@ -207,22 +212,19 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_value_distribution", type=str, default="uniform", help="Sampling distribution to use when generating value samples.")
     parser.add_argument("--tvf_horizon_distribution", type=str, default="uniform", help="Sampling distribution to use when generating horizon samples.")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
-    parser.add_argument("--tvf_hidden_units", type=float, default=512)
+    parser.add_argument("--tvf_hidden_units", type=int, default=512)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
     parser.add_argument("--tvf_soft_anchor", type=float, default=1.0, help="MSE loss for V(*,0) being non-zero.")
-    parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered]")
-    # remove once we get to v14
-    parser.add_argument("--tvf_h_scale", type=str, default="", help="IGNORED")
-    parser.add_argument("--tvf_loss_weighting", type=str, default="default", help="IGNORED")
-
-
+    parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|zero]")
+    parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|zero]")
     parser.add_argument("--tvf_update_return_freq", type=int, default=1, help="How often to update returns")
-
+    parser.add_argument("--tvf_adaptive_ratio", type=float, default=0.1, help="Ratio between max n_step and horizon")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
     parser.add_argument("--value_epochs", type=int, default=6, help="Number of value training epochs per training batch.")
+    parser.add_argument("--distill_epochs", type=int, default=0, help="Number of distilation epochs")
     parser.add_argument("--target_kl", type=float, default=0.01, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
     parser.add_argument("--value_mini_batch_size", type=int, default=256)
@@ -261,7 +263,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--per_step_reward", type=float, default=0.0)
     parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
-    parser.add_argument("--deferred_rewards", type=str2bool, default=False)
+    parser.add_argument("--deferred_rewards", type=int, default=0,
+                        help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
+    parser.add_argument("--use_compression", type=str2bool, default=False,
+                        help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=True)
@@ -293,6 +298,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
     parser.add_argument("--debug_terminal_logging", type=str2bool, default=False,
                         help="Log information around terminals.")
+    parser.add_argument("--debug_value_logging", type=str2bool, default=False,
+                        help="Log information around terminals.")
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
 
@@ -309,6 +316,11 @@ def parse_args(no_env=False, args_override=None):
         args.intrinsic_reward_propagation = args.use_rnd
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
+
+    try:
+        args.tvf_lambda = float(args.tvf_lambda)
+    except:
+        pass
 
     assert args.tvf_value_samples <= args.tvf_max_horizon, "tvf_value_samples must be <= tvf_max_horizon."
     assert args.tvf_horizon_samples <= args.tvf_max_horizon, "tvf_horizon_samples must be <= tvf_max_horizon."
