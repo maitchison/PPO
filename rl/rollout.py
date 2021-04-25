@@ -1520,9 +1520,35 @@ class Runner():
 
     def train_distill_minibatch(self, data, loss_scale=1.0):
 
-        """ we could make this learn the entire curve... yeah why not... ""
+        # method 1. try to learn entire curve...
+        assert args.use_tvf==True, "only tvf supported with distillation at the moment..."
 
-        pass
+        mini_batch_size = len(data["prev_state"])
+
+        loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+
+        aux_features = package_aux_features(
+            data["tvf_horizons"],
+            data["tvf_time"]
+        )
+
+        model_out = self.model.forward(data["prev_state"], output="all", aux_features=aux_features)
+
+        targets = model_out["value_tvf_value"].detach()
+        predictions = model_out["policy_tvf_value"]
+        old_policy_logprobs = data["log_policy"]
+        logps = model_out["policy_log_policy"]
+
+        # MSE loss
+        target_loss = 0.5 * args.tvf_coef * torch.square(targets - predictions)
+        target_loss = target_loss.sum() / mini_batch_size
+        loss = loss + target_loss
+
+        # KL loss
+        kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
+        loss = loss + args.distill_beta * kl_true
+
+        self.log.watch_mean("loss_distill", loss, history_length=64, display_width=8)
 
     def train_value_minibatch(self, data, loss_scale=1.0):
 
@@ -1927,12 +1953,21 @@ class Runner():
         # ----------------------------------------------------
         # distill phase
 
-        batch_data = {}
-        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
 
         for distill_epoch in range(args.distill_epochs):
-            if "ext_value" not in batch_data:
-                batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
+            # we do this here so it is only run if there is at least one epoch
+            # also regenerating targets each epoch is a good idea.
+            batch_data = {}
+            batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
+            horizons = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_horizon_samples, args.tvf_horizon_distribution)
+            target_values = self.get_value_estimates(
+                obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape(B, len(horizons))
+
+            batch_data["tvf_value"] = target_values
+            batch_data["tvf_horizons"] = expand_to_na(N, A, horizons)
+            batch_data["tvf_time"] = expand_to_h(len(horizons), self.prev_time)
+            batch_data["log_policy"] = self.log_policy
+
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distill_minibatch,
@@ -2105,3 +2140,22 @@ def time_scale_function(x):
         return (x - 0.5) * 30.0
     else:
         raise ValueError("Invalid args.tvf_time_scale.")
+
+def expand_to_na(n,a,x):
+    """
+    takes 1d input and returns it duplicated [N,A] times
+    in form [n, a, *]
+    """
+    x = x[None, None, :]
+    x = np.repeat(x, n, axis=0)
+    x = np.repeat(x, a, axis=1)
+    return x
+
+def expand_to_h(h,x):
+    """
+    takes 2d input and returns it duplicated [H] times
+    in form [*, *, h]
+    """
+    x = x[:, :, None]
+    x = np.repeat(x, h, axis=2)
+    return x

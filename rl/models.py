@@ -144,113 +144,113 @@ class RNDPredictor_Net(Base_Net):
 # Models
 # ----------------------------------------------------------------------------------------------------------------
 
-class PolicyNet(nn.Module):
-
-    def __init__(self, network, input_dims, actions, **kwargs):
-        super().__init__()
-        self.policy_encoder = construct_network(network, input_dims, **kwargs)
-        # policy outputs policy, but also value so that we can train it to predict value as an aux task
-        # value outputs extrinsic and intrinsic value
-        self.policy_net_policy = nn.Linear(self.policy_encoder.hidden_units, actions)
-        self.policy_net_value = nn.Linear(self.policy_encoder.hidden_units, 2)
-
-    def forward(self, x, policy_temperature=1.0):
-
-        result = {}
-
-        policy_features = F.relu(self.policy_encoder(x))
-        policy_values = self.policy_net_value(policy_features)
-        unscaled_policy = self.policy_net_policy(policy_features)
-        result['raw_policy'] = unscaled_policy
-        result['log_policy'] = F.log_softmax(unscaled_policy / policy_temperature, dim=1)
-
-        result['policy_ext_value'] = policy_values[:, 0]
-        result['policy_int_value'] = policy_values[:, 1]
-
-        return result
-
-
-class ValueNet(nn.Module):
+class DualNet(nn.Module):
+    """
+    Network has both policy and value heads, but may only use one of these.
+    """
 
     def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_horizon_transform, tvf_time_transform,
+                 actions=None,
+                 policy_head=True, value_head=True,
                  **kwargs):
         super().__init__()
 
-        self.value_encoder = construct_network(network, input_dims, **kwargs)
+        self.encoder = construct_network(network, input_dims, **kwargs)
 
-        self.tvf_activation = tvf_activation
-        self.tvf_hidden_units = int(tvf_hidden_units)
-        self.horizon_transform = tvf_horizon_transform
-        self.time_transform = tvf_time_transform
+        self.policy_head = policy_head
+        self.value_head = value_head
 
-        # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
-        self.value_net_value = nn.Linear(self.value_encoder.hidden_units, 2)
-        self.value_net_hidden = nn.Linear(self.value_encoder.hidden_units, self.tvf_hidden_units)
-        self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units)
-        self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
+        if self.policy_head:
+            assert actions is not None
+            # policy outputs policy, but also value so that we can train it to predict value as an aux task
+            # value outputs extrinsic and intrinsic value
+            self.policy_net_policy = nn.Linear(self.encoder.hidden_units, actions)
+            self.policy_net_value = nn.Linear(self.encoder.hidden_units, 2)
 
-        # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
-        torch.nn.init.uniform_(
-            self.value_net_hidden_aux.weight,
-            -1/(self.value_encoder.hidden_units ** 0.5),
-             1/(self.value_encoder.hidden_units ** 0.5)
-        )
-        torch.nn.init.uniform_(
-            self.value_net_hidden_aux.bias,
-            -1 / (self.value_encoder.hidden_units ** 0.5),
-            1 / (self.value_encoder.hidden_units ** 0.5)
-        )
+        if self.value_head:
+            self.tvf_activation = tvf_activation
+            self.tvf_hidden_units = int(tvf_hidden_units)
+            self.horizon_transform = tvf_horizon_transform
+            self.time_transform = tvf_time_transform
 
-    def forward(self, x, aux_features=None):
+            # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
+            self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
+            self.value_net_hidden = nn.Linear(self.encoder.hidden_units, self.tvf_hidden_units)
+            self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units)
+            self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
+
+            # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
+            torch.nn.init.uniform_(
+                self.value_net_hidden_aux.weight,
+                -1/(self.encoder.hidden_units ** 0.5),
+                 1/(self.encoder.hidden_units ** 0.5)
+            )
+            torch.nn.init.uniform_(
+                self.value_net_hidden_aux.bias,
+                -1 / (self.encoder.hidden_units ** 0.5),
+                1 / (self.encoder.hidden_units ** 0.5)
+            )
+
+    def forward(
+            self, x, aux_features=None, policy_temperature=1.0,
+            exclude_value=False, exclude_policy=False,
+        ):
         """
         x is [B, *state_shape]
         aux_features, if given are [B, H, 2] where [...,0] are horizons and [...,1] are fractions of remaining time
         """
 
         result = {}
+        features = F.relu(self.encoder(x))
 
-        value_features = F.relu(self.value_encoder(x))
-        value_values = self.value_net_value(value_features)
-        result['ext_value'] = value_values[:, 0]
-        result['int_value'] = value_values[:, 1]
+        if self.policy_head and not exclude_policy:
+            unscaled_policy = self.policy_net_policy(features)
+            result['raw_policy'] = unscaled_policy
+            result['log_policy'] = F.log_softmax(unscaled_policy / policy_temperature, dim=1)
 
-        # auxiliary features
-        if aux_features is not None:
+        if self.value_head and not exclude_value:
 
-            # upload aux_features to GPU and cast to float
-            if type(aux_features) is np.ndarray:
-                aux_features = torch.from_numpy(aux_features)
+            value_values = self.value_net_value(features)
+            result['ext_value'] = value_values[:, 0]
+            result['int_value'] = value_values[:, 1]
 
-            aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
+            # auxiliary features
+            if aux_features is not None:
 
-            _, H, _ = aux_features.shape
+                # upload aux_features to GPU and cast to float
+                if type(aux_features) is np.ndarray:
+                    aux_features = torch.from_numpy(aux_features)
 
-            # apply horizon transform (usually just normalize them between 0 and 1)
-            transformed_aux_features = torch.zeros_like(aux_features)
-            transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
-            transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
+                aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
 
-            if self.tvf_activation == "relu":
-                activation = F.relu
-            elif self.tvf_activation == "tanh":
-                activation = F.tanh
-            elif self.tvf_activation == "sigmoid":
-                activation = F.sigmoid
-            else:
-                raise Exception("invalid activation")
+                _, H, _ = aux_features.shape
 
-            # combine aux features the fast way
+                # apply horizon transform (usually just normalize them between 0 and 1)
+                transformed_aux_features = torch.zeros_like(aux_features)
+                transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
+                transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
 
-            # features_part will be [B, Hidden]
-            features_part = self.value_net_hidden(value_features)
-            # aux part will be [B, H, Hidden]
-            aux_part = self.value_net_hidden_aux(transformed_aux_features)
-            # features will be [B, 128], but needs to be [B, 1, 128]
-            tvf_h = activation(features_part[:, None, :] + aux_part)
+                if self.tvf_activation == "relu":
+                    activation = F.relu
+                elif self.tvf_activation == "tanh":
+                    activation = F.tanh
+                elif self.tvf_activation == "sigmoid":
+                    activation = F.sigmoid
+                else:
+                    raise Exception("invalid activation")
 
-            tvf_values = self.value_net_tvf(tvf_h)[..., 0]
+                # combine aux features the fast way
 
-            result['tvf_value'] = tvf_values
+                # features_part will be [B, Hidden]
+                features_part = self.value_net_hidden(features)
+                # aux part will be [B, H, Hidden]
+                aux_part = self.value_net_hidden_aux(transformed_aux_features)
+                # features will be [B, 128], but needs to be [B, 1, 128]
+                tvf_h = activation(features_part[:, None, :] + aux_part)
+
+                tvf_values = self.value_net_tvf(tvf_h)[..., 0]
+
+                result['tvf_value'] = tvf_values
 
         return result
 
@@ -307,16 +307,19 @@ class TVFModel(nn.Module):
         single_channel_input_dims = (1, *input_dims[1:])
         self.use_rnd = use_rnd
 
-        self.policy_net = PolicyNet(network=network, input_dims=input_dims, actions=actions, **(network_args or {}))
-        self.value_net = ValueNet(
+        make_net = lambda : DualNet(
             network=network,
             input_dims=input_dims,
             tvf_activation=tvf_activation,
             tvf_hidden_units=tvf_hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
             tvf_time_transform=tvf_time_transform,
+            actions=actions,
             **(network_args or {})
         )
+
+        self.policy_net = make_net()
+        self.value_net = make_net()
 
         if self.use_rnd:
             self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
@@ -395,7 +398,7 @@ class TVFModel(nn.Module):
 
         return errors
 
-    def forward(self, x, aux_features=None, output:str = "both", policy_temperature: float = 1.0):
+    def forward(self, x, aux_features=None, output: str = "default", policy_temperature: float = 1.0):
         """
 
         Forward input through model and return dictionary containing
@@ -411,18 +414,45 @@ class TVFModel(nn.Module):
         x: tensor of dims [B, *obs_shape]
         aux_features: (optional) int32 tensor of dims [B, H]
         output: which network(s) to run ["both", "policy", "value"]
+
+        Outputs are:
+            policy: policy->policy
+            value: value->value
+            default: policy->policy, value->value
+            full: policy->policy, value->value, value->policy, policy->value (with prefix)
         """
 
-        assert output in ["both", "policy", "value"]
+        assert output in ["default", "all", "policy", "value"]
 
         result = {}
         x = self.prep_for_model(x)
 
-        if output in ["both", "policy"]:
-            result.update(self.policy_net(x, policy_temperature=policy_temperature))
+        if output == "full":
+            # this is a special case where we return all heads from both networks
+            # required for distillation.
+            policy_part = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
+            value_part = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
+            result = {}
+            for k,v in policy_part:
+                result["policy_" + k] = v
+            for k, v in value_part:
+                result["value_" + k] = v
+            return result
 
-        if output in ["both", "value"]:
-            result.update(self.value_net(x, aux_features=aux_features))
+        if output in ["default", "policy"]:
+            result.update(self.policy_net(
+                x,
+                aux_features=aux_features,
+                policy_temperature=policy_temperature,
+                exclude_value=True,
+            ))
+        if output in ["default", "value"]:
+            result.update(self.value_net(
+                x,
+                aux_features=aux_features,
+                policy_temperature=policy_temperature,
+                exclude_policy=True,
+                ))
 
         return result
 
