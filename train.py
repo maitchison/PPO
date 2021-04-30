@@ -108,6 +108,7 @@ if __name__ == "__main__":
 
     try:
 
+
         utils.lock_job()
 
         if args.model == "cnn":

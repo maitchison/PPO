@@ -418,7 +418,7 @@ class Runner():
             self.tvf_debug_horizons.append(args.tvf_max_horizon)
         self.tvf_debug_horizons.sort()
 
-        if args.tvf_lambda == "adaptive":
+        if args.tvf_mode == "adaptive":
             self.effective_n_step_table = self.generate_adaptive_n_step_table()
 
     def generate_adaptive_n_step_table(self):
@@ -433,7 +433,7 @@ class Runner():
         # future horizons use the same n_step as us. I think what I have here is a good enough approximation though
         # also, this functions seems to be approximately 10*(8-log(x)) for 0.1 and 3k
 
-        n_step_for_horizon = np.asarray([max(1, int(h*args.tvf_adaptive_ratio)) for h in range(args.tvf_max_horizon+1)])
+        n_step_for_horizon = np.asarray([self.get_adaptive_n_step(h) for h in range(args.tvf_max_horizon+1)])
 
         # this records the number of times an error would be copied if it is at horizon h
         table = np.zeros([args.tvf_max_horizon+1])
@@ -742,9 +742,11 @@ class Runner():
 
         return returns
 
+    def get_adaptive_n_step(self, h):
+        return max(1, int(2*args.tvf_n_step * h / args.tvf_max_horizon))
+
     def _calculate_adaptive_sampled_returns(
             self,
-            dims:tuple,
             n_step_func: callable,
             required_horizons,
     ):
@@ -752,7 +754,7 @@ class Runner():
         Calculate returns where n_steps depends on horizon
         """
 
-        required_n_steps = [max(1, int(h * args.tvf_adaptive_ratio)) for h in required_horizons]
+        required_n_steps = [self.get_adaptive_n_step(h) for h in required_horizons]
         n_step_lookup = defaultdict(list)
         for n, h in zip(required_n_steps, required_horizons):
             n_step_lookup[n].append(h)
@@ -868,28 +870,27 @@ class Runner():
             value_samples=value_samples,
         )
 
-        if args.tvf_lambda == "exp":
+        if args.tvf_mode == "exponential":
             returns = self._calculate_exp_sampled_returns(
                 dims=(N, A, len(required_horizons)),
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
             )
-        elif args.tvf_lambda == "adaptive":
+        elif args.tvf_mode == "adaptive":
             returns = self._calculate_adaptive_sampled_returns(
-                dims=(N, A, len(required_horizons)),
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
             )
-        elif args.tvf_lambda >= 0:
+        elif args.tvf_mode == "lambda":
             returns = self._calculate_lambda_sampled_returns(
                 dims=(N, A, len(required_horizons)),
                 td_lambda=args.tvf_lambda,
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
             )
-        else:
+        elif args.tvf_mode == "nstep":
             returns = self._calculate_n_step_sampled_returns(
-                n_step=-int(args.tvf_lambda),
+                n_step=args.tvf_n_step,
                 gamma=args.tvf_gamma,
                 rewards=rewards,
                 dones=dones,
@@ -897,6 +898,8 @@ class Runner():
                 value_sample_horizons=value_sample_horizons,
                 value_samples=value_samples,
             )
+        else:
+            raise ValueError("Invalid tvf_mode")
 
         if args.debug_value_logging and not no_debug:
             import matplotlib.pyplot as plt
@@ -1679,26 +1682,28 @@ class Runner():
             p = np.asarray([1/(h+1) for h in sample_range])
             p /= np.sum(p)
         elif distribution == "advanced":
-
             def prob_from_effective_n_step(effective_n_step: float):
                 return (self.current_max_horizon - sample_range + effective_n_step) / effective_n_step
-
             # this uses the number of times a horizon will (on average) be copied)
-            if args.tvf_lambda == "exp":
+            if args.tvf_mode == "exponential":
+                # I think this is wrong... need to figure this out
+                # for n_steps=1 we have (h_max-h+1)/1
+                # for n_steps=2 we have ((1.5)h_max-(1.5)h+2)/2
+
                 p = prob_from_effective_n_step(args.n_steps / np.log2(args.n_steps))
-            elif args.tvf_lambda == "adaptive":
+            elif args.tvf_mode == "adaptive":
                 p = self.effective_n_step_table[sample_range]
-            elif args.tvf_lambda < 0:
-                # n step returns
-                p = prob_from_effective_n_step(-args.tvf_lambda)
-                # td updates
-            elif args.tvf_lambda == 0:
-                p = prob_from_effective_n_step(1)
-            elif args.tvf_lambda == 1:
-                # MC style
-                p = prob_from_effective_n_step(args.n_steps / 2)
+            elif args.tvf_mode == "nstep":
+                p = prob_from_effective_n_step(args.tvf_n_step)
+            elif args.tvf_mode == "lambda":
+                if args.tvf_lambda == 0:
+                    p = prob_from_effective_n_step(1)
+                elif args.tvf_lambda == 1:
+                    p = prob_from_effective_n_step(args.n_steps / 2)
+                else:
+                    p = prob_from_effective_n_step(min(1 / (1 - args.tvf_lambda), args.n_steps))
             else:
-                p = prob_from_effective_n_step(min(1 / (1 - args.tvf_lambda), args.n_steps))
+                raise ValueError()
             p /= np.sum(p)
         elif distribution == "exponential":
             # adjust exponential so mean is half horizon
@@ -1717,6 +1722,8 @@ class Runner():
         Generates return estimates for current batch of data.
         """
 
+        assert args.tvf_mode == "nstep", "Only nstep returns supported with tvf_value_samples=-1 at the moment."
+
         value_estimates = self.get_value_estimates(
             obs=self.all_obs,
             time=self.all_time,
@@ -1729,7 +1736,7 @@ class Runner():
                 values=value_estimates[:-1],
                 final_value_estimates=value_estimates[-1],
                 gamma=args.tvf_gamma,
-                n_step=-int(args.tvf_lambda),
+                n_step=args.tvf_n_step,
         )
 
         horizons = np.arange(0, args.tvf_max_horizon+1)[None, None, :]
@@ -1961,7 +1968,6 @@ class Runner():
 
         # ----------------------------------------------------
         # distill phase
-
 
         if args.distill_epochs > 0:
             batch_data = {}

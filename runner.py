@@ -352,13 +352,13 @@ class Job:
         if status == "running":
             priority += 1000
 
-        # if "search" in self.experiment_name.lower():
-        #     # with search we want to make sure we complete partial runs first
-        #     priority = priority + self.get_completed_epochs()
-        # else:
-        #     priority = priority - self.get_completed_epochs()
+        if "search" in self.experiment_name.lower():
+            # with search we want to make sure we complete partial runs first
+            priority = priority + self.get_completed_epochs()
+        else:
+            priority = priority - self.get_completed_epochs()
 
-        priority = priority - self.get_completed_epochs()
+        #priority = priority - self.get_completed_epochs()
 
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
@@ -593,40 +593,12 @@ def show_fps(filter_jobs=None):
         print(f"{k:<20} {v:,.0f} FPS")
 
 
-def random_search_old(run:str, main_params: dict, search_params:dict, envs: list, score_thresholds: list, count: int = 128,
-                  max_batch_size=None
-                  ):
+def random_search(run:str, main_params: dict, search_params:dict, envs: list, score_thresholds: list, count: int = 128):
 
     assert len(envs) == len(score_thresholds)
 
-    for i in range(count):
-        params = {}
-        random.seed(i)
-        for k, v in search_params.items():
-            params[k] = random.choice(v)
-
-        # make sure params aren't too high (due to memory)
-        # todo: remove this constraint...
-        if max_batch_size is not None:
-            while params["agents"] * params["n_steps"] > max_batch_size:
-                params["agents"] //= 2
-
-        while params["agents"] * params["n_steps"] < params["policy_mini_batch_size"]:
-            params["policy_mini_batch_size"] //= 2
-
-        while params["agents"] * params["n_steps"] < params["value_mini_batch_size"]:
-            params["value_mini_batch_size"] //= 2
-
-        for env_name, score_threshold in zip(envs, score_thresholds):
-            main_params['env_name'] = env_name
-            add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
-
-
-def random_search(run:str, main_params: dict, search_params:dict, envs: list, score_thresholds: list, count: int = 128,
-                  max_batch_size=64*1024
-                  ):
-
-    assert len(envs) == len(score_thresholds)
+    # note: for categorical we could do better creating a list with the correct proportions then shuffeling it
+    # the last run had just 4 wide out of 32 when 10 or 11 were expected...
 
     for i in range(count):
         params = {}
@@ -634,9 +606,8 @@ def random_search(run:str, main_params: dict, search_params:dict, envs: list, sc
         for k, v in search_params.items():
             params[k] = v.sample()
 
-        # enabled compression if batch_size is large than some limit
-        if max_batch_size is not None and params["agents"] * params["n_steps"] >= max_batch_size:
-                params["use_compression"] = True
+        # agents must divide workers
+        params['agents'] = (params['agents'] // 8) * 8
 
         while params["agents"] * params["n_steps"] < params["policy_mini_batch_size"]:
             params["policy_mini_batch_size"] //= 2
@@ -648,6 +619,71 @@ def random_search(run:str, main_params: dict, search_params:dict, envs: list, sc
             main_params['env_name'] = env_name
             add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
 
+
+def random_search_adv(
+        run:str, main_params: dict, search_params:dict, envs: list, score_thresholds: list, count: int = 128,
+        base_seed=0,
+
+):
+    """
+    Improved random search:
+    for consistantancy random seed is now based on key.
+    values are evenly distributed over range then shuffled
+    """
+
+    assert len(envs) == len(score_thresholds)
+
+    # note: for categorical we could do better creating a list with the correct proportions then shuffeling it
+    # the last run had just 4 wide out of 32 when 10 or 11 were expected...
+    # one disadvantage of this is that we can not change the count after the search has started. (although we could run it twice I guess?)
+
+    import numpy as np
+    import hashlib
+
+    def smart_round_sig(x, sig=4):
+        if int(x) == x:
+            return x
+        return round(x, sig - int(math.floor(math.log10(abs(x)))) - 1)
+
+    even_dist_samples = {}
+
+    # this method makes sure categorical samples are well balanced
+    for k, v in search_params.items():
+        seed = hashlib.sha256(k.encode("UTF-8")).digest()
+        random.seed(int.from_bytes(seed, "big")+base_seed)
+        if type(v) is Categorical:
+            samples = []
+            for _ in range(math.ceil(count/len(v._values))):
+                samples.extend(v._values)
+        elif type(v) is Uniform:
+            samples = np.linspace(v._min, v._max, count)
+        elif type(v) is LogUniform:
+            samples = np.logspace(v._min, v._max, base=math.e, num=count)
+        else:
+            raise TypeError()
+
+        random.shuffle(samples)
+        even_dist_samples[k] = samples[:count]
+
+    for i in range(count):
+        params = {}
+        for k, v in search_params.items():
+            params[k] = even_dist_samples[k][i]
+            if type(v) in [Uniform, LogUniform] and v._force_int:
+                params[k] = int(params[k])
+            if type(params[k]) in [float, np.float64]:
+                params[k] = smart_round_sig(params[k])
+
+        # agents must divide workers
+        params['agents'] = (params['agents'] // 8) * 8
+
+        # make sure mini_batch_size is not larger than batch_size
+        params["policy_mini_batch_size"] = min(params["agents"] * params["n_steps"], params["policy_mini_batch_size"])
+        params["value_mini_batch_size"] = min(params["agents"] * params["n_steps"], params["value_mini_batch_size"])
+
+        for env_name, score_threshold in zip(envs, score_thresholds):
+            main_params['env_name'] = env_name
+            add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
 
 
 def nice_format(x):
@@ -706,14 +742,16 @@ class Categorical():
 
 
 class Uniform():
-    def __init__(self, min, max):
+    def __init__(self, min, max, force_int=False):
         self._min = min
         self._max = max
+        self._force_int = force_int
 
     def sample(self):
         r = (self._max-self._min)
         a = self._min
-        return a + random.random() * r
+        result = a + random.random() * r
+        return int(result) if self._force_int else result
 
 class LogUniform():
     def __init__(self, min, max, force_int=False):
@@ -729,31 +767,36 @@ class LogUniform():
 
 def random_search_14_tvf():
 
+    # modified to be a bit faster and removed some settings that didn't look helpful.
+
     main_params = {
         'checkpoint_every': int(5e6),
         'workers': WORKERS,
         'export_video': False, # save some space...
         'use_tvf': True,
         'gamma': 0.999,
-        'epochs': 50,
+        'tvf_gamma': 0.999,
+        'epochs': 30,
+        'tvf_update_return_freq': 4,
+        'use_compression': True,
         'priority': -100,
     }
 
     search_params = {
 
         # ppo params
-        'max_grad_norm':    LogUniform(10, 50),
+        'max_grad_norm':    LogUniform(1, 50),
         'agents':           LogUniform(128, 1024, force_int=True),
-        'n_steps':          LogUniform(128, 1024, force_int=True),
+        'n_steps':          LogUniform(32, 1024, force_int=True),
 
-        'policy_mini_batch_size': LogUniform(256, 1024, force_int=True),
-        'value_mini_batch_size': LogUniform(256, 1024, force_int=True),
+        'policy_mini_batch_size': LogUniform(64, 1024, force_int=True),
+        'value_mini_batch_size': LogUniform(64, 1024, force_int=True),
 
-        'value_epochs':     Categorical(2, 3, 4, 6),
-        'policy_epochs':    Categorical(2, 3, 4, 6),
-        'distill_epochs':   Categorical(0, 1, 2),
+        'value_epochs':     Categorical(1, 2, 3, 4),
+        'policy_epochs':    Categorical(1, 2, 3, 4),
+        'distill_epochs':   Categorical(0, 1),
         'distill_beta':     LogUniform(0.3, 3), # only used when distill=1
-        'target_kl':        LogUniform(0.01, 1.0),
+        'target_kl':        LogUniform(0.001, 1.0),
         'ppo_epsilon':      Uniform(0.03, 0.3),
         'value_lr':         LogUniform(1e-4, 5e-4),
         'policy_lr':        LogUniform(1e-4, 5e-4),
@@ -761,72 +804,31 @@ def random_search_14_tvf():
 
         # tvf params
         'tvf_coef':         LogUniform(0.1, 10),
-        'tvf_gamma':        Categorical(0.999, 0.9999, 1.0),
-        'tvf_lambda':       Categorical(-8, -16, -32, "exp", "adaptive"),
-        'tvf_adaptive_ratio': LogUniform(0.01, 1.0), # only used with adaptive
+        'tvf_mode':         Categorical("exponential", "adaptive", "nstep"),
+        'tvf_n_step':       LogUniform(4, 64, force_int=True),
 
         'time_aware':       Categorical(True, False),
         'tvf_max_horizon':  LogUniform(1000, 9000, force_int=True),
         'tvf_value_samples': LogUniform(32, 256, force_int=True),
-        'tvf_horizon_samples': LogUniform(32, 256, force_int=True),
+        'tvf_horizon_samples': LogUniform(16, 512, force_int=True),
         'tvf_value_distribution': Categorical("uniform", "advanced"),
         'tvf_horizon_distribution': Categorical("uniform", "advanced"),
         'tvf_hidden_units': LogUniform(32, 1024, force_int=True),
-        'tvf_soft_anchor': LogUniform(0.3, 3),
-        'tvf_update_return_freq': Categorical(1, 2, 4),
+        'tvf_soft_anchor': LogUniform(0.1, 3),
         'tvf_horizon_scale': Categorical("default", "centered", "wide"),
         'tvf_time_scale': Categorical("default", "centered", "wide", "zero"),
+        'tvf_first_and_last': LogUniform(0.01, 0.1), # this might be a bad idea...
     }
 
     # score threshold should be 200, but I want some early good results...
-    random_search(
-        "TVF_14_Search_999",
+    random_search_adv(
+        "TVF_14_Search_1k",
         main_params,
         search_params,
-        count=32,
+        count=48,   # extra are needed due to the search over tvf_mode
         envs=['BattleZone', 'DemonAttack', 'Amidar'],
         # set roughly to 2x random
         score_thresholds=[4000, 300, 10],
-    )
-
-
-def random_search_11_ppo():
-    main_params = {
-        'checkpoint_every': int(5e6),
-        'workers': WORKERS,
-        'export_video': False, # save some space...
-        'use_tvf': False,
-        'gamma': 0.999,
-        'epochs': 50,
-        'priority': -20,
-    }
-
-    search_params = {
-        'max_grad_norm': [0.5, 5, 20.0],    # should have little to no effect
-        'agents': [64, 128, 256, 512],      # I expect more is better
-        'n_steps': [16, 32, 64, 128, 256],  # I expect more is better
-        'policy_mini_batch_size': [512, 1024, 2048],
-        'value_mini_batch_size': [256, 512, 1024, 2048], #I expect lower is better
-        'value_epochs': [1, 2, 4, 6],
-        'policy_epochs': [1, 2, 4, 6],
-        'target_kl': [0.01, 0.03, 0.1, 1.0],  # 1.0 is effectively off
-        'ppo_epsilon': [0.05, 0.1, 0.2, 0.3], # I have only gotten <= 0.1 to work so far
-        'value_lr': [1e-4, 2.5e-4, 5e-4],
-        'policy_lr': [1e-4, 2.5e-4, 5e-4],
-        'vf_coef': [0.25, 0.5, 1.0],          # I don't think this matters?
-        'entropy_bonus': [0.003, 0.01, 0.03]  # probably will not make much difference
-    }
-
-    # score threshold should be 200, but I want some early good results...
-    random_search_old(
-        "TVF_11_Search_PPO",
-        main_params,
-        search_params,
-        count=32,
-        envs=['BattleZone', 'DemonAttack', 'Amidar'],
-        # set roughty to 2x random
-        score_thresholds=[4000, 300, 10],
-        max_batch_size=64*1024,
     )
 
 
@@ -952,6 +954,30 @@ def setup_experiments_14():
         tvf_coef=1.0,
         epochs=50,
         priority=200,
+    )
+
+    # another regression test...
+    # this is after the tvf_mode change
+    for tvf_mode in ["nstep", "adaptive", "exponential"]:
+        add_job(
+            f"TVF_14_QuickCheck",
+            env_name="DemonAttack",
+            run_name=f"mode={tvf_mode}",
+            tvf_mode=tvf_mode,
+            tvf_n_step=12,
+            default_params=v14_adjusted,
+            epochs=50,
+            priority=250,
+        )
+    add_job(
+        f"TVF_14_QuickCheck",
+        env_name="DemonAttack",
+        run_name=f"mode=adaptive (2x)",
+        tvf_mode="adaptive",
+        tvf_n_step=24,
+        default_params=v14_adjusted,
+        epochs=50,
+        priority=250,
     )
 
     return
@@ -1116,11 +1142,8 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    # random_search_11_ppo()
-    # setup_experiments_13()
-    # setup_experiments_13_eval()
     setup_experiments_14()
-    #random_search_14_tvf()
+    random_search_14_tvf()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

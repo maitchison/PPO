@@ -37,6 +37,26 @@ class EpisodicDiscounting(gym.Wrapper):
         return obs, reward, done, info
 
 
+class NoPassThruWrapper(gym.Wrapper):
+    """
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.first = False
+
+    def reset(self):
+        self.t = 0
+        self.obs = self.env.reset()
+        self.first = True
+        return self.obs
+
+    def step(self, action):
+        if self.first:
+            self.obs, _, _, self.info = self.env.step(action)
+            self.first=False
+        return self.obs, 0, False, self.info
+
 class TimeAwareWrapper(gym.Wrapper):
     """
     Includes time on frame of last channel of observation (which is last state if using stacking)

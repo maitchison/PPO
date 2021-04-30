@@ -71,7 +71,8 @@ class Config:
         self.tvf_horizon_scale  = str()
         self.tvf_time_scale = str()
         self.tvf_update_return_freq = int()
-        self.tvf_adaptive_ratio = float()
+        self.tvf_n_step         = int()
+        self.tvf_mode           = str()
 
     
         self.time_aware = bool()
@@ -205,7 +206,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--use_tvf", type=str2bool, default=True, help="Use truncated value function.")
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
-    parser.add_argument("--tvf_lambda", type=str, default="1.0", help="Lambda for TVF(\lambda), negative values use n_step(-lambda)")
+    parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda)")
     parser.add_argument("--tvf_lambda_samples", type=int, default=16, help="Number of n-step samples to use for tvf_lambda calculation")
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
     parser.add_argument("--tvf_value_samples", type=int, default=64, help="Number of values to sample during training.")
@@ -220,7 +221,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|zero]")
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|zero]")
     parser.add_argument("--tvf_update_return_freq", type=int, default=8, help="How often to update returns")
-    parser.add_argument("--tvf_adaptive_ratio", type=float, default=0.1, help="Ratio between max n_step and horizon")
+    parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
+    parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
