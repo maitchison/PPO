@@ -68,6 +68,29 @@ v8_args = {
     **tuned_args,
 }
 
+hps_14_args = {
+    'use_tvf': True,
+    'tvf_hidden_units': 128,
+
+    'tvf_horizon_samples': 128,
+    'tvf_value_samples': 128,
+
+    'tvf_lambda': -16,
+    'tvf_coef': 0.01,
+    'tvf_max_horizon': 3000,
+    'gamma': 0.999,
+    'tvf_gamma': 0.999,
+
+    # required due to bug fix
+    'value_lr': 2.5e-4,
+
+    'tvf_loss_weighting': "advanced",
+    'tvf_h_scale': "squared",
+
+    **tuned_args,
+}
+
+
 # initial long horizon test... :)
 better_args = {
     'checkpoint_every': int(5e6),
@@ -254,6 +277,50 @@ v14_adjusted = {
     'gamma': 0.999,
     'tvf_gamma': 0.999,
 }
+
+# these were set to best settings from search.
+v15_args = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'epochs': 50,
+    'export_video': False,                  # in general not needed
+
+    # PPO args
+    'max_grad_norm': 32.0,
+    'agents': 768,
+    'n_steps': 128,
+    'policy_mini_batch_size': 512,
+    'value_mini_batch_size': 512,
+    'value_epochs': 2,
+    'policy_epochs': 1,
+    'distill_epochs': 1,
+    'target_kl': 0.15,
+    'ppo_epsilon': 0.25,                    # was 0.1
+    'value_lr': 2.5e-4,
+    'policy_lr': 1.0e-4,
+    'entropy_bonus': 0.02,                  # was 0.01
+    'time_aware': True,
+    'gamma': 0.999,
+    'distill_beta': 0.5,
+
+    # TVF args
+    'use_tvf': True,
+    'tvf_value_distribution': 'uniform',    # could improve this to advanced later on...
+    'tvf_horizon_distribution': 'uniform',  # could improve this to advanced later on...
+    'tvf_horizon_scale': 'wide',
+    'tvf_time_scale': 'default',
+    'tvf_hidden_units': 256,
+    'tvf_value_samples': 32,
+    'tvf_horizon_samples': 32,
+    'tvf_mode': 'adaptive',                 # << not expecting this... ?
+    'tvf_n_step': 20,
+    'tvf_coef': 2.0,
+    'tvf_soft_anchor': 1.0,
+    'tvf_max_horizon': 9000,
+    'tvf_gamma': 0.999,
+
+ }
+
 
 def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
 
@@ -776,7 +843,7 @@ def random_search_14_tvf():
         'use_tvf': True,
         'gamma': 0.999,
         'tvf_gamma': 0.999,
-        'epochs': 30,
+        'epochs': 50,
         'tvf_update_return_freq': 4,
         'use_compression': True,
         'priority': -100,
@@ -827,8 +894,8 @@ def random_search_14_tvf():
         search_params,
         count=48,   # extra are needed due to the search over tvf_mode
         envs=['BattleZone', 'DemonAttack', 'Amidar'],
-        # set roughly to 2x random
-        score_thresholds=[4000, 300, 10],
+        # set roughly to random
+        score_thresholds=[2000, 150, 5],
     )
 
 
@@ -1135,6 +1202,35 @@ def setup_experiments_14():
         )
 
 
+def setup_experiments_15():
+    for tvf_horizon_distribution in ['uniform', 'advance']:
+        for tvf_mode, tvf_n_step in zip(['exponential', 'adaptive'], [40, 20]):
+            add_job(
+                f"TVF_15_Regression",
+                env_name="DemonAttack",
+                run_name=f"dist={tvf_horizon_distribution} mode={tvf_mode}_{tvf_n_step}",
+                default_params=v15_args,
+                tvf_horizon_distribution=tvf_horizon_distribution,
+                tvf_mode=tvf_mode,
+                epochs=50,
+                priority=100,
+            )
+    # todo: target_kl by ppo_epsilon on 2 policy epochs
+    for ppo_epsilon in [0.05, 0.1, 0.2]:
+        for target_kl in [0.01, 0.1, 1.0]:
+            add_job(
+                f"TVF_15_Policy",
+                env_name="DemonAttack",
+                run_name=f"p_e={2} ppo_e={ppo_epsilon} tk_l={target_kl}",
+                default_params=v15_args,
+                target_kl=target_kl,
+                ppo_epsilon=ppo_epsilon,
+                policy_epochs=2,
+                epochs=50,
+                priority=0,
+            )
+
+
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
@@ -1142,8 +1238,9 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    setup_experiments_14()
+    #setup_experiments_14()
     random_search_14_tvf()
+    setup_experiments_15()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

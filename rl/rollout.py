@@ -620,11 +620,12 @@ class Runner():
         gamma: discount to use
         reward: nd array of dims [N, A]
         dones: nd array of dims [N, A]
-        requred_horizons: nd array of dims [K]
-
+        required_horizons: nd array of dims [K]
 
         If n_step td_lambda is negative it is taken as
         """
+
+        assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == args.tvf_max_horizon, "First and value horizon are required."
 
         N, A = rewards.shape
         H = args.tvf_max_horizon
@@ -743,7 +744,7 @@ class Runner():
         return returns
 
     def get_adaptive_n_step(self, h):
-        return max(1, int(2*args.tvf_n_step * h / args.tvf_max_horizon))
+        return max(1, int(args.tvf_n_step * h / args.tvf_max_horizon))
 
     def _calculate_adaptive_sampled_returns(
             self,
@@ -810,6 +811,7 @@ class Runner():
         # step 1:
         # use our model to generate the value estimates required
         # for MC this is just an estimate at the end of the window
+        assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == args.tvf_max_horizon, "First and value horizon are required."
         horizons = value_sample_horizons[None, None, :]
         horizons = np.repeat(horizons, repeats=N + 1, axis=0)
         horizons = np.repeat(horizons, repeats=A, axis=1)
@@ -938,7 +940,6 @@ class Runner():
                     plt.savefig(
                         f"{args.log_folder}/[{t:03}]-{self.batch_counter:04}-{time_code}.png")
                 plt.close()
-
 
         return returns
 
@@ -1256,7 +1257,8 @@ class Runner():
             value_samples = self.generate_horizon_sample(
                 args.tvf_max_horizon,
                 args.tvf_value_samples,
-                distribution=args.tvf_value_distribution
+                distribution=args.tvf_value_distribution,
+                force_first_and_last=True,
             )
 
             targets = self.calculate_sampled_returns(
@@ -1652,45 +1654,53 @@ class Runner():
 
         return {}
 
-    def generate_horizon_sample(self, max_value: int, samples: int, distribution: str = "uniform") -> np.ndarray:
+    def generate_horizon_sample(
+            self,
+            max_value: int,
+            samples: int,
+            distribution: str = "uniform",
+            force_first_and_last: bool = False) -> np.ndarray:
         """
         generates random samples from 0 to max (inclusive) using sampling with replacement
         and always including the first and last value
         distribution is the distribution to sample from
+        force_first_and_last: if true horzion 0 and horizon max_value will always be included.
         output is always sorted
+
         """
         if samples == -1 or samples >= (max_value + 1):
             return np.arange(0, max_value + 1)
 
         # make sure first and last horizons are always included.
-        f_and_l = math.ceil(samples * args.tvf_first_and_last)
-        required = []
-        for i in range(f_and_l):
-            required.append(i)
-            required.append(max_value-i)
-        required = np.asarray(required, dtype=np.int32)
+        if force_first_and_last:
+            f_and_l = 1
+            required = np.asarray([0, max_value], dtype=np.int32)
+        else:
+            f_and_l = 0
+            required = np.asarray([], dtype=np.int32)
 
-        sample_range = np.arange(f_and_l, max_value-f_and_l+1)
+        sample_range = np.arange(f_and_l, max_value - f_and_l + 1)
 
         if distribution in ["uniform", "constant"]:
             # constant was the old name for this
             p = None
         elif distribution == "linear":
-            p = np.asarray([max_value-h for h in sample_range], dtype=np.float32)
+            p = np.asarray([max_value - h for h in sample_range], dtype=np.float32)
             p /= np.sum(p)
         elif distribution == "hyperbolic":
-            p = np.asarray([1/(h+1) for h in sample_range])
+            p = np.asarray([1 / (h + 1) for h in sample_range])
             p /= np.sum(p)
         elif distribution == "advanced":
             def prob_from_effective_n_step(effective_n_step: float):
                 return (self.current_max_horizon - sample_range + effective_n_step) / effective_n_step
+
             # this uses the number of times a horizon will (on average) be copied)
             if args.tvf_mode == "exponential":
-                # I think this is wrong... need to figure this out
-                # for n_steps=1 we have (h_max-h+1)/1
-                # for n_steps=2 we have ((1.5)h_max-(1.5)h+2)/2
-
-                p = prob_from_effective_n_step(args.n_steps / np.log2(args.n_steps))
+                p = prob_from_effective_n_step(1)
+                h = 2
+                while h <= args.n_steps:
+                    p += prob_from_effective_n_step(h)
+                    h *= 2
             elif args.tvf_mode == "adaptive":
                 p = self.effective_n_step_table[sample_range]
             elif args.tvf_mode == "nstep":
@@ -1707,12 +1717,12 @@ class Runner():
             p /= np.sum(p)
         elif distribution == "exponential":
             # adjust exponential so mean is half horizon
-            p = np.asarray([np.exp(-(2/max_value*h)) for h in sample_range])
+            p = np.asarray([np.exp(-(2 / max_value * h)) for h in sample_range])
             p /= np.sum(p)
         else:
             raise Exception("invalid distribution")
 
-        sampled = np.random.choice(sample_range, samples-(f_and_l*2), replace=False, p=p)
+        sampled = np.random.choice(sample_range, samples - (f_and_l * 2), replace=False, p=p)
         result = list(np.concatenate((required, sampled)))
         result.sort()
         return np.asarray(result)
@@ -1747,11 +1757,14 @@ class Runner():
 
 
     @torch.no_grad()
-    def generate_return_sample(self):
+    def generate_return_sample(self, force_first_and_last: bool = False):
         """
         Generates return estimates for current batch of data.
 
-        Note: could roll this into calculate_sampled_returns, and just have it return the horizions aswell?
+
+        force_first_and_last: if true always includes first and last horizon
+
+        Note: could roll this into calculate_sampled_returns, and just have it return the horizons aswell?
 
         returns:
             returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
@@ -1763,14 +1776,23 @@ class Runner():
         H = self.current_max_horizon
         N, A, *state_shape = self.prev_obs.shape
 
-        horizon_samples = self.generate_horizon_sample(H, args.tvf_horizon_samples,
-                                                       distribution=args.tvf_horizon_distribution)
+        horizon_samples = self.generate_horizon_sample(
+            H,
+            args.tvf_horizon_samples,
+            distribution=args.tvf_horizon_distribution,
+            force_first_and_last=force_first_and_last,
+        )
         if args.tvf_value_samples == -1:
             # this uses the old algorithm with no value sampling
             returns, horizons = self.generate_all_returns()
             return returns[..., horizon_samples], horizons[..., horizon_samples]
 
-        value_samples = self.generate_horizon_sample(H, args.tvf_value_samples, distribution=args.tvf_value_distribution)
+        value_samples = self.generate_horizon_sample(
+            H,
+            args.tvf_value_samples,
+            distribution=args.tvf_value_distribution,
+            force_first_and_last=True
+        )
 
         returns = self.calculate_sampled_returns(
             value_sample_horizons=value_samples,
@@ -1922,7 +1944,7 @@ class Runner():
             )
             expected_mini_batches = (args.batch_size / args.policy_mini_batch_size)
             policy_epochs += results["mini_batches"] / expected_mini_batches
-            if results["mini_batches"] < expected_mini_batches:
+            if "did_break" in results:
                 break
         self.log.watch_full("policy_epochs", policy_epochs, display_width=8)
 
@@ -1948,12 +1970,8 @@ class Runner():
                 # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
                 # we don't drift, as the updates will modify our model and change the value estimates.
                 # it is possible that instead we should be updating our return estimates as we go though
-                if value_epoch % args.tvf_update_return_freq == 0:
-                    # updating returns allows values to propagate through the horizons more quickly.
-                    # e.g. if an improvement is made at horizon x, only horizon x+tvf_n_step can benefit,
-                    # but with horizon updating we get x+(tvf_n_step*value_epochs) which could be important
-                    # for very long horizons.
-                    returns, horizons = self.generate_return_sample()
+                if value_epoch == 0:
+                    returns, horizons = self.generate_return_sample(force_first_and_last=True)
                     batch_data["tvf_returns"] = returns.reshape([B, -1])
                     batch_data["tvf_horizons"] = horizons.reshape([B, -1])
                     batch_data["tvf_time"] = self.prev_time.reshape([B])
@@ -2022,6 +2040,7 @@ class Runner():
         Returns context with
             'mini_batches' number of mini_batches completed
             'outputs' output from each mini_batch update
+            'did_break'=True (only if training terminated early)
         """
 
         mini_batches = args.batch_size // mini_batch_size
@@ -2066,6 +2085,7 @@ class Runner():
 
             if hooks is not None and "after_mini_batch" in hooks:
                 if hooks["after_mini_batch"](context):
+                    context["did_break"] = True
                     break
 
             self.optimizer_step(optimizer=optimizer, label=label)

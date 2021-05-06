@@ -66,11 +66,9 @@ class Config:
         self.tvf_hidden_units   = int()
         self.tvf_model          = str()
         self.tvf_activation     = str()
-        self.tvf_first_and_last = float()
         self.tvf_soft_anchor    = float()
         self.tvf_horizon_scale  = str()
         self.tvf_time_scale = str()
-        self.tvf_update_return_freq = int()
         self.tvf_n_step         = int()
         self.tvf_mode           = str()
 
@@ -216,11 +214,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
     parser.add_argument("--tvf_hidden_units", type=int, default=512)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
-    parser.add_argument("--tvf_first_and_last", type=float, default=1/32, help="Fraction of horizon samples to dedicate to first and last horizons")
     parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|zero]")
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|zero]")
-    parser.add_argument("--tvf_update_return_freq", type=int, default=8, help="How often to update returns")
     parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
     parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
 
