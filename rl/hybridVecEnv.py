@@ -59,22 +59,19 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
         results, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
         counter = 0
         # concatenate results together into one large vector env
-        concatenated = {}
         for result in results:
             for k, v in result.items():
-                concatenated[f"vec_{counter:03d}"] = v
+                buffer[f"vec_{counter:03d}"] = v
                 counter += 1
-        buffer["vec_env"] = concatenated
 
     def restore_state(self, buffer):
         # split data up...
         splits = [{} for _ in range(self.n_parallel)]
-        save_state = buffer["vec_env"]
         for i in range(self.n_parallel):
             for j in range(self.n_sequential):
-                 splits[i][f"vec_{j:03d}"] = save_state[f"vec_{i*self.n_parallel+j:03d}"]
+                 splits[i][f"vec_{j:03d}"] = buffer[f"vec_{i*self.n_parallel+j:03d}"]
 
-        for pipe, save_split in zip(self.parent_pipes, save_state):
+        for pipe, save_split in zip(self.parent_pipes, splits):
             pipe.send(('load', save_split))
         self._poll()
         results, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])

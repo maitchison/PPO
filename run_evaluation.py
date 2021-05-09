@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms
 import matplotlib.colors
 import numpy.random
+from gym.vector import sync_vector_env
 from rl import atari, config, utils, models, hybridVecEnv, rollout
 from rl.config import args
 import lz4.frame as lib
@@ -339,7 +340,11 @@ def generate_rollouts(
     Generates rollouts
     """
 
-    env = hybridVecEnv.HybridAsyncVectorEnv([lambda : atari.make(monitor_video=include_video, seed=i) for i in range(num_rollouts)])
+    env_fns = [lambda: atari.make(monitor_video=include_video, seed=i) for i in range(num_rollouts)]
+    if num_rollouts > 16:
+        env = hybridVecEnv.HybridAsyncVectorEnv(env_fns)
+    else:
+        env = sync_vector_env.SyncVectorEnv(env_fns)
 
     _ = env.reset()
     states = env.reset()
@@ -389,11 +394,12 @@ def generate_rollouts(
             # new method
             kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
 
-        model_out = model.forward(
-            states,
-            **kwargs,
-            **({'policy_temperature':temperature} if temperature is not None else {})
-        )
+        with torch.no_grad():
+            model_out = model.forward(
+                states,
+                **kwargs,
+                **({'policy_temperature':temperature} if temperature is not None else {})
+            )
 
         log_probs = model_out["log_policy"].detach().cpu().numpy()
 
@@ -718,7 +724,7 @@ if __name__ == "__main__":
     # usage
     # python run_evaluation.py video ./bundle_0 temperatures=[-0.01 , -0.1, -0.5, -1] --max_epochs=200
 
-    parser = argparse.ArgumentParser(description="Trainer for PPO2")
+    parser = argparse.ArgumentParser(description="Evaluaton script for PPO/PPG/TVF")
     parser.add_argument("mode", help="[video|eval]")
     parser.add_argument("checkpoint", type=str)
     parser.add_argument("output_file", type=str)

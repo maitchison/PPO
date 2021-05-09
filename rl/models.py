@@ -176,7 +176,7 @@ class DualNet(nn.Module):
             # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
             self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
             self.value_net_hidden = nn.Linear(self.encoder.hidden_units, self.tvf_hidden_units)
-            self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units)
+            self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units, bias=False)
             self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
 
             # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
@@ -185,11 +185,12 @@ class DualNet(nn.Module):
                 -1/(self.encoder.hidden_units ** 0.5),
                  1/(self.encoder.hidden_units ** 0.5)
             )
-            torch.nn.init.uniform_(
-                self.value_net_hidden_aux.bias,
-                -1 / (self.encoder.hidden_units ** 0.5),
-                1 / (self.encoder.hidden_units ** 0.5)
-            )
+            if self.value_net_hidden_aux.bias is not None:
+                torch.nn.init.uniform_(
+                    self.value_net_hidden_aux.bias,
+                    -1 / (self.encoder.hidden_units ** 0.5),
+                    1 / (self.encoder.hidden_units ** 0.5)
+                )
 
     def forward(
             self, x, aux_features=None, policy_temperature=1.0,

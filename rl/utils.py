@@ -736,19 +736,22 @@ def restore_env_state(env, save_state:dict):
     """
     Restores state for all wrappers using given save_state dictionary (created from msave_env_state).
     """
-    save_data = {}
+
+    #print(f"Restoring state on env: {env} with dict:{save_state.keys()}")
 
     while True:
 
         if issubclass(type(env), gym.vector.SyncVectorEnv):
             # process each sub-child
-            for i, env, in enumerate(env.envs):
-                restore_env_state(env, save_data[f"vec_{i:03d}"])
+            #print("Enumerating environments...")
+            for i, sub_env, in enumerate(env.envs):
+                restore_env_state(sub_env, save_state[f"vec_{i:03d}"])
             return
 
         # otherwise process wrapper and move down the chain
         key = type(env).__name__
         if key in save_state:
+            #print(f"Restoring {key} with {save_state}")
             env.restore_state(save_state[key])
 
         # end of chain

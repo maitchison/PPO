@@ -510,13 +510,16 @@ class NullActionWrapper(gym.Wrapper):
     def __init__(self, env):
         gym.Wrapper.__init__(self, env)
         self._prev_obs = None
+        self._prev_time_frac = 0.0
 
     def step(self, action:int):
         if action < 0:
-            return self._prev_obs, 0, False, dict()
+            return self._prev_obs, 0, False, {'time_frac': self._prev_time_frac}
         else:
             obs, reward, done, info = self.env.step(action)
             self._prev_obs = obs
+            if "time_frac" in info:
+                self._prev_time_frac = info["time_frac"]
             return obs, reward, done, info
 
     def reset(self, **kwargs):

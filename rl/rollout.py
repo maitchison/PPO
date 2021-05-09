@@ -33,10 +33,14 @@ def save_progress(log: Logger):
     else:
         details["score"] = log["ep_score"][0]
     details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
-    details["fps"] = log["fps"]
+    try:
+        details["fps"] = log["fps"]
+    except:
+        details["fps"] = 0
     frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
-    details["eta"] = frames_remaining / details["fps"]
+    details["eta"] = (frames_remaining / details["fps"]) if details["fps"] > 0 else 0
     details["host"] = args.hostname
+    details["device"] = args.device
     details["last_modified"] = time.time()
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
@@ -2149,7 +2153,7 @@ def horizon_scale_function(x):
     elif args.tvf_horizon_scale == "zero":
         return x*0
     elif args.tvf_horizon_scale == "log":
-        return (1+x).log()
+        return (10+x).log()
     elif args.tvf_horizon_scale == "centered":
         # this will be roughly unit normal
         return ((x / args.tvf_max_horizon) - 0.5) * 3.0

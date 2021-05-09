@@ -15,6 +15,26 @@ import torch.multiprocessing
 from . import utils, models, keyboard
 from .config import args
 
+def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
+    if verbose:
+        print(f"Warming up environments for {min_duration}-{max_duration} steps:", end='', flush=True)
+    max_steps = np.random.randint(min_duration, max_duration, [args.agents])
+    for t in range(max(max_steps)):
+        masks = t < max_steps
+        with torch.no_grad():
+            model_out = runner.forward(runner.obs, output="policy")
+            log_policy = model_out["log_policy"].cpu().numpy()
+        actions = np.asarray([
+            utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
+        ], dtype=np.int32)
+        runner.obs, ext_rewards, dones, infos = runner.vec_env.step(actions)
+        runner.time = np.asarray([info["time_frac"] for info in infos])
+        if t % 100 == 0 and verbose:
+            print(".", end='', flush=True)
+    if verbose:
+        print()
+
+
 def train(model: models.TVFModel, log: Logger):
     """
     Default parameters from stable baselines
@@ -48,6 +68,7 @@ def train(model: models.TVFModel, log: Logger):
 
     runner = Runner(model, log)
     runner.create_envs()
+    runner.reset()
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
@@ -68,10 +89,15 @@ def train(model: models.TVFModel, log: Logger):
     if not did_restore:
         log.log("To run experiment again use:")
         log.log("python train.py "+ " ".join(sys.argv[1:]))
-        runner.reset()
         if args.normalize_observations:
             # this will get an initial estimate for the normalization constants.
             runner.run_random_agent(20)
+
+        warmup_duration = 250
+        desync_envs(runner, 5, warmup_duration)
+    else:
+        # this is really just the throw a few new frames through the wrappers
+        desync_envs(runner, 2, 4, verbose=False)
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"), "w") as f:
@@ -117,6 +143,9 @@ def train(model: models.TVFModel, log: Logger):
         log.watch("walltime", walltime,
                   display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
 
+        # save early progress
+        save_progress(log)
+
         # generate the rollout
         rollout_start_time = time.time()
         runner.generate_rollout()
@@ -147,6 +176,11 @@ def train(model: models.TVFModel, log: Logger):
                        display_width=0)
 
         log.record_step()
+
+        # make sure we still have lock
+        if not utils.have_lock():
+            log.important("Lock was lost, aborting...")
+            return
 
         # periodically print and save progress
         if time.time() - last_print_time >= args.debug_print_freq:
@@ -210,7 +244,6 @@ def train(model: models.TVFModel, log: Logger):
             # each checkpoint will get confused (unless we save it as most recent...? Actually that would work?
             log.important("Training interrupted, as device was disallowed.")
             utils.release_lock()
-
             return
 
 
