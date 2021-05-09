@@ -3,18 +3,24 @@ import numpy as np
 import functools
 import sys
 
+from rl import wrappers, utils
+
 import gym.vector.async_vector_env
 from gym.vector.utils import write_to_shared_memory
 
 # modified to support vector environments...
 
 class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
-    """ Async vector env, that limits the number of worker threads spawned """
+    """
+    Async vector env, that limits the number of worker threads spawned
+    Note: currently not compatiable with vecwrappers as we implement reset, not reset_async/wait etc.
 
-    def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True, shared_memory=True):
+    """
+
+    def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True):
         if len(env_fns) <= max_cpus:
             # this is just a standard vec env
-            super().__init__(env_fns, copy=copy, shared_memory=shared_memory)
+            super().__init__(env_fns, copy=copy, shared_memory=True)
             self.is_batched = False
         else:
             # create sequential envs for each worker
@@ -30,9 +36,9 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             if verbose:
                 print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
 
-            worker_function = _worker_shared_memory if shared_memory else _worker
+            worker_function = _worker_shared_memory
 
-            super().__init__(vec_functions, worker=worker_function, copy=copy, shared_memory=shared_memory)
+            super().__init__(vec_functions, worker=worker_function, copy=copy, shared_memory=True)
 
             self.is_batched = True
             # super will set num_envs to number of workers, so we fix it here.
@@ -40,10 +46,38 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
 
     def reset(self):
         if self.is_batched:
-            obs = super(HybridAsyncVectorEnv, self).reset()
+            obs = super().reset()
             return np.reshape(obs, [-1, *obs.shape[2:]])
         else:
-            return super(HybridAsyncVectorEnv, self).reset()
+            return super().reset()
+
+    def save_state(self, buffer):
+        # note we might be able to do this more easily by having a fetch for envs, then iterating over them.
+        for pipe in self.parent_pipes:
+            pipe.send(('save', None))
+        self._poll()
+        results, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
+        counter = 0
+        # concatenate results together into one large vector env
+        concatenated = {}
+        for result in results:
+            for k, v in result.items():
+                concatenated[f"vec_{counter:03d}"] = v
+                counter += 1
+        buffer["vec_env"] = concatenated
+
+    def restore_state(self, buffer):
+        # split data up...
+        splits = [{} for _ in range(self.n_parallel)]
+        save_state = buffer["vec_env"]
+        for i in range(self.n_parallel):
+            for j in range(self.n_sequential):
+                 splits[i][f"vec_{j:03d}"] = save_state[f"vec_{i*self.n_parallel+j:03d}"]
+
+        for pipe, save_split in zip(self.parent_pipes, save_state):
+            pipe.send(('load', save_split))
+        self._poll()
+        results, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
 
     def step(self, actions):
         """
@@ -71,41 +105,6 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
         else:
             return super().step(actions)
 
-def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
-    assert shared_memory is None
-    env = env_fn()
-    parent_pipe.close()
-    try:
-        while True:
-            command, data = pipe.recv()
-            if command == 'reset':
-                observation = env.reset()
-                pipe.send((observation, True))
-            elif command == 'step':
-                observation, reward, done, info = env.step(data)
-                # Vectorized environments will reset by themselves so we don't need to auto reset them here.
-                if type(done) != np.ndarray and done:
-                    observation = env.reset()
-                pipe.send(((observation, reward, done, info), True))
-            elif command == 'seed':
-                env.seed(data)
-                pipe.send((None, True))
-            elif command == 'close':
-                pipe.send((None, True))
-                break
-            elif command == '_check_observation_space':
-                pipe.send((data == env.observation_space, True))
-            else:
-                raise RuntimeError('Received unknown command `{0}`. Must '
-                    'be one of {`reset`, `step`, `seed`, `close`, '
-                    '`_check_observation_space`}.'.format(command))
-    except (KeyboardInterrupt, Exception):
-        error_queue.put((index,) + sys.exc_info()[:2])
-        pipe.send((None, False))
-    finally:
-        env.close()
-
-
 def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
     assert shared_memory is not None
     env = env_fn()
@@ -130,6 +129,12 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
             elif command == 'seed':
                 env.seed(data)
                 pipe.send((None, True))
+            elif command == 'save':
+                save_dict = utils.save_env_state(env)
+                pipe.send((save_dict, True))
+            elif command == 'load':
+                wrappers.utils.restore_env_state(env, data)
+                pipe.send((None, True))
             elif command == 'close':
                 pipe.send((None, True))
                 break
@@ -137,7 +142,7 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 pipe.send((data == observation_space, True))
             else:
                 raise RuntimeError('Received unknown command `{0}`. Must '
-                    'be one of {`reset`, `step`, `seed`, `close`, '
+                    'be one of {`reset`, `step`, `save`, `load`, `seed`, `close`, '
                     '`_check_observation_space`}.'.format(command))
     except (KeyboardInterrupt, Exception):
         error_queue.put((index,) + sys.exc_info()[:2])

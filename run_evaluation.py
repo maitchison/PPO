@@ -98,6 +98,8 @@ def load_args(checkpoint_path):
 def load_checkpoint(checkpoint_path, device=None):
     """ Restores model from checkpoint. Returns current env_step"""
 
+    global REWARD_SCALE
+
     load_args(checkpoint_path)
 
     args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
@@ -110,9 +112,16 @@ def load_checkpoint(checkpoint_path, device=None):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     step = checkpoint['step']
-    atari.ENV_STATE = checkpoint['env_state']
-    global REWARD_SCALE
-    REWARD_SCALE = checkpoint['env_state']['returns_norm_state'][1] ** 0.5
+    env_state = checkpoint["env_state"]
+
+    if "VecNormalizeRewardWrapper" in env_state:
+        # the new way
+        REWARD_SCALE = env_state['VecNormalizeRewardWrapper']['ret_rms'][1] ** 0.5
+    else:
+        # the old way
+        atari.ENV_STATE = env_state
+        REWARD_SCALE = env_state['returns_norm_state'][1] ** 0.5
+
     return model
 
 def make_model(env):

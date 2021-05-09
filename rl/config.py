@@ -88,10 +88,6 @@ class Config:
         self.value_lr = float()
         self.policy_lr = float()
 
-        #
-
-        self.env_desync = bool()
-
         self.use_icm            = bool()
         self.icm_eta            = str()
 
@@ -274,7 +270,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--ed_gamma", type=float, default=1.0)
 
     parser.add_argument("--frame_stack", type=int, default=4)
-    parser.add_argument("--env_desync", type=str2bool, default=True, help="Runs environments without policy to desync before training.")
 
     parser.add_argument("--log_folder", type=str, default=None)
 

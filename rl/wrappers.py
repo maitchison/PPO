@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 import hashlib
 import collections
+from gym.envs.atari import AtariEnv
 from . import utils
 
 from gym.vector import VectorEnv
@@ -36,9 +37,15 @@ class EpisodicDiscounting(gym.Wrapper):
 
         return obs, reward, done, info
 
+    def save_state(self, buffer):
+        buffer["t"] = self.t
+
+    def restore_state(self, buffer):
+        self.t = buffer["t"]
 
 class NoPassThruWrapper(gym.Wrapper):
     """
+    Always returns first state after reset. Can be used to debug performance hit from running environment / wrappers.
     """
 
     def __init__(self, env: gym.Env):
@@ -46,7 +53,6 @@ class NoPassThruWrapper(gym.Wrapper):
         self.first = False
 
     def reset(self):
-        self.t = 0
         self.obs = self.env.reset()
         self.first = True
         return self.obs
@@ -54,7 +60,7 @@ class NoPassThruWrapper(gym.Wrapper):
     def step(self, action):
         if self.first:
             self.obs, _, _, self.info = self.env.step(action)
-            self.first=False
+            self.first = False
         return self.obs, 0, False, self.info
 
 class TimeAwareWrapper(gym.Wrapper):
@@ -67,7 +73,6 @@ class TimeAwareWrapper(gym.Wrapper):
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        self.env = env
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
@@ -186,30 +191,11 @@ class FrameSkipWrapper(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-def cast_down(x: Union[str, float, int]):
-    """
-    Try to convert string / float into an integer, float, or string, in that order...
-    """
-    try:
-        if int(x) == x:
-            return int(x)
-    except:
-        pass
-    try:
-        if float(x) == x:
-            return float(x)
-    except:
-        pass
-    return str(x)
-
-
 class ClipRewardWrapper(gym.Wrapper):
     """ Clips reward to given range"""
 
     def __init__(self, env: gym.Env, clip: float):
         super().__init__(env)
-        self.env = env
-
         self.clip = clip
 
     def step(self, action):
@@ -239,12 +225,6 @@ class DeferredRewardWrapper(gym.Wrapper):
         obs, reward, done, info = self.env.step(action)
         self.t += 1
 
-        # drop a hint in observation
-        # stub:
-        # if self.t+1 == self.time_limit:
-        #     # obs will be 1, H, W (I think)
-        #     obs *= 0
-
         give_rewards = (self.t == self.time_limit) or ((self.time_limit == - 1) and done)
 
         self.episode_reward += reward
@@ -262,12 +242,39 @@ class DeferredRewardWrapper(gym.Wrapper):
         self.episode_reward = 0
         return obs
 
+    def save_state(self, buffer):
+        buffer["t"] = self.t
+        buffer["episode_reward"] = self.episode_reward
+
+    def restore_state(self, buffer):
+        self.t = buffer["t"]
+        self.episode_reward = buffer["episode_reward"]
+
+
+class SaveEnvStateWrapper(gym.Wrapper):
+    """
+    Enables saveing and restoring of the environment state.
+    Only support atari at the moment.
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+
+    def save_state(self, buffer):
+        assert type(self.unwrapped) == AtariEnv, "Only Atari is supported for state saving/loading"
+        buffer["atari"] = self.unwrapped.clone_full_state()
+
+    def restore_state(self, buffer):
+        assert type(self.unwrapped) == AtariEnv, "Only Atari is supported for state saving/loading"
+        assert "atari" in buffer, "No state information found for Atari."
+        self.unwrapped.restore_full_state(buffer["atari"])
+
+
 class SqrtRewardWrapper(gym.Wrapper):
     """ Clips reward to given range"""
 
     def __init__(self, env: gym.Env, epsilon: float = 1e-3):
         super().__init__(env)
-        self.env = env
         self.epsilon = epsilon
 
     def step(self, action):
@@ -308,6 +315,12 @@ class NormalizeObservationsWrapper(gym.Wrapper):
             scaled_obs = np.asarray(scaled_obs, dtype=np.float32)
             return scaled_obs, reward, done, info
 
+    def save_state(self, buffer):
+        buffer["obs_rms"] = self.obs_rms.save_state()
+
+    def restore_state(self, buffer):
+        self.obs_rms.restore_state(buffer["obs_rms"])
+
 
 class VecNormalizeRewardWrapper(gym.Wrapper):
     """
@@ -322,16 +335,17 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         """
         super().__init__(env)
 
-        self.env = env
         self.clip = clip
-        self.epsilon = 1e-4
+        self.epsilon = 1e-8
         self.current_returns = np.zeros([env.num_envs], dtype=np.float32)
         self.ret_rms = utils.RunningMeanStd(shape=())
-        self.mean = 0.0
-        self.std = 0.0
         self.gamma = gamma
         if initial_state is not None:
             self.ret_rms.restore_state(initial_state)
+
+    def reset(self):
+        self.current_returns *= 0
+        return self.env.reset()
 
     def step(self, actions):
         obs, rewards, dones, infos = self.env.step(actions)
@@ -339,49 +353,27 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
         # but it is what OpenAI does...
         self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
-
         self.ret_rms.update(self.current_returns)
-        self.mean = self.ret_rms.mean
-        self.std = math.sqrt(self.ret_rms.var)
 
-        scaled_rewards = np.clip(rewards / (self.std + self.epsilon), -self.clip, +self.clip)
-
-        infos[0]["returns_norm_state"] = self.ret_rms.save_state()
-        infos[0]["unscaled_rewards"] = rewards.copy()
+        scaled_rewards = np.clip(rewards / self.std, -self.clip, +self.clip)
 
         return obs, scaled_rewards, dones, infos
 
+    @property
+    def mean(self):
+        return self.ret_rms.mean
 
-class NormalizeRewardWrapper(gym.Wrapper):
-    """
-    Normalizes rewards such that returns are unit normal.
-    """
+    @property
+    def std(self):
+        return math.sqrt(self.ret_rms.var + self.epsilon)
 
-    def __init__(self, env, initial_state=None):
-        """
-        Normalizes returns
-        """
-        super().__init__(env)
+    def save_state(self, buffer):
+        buffer["ret_rms"] = self.ret_rms.save_state()
+        buffer["current_returns"] = self.current_returns
 
-        self.env = env
-        self.epsilon = 1e-4
-        self.current_return = 0
-        self.ret_rms = utils.RunningMeanStd(shape=())
-        self.mean = 0.0
-        self.std = 0.0
-        if initial_state is not None:
-            self.ret_rms.restore_state(initial_state)
-
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-        self.current_return = reward + self.current_return * (1-done)
-        self.ret_rms.update(self.current_return)
-        self.mean = self.ret_rms.mean
-        self.std = math.sqrt(self.ret_rms.var)
-        scaled_reward = reward / (self.std + self.epsilon)
-        info["returns_norm_state"] = self.ret_rms.save_state()
-        return obs, scaled_reward, done, info
-
+    def restore_state(self, buffer):
+        self.ret_rms.restore_state(buffer["ret_rms"])
+        self.current_returns = buffer["current_returns"]
 
 class MonitorWrapper(gym.Wrapper):
     """
@@ -391,7 +383,6 @@ class MonitorWrapper(gym.Wrapper):
 
     def __init__(self, env: gym.Env, monitor_video=False):
         super().__init__(env)
-        self.env = env
         self.monitor_video = monitor_video
 
     def step(self, action):
@@ -401,41 +392,6 @@ class MonitorWrapper(gym.Wrapper):
         info["raw_reward"] = reward
         return obs, reward, done, info
 
-class ResetOnCrash(gym.Wrapper):
-    """
-    Resets game if screen does not change for 150 frames (10 seconds with frame skip of 4)
-    """
-
-    def __init__(self, env: gym.Env, window_length=300):
-        super().__init__(env)
-        self.env = env
-        self.window_length = window_length
-        self.buffer = np.zeros([self.window_length], dtype=np.int64)
-        self.counter = 0
-
-    def step(self, action):
-
-        obs, reward, done, info = self.env.step(action)
-
-        # note, hash is 32 bit so we can add them up safely in a 64bit buffer
-        self.buffer[self.counter % self.window_length] = hash(obs.data.tobytes()) & 0xffffffff
-
-        if not done and self.counter >= self.window_length:
-            if np.sum(np.abs(self.buffer - self.buffer[0])) == 0:
-                print(f"Game crashed at frame {self.counter}")
-                info["game_freeze"] = True
-                obs = self.env.reset()
-                self.counter = 0
-                return obs, 0.0, True, info
-
-        self.counter += 1
-        return obs, reward, done, info
-
-    def reset(self):
-        self.counter = 0
-        return self.env.reset()
-
-
 class FrameCropWrapper(gym.Wrapper):
     """
     Crops input frame.
@@ -443,7 +399,6 @@ class FrameCropWrapper(gym.Wrapper):
 
     def __init__(self, env: gym.Env, x1, x2, y1, y2):
         super().__init__(env)
-        self.env = env
         self.cropping = (slice(y1, y2, 1), slice(x1, x2, 1))
 
     def step(self, action):
@@ -466,7 +421,7 @@ class TimeLimitWrapper(gym.Wrapper):
         if self._elapsed_steps >= self._max_episode_steps:
             done = True
             info['TimeLimit.truncated'] = True
-        # when a done occurs we will reset and the observation retured will be the first frame of a new
+        # when a done occurs we will reset and the observation returned will be the first frame of a new
         # espisode, so time_frac should be 0. Remember time_frac is the time of the state we *land in* not
         # of the state we started from.
         info['time_frac'] = (self._elapsed_steps / self._max_episode_steps) if not done else 0
@@ -476,157 +431,11 @@ class TimeLimitWrapper(gym.Wrapper):
         self._elapsed_steps = 0
         return self.env.reset(**kwargs)
 
-class FoveaWrapper(gym.Wrapper):
-    """
-    Applies a fovea model to the Atari game. This involves stacking global grayscale low resolution frames with
-    local high resolution color frames.
-    """
+    def save_state(self, buffer):
+        buffer["_elapsed_steps"] = self._elapsed_steps
 
-    def __init__(self, env: gym.Env, global_stacks=4, local_stacks=4, width=42, height=42, global_frame_skip=1):
-        """
-        Stack and do other stuff...
-        Input should be (210, 160, 3)
-        Output is a stack of shape (nstacks, width, height)
-        """
-
-        super().__init__(env)
-
-        self.env = env
-
-        self.global_stack_count = global_stacks
-        self.local_stack_count = local_stacks
-        self.global_frame_skip = global_frame_skip
-        self._width, self._height = width, height
-
-        assert global_stacks == local_stacks, "Gobal stacks not equal to local stacks not implemented yet."
-
-        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
-        assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
-        assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
-
-        self.local_stack = collections.deque(maxlen=local_stacks)
-        self.mask_stack = collections.deque(maxlen=local_stacks)
-        self.global_stack = collections.deque(maxlen=global_stacks)
-
-        self.local_x = 0
-        self.local_y = 0
-        self.blur_factor = 0
-        self.counter = 0
-
-        # dx, dy
-        self.action_map = [(0,0)]
-        for step in [1, 4, 8]:
-            self.action_map.append((-step, 0))
-            self.action_map.append((+step, 0))
-            self.action_map.append((0, -step))
-            self.action_map.append((0, +step))
-            self.action_map.append((-step, +step))
-            self.action_map.append((+step, -step))
-            self.action_map.append((-step, -step))
-            self.action_map.append((+step, +step))
-
-        self.channels = []
-        for i in range(self.global_stack_count):
-            # right now these are all mixed up but what would be better is to have seperate stacks for each one
-            # so I can have different levels of local and global stacks.
-            self.channels.append("Gray-" + str(i))
-        for i in range(self.local_stack_count):
-            self.channels.append("ColorR-" + str(i))
-            self.channels.append("ColorG-" + str(i))
-            self.channels.append("ColorB-" + str(i))
-        for i in range(self.local_stack_count):
-            self.channels.append("Mask-" + str(i))
-
-        self.n_channels = len(self.channels)
-
-        self.observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(self.n_channels, self._width, self._height),
-            dtype=np.uint8,
-        )
-
-    def _get_fovia_rect(self):
-        x1 = np.clip(self.local_x, 0, 160 - self._width)
-        y1 = np.clip(self.local_y, 0, 210 - self._height)
-        x2 = x1 + self._width
-        y2 = y1 + self._height
-        return x1,y1,x2,y2
-
-    def _get_local_frame(self, obs):
-        fr = self._get_fovia_rect()
-
-        # generate fovea location frame
-        mask = np.zeros((210, 160), dtype=np.uint8) + 64
-        mask[fr[1]:fr[3], fr[0]:fr[2]] = 255
-        mask = cv2.resize(mask, (self._height, self._width), interpolation=cv2.INTER_AREA)
-        mask = mask[np.newaxis, :, :]
-
-        # generate a local frame
-        local_obs = obs[fr[1]:fr[3], fr[0]:fr[2]]
-        assert local_obs.shape == (self._width, self._height, 3), "Invalid fovia rect {} - {}".format(str(fr), str(
-            local_obs.shape))
-
-        if self.blur_factor > 1:
-            local_obs = cv2.blur(local_obs, (int(self.blur_factor), int(self.blur_factor)))
-
-        local_obs = np.transpose(local_obs, (2, 0, 1))
-        local_obs = local_obs[::-1, :, :]
-
-        return local_obs, mask
-
-    def _get_global_frame(self, obs):
-        global_obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-        global_obs = cv2.resize(global_obs, (self._height, self._width), interpolation=cv2.INTER_AREA)
-        return global_obs[np.newaxis, :, :]
-
-    def _push_raw_obs(self, obs):
-        local_obs, mask_obs = self._get_local_frame(obs)
-        self.local_stack.append(local_obs)
-        self.mask_stack.append(mask_obs)
-        # generate the global frame
-        if self.counter % self.global_frame_skip == 0:
-            global_obs = self._get_global_frame(obs)
-            self.global_stack.append(global_obs)
-        self.counter += 1
-
-    def step(self, action):
-
-        # get attention
-        if type(action) is int:
-            env_action = action
-            movement_cost = 0
-            self.blur_factor = 0
-        else:
-            env_action, fovia_action = tuple(action)
-            dx, dy = self.action_map[fovia_action]
-            movement_cost = abs(dx) + abs(dy)
-            self.blur_factor = movement_cost
-            self.local_x = np.clip(self.local_x + dx, 0, 160)
-            self.local_y = np.clip(self.local_y + dy, 0, 210)
-
-        obs, reward, done, info = self.env.step(env_action)
-        info["attention_cost"] = movement_cost / 100
-        self._push_raw_obs(obs)
-        info["channels"] = self.channels[:]
-        return self.stack, reward, done, info
-
-    @property
-    def stack(self):
-        stack = np.concatenate([*self.global_stack, *self.local_stack, *self.mask_stack], axis=0)
-        return stack
-
-    def reset(self):
-        obs = self.env.reset()
-        self.counter = 0
-        local_obs, mask_obs = self._get_local_frame(obs)
-        global_obs = self._get_global_frame(obs)
-        for _ in range(self.local_stack_count):
-            self.local_stack.append(local_obs)
-            self.mask_stack.append(mask_obs)
-        for _ in range(self.global_stack_count):
-            self.global_stack.append(global_obs)
-        return self.stack
+    def restore_state(self, buffer):
+        self._elapsed_steps= buffer["_elapsed_steps"]
 
 
 class AtariWrapper(gym.Wrapper):
@@ -647,8 +456,6 @@ class AtariWrapper(gym.Wrapper):
         """
 
         super().__init__(env)
-
-        self.env = env
 
         self._width, self._height = width, height
 
@@ -695,7 +502,7 @@ class AtariWrapper(gym.Wrapper):
 class NullActionWrapper(gym.Wrapper):
     """
     Allows passing of a negative action to indicate not to proceed the environment forward.
-    Observation, frozen, info emply, and reward will be 0, done will be false
+    Observation, frozen, info empty, and reward will be 0, done will be false
     Child environment will not be stepped.
     Helpful for vectorized environments.
     """
@@ -724,7 +531,7 @@ class EpisodeScoreWrapper(gym.Wrapper):
     """
 
     def __init__(self, env):
-        gym.Wrapper.__init__(self, env)
+        super().__init__(env)
         self.ep_score = 0
         self.ep_length = 0
 
@@ -742,6 +549,13 @@ class EpisodeScoreWrapper(gym.Wrapper):
         self.ep_length = 0
         return obs
 
+    def save_state(self, buffer):
+        buffer["ep_score"] = self.ep_score
+        buffer["ep_length"] = self.ep_length
+
+    def restore_state(self, buffer):
+        self.ep_length = buffer["ep_score"]
+        self.ep_length = buffer["ep_length"]
 
 class NoopResetWrapper(gym.Wrapper):
     """
@@ -812,8 +626,6 @@ class FrameStack(gym.Wrapper):
 
         self.ordering = ordering
 
-        self.counter = 0
-
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
@@ -822,9 +634,6 @@ class FrameStack(gym.Wrapper):
         )
 
     def _push_obs(self, obs):
-
-        # stub, label frames
-        self.counter += 1
 
         if self.ordering == "default":
             # most recent is in slot 0, then ascending from there... strange ordering, but it's what I used
@@ -847,7 +656,6 @@ class FrameStack(gym.Wrapper):
         else:
             raise Exception(f"Invalid ordering {self.ordering}.")
 
-
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self._push_obs(obs)
@@ -860,6 +668,12 @@ class FrameStack(gym.Wrapper):
         for _ in range(self.n_stacks):
             self._push_obs(obs)
         return self.stack
+
+    def save_state(self, buffer):
+        buffer["stack"] = self.stack
+
+    def restore_state(self, buffer):
+        self.stack = buffer["stack"]
 
 class FrameStack_Lazy(gym.Wrapper):
     # taken from https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
@@ -933,3 +747,32 @@ class LazyFrames(object):
 
     def frame(self, i):
         return self._force()[..., i]
+
+def cast_down(x: Union[str, float, int]):
+    """
+    Try to convert string / float into an integer, float, or string, in that order...
+    """
+    try:
+        if int(x) == x:
+            return int(x)
+    except:
+        pass
+    try:
+        if float(x) == x:
+            return float(x)
+    except:
+        pass
+    return str(x)
+
+
+def get_wrapper(env, wrapper_type) -> Union[gym.Wrapper, None]:
+    """
+    Returns first wrapper matching type in environment, or none.
+    """
+    while True:
+        if type(env) == wrapper_type:
+            return env
+        try:
+            env = env.env
+        except:
+            return None

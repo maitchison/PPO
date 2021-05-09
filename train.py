@@ -1,15 +1,7 @@
 import os
 
-import torch
 import uuid
 import multiprocessing
-
-from rl import utils, models, atari, config, logger, rollout
-from rl import ppo
-from rl.config import args
-
-import json
-import socket
 
 resolution_map = {
     "full": (210, 160),
@@ -28,6 +20,12 @@ def get_previous_experiment_guid(experiment_path, run_name):
     return None
 
 if __name__ == "__main__":
+
+    # import here to make workers load faster / use less memory
+    import torch
+    from rl import utils, models, atari, config, logger, rollout
+    from rl import ppo
+    from rl.config import args
 
     log = logger.Logger()
 

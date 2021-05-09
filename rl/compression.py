@@ -1,6 +1,7 @@
 import lz4.frame
 import time
 import numpy as np
+from typing import List
 
 """
 Handles compressed data for rollout.
@@ -60,11 +61,8 @@ class StateBuffer():
     buffer
     """
 
-    def __init__():
-        pass
-
     def __init__(self):
-        self.buffer: list[BufferSlot] = []
+        self.buffer: List[BufferSlot] = []
 
     def append(self, x: np.ndarray):
         self.buffer.append(BufferSlot(x))

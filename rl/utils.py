@@ -14,6 +14,8 @@ import torchvision
 from . import hybridVecEnv, atari, config
 from .config import args
 
+import gym
+
 from typing import List
 
 NATS_TO_BITS = 1.0/math.log(2)
@@ -684,6 +686,24 @@ def dtw(obs1, obs2):
 
     return DTW[n, m]
 
+# stub: show memory usage
+def print_memory_usage(scope):
+    data = []
+    np_arrays = {k: v for k, v in scope.items() if isinstance(v, np.ndarray)}
+    for var_name, array in np_arrays.items():
+        row = (array.size*array.itemsize, 'np', var_name, str(array.shape)+' '+str(array.dtype))
+        data.append(row)
+    th_arrays = {k: v for k, v in scope.items() if isinstance(v, torch.Tensor)}
+    for var_name, array in th_arrays.items():
+        row = (array.element_size() * array.nelement(), 'torch', var_name, str(array.shape) + ' ' + str(array.dtype))
+        data.append(row)
+
+    data.sort(reverse=True, key=lambda x: x[0])
+    for ob_size, var_type, var_name, var_description in data[:100]:
+        print(f"{ob_size/1024/1024:>10.1f}M {var_type:<10} {var_name[:20]:<20} {var_description[:50]}")
+    data = []
+
+
 # -------------------------------------------------------------
 # CUDA
 # -------------------------------------------------------------
@@ -711,3 +731,63 @@ def get_auto_device(ignore_devices: List[int]):
             print("Warning: No devices usable.")
             return None
 
+
+def restore_env_state(env, save_state:dict):
+    """
+    Restores state for all wrappers using given save_state dictionary (created from msave_env_state).
+    """
+    save_data = {}
+
+    while True:
+
+        if issubclass(type(env), gym.vector.SyncVectorEnv):
+            # process each sub-child
+            for i, env, in enumerate(env.envs):
+                restore_env_state(env, save_data[f"vec_{i:03d}"])
+            return
+
+        # otherwise process wrapper and move down the chain
+        key = type(env).__name__
+        if key in save_state:
+            env.restore_state(save_state[key])
+
+        # end of chain
+        if not hasattr(env, "env") or env.env == env:
+            break
+
+        env = env.env
+
+
+def save_env_state(env):
+    """
+    Produces a dictionary containing state of all wrappers for this environment.
+
+    Does not support async_vec_env, but does support hybrid_vec_env
+    """
+
+    save_data = {}
+
+    while True:
+
+        if issubclass(type(env), gym.vector.SyncVectorEnv):
+            # process each sub-child
+            for i, env, in enumerate(env.envs):
+                save_data[f"vec_{i:03d}"] = save_env_state(env)
+            return save_data
+
+        # otherwise process wrapper and move down the chain
+        # note: silly wrappers override __get_attr__ so we can't use get_attr(env, "save_state, None)
+        key = type(env).__name__
+        if "save_state" in dir(env):
+            save_dict = {}
+            env.save_state(save_dict)
+            if len(save_dict) > 0:
+                save_data[key] = save_dict
+
+        # end of chain
+        if not hasattr(env, "env") or env.env == env:
+            break
+
+        env = env.env
+
+    return save_data

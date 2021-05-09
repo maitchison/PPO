@@ -5,16 +5,11 @@ from collections import defaultdict
 from . import wrappers
 from .config import args
 
-ENV_STATE = {}
-
 # get list of game environments...
 _game_envs = defaultdict(set)
 for env in gym.envs.registry.all():
     env_type = env.entry_point.split(':')[0].split('.')[-1]
     _game_envs[env_type].add(env.id)
-
-def get_env_state(key):
-    return ENV_STATE.get(key, None)
 
 def make(non_determinism=None, monitor_video=False, seed=None):
     """ Construct environment of given name, including any required wrappers."""
@@ -45,6 +40,8 @@ def make(non_determinism=None, monitor_video=False, seed=None):
     if env_type == "atari":
 
         assert "NoFrameskip" in env_name
+
+        env = wrappers.SaveEnvStateWrapper(env)
 
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":

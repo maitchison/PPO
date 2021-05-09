@@ -445,8 +445,6 @@ class Runner():
         return table
 
 
-
-
     def create_envs(self):
         """ Creates environments for runner"""
         env_fns = [lambda: atari.make() for _ in range(args.agents)]
@@ -457,7 +455,6 @@ class Runner():
             self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(
                 env_fns,
                 copy=False,
-                shared_memory=True,
                 max_cpus=args.workers,
                 verbose=True
             )
@@ -465,7 +462,6 @@ class Runner():
         if args.reward_normalization:
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
-                initial_state=atari.get_env_state("returns_norm_state"),
                 gamma=args.gamma
             )
 
@@ -480,7 +476,7 @@ class Runner():
             'ep_count': self.ep_count,
             'model_state_dict': self.model.state_dict(),
             'logs': self.log,
-            'env_state': atari.ENV_STATE,
+            'env_state': utils.save_env_state(self.vec_env),
             'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
             'value_optimizer_state_dict': self.value_optimizer.state_dict()
         }
@@ -529,7 +525,7 @@ class Runner():
             self.ems_norm = checkpoint['ems_norm']
             self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
 
-        atari.ENV_STATE = checkpoint['env_state']
+        utils.restore_env_state(self.vec_env, checkpoint['env_state'])
 
         if args.normalize_observations:
             self.model.obs_rms.restore_state(checkpoint["observation_norm_state"])
@@ -560,11 +556,8 @@ class Runner():
     def forward(self, obs:np.ndarray, aux_features=None, max_batch_size=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
-
             obs: np array of dims [B, *state_shape]
-
         """
-
         max_batch_size = max_batch_size or args.max_micro_batch_size
 
         # state_shape will be empty_list if compression is enabled
@@ -621,6 +614,8 @@ class Runner():
         reward: nd array of dims [N, A]
         dones: nd array of dims [N, A]
         required_horizons: nd array of dims [K]
+        value_samples: nd array of dims [N, A, K], where value_samples[n,a,k] is the value of the nth timestep ath agent
+            for horizon required_horizons[k]
 
         If n_step td_lambda is negative it is taken as
         """
@@ -669,7 +664,7 @@ class Runner():
                 if h-steps_made <= 0:
                     # these are just the accumulated sums and don't need horizon bootstrapping
                     continue
-                interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
+                interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made, :], h - steps_made)
                 returns[t, :, h_lookup[h]] = reward_sum + interpolated_value * discount
 
         return returns
@@ -744,7 +739,9 @@ class Runner():
         return returns
 
     def get_adaptive_n_step(self, h):
-        return max(1, int(args.tvf_n_step * h / args.tvf_max_horizon))
+        # the 0.5 makes adaptive tvf_n_step line up better with normal n_step returns
+        # i.e. the both like approximately 40 n_steps
+        return max(1, int(0.5 * args.tvf_n_step * h / args.tvf_max_horizon))
 
     def _calculate_adaptive_sampled_returns(
             self,
@@ -1067,8 +1064,6 @@ class Runner():
                 max_rollout_batch_size //= horizon_factor
             max_final_batch_size //= horizon_factor
 
-        infos = None
-
         for t in range(self.N):
 
             prev_obs = self.obs.copy()
@@ -1154,18 +1149,6 @@ class Runner():
             last_obs = self.obs
         self.all_obs[-1] = last_obs
         self.all_time[-1] = self.time
-
-        #  save a copy of the observation normalization statistics.
-        if args.normalize_observations:
-            atari.ENV_STATE["observation_norm_state"] = self.model.obs_rms.save_state()
-
-        # save a copy of the reward normalizion statistics
-        # returns_norm_state is always put in info 0.
-        if infos is not None and "returns_norm_state" in infos[0]:
-            atari.ENV_STATE["returns_norm_state"] = infos[0]["returns_norm_state"]
-            norm_mean, norm_var, norm_count = infos[0]["returns_norm_state"]
-            self.log.watch("returns_norm_mu", norm_mean, display_width=0)
-            self.log.watch("returns_norm_std", norm_var ** 0.5, display_width=0)
 
         if args.debug_terminal_logging:
             for t in range(self.N):
@@ -1899,7 +1882,8 @@ class Runner():
     def reward_scale(self):
         """ The amount rewards have been scaled by. """
         if args.reward_normalization:
-            return atari.get_env_state("returns_norm_state")[1] ** 0.5
+            norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
+            return norm_wrapper.std
         else:
             return 1.0
 
@@ -2164,12 +2148,17 @@ def horizon_scale_function(x):
         return x / args.tvf_max_horizon
     elif args.tvf_horizon_scale == "zero":
         return x*0
+    elif args.tvf_horizon_scale == "log":
+        return (1+x).log()
     elif args.tvf_horizon_scale == "centered":
         # this will be roughly unit normal
         return ((x / args.tvf_max_horizon) - 0.5) * 3.0
     elif args.tvf_horizon_scale == "wide":
-        # this will be roughly unit normal
+        # this will be roughly 10x normal
         return ((x / args.tvf_max_horizon) - 0.5) * 30.0
+    elif args.tvf_horizon_scale == "wider":
+        # this will be roughly 30x normal
+        return ((x / args.tvf_max_horizon) - 0.5) * 100.0
     else:
         raise ValueError("Invalid args.tvf_horizon_scale.")
 
@@ -2182,8 +2171,11 @@ def time_scale_function(x):
         # this will be roughly unit normal
         return (x - 0.5) * 3.0
     elif args.tvf_time_scale == "wide":
-        # this will be roughly unit normal
+        # this will be roughly 10x unit normal
         return (x - 0.5) * 30.0
+    elif args.tvf_time_scale == "wider":
+        # this will be roughly 30x unit normal
+        return (x - 0.5) * 100.0
     else:
         raise ValueError("Invalid args.tvf_time_scale.")
 

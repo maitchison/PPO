@@ -245,7 +245,7 @@ class DualNet(nn.Module):
                 features_part = self.value_net_hidden(features)
                 # aux part will be [B, H, Hidden]
                 aux_part = self.value_net_hidden_aux(transformed_aux_features)
-                # features will be [B, 128], but needs to be [B, 1, 128]
+                # features will be [B, Hidden], but needs to be [B, 1, Hidden]
                 tvf_h = activation(features_part[:, None, :] + aux_part)
 
                 tvf_values = self.value_net_tvf(tvf_h)[..., 0]
