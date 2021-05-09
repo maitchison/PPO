@@ -148,6 +148,7 @@ def make_model(env):
 
     additional_args['tvf_hidden_units'] = args.tvf_hidden_units
     additional_args['tvf_activation'] = args.tvf_activation
+    additional_args['tvf_n_value_heads'] = args.tvf_n_value_heads
 
     additional_args['head'] = "Nature"
     additional_args['network'] = "Nature"

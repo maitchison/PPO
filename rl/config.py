@@ -69,6 +69,7 @@ class Config:
         self.tvf_time_scale = str()
         self.tvf_n_step         = int()
         self.tvf_mode           = str()
+        self.tvf_n_value_heads  = int()
 
     
         self.time_aware = bool()
@@ -207,6 +208,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_horizon_distribution", type=str, default="uniform", help="Sampling distribution to use when generating horizon samples.")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
     parser.add_argument("--tvf_hidden_units", type=int, default=512)
+    parser.add_argument("--tvf_n_value_heads", type=int, default=1)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|zero]")

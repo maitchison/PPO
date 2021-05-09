@@ -131,6 +131,7 @@ if __name__ == "__main__":
             use_rnn=False,
             tvf_horizon_transform=rollout.horizon_scale_function,
             tvf_time_transform=rollout.time_scale_function,
+            tvf_n_value_heads=args.tvf_n_value_heads,
 
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,

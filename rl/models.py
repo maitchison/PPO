@@ -149,10 +149,21 @@ class DualNet(nn.Module):
     Network has both policy and value heads, but may only use one of these.
     """
 
-    def __init__(self, network, input_dims, tvf_activation, tvf_hidden_units, tvf_horizon_transform, tvf_time_transform,
-                 actions=None,
-                 policy_head=True, value_head=True,
-                 **kwargs):
+    def __init__(
+            self,
+            network,
+            input_dims,
+            tvf_activation,
+            tvf_hidden_units,
+            tvf_horizon_transform,
+            tvf_time_transform,
+            tvf_n_value_heads: int = 1,
+            actions=None,
+            policy_head=True,
+            value_head=True,
+
+            **kwargs
+    ):
         super().__init__()
 
         self.encoder = construct_network(network, input_dims, **kwargs)
@@ -168,6 +179,9 @@ class DualNet(nn.Module):
             self.policy_net_value = nn.Linear(self.encoder.hidden_units, 2)
 
         if self.value_head:
+
+            self.n_value_heads = 1 # stub: for the moment
+
             self.tvf_activation = tvf_activation
             self.tvf_hidden_units = int(tvf_hidden_units)
             self.horizon_transform = tvf_horizon_transform
@@ -177,7 +191,7 @@ class DualNet(nn.Module):
             self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
             self.value_net_hidden = nn.Linear(self.encoder.hidden_units, self.tvf_hidden_units)
             self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units, bias=False)
-            self.value_net_tvf = nn.Linear(self.tvf_hidden_units, 1)
+            self.value_net_tvf = nn.Linear(self.tvf_hidden_units, self.n_value_heads)
 
             # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
             torch.nn.init.uniform_(
@@ -191,6 +205,24 @@ class DualNet(nn.Module):
                     -1 / (self.encoder.hidden_units ** 0.5),
                     1 / (self.encoder.hidden_units ** 0.5)
                 )
+
+    def _transformed_features(self, aux_features: torch.Tensor):
+        # apply horizon transform (usually just normalize them between 0 and 1)
+        transformed_aux_features = torch.zeros_like(aux_features)
+        transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
+        transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
+        return transformed_aux_features
+
+    @property
+    def tvf_activation_function(self):
+        if self.tvf_activation == "relu":
+            return F.relu
+        elif self.tvf_activation == "tanh":
+            return F.tanh
+        elif self.tvf_activation == "sigmoid":
+            return F.sigmoid
+        else:
+            raise Exception("invalid activation")
 
     def forward(
             self, x, aux_features=None, policy_temperature=1.0,
@@ -223,35 +255,27 @@ class DualNet(nn.Module):
                     aux_features = torch.from_numpy(aux_features)
 
                 aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
-
                 _, H, _ = aux_features.shape
 
-                # apply horizon transform (usually just normalize them between 0 and 1)
-                transformed_aux_features = torch.zeros_like(aux_features)
-                transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
-                transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
-
-                if self.tvf_activation == "relu":
-                    activation = F.relu
-                elif self.tvf_activation == "tanh":
-                    activation = F.tanh
-                elif self.tvf_activation == "sigmoid":
-                    activation = F.sigmoid
-                else:
-                    raise Exception("invalid activation")
-
                 # combine aux features the fast way
+                transformed_aux_features = self._transformed_features(aux_features)
 
                 # features_part will be [B, Hidden]
                 features_part = self.value_net_hidden(features)
                 # aux part will be [B, H, Hidden]
                 aux_part = self.value_net_hidden_aux(transformed_aux_features)
                 # features will be [B, Hidden], but needs to be [B, 1, Hidden]
-                tvf_h = activation(features_part[:, None, :] + aux_part)
+                tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
+                # values will be [B, H, n_value_heads]
+                tvf_values = self.value_net_tvf(tvf_h)
 
-                tvf_values = self.value_net_tvf(tvf_h)[..., 0]
+                # in multi head work out which head predicts which horizon
+                required_head = torch.clamp(torch.round(torch.log2(1+aux_features[..., 0])), 0, self.n_value_heads-1)
 
-                result['tvf_value'] = tvf_values
+                # todo: reference horizon from head position
+                # todo: implement blending...
+
+                result['tvf_value'] = torch.gather(tvf_values, dim=2, index=required_head)
 
         return result
 
@@ -289,9 +313,10 @@ class TVFModel(nn.Module):
             use_rnn:bool = False,
 
             tvf_horizon_transform = lambda x : x / 1000,
-            tvf_time_transform=lambda x: x,
+            tvf_time_transform = lambda x: x,
             tvf_hidden_units:int = 512,
             tvf_activation:str = "relu",
+            tvf_n_value_heads:int=1,
             network_args:Union[dict, None] = None,
     ):
 
@@ -315,6 +340,7 @@ class TVFModel(nn.Module):
             tvf_hidden_units=tvf_hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
             tvf_time_transform=tvf_time_transform,
+            tvf_n_value_heads=tvf_n_value_heads,
             actions=actions,
             **(network_args or {})
         )

@@ -978,6 +978,31 @@ def setup_experiments_15():
                 epochs=20,
                 priority=100,
             )
+            add_job(
+                f"TVF_15_Breakout_HQ",
+                env_name="Breakout",
+                run_name=f"max_horizon={horizon} gamma={gamma} (samples=512)",
+                default_params=v15_lh_args_v2,
+                tvf_value_samples=512,
+                tvf_horizon_samples=512,
+                tvf_max_horizon=horizon,
+                gamma=gamma,
+                tvf_gamma=gamma,
+                epochs=20,
+                priority=100,
+            )
+            add_job(
+                f"TVF_15_Breakout_HQ2",
+                env_name="Breakout",
+                run_name=f"max_horizon={horizon} gamma={gamma} (multi_head)",
+                default_params=v15_lh_args_v2,
+                tvf_n_value_heads=16,
+                tvf_max_horizon=horizon,
+                gamma=gamma,
+                tvf_gamma=gamma,
+                epochs=20,
+                priority=200,
+            )
 
         add_job(
             f"TVF_15_Breakout_HQ",
