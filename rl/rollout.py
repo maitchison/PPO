@@ -727,18 +727,12 @@ class Runner():
         But does not require many calculations, and should work fine for large n_steps
         """
 
-        N, A, K = dims
+        n_steps = self.get_exponential_n_steps()
 
-        n_steps = []
-        n = 2
-        while n <= N:
-            n_steps.append(n)
-            n *= 2
-
-        returns = n_step_func(1, required_horizons)
-        for n in n_steps:
+        returns = n_step_func(n_steps[0], required_horizons)
+        for n in n_steps[1:]:
             returns += n_step_func(n, required_horizons)
-        returns *= 1/(len(n_steps)+1)
+        returns *= 1/(len(n_steps))
 
         return returns
 
@@ -746,6 +740,20 @@ class Runner():
         # the 0.5 makes adaptive tvf_n_step line up better with normal n_step returns
         # i.e. the both like approximately 40 n_steps
         return max(1, int(0.5 * args.tvf_n_step * h / args.tvf_max_horizon))
+
+    def get_exponential_n_steps(self):
+        """
+        Returns a list of horizons spaced out exponentially for given horizon.
+        In some cases horizons might be duplicated (in which case they should extra weighting)
+        """
+        results = []
+        current_h = 1
+        while True:
+            results.append(round(current_h))
+            current_h *= args.tvf_exp_gamma
+            if current_h > args.n_steps:
+                break
+        return results
 
     def _calculate_adaptive_sampled_returns(
             self,
@@ -778,6 +786,8 @@ class Runner():
             rewards=None,
             dones=None,
             no_debug=False,
+            tvf_mode=None,
+            tvf_n_step=None
     ):
         """
         Calculates and returns the (tvf_gamma discounted) return estimates for given rollout.
@@ -802,6 +812,8 @@ class Runner():
         time = time if time is not None else self.all_time
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
+        tvf_mode = tvf_mode or args.tvf_mode
+        tvf_n_step = tvf_n_step or args.tvf_n_step
 
         N, A, *state_shape = obs[:-1].shape
 
@@ -813,21 +825,8 @@ class Runner():
         # use our model to generate the value estimates required
         # for MC this is just an estimate at the end of the window
         assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == args.tvf_max_horizon, "First and value horizon are required."
-        horizons = value_sample_horizons[None, None, :]
-        horizons = np.repeat(horizons, repeats=N + 1, axis=0)
-        horizons = np.repeat(horizons, repeats=A, axis=1)
 
-        # todo: use get_value_estimates
-        with torch.no_grad():
-            model_out = self.forward(
-                obs=obs.reshape([(N + 1) * A, *state_shape]),
-                aux_features=package_aux_features(
-                    horizons.reshape([(N + 1) * A, -1]),
-                    time.reshape([(N + 1) * A]),
-                ),
-                output="value",
-            )
-        value_samples = model_out["tvf_value"].reshape([(N + 1), A, len(value_sample_horizons)]).cpu().numpy()
+        value_samples = self.get_value_estimates(obs=obs, time=time, horizons=value_sample_horizons)
 
         def plot_true_value(n, a):
             xs = np.arange(args.tvf_max_horizon+1)
@@ -873,27 +872,27 @@ class Runner():
             value_samples=value_samples,
         )
 
-        if args.tvf_mode == "exponential":
+        if tvf_mode == "exponential":
             returns = self._calculate_exp_sampled_returns(
                 dims=(N, A, len(required_horizons)),
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
             )
-        elif args.tvf_mode == "adaptive":
+        elif tvf_mode == "adaptive":
             returns = self._calculate_adaptive_sampled_returns(
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
             )
-        elif args.tvf_mode == "lambda":
+        elif tvf_mode == "lambda":
             returns = self._calculate_lambda_sampled_returns(
                 dims=(N, A, len(required_horizons)),
                 td_lambda=args.tvf_lambda,
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
             )
-        elif args.tvf_mode == "nstep":
+        elif tvf_mode == "nstep":
             returns = self._calculate_n_step_sampled_returns(
-                n_step=args.tvf_n_step,
+                n_step=tvf_n_step,
                 gamma=args.tvf_gamma,
                 rewards=rewards,
                 dones=dones,
@@ -1170,7 +1169,7 @@ class Runner():
                         )
 
     @torch.no_grad()
-    def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray] =None,
+    def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
                             horizons: Union[None, np.ndarray, int] = None) -> np.ndarray:
         """
         Returns value estimates for each given observation
@@ -1189,6 +1188,14 @@ class Runner():
 
         if args.use_tvf:
             horizons = horizons if horizons is not None else args.tvf_max_horizon
+
+            assert time is not None and time.shape == (N, A)
+            if type(horizons) == int:
+                pass
+            elif type(horizons) is np.ndarray:
+                assert len(horizons.shape) == 1, f"Invalid horizon shape {horizons.shape}"
+            else:
+                raise ValueError("Invalid horizon type {type(horizons)}")
 
             if type(horizons) in [int, float]:
                 scalar_output = True
@@ -1256,6 +1263,7 @@ class Runner():
                 rewards=self.ext_rewards[:, agent_filter],
                 dones=self.terminals[:, agent_filter],
                 no_debug=True,
+                tvf_mode="exponential", # <-- this seems like a fair benchmark to compare against
             )
 
             for index, h in enumerate(self.tvf_debug_horizons):
@@ -1683,11 +1691,9 @@ class Runner():
 
             # this uses the number of times a horizon will (on average) be copied)
             if args.tvf_mode == "exponential":
-                p = prob_from_effective_n_step(1)
-                h = 2
-                while h <= args.n_steps:
-                    p += prob_from_effective_n_step(h)
-                    h *= 2
+                p = prob_from_effective_n_step(1) * 0
+                for n in self.get_exponential_n_steps():
+                    p += prob_from_effective_n_step(n)
             elif args.tvf_mode == "adaptive":
                 p = self.effective_n_step_table[sample_range]
             elif args.tvf_mode == "nstep":
@@ -2008,10 +2014,7 @@ class Runner():
                 label="distill",
             )
 
-
-
         # todo: include rnd ...
-
 
         self.batch_counter += 1
 

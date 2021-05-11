@@ -937,8 +937,75 @@ def setup_experiments_15():
             chunk_size=1,
         )
 
+    # value heads
+    for tvf_n_value_heads in [1, 4, 16]:
+        add_job(
+            f"TVF_15_ValueHeads",
+            env_name="DemonAttack",
+            run_name=f"tvf_n_value_heads={tvf_n_value_heads}",
+            default_params=v15_lh_args_v2,
+            tvf_n_value_heads=tvf_n_value_heads,
+            epochs=10,
+            priority=200,
+        )
+
+    # value heads
+    for tvf_n_value_heads in [2, 4, 8]:
+        add_job(
+            f"TVF_15_Breakout_MVH_EXP",
+            env_name="Breakout",
+            run_name=f"heads={tvf_n_value_heads} (piecewise)",
+            tvf_horizon_scale='centered', # see if this is enough...
+            tvf_time_scale='centered',
+            tvf_mode="exponential",
+            default_params=v15_lh_args_v2,
+            tvf_n_value_heads=tvf_n_value_heads,
+            epochs=20,
+            priority=20,
+        )
+
+        add_job(
+            f"TVF_15_Breakout_MVH_EXP",
+            env_name="Breakout",
+            run_name=f"heads={tvf_n_value_heads} (step)",
+            tvf_horizon_scale='zero',
+            tvf_time_scale='centered',
+            tvf_mode="exponential",
+            default_params=v15_lh_args_v2,
+            tvf_n_value_heads=tvf_n_value_heads,
+            epochs=20,
+            priority=20,
+        )
+
+        add_job(
+            f"TVF_15_Breakout_MVH_EXP",
+            env_name="Breakout",
+            run_name=f"heads={tvf_n_value_heads} (linear)",
+            tvf_horizon_scale='zero',
+            tvf_time_scale='centered',
+            tvf_mode="exponential",
+            default_params=v15_lh_args_v2,
+            tvf_n_value_heads=-tvf_n_value_heads,
+            epochs=20,
+            priority=20,
+        )
+
+        add_job(
+            f"TVF_15_Breakout_MVH_EXP",
+            env_name="Breakout",
+            run_name=f"heads={tvf_n_value_heads} (blended)",
+            tvf_horizon_scale='centered',
+            tvf_time_scale='centered',
+            tvf_mode="exponential",
+            default_params=v15_lh_args_v2,
+            tvf_n_value_heads=-tvf_n_value_heads,
+            epochs=20,
+            priority=20,
+        )
+
     # breakout horizon quality (with new settings)
     for horizon, gamma in zip([300, 1000, 3000, 30000], [0.997, 0.999, 0.9997, 0.99997]):
+
         # try to do better on breakout...
         add_job(
             f"TVF_15_Breakout_HQ",
@@ -992,16 +1059,30 @@ def setup_experiments_15():
                 priority=100,
             )
             add_job(
-                f"TVF_15_Breakout_HQ2",
+                f"TVF_15_Breakout_HQ",
                 env_name="Breakout",
-                run_name=f"max_horizon={horizon} gamma={gamma} (multi_head)",
+                run_name=f"max_horizon={horizon} gamma={gamma} (n_step=512)",
                 default_params=v15_lh_args_v2,
-                tvf_n_value_heads=16,
                 tvf_max_horizon=horizon,
+                tvf_mode="nstep",
+                tvf_n_step=512,
                 gamma=gamma,
                 tvf_gamma=gamma,
                 epochs=20,
-                priority=200,
+                priority=100,
+            )
+            add_job(
+                f"TVF_15_Breakout_HQ",
+                env_name="Breakout",
+                run_name=f"max_horizon={horizon} gamma={gamma} (adaptive=512)",
+                default_params=v15_lh_args_v2,
+                tvf_max_horizon=horizon,
+                tvf_mode="adaptive",
+                tvf_n_step=512,
+                gamma=gamma,
+                tvf_gamma=gamma,
+                epochs=20,
+                priority=100,
             )
 
         add_job(

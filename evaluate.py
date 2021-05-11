@@ -18,6 +18,7 @@ PARALLEL_ENVS = 64 # number of environments to run in parallel
 
 GENERATE_EVAL = False
 GENERATE_MOVIES = True
+ZERO_TIME = False
 
 def update_file(source, destination):
     # check if file needs updating
@@ -72,18 +73,21 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
 
     for epoch in range(0, max_epoch+1):
 
-        temp_postfix = f"_t={temperature}" if temperature is not None else ""
+        postfix = f"_t={temperature}" if temperature is not None else ""
 
-        checkpoint_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{temp_postfix}.dat")
+        if ZERO_TIME:
+            postfix = postfix + "_no_time"
+
+        checkpoint_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
         checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt")
 
-        checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{temp_postfix}"
+        checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{postfix}"
 
         if os.path.exists(checkpoint_name):
 
             if GENERATE_MOVIES:
 
-                matching_files = [x for x in files_in_dir if checkpoint_movie_base in x and x.endswith('.mp4')]
+                matching_files = [x for x in files_in_dir if checkpoint_movie_base+'.mp4' in x]
 
                 if len(matching_files) >= 2:
                     print(f"Multiple matches for file {run_path}/{checkpoint_movie_base}.")
@@ -104,7 +108,7 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
                     output_file = os.path.join(os.path.split(run_path)[-1], checkpoint_movie_base+".mp4")
 
                     run_evaluation_script(
-                        mode='video',
+                        mode='video_nt' if ZERO_TIME else 'video',
                         checkpoint=checkpoint_name,
                         output_file=output_file,
                         temperature=temperature
@@ -144,7 +148,9 @@ if __name__ == "__main__":
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
     eval_args = parser.parse_args()
 
-    assert eval_args.mode in ["video", "eval"]
+    assert eval_args.mode in ["video", "video_nt", "eval"]
+
+    ZERO_TIME = eval_args.mode == "video_nt"
 
     temperatures = ast.literal_eval(eval_args.temperatures)
     if type(temperatures) in [float, int]:

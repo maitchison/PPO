@@ -70,6 +70,7 @@ class Config:
         self.tvf_n_step         = int()
         self.tvf_mode           = str()
         self.tvf_n_value_heads  = int()
+        self.tvf_exp_gamma      = float()
 
     
         self.time_aware = bool()
@@ -215,6 +216,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|zero]")
     parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
     parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
+    parser.add_argument("--tvf_exp_gamma", type=float, default=2.0)
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")

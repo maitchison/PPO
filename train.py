@@ -132,6 +132,7 @@ if __name__ == "__main__":
             tvf_horizon_transform=rollout.horizon_scale_function,
             tvf_time_transform=rollout.time_scale_function,
             tvf_n_value_heads=args.tvf_n_value_heads,
+            tvf_max_horizon=args.tvf_max_horizon,
 
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,

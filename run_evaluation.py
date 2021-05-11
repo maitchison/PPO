@@ -148,7 +148,12 @@ def make_model(env):
 
     additional_args['tvf_hidden_units'] = args.tvf_hidden_units
     additional_args['tvf_activation'] = args.tvf_activation
-    additional_args['tvf_n_value_heads'] = args.tvf_n_value_heads
+    additional_args['tvf_max_horizon'] = args.tvf_max_horizon
+
+    try:
+        additional_args['tvf_n_value_heads'] = args.tvf_n_value_heads
+    except:
+        pass
 
     additional_args['head'] = "Nature"
     additional_args['network'] = "Nature"
@@ -312,8 +317,10 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
     with open(filename, "wb") as f:
         pickle.dump(data, f)
 
-def generate_rollout(model, max_frames = 30*60*15, include_video=False, temperature=1.0):
-    return generate_rollouts(model, max_frames, include_video, num_rollouts=1, temperature=temperature)[0]
+def generate_rollout(model, max_frames = 30*60*15, include_video=False, temperature=1.0, zero_time=False):
+    return generate_rollouts(
+        model, max_frames, include_video, num_rollouts=1, temperature=temperature, zero_time=zero_time
+    )[0]
 
 def generate_fake_rollout(num_frames = 30*60):
     """
@@ -336,6 +343,7 @@ def generate_rollouts(
         num_rollouts=1,
         temperature=1.0,
         include_horizons=True,
+        zero_time=False,
     ):
     """
     Generates rollouts
@@ -425,7 +433,7 @@ def generate_rollouts(
 
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
-            times[i] = infos[i]["time_frac"]
+            times[i] = infos[i]["time_frac"] if not zero_time else 0.0
 
             if 'frames' in buffers[i]:
                 agent_layers = prev_states[i]
@@ -531,6 +539,8 @@ class QuickPlot():
             x1 = 0
         if x2 >= w:
             x2 = w
+        if x2 < x1:
+            return
         x1, x2 = min(x1,x2), max(x1, x2)
         self.buffer[-y, x1:x2+1] = c
 
@@ -542,6 +552,8 @@ class QuickPlot():
             y1 = 0
         if y2 >= h:
             y2 = h
+        if y2 < y1:
+            return
         y1, y2 = min(y1, y2), max(y1, y2)
         self.buffer[-y2:-y1, x] = c
 
@@ -578,7 +590,14 @@ class QuickPlot():
             old_x = new_x
             old_y = new_y
 
-def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_filename=False, temperature=1.0):
+def export_movie(
+        model,
+        filename_base,
+        max_frames = 30*60*15,
+        include_score_in_filename=False,
+        temperature=1.0,
+        zero_time=False,
+):
     """
     Modified version of export movie that supports display of truncated value functions
     In order to show the true discounted returns we write all observations to a buffer, which may take
@@ -602,7 +621,7 @@ def export_movie(model, filename_base, max_frames = 30*60*15, include_score_in_f
 
     print(f"Video {filename_base} ", end='', flush=True)
 
-    buffer = generate_rollout(model, max_frames, include_video=True, temperature=temperature)
+    buffer = generate_rollout(model, max_frames, include_video=True, temperature=temperature, zero_time=zero_time)
     rewards = buffer["rewards"]
     raw_rewards = buffer["raw_rewards"]
     print(f"ratio:{buffer['frames'].ratio:.2f} ", end='', flush=True)
@@ -756,6 +775,14 @@ if __name__ == "__main__":
                 os.path.splitext(eval_args.output_file)[0],
                 include_score_in_filename=True,
                 temperature=temperature,
+            )
+        elif eval_args.mode == "video_nt":
+            video_filename = export_movie(
+                model,
+                os.path.splitext(eval_args.output_file)[0],
+                include_score_in_filename=True,
+                temperature=temperature,
+                zero_time=True,
             )
         elif eval_args.mode == "eval":
             evaluate_model(

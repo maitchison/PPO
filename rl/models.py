@@ -157,6 +157,7 @@ class DualNet(nn.Module):
             tvf_hidden_units,
             tvf_horizon_transform,
             tvf_time_transform,
+            tvf_max_horizon,
             tvf_n_value_heads: int = 1,
             actions=None,
             policy_head=True,
@@ -170,6 +171,7 @@ class DualNet(nn.Module):
 
         self.policy_head = policy_head
         self.value_head = value_head
+        self.tvf_max_horizon = tvf_max_horizon
 
         if self.policy_head:
             assert actions is not None
@@ -180,7 +182,12 @@ class DualNet(nn.Module):
 
         if self.value_head:
 
-            self.n_value_heads = 1 # stub: for the moment
+            if tvf_n_value_heads < 0:
+                self.n_value_heads = -tvf_n_value_heads
+                self.tvf_blending = True
+            else:
+                self.n_value_heads = tvf_n_value_heads
+                self.tvf_blending = False
 
             self.tvf_activation = tvf_activation
             self.tvf_hidden_units = int(tvf_hidden_units)
@@ -205,13 +212,6 @@ class DualNet(nn.Module):
                     -1 / (self.encoder.hidden_units ** 0.5),
                     1 / (self.encoder.hidden_units ** 0.5)
                 )
-
-    def _transformed_features(self, aux_features: torch.Tensor):
-        # apply horizon transform (usually just normalize them between 0 and 1)
-        transformed_aux_features = torch.zeros_like(aux_features)
-        transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
-        transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
-        return transformed_aux_features
 
     @property
     def tvf_activation_function(self):
@@ -257,25 +257,55 @@ class DualNet(nn.Module):
                 aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
                 _, H, _ = aux_features.shape
 
-                # combine aux features the fast way
-                transformed_aux_features = self._transformed_features(aux_features)
-
-                # features_part will be [B, Hidden]
-                features_part = self.value_net_hidden(features)
-                # aux part will be [B, H, Hidden]
-                aux_part = self.value_net_hidden_aux(transformed_aux_features)
-                # features will be [B, Hidden], but needs to be [B, 1, Hidden]
-                tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
-                # values will be [B, H, n_value_heads]
-                tvf_values = self.value_net_tvf(tvf_h)
+                # spread heads out over range, first head is always h=0 and last head is h=tvf_max_horizon
+                if self.n_value_heads == 1:
+                    scale_factor = 1.0
+                else:
+                    scale_factor = np.log2(1+self.tvf_max_horizon) / (self.n_value_heads-1)
 
                 # in multi head work out which head predicts which horizon
-                required_head = torch.clamp(torch.round(torch.log2(1+aux_features[..., 0])), 0, self.n_value_heads-1)
+                log2_horizon = torch.log2(1 + aux_features[..., 0]) / scale_factor
 
-                # todo: reference horizon from head position
-                # todo: implement blending...
+                def get_tvf_values(features, aux_features, horizon_offsets=None):
+                    if horizon_offsets is None:
+                        horizon_offsets = 0.0
+                    transformed_aux_features = torch.zeros_like(aux_features)
+                    transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0]) - horizon_offsets
+                    transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
 
-                result['tvf_value'] = torch.gather(tvf_values, dim=2, index=required_head)
+                    features_part = self.value_net_hidden(features)
+                    aux_part = self.value_net_hidden_aux(transformed_aux_features)
+                    tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
+                    return self.value_net_tvf(tvf_h)
+
+                def get_head_location(heads, transform=True):
+                    locations = ((2 ** (heads * scale_factor)) - 1).to(dtype=torch.float32)
+                    if transform:
+                        locations = self.horizon_transform(locations)
+                    return locations
+
+                if self.tvf_blending:
+                    head_low = torch.clamp(torch.floor(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
+                    head_high = torch.clamp(torch.ceil(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
+                    head_factor = torch.frac(log2_horizon)
+
+                    # it's a shame but we run this twice, once for each centered h_value...
+                    # if we where not centering transformed_h we wouldn't have to do this
+                    tvf_values_low = get_tvf_values(features, aux_features, get_head_location(head_low))
+                    tvf_values_high = get_tvf_values(features, aux_features, get_head_location(head_high))
+
+                    value_low = torch.gather(tvf_values_low, dim=2, index=head_low[:, :, None])[:, :, 0]
+                    value_high = torch.gather(tvf_values_high, dim=2, index=head_high[:, :, None])[:, :, 0]
+                    result['tvf_value'] = value_low * (1 - head_factor) + value_high * head_factor
+                else:
+                    head_near = torch.clamp(torch.round(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
+                    tvf_values = get_tvf_values(
+                        features,
+                        aux_features,
+                        get_head_location(head_near, transform=self.n_value_heads > 1)
+                    )
+                    value_near = torch.gather(tvf_values, dim=2, index=head_near[:, :, None])[:, :, 0]
+                    result['tvf_value'] = value_near
 
         return result
 
@@ -312,11 +342,13 @@ class TVFModel(nn.Module):
             use_rnd:bool = False,
             use_rnn:bool = False,
 
-            tvf_horizon_transform = lambda x : x / 1000,
+            tvf_max_horizon:int = 65536,
+            tvf_horizon_transform = lambda x : x,
             tvf_time_transform = lambda x: x,
             tvf_hidden_units:int = 512,
             tvf_activation:str = "relu",
             tvf_n_value_heads:int=1,
+
             network_args:Union[dict, None] = None,
     ):
 
@@ -341,6 +373,7 @@ class TVFModel(nn.Module):
             tvf_horizon_transform=tvf_horizon_transform,
             tvf_time_transform=tvf_time_transform,
             tvf_n_value_heads=tvf_n_value_heads,
+            tvf_max_horizon=tvf_max_horizon,
             actions=actions,
             **(network_args or {})
         )

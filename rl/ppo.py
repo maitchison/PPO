@@ -17,7 +17,7 @@ from .config import args
 
 def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     if verbose:
-        print(f"Warming up environments for {min_duration}-{max_duration} steps:", end='', flush=True)
+        print(f"Warming up environments for {min_duration} to {max_duration} steps:", end='', flush=True)
     max_steps = np.random.randint(min_duration, max_duration, [args.agents])
     for t in range(max(max_steps)):
         masks = t < max_steps
