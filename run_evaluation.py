@@ -280,10 +280,19 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
 
     return_estimates = {}
 
+    counter = 0
+
     while remaining_samples > 0:
 
         batch_samples = min(PARALLEL_ENVS, remaining_samples) # 1 at a time is slower, but better on the memory for long runs...
-        buffers = generate_rollouts(model, max_frames, num_rollouts=batch_samples, temperature=temperature, include_horizons=False)
+        buffers = generate_rollouts(
+            model,
+            max_frames,
+            num_rollouts=batch_samples,
+            temperature=temperature,
+            include_horizons=False,
+            seed_base=eval_args.seed+(counter*17)
+        )
 
         for i, buffer in enumerate(buffers):
             # get game score and length
@@ -296,6 +305,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
             print(".", end='')
 
         remaining_samples -= batch_samples
+        counter += 1
 
     def print_it(label, x):
         print(f"{label:<20} {np.mean(x):.2f} +- {np.std(x)/(len(x)**0.5):.2f} [{np.min(x):.1f} to {np.max(x):.1f}]")
@@ -305,7 +315,6 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
     print_it("Ep Score:", episode_scores)
     print_it("Ep Length:", episode_lengths)
 
-
     print()
 
     data = {
@@ -314,7 +323,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
         'return_estimates': return_estimates,
     }
 
-    with open(filename, "wb") as f:
+    with open(filename+".dat", "wb") as f:
         pickle.dump(data, f)
 
 def generate_rollout(model, max_frames = 30*60*15, include_video=False, temperature=1.0, zero_time=False):
@@ -344,12 +353,15 @@ def generate_rollouts(
         temperature=1.0,
         include_horizons=True,
         zero_time=False,
+        seed_base=None,
     ):
     """
     Generates rollouts
     """
 
-    env_fns = [lambda: atari.make(monitor_video=include_video, seed=i) for i in range(num_rollouts)]
+    seed_base = seed_base or eval_args.seed
+
+    env_fns = [lambda: atari.make(monitor_video=include_video, seed=(i*997)+seed_base) for i in range(num_rollouts)]
     if num_rollouts > 16:
         env = hybridVecEnv.HybridAsyncVectorEnv(env_fns)
     else:
@@ -381,9 +393,13 @@ def generate_rollouts(
     if include_horizons and args.use_tvf:
         horizons = np.repeat(np.arange(int(args.tvf_max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
     else:
-        horizons = None
+        horizons = np.repeat(np.arange(args.tvf_max_horizon, args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
 
     times = np.zeros([num_rollouts])
+
+    # set seeds
+    torch.manual_seed(seed_base)
+    np.random.seed(seed_base)
 
     while any(is_running) and frame_count < max_frames:
 
@@ -753,9 +769,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=1, help="Random Seed")
 
     eval_args = parser.parse_args()
-
-    torch.manual_seed(eval_args.seed)
-    np.random.seed(eval_args.seed)
 
     if eval_args.mode == "video":
         GENERATE_EVAL = False

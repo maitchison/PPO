@@ -45,9 +45,11 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
     args.append(output_file)
 
     if temperature is not None:
-        args.append(f" --temperature={temperature}")
+        args.append('--temperature')
+        args.append(str(temperature))
     if samples is not None:
-        args.append(f" --samples={samples}")
+        args.append('--samples')
+        args.append(str(samples))
 
     old_path = os.getcwd()
     try:
@@ -78,16 +80,16 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
         if ZERO_TIME:
             postfix = postfix + "_no_time"
 
-        checkpoint_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
-        checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt")
 
+        checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt")
         checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{postfix}"
+        checkpoint_eval_file = os.path.join(os.path.split(run_path)[-1], f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
 
         if os.path.exists(checkpoint_name):
 
             if GENERATE_MOVIES:
 
-                matching_files = [x for x in files_in_dir if checkpoint_movie_base+'.mp4' in x]
+                matching_files = [x for x in files_in_dir if (checkpoint_movie_base in x) and (x.endswith('mp4'))]
 
                 if len(matching_files) >= 2:
                     print(f"Multiple matches for file {run_path}/{checkpoint_movie_base}.")
@@ -115,11 +117,10 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
                     )
 
             if GENERATE_EVAL and not os.path.exists(checkpoint_eval_file):
-                output_file = checkpoint_eval_file
                 run_evaluation_script(
                     mode='eval',
                     checkpoint=checkpoint_name,
-                    output_file=output_file,
+                    output_file=checkpoint_eval_file,
                     temperature=temperature,
                     samples=SAMPLES
                 )
@@ -151,6 +152,8 @@ if __name__ == "__main__":
     assert eval_args.mode in ["video", "video_nt", "eval"]
 
     ZERO_TIME = eval_args.mode == "video_nt"
+    GENERATE_EVAL = eval_args.mode=="eval"
+    GENERATE_MOVIES = eval_args.mode == "video"
 
     temperatures = ast.literal_eval(eval_args.temperatures)
     if type(temperatures) in [float, int]:

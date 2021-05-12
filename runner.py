@@ -889,8 +889,9 @@ def setup_experiments_15():
             env_name=env_name,
             run_name=f"tfv_50k",
             default_params=v15_early_lh_args,
-            epochs=100 if env_name in ["Breakout", "Skiing"] else 50,
-            priority=100,
+            epochs=200 if env_name in ["Breakout", "Skiing"] else 50,
+            priority=200,
+            chunk_size=50,
         )
         add_job(
             f"TVF_15_{env_name}",
@@ -950,6 +951,18 @@ def setup_experiments_15():
         )
 
     # value heads
+    add_job(
+        f"TVF_15_Breakout_MVH_EXP",
+        env_name="Breakout",
+        run_name=f"reference",
+        tvf_horizon_scale='centered',  # see if this is enough...
+        tvf_time_scale='centered',
+        tvf_mode="exponential",
+        default_params=v15_lh_args_v2,
+        tvf_n_value_heads=1,
+        epochs=20,
+        priority=20,
+    )
     for tvf_n_value_heads in [2, 4, 8]:
         add_job(
             f"TVF_15_Breakout_MVH_EXP",
