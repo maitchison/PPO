@@ -1425,6 +1425,7 @@ class Runner():
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0)
+        self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0)
 
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0)
         self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0)
@@ -1797,6 +1798,11 @@ class Runner():
         horizon_samples = np.repeat(horizon_samples, A, axis=1)
         return returns, horizon_samples
 
+    @property
+    def current_entropy_bonus(self):
+        t = self.step / 50e6
+        return args.entropy_bonus * 10 ** (args.eb_alpha * math.sin(t*math.pi*2) + args.eb_beta * t)
+
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
         mini_batch_size = len(data["prev_state"])
@@ -1847,8 +1853,7 @@ class Runner():
         # -------------------------------------------------------------------------
 
         loss_entropy = -(logps.exp() * logps).mean(axis=1)
-        loss_entropy = loss_entropy * args.entropy_bonus
-        loss_entropy = loss_entropy.mean()
+        loss_entropy = loss_entropy.mean() * self.current_entropy_bonus
         loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------

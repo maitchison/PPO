@@ -257,22 +257,12 @@ class DualNet(nn.Module):
                 aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
                 _, H, _ = aux_features.shape
 
-                # spread heads out over range, first head is always h=0 and last head is h=tvf_max_horizon
-                if self.n_value_heads == 1:
-                    scale_factor = 1.0
-                else:
-                    scale_factor = np.log2(1+self.tvf_max_horizon) / (self.n_value_heads-1)
-
-                # in multi head work out which head predicts which horizon
-                log2_horizon = torch.log2(1 + aux_features[..., 0]) / scale_factor
-
                 def get_tvf_values(features, aux_features, horizon_offsets=None):
                     if horizon_offsets is None:
                         horizon_offsets = 0.0
                     transformed_aux_features = torch.zeros_like(aux_features)
                     transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0]) - horizon_offsets
                     transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
-
                     features_part = self.value_net_hidden(features)
                     aux_part = self.value_net_hidden_aux(transformed_aux_features)
                     tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
@@ -284,28 +274,38 @@ class DualNet(nn.Module):
                         locations = self.horizon_transform(locations)
                     return locations
 
-                if self.tvf_blending:
-                    head_low = torch.clamp(torch.floor(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
-                    head_high = torch.clamp(torch.ceil(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
-                    head_factor = torch.frac(log2_horizon)
-
-                    # it's a shame but we run this twice, once for each centered h_value...
-                    # if we where not centering transformed_h we wouldn't have to do this
-                    tvf_values_low = get_tvf_values(features, aux_features, get_head_location(head_low))
-                    tvf_values_high = get_tvf_values(features, aux_features, get_head_location(head_high))
-
-                    value_low = torch.gather(tvf_values_low, dim=2, index=head_low[:, :, None])[:, :, 0]
-                    value_high = torch.gather(tvf_values_high, dim=2, index=head_high[:, :, None])[:, :, 0]
-                    result['tvf_value'] = value_low * (1 - head_factor) + value_high * head_factor
+                if self.n_value_heads == 1:
+                    # this is the old code
+                    result['tvf_value'] = get_tvf_values(features, aux_features)[..., 0]
                 else:
-                    head_near = torch.clamp(torch.round(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
-                    tvf_values = get_tvf_values(
-                        features,
-                        aux_features,
-                        get_head_location(head_near, transform=self.n_value_heads > 1)
-                    )
-                    value_near = torch.gather(tvf_values, dim=2, index=head_near[:, :, None])[:, :, 0]
-                    result['tvf_value'] = value_near
+                    # spread heads out over range, first head is always h=0 and last head is h=tvf_max_horizon
+                    scale_factor = np.log2(1+self.tvf_max_horizon) / (self.n_value_heads-1)
+
+                    # in multi head work out which head predicts which horizon
+                    log2_horizon = torch.log2(1 + aux_features[..., 0]) / scale_factor
+
+                    if self.tvf_blending:
+                        head_low = torch.clamp(torch.floor(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
+                        head_high = torch.clamp(torch.ceil(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
+                        head_factor = torch.frac(log2_horizon)
+
+                        # it's a shame but we run this twice, once for each centered h_value...
+                        # if we where not centering transformed_h we wouldn't have to do this
+                        tvf_values_low = get_tvf_values(features, aux_features, get_head_location(head_low))
+                        tvf_values_high = get_tvf_values(features, aux_features, get_head_location(head_high))
+
+                        value_low = torch.gather(tvf_values_low, dim=2, index=head_low[:, :, None])[:, :, 0]
+                        value_high = torch.gather(tvf_values_high, dim=2, index=head_high[:, :, None])[:, :, 0]
+                        result['tvf_value'] = value_low * (1 - head_factor) + value_high * head_factor
+                    else:
+                        head_near = torch.clamp(torch.round(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
+                        tvf_values = get_tvf_values(
+                            features,
+                            aux_features,
+                            get_head_location(head_near, transform=self.n_value_heads > 1)
+                        )
+                        value_near = torch.gather(tvf_values, dim=2, index=head_near[:, :, None])[:, :, 0]
+                        result['tvf_value'] = value_near
 
         return result
 

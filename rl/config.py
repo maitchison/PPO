@@ -72,6 +72,10 @@ class Config:
         self.tvf_n_value_heads  = int()
         self.tvf_exp_gamma      = float()
 
+        # entropy bonus constants
+        self.eb_alpha           = float()
+        self.eb_beta            = float()
+        self.eb_theta           = float()
     
         self.time_aware = bool()
         self.ed_type = str()
@@ -265,6 +269,10 @@ def parse_args(no_env=False, args_override=None):
                         help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
     parser.add_argument("--use_compression", type=str2bool, default=False,
                         help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
+
+    parser.add_argument("--eb_alpha", type=float, default=0.0)
+    parser.add_argument("--eb_beta", type=float, default=0.0)
+    parser.add_argument("--eb_theta", type=float, default=1.0)
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=True)

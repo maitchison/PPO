@@ -262,6 +262,50 @@ v15_lh_args_v2 = {
 
  }
 
+# tweaked mostly to be faster...
+v15_lh_args_v3 = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'epochs': 50,
+    'export_video': False,
+
+    # PPO args
+    'max_grad_norm': 10.0,
+    'agents': 512,
+    'n_steps': 512,
+    'policy_mini_batch_size': 256,
+    'value_mini_batch_size': 256,
+    'value_epochs': 2,
+    'policy_epochs': 3,
+    'distill_epochs': 1,
+    'target_kl': 0.01,
+    'ppo_epsilon': 0.15,
+    'value_lr': 2.5e-4,
+    'policy_lr': 1.0e-4,
+    'entropy_bonus': 0.01,
+    'time_aware': True,
+    'distill_beta': 2.5,
+
+    # TVF args
+    'use_tvf': True,
+    'tvf_value_distribution': 'advanced',
+    'tvf_horizon_distribution': 'uniform',
+    'tvf_horizon_scale': 'wider',
+    'tvf_time_scale': 'wider',
+    'tvf_hidden_units': 1024,
+    'tvf_value_samples': 128,
+    'tvf_horizon_samples': 64,
+    'tvf_mode': 'adaptive',                # << not expecting this... ?
+    'tvf_n_step': 100,                     # big guess...
+    'tvf_coef': 2.0,
+    'tvf_soft_anchor': 0.1,
+    'tvf_max_horizon': 50000,
+
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+
+ }
+
 
 def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
 
@@ -949,6 +993,34 @@ def setup_experiments_15():
             epochs=10,
             priority=200,
         )
+
+    # entropy annealing
+    for alpha in [0, 1.0]:
+        for beta in [0, -0.5]:
+            add_job(
+                f"TVF_15_EB_DemonAttack",
+                env_name="DemonAttack",
+                run_name=f"alpha={alpha} beta={beta} theta=1",
+                default_params=v15_lh_args_v3,
+                eb_alpha=alpha,
+                eb_beta=beta,
+                eb_theta=1.0,
+                epochs=50,
+                priority=200,
+            )
+
+    # try on skiing
+    add_job(
+        f"TVF_15_EB_Skiing",
+        env_name="Skiing",
+        run_name=f"alpha=1.0 beta=-0.5 theta=1",
+        default_params=v15_lh_args_v3,
+        eb_alpha=1.0,
+        eb_beta=-0.5,
+        eb_theta=1.0,
+        epochs=200,
+        priority=200,
+    )
 
     # value heads
     add_job(
