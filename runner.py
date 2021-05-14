@@ -263,6 +263,8 @@ v15_lh_args_v2 = {
  }
 
 # tweaked mostly to be faster...
+# also reduced entropy_coef to match fixed code (where entropy is ~5x smaller)
+# these settings were essentially broken due to kl targeting being too low.
 v15_lh_args_v3 = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
@@ -271,20 +273,20 @@ v15_lh_args_v3 = {
 
     # PPO args
     'max_grad_norm': 10.0,
-    'agents': 512,
+    'agents': 512,                          # maybe reduce this to 256 due to memory contraints...
     'n_steps': 512,
     'policy_mini_batch_size': 256,
     'value_mini_batch_size': 256,
     'value_epochs': 2,
     'policy_epochs': 3,
     'distill_epochs': 1,
-    'target_kl': 0.01,
+    'target_kl': 0.01,                      # this is way too low...
     'ppo_epsilon': 0.15,
     'value_lr': 2.5e-4,
     'policy_lr': 1.0e-4,
-    'entropy_bonus': 0.01,
+    'entropy_bonus': 0.002,                 # seems too low?
     'time_aware': True,
-    'distill_beta': 2.5,
+    'distill_beta': 2.0,
 
     # TVF args
     'use_tvf': True,
@@ -300,6 +302,50 @@ v15_lh_args_v3 = {
     'tvf_coef': 2.0,
     'tvf_soft_anchor': 0.1,
     'tvf_max_horizon': 50000,
+
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+
+ }
+
+# these are really just an 'informed' guess
+v16_lh_args = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'epochs': 50,
+    'export_video': False,
+
+    # PPO args
+    'max_grad_norm': 25.0,
+    'agents': 256,                          # want this to be higher, but memory constrained...
+    'n_steps': 256,                         # large n_steps might be needed for long horizon?
+    'policy_mini_batch_size': 512,
+    'value_mini_batch_size': 256,
+    'policy_epochs': 3,
+    'value_epochs': 2,
+    'distill_epochs': 1,
+    'target_kl': 0.1,
+    'ppo_epsilon': 0.2,
+    'value_lr': 2.5e-4,
+    'policy_lr': 1.0e-4,
+    'entropy_bonus': 0.01,
+    'time_aware': True,
+    'distill_beta': 1.0,
+
+    # TVF args
+    'use_tvf': True,
+    'tvf_value_distribution': 'advanced',
+    'tvf_horizon_distribution': 'advanced',
+    'tvf_horizon_scale': 'wider',
+    'tvf_time_scale': 'wider',
+    'tvf_hidden_units': 256,               # more is probably better, but we need just ok for the moment
+    'tvf_value_samples': 128,              # again, more is probably better...
+    'tvf_horizon_samples': 128,
+    'tvf_mode': 'adaptive',                # adaptive seems like a good tradeoff
+    'tvf_n_step': 40,                      # perhaps experiment with higher later on?
+    'tvf_coef': 2.0,                       # this is an important parameter...
+    'tvf_soft_anchor': 0.1,                # isn't this essentially off?
+    'tvf_max_horizon': 30000,              # 50k is actually better, probably because it emphasises the final value more
 
     'gamma': 0.99997,
     'tvf_gamma': 0.99997,
@@ -792,7 +838,7 @@ def random_search_15_tvf():
         'tvf_gamma': 0.99997,
         'epochs': 50,
         'use_compression': True,
-        'priority': 0,
+        'priority': 400,
     }
 
     search_params = {
@@ -913,6 +959,147 @@ def random_search_16_tvf():
     )
 
 
+def setup_experiments_16():
+    for tvf_n_step in range(20, 40, 80):
+        add_job(
+            f"TVF_16_Regression",
+            env_name="DemonAttack",
+            run_name=f"tvf_n_step={tvf_n_step}",
+            default_params=v16_lh_args,
+            epochs=50,
+            priority=200,
+        )
+
+    if True:
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_full",
+            default_params=v16_lh_args,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_300",
+            default_params=v16_lh_args,
+            tvf_max_horizon=3000,
+            gamma=0.99,
+            tvf_gamma=0.99,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_ext",
+            default_params=v16_lh_args,
+            tvf_force_ext_value_distill=True,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_off",
+            default_params=v16_lh_args,
+            distill_epochs=0,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"ppg_99997",
+            use_tvf=False,
+            default_params=v16_lh_args,
+            epochs=50,
+            priority=1000,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"ppo_99997",
+            use_tvf=False,
+            distill_epochs=0,
+            default_params=v16_lh_args,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"ppg_99",
+            use_tvf=False,
+            gamma=0.99,
+            default_params=v16_lh_args,
+            epochs=50,
+            priority=1000,
+        )
+
+        add_job(
+            f"TVF_16_Distill",
+            env_name="DemonAttack",
+            run_name=f"ppo_99",
+            use_tvf=False,
+            gamma=0.99,
+            distill_epochs=0,
+            default_params=v16_lh_args,
+            epochs=50,
+            priority=100,
+        )
+
+    # entropy annealing
+    for alpha in [0, 1.0]:
+        for beta in [0, -0.5]:
+            theta = 1.0
+            add_job(
+                f"TVF_16_EBS_CrazyClimber",
+                env_name="CrazyClimber",
+                run_name=f"alpha={alpha} beta={beta} theta={theta}",
+                default_params=v16_lh_args,
+                eb_alpha=alpha,
+                eb_beta=beta,
+                eb_theta=theta,
+                epochs=50,
+                priority=200,
+            )
+    for theta in [0, 1, 1/2, 1/5]:
+            alpha = 1
+            beta = -0.5
+            add_job(
+                f"TVF_16_EBS_CrazyClimber",
+                env_name="CrazyClimber",
+                run_name=f"alpha={alpha} beta={beta} theta={theta}",
+                default_params=v16_lh_args,
+                eb_alpha=alpha,
+                eb_beta=beta,
+                eb_theta=theta,
+                epochs=50,
+                priority=200,
+            )
+
+
+
+    # try on skiing
+    add_job(
+        f"TVF_16_EBS_Skiing",
+        env_name="Skiing",
+        run_name=f"alpha=1.0 beta=-0.5 theta=1",
+        default_params=v16_lh_args,
+        eb_alpha=1.0,
+        eb_beta=-0.5,
+        eb_theta=1.0,
+        epochs=200,
+        priority=200,
+    )
 
 
 def setup_experiments_15():
@@ -995,19 +1182,87 @@ def setup_experiments_15():
         )
 
     # entropy annealing
-    for alpha in [0, 1.0]:
-        for beta in [0, -0.5]:
-            add_job(
-                f"TVF_15_EB_DemonAttack",
-                env_name="DemonAttack",
-                run_name=f"alpha={alpha} beta={beta} theta=1",
-                default_params=v15_lh_args_v3,
-                eb_alpha=alpha,
-                eb_beta=beta,
-                eb_theta=1.0,
-                epochs=50,
-                priority=200,
-            )
+    # for alpha in [0, 1.0]:
+    #     for beta in [0, -0.5]:
+    #         add_job(
+    #             f"TVF_15_EB_DemonAttack",
+    #             env_name="DemonAttack",
+    #             run_name=f"alpha={alpha} beta={beta} theta=1",
+    #             default_params=v15_lh_args_v3,
+    #             eb_alpha=alpha,
+    #             eb_beta=beta,
+    #             eb_theta=1.0,
+    #             epochs=50,
+    #             priority=200,
+    #         )
+    # for theta in [0, 1, 1/2, 1/5]:
+            # alpha = 1
+            # beta = -0.5
+    #         add_job(
+    #             f"TVF_15_EB_DemonAttack",
+    #             env_name="DemonAttack",
+    #             run_name=f"alpha={alpha} beta={beta} theta={theta}",
+    #             default_params=v15_lh_args_v3,
+    #             eb_alpha=alpha,
+    #             eb_beta=beta,
+    #             eb_theta=theta,
+    #             epochs=50,
+    #             priority=200,
+    #         )
+
+    # had issues
+    if False:
+        # quick check on new distill code...
+        # add PPO soon...
+        add_job(
+            f"TVF_15_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_full",
+            default_params=v15_lh_args_v3,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_15_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_ext",
+            default_params=v15_lh_args_v3,
+            tvf_force_ext_value_distill=True,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_15_Distill",
+            env_name="DemonAttack",
+            run_name=f"tvf_off",
+            default_params=v15_lh_args_v3,
+            distill_epochs=0,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_15_Distill",
+            env_name="DemonAttack",
+            run_name=f"ppo_distill",
+            use_tvf=False,
+            default_params=v15_lh_args_v3,
+            epochs=50,
+            priority=100,
+        )
+
+        add_job(
+            f"TVF_15_Distill",
+            env_name="DemonAttack",
+            run_name=f"ppo",
+            use_tvf=False,
+            distill_epochs=0,
+            default_params=v15_lh_args_v3,
+            epochs=50,
+            priority=100,
+        )
 
     # try on skiing
     add_job(
@@ -1233,7 +1488,7 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     random_search_15_tvf()
-    setup_experiments_15()
+    setup_experiments_16()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

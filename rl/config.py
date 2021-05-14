@@ -71,6 +71,7 @@ class Config:
         self.tvf_mode           = str()
         self.tvf_n_value_heads  = int()
         self.tvf_exp_gamma      = float()
+        self.tvf_force_ext_value_distill = bool()
 
         # entropy bonus constants
         self.eb_alpha           = float()
@@ -202,6 +203,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--timeout", type=int, default=60*60*30, help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
 
     parser.add_argument("--use_tvf", type=str2bool, default=True, help="Use truncated value function.")
+    parser.add_argument("--tvf_force_ext_value_distill", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda)")
@@ -245,7 +247,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
-    parser.add_argument("--max_micro_batch_size", type=int, default=512)
+    parser.add_argument("--max_micro_batch_size", type=int, default=1024)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")

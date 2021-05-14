@@ -2,8 +2,7 @@ import gym
 import numpy as np
 from collections import defaultdict
 
-from . import wrappers
-from .config import args
+from . import wrappers, config
 
 # get list of game environments...
 _game_envs = defaultdict(set)
@@ -11,8 +10,12 @@ for env in gym.envs.registry.all():
     env_type = env.entry_point.split(':')[0].split('.')[-1]
     _game_envs[env_type].add(env.id)
 
-def make(non_determinism=None, monitor_video=False, seed=None):
+def make(non_determinism=None, monitor_video=False, seed=None, args=None):
     """ Construct environment of given name, including any required wrappers."""
+
+    # this global reference wont work on windows when we spawn instead of fork,
+    # so make sure to pass args in as an argument.
+    args = args or config.args
 
     env_type = None
 

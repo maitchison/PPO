@@ -557,7 +557,7 @@ class EpisodeScoreWrapper(gym.Wrapper):
         buffer["ep_length"] = self.ep_length
 
     def restore_state(self, buffer):
-        self.ep_length = buffer["ep_score"]
+        self.ep_score = buffer["ep_score"]
         self.ep_length = buffer["ep_length"]
 
 class NoopResetWrapper(gym.Wrapper):

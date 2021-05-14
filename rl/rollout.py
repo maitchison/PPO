@@ -451,7 +451,7 @@ class Runner():
 
     def create_envs(self):
         """ Creates environments for runner"""
-        env_fns = [lambda: atari.make() for _ in range(args.agents)]
+        env_fns = [lambda: atari.make(args=args) for _ in range(args.agents)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
@@ -661,7 +661,6 @@ class Runner():
 
                 # the first n_step returns are just the discounted rewards, no bootstrap estimates...
                 if n in h_lookup:
-                    # this might be wrong...
                     returns[t, :, h_lookup[n]] = reward_sum
 
             for h in required_horizons:
@@ -1228,7 +1227,7 @@ class Runner():
 
 
     @torch.no_grad()
-    def log_value_quality(self):
+    def log_value_quality(self, samples):
         """
         Writes value quality stats to log
         """
@@ -1239,7 +1238,7 @@ class Runner():
             # because we use sampling it is not guaranteed that these horizons will be included so we need to
             # recalculate everything
 
-            agent_sample_count = int(np.clip(args.agents // 4, 4, float('inf')))
+            agent_sample_count = np.clip(samples, 1, args.agents)
             agent_filter = np.random.choice(args.agents, agent_sample_count, replace=False)
 
             values = self.get_value_estimates(
@@ -1278,6 +1277,7 @@ class Runner():
                 self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5),
                                     display_width=0)
                 self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
+
 
             # do ev over random horizons, 100 samples, uniform with replacement
             random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=True)
@@ -1442,10 +1442,9 @@ class Runner():
 
         self.log.watch("tvf_horizon", self.current_max_horizon)
 
-        # this is a big slow as it recalculates values so it might be a good idea to only do it every so often
-        # current time taken is 0.24 for 10k horizons
-        if self.batch_counter % 2 == 0:
-            self.log_value_quality()
+        if self.batch_counter % 4 == 3:
+            # this can take a few seconds so we only calculate it every so often
+            self.log_value_quality(samples=64)
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
@@ -1524,29 +1523,29 @@ class Runner():
 
     def train_distill_minibatch(self, data, loss_scale=1.0):
 
-        # method 1. try to learn entire curve...
-        assert args.use_tvf, "only tvf supported with distillation at the moment..."
-
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
-        aux_features = package_aux_features(
-            data["tvf_horizons"],
-            data["tvf_time"]
-        )
+        if args.use_tvf == False or args.tvf_force_ext_value_distill:
+            # method 1. just learn the final value
+            model_out = self.model.forward(data["prev_state"], output="policy")
+            targets = data["value_targets"]
+            predictions = model_out["ext_value"]
+        else:
+            # method 2. try to learn the entire curve...
+            aux_features = package_aux_features(
+                data["tvf_horizons"],
+                data["tvf_time"]
+            )
+            model_out = self.model.forward(data["prev_state"], output="policy", aux_features=aux_features)
+            targets = data["value_targets"]
+            predictions = model_out["tvf_value"]
 
-        model_out = self.model.forward(data["prev_state"], output="full", aux_features=aux_features)
-
-        # note, we could generate the value targets once per batch update if we wanted rather than doing them
-        # multiple times (for distill_epochs=1 this won't matter)
-        # if we used same horizon sampling we'd even get this for free...
-        targets = model_out["value_tvf_value"].detach()
-        predictions = model_out["policy_tvf_value"]
         old_policy_logprobs = data["old_log_policy"]
-        logps = model_out["policy_log_policy"]
+        logps = model_out["log_policy"]
 
         # MSE loss
         target_loss = torch.square(targets - predictions)
-        target_loss = 0.5 * target_loss.mean()
+        target_loss = 0.5 * target_loss.mean() # note we average accross horizons, not sum.
         loss = loss + target_loss
 
         # KL loss
@@ -1563,8 +1562,6 @@ class Runner():
         self.log.watch_mean("loss_distill", loss, history_length=64, display_width=8)
 
     def train_value_minibatch(self, data, loss_scale=1.0):
-
-        mini_batch_size = len(data["prev_state"])
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
@@ -1800,8 +1797,9 @@ class Runner():
 
     @property
     def current_entropy_bonus(self):
-        t = self.step / 50e6
-        return args.entropy_bonus * 10 ** (args.eb_alpha * math.sin(t*math.pi*2) + args.eb_beta * t)
+        t = self.step / 10e6
+        # I think I'll change this from sin to -cos (i.e. start and end at the low point)
+        return args.entropy_bonus * 10 ** (args.eb_alpha * math.sin(args.eb_theta*t*math.pi*2) + args.eb_beta * t)
 
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
@@ -1852,8 +1850,9 @@ class Runner():
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
-        loss_entropy = -(logps.exp() * logps).mean(axis=1)
-        loss_entropy = loss_entropy.mean() * self.current_entropy_bonus
+        entropy = -(logps.exp() * logps).sum(axis=1)
+        entropy = entropy.mean()
+        loss_entropy = entropy * self.current_entropy_bonus
         loss = loss + loss_entropy
 
         # -------------------------------------------------------------------------
@@ -1871,6 +1870,7 @@ class Runner():
         self.log.watch_mean("kl_approx", kl_approx, display_width=0)
         self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8)
+        self.log.watch_mean("entropy", entropy)
         self.log.watch_mean("loss_ent", loss_entropy)
         self.log.watch_mean("policy_loss", loss)
 
@@ -1989,23 +1989,27 @@ class Runner():
         if args.distill_epochs > 0:
             batch_data = {}
             batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
-            horizons = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_horizon_samples,
-                                                    args.tvf_horizon_distribution)
-            H = len(horizons)
-            target_values = self.get_value_estimates(
-                obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape(B, H)
 
-            batch_data["tvf_value"] = target_values.reshape([B, H])
-            batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
-            batch_data["tvf_time"] = self.prev_time.reshape([B])
+            if args.use_tvf and not args.tvf_force_ext_value_distill:
+                horizons = self.generate_horizon_sample(args.tvf_max_horizon, args.tvf_horizon_samples,
+                                                        args.tvf_horizon_distribution)
+                H = len(horizons)
+                target_values = self.get_value_estimates(
+                    obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape([B, H])
 
-            # need to update these after the policy updates
+                batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
+                batch_data["tvf_time"] = self.prev_time.reshape([B])
+                batch_data["value_targets"] = target_values.reshape([B, H])
+            else:
+                target_values = self.get_value_estimates(
+                    obs=self.prev_obs, time=self.prev_time).reshape([B])
+                batch_data["value_targets"] = target_values.reshape([B])
+
             with torch.no_grad():
                 model_out = self.forward(
                     obs=self.prev_obs.reshape([B, *state_shape]), output="policy"
                 )
-            old_log_policy = model_out["log_policy"].detach().cpu().numpy()
-            batch_data["old_log_policy"] = old_log_policy
+            batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
         for distill_epoch in range(args.distill_epochs):
             # we do this here so it is only run if there is at least one epoch

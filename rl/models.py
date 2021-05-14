@@ -504,14 +504,14 @@ class TVFModel(nn.Module):
                 x,
                 aux_features=aux_features,
                 policy_temperature=policy_temperature,
-                exclude_value=True,
+                exclude_value=output == 'default',
             ))
         if output in ["default", "value"]:
             result.update(self.value_net(
                 x,
                 aux_features=aux_features,
                 policy_temperature=policy_temperature,
-                exclude_policy=True,
+                exclude_policy=output == 'default',
                 ))
 
         return result

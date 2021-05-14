@@ -56,6 +56,8 @@ def train(model: models.TVFModel, log: Logger):
 
     """
 
+    start_time = time.time()
+
     # setup logging
     log.add_variable(LogVariable("ep_score", 100, "stats",
                                  display_width=12))  # these need to be added up-front as it might take some
@@ -118,8 +120,6 @@ def train(model: models.TVFModel, log: Logger):
             str(round(args.epochs))
         ))
 
-    log.info()
-
     last_print_time = -1
     last_log_time = -1
 
@@ -130,6 +130,9 @@ def train(model: models.TVFModel, log: Logger):
     checkpoints = sorted(set(checkpoints))
 
     log_time = 0
+
+    log.info(f"Training started. (init took {time.time()-start_time:.1f} seconds)")
+    log.info()
 
     for iteration in range(start_iteration, n_iterations + 1):
 

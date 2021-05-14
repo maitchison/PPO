@@ -310,7 +310,7 @@ def assume_type(value):
     """ Returns the type, int, float or str of variable. Should work fine with np variables. """
 
     if type(value) == torch.Tensor:
-        assert len(value.shape) == 0, "Torch tensor must be scalar, but found shape {}".format(value.shape)
+        assert len(value.shape) == 0, f"Torch tensor must be scalar, but found shape {value.shape}"
         if value.dtype in [torch.float32, torch.float16]:
             return "float"
         if value.dtype == torch.int:
