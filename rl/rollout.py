@@ -1798,8 +1798,7 @@ class Runner():
     @property
     def current_entropy_bonus(self):
         t = self.step / 10e6
-        # I think I'll change this from sin to -cos (i.e. start and end at the low point)
-        return args.entropy_bonus * 10 ** (args.eb_alpha * math.sin(args.eb_theta*t*math.pi*2) + args.eb_beta * t)
+        return args.entropy_bonus * 10 ** (args.eb_alpha * -math.cos(args.eb_theta*t*math.pi*2) + args.eb_beta * t)
 
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
