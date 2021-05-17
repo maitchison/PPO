@@ -117,12 +117,13 @@ v16_safe_args = {
 
 
 # args to match run 0009, which had good results and was stable.
-# ranm usage will be extremly high though.
+# ram usage will be extremly high though. (but it works really well if trained for long enough...)
 v16_0009_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
     'epochs': 50,
     'export_video': False,
+    'use_compression': True,
 
     # PPO args
     'max_grad_norm': 25.0,
@@ -766,8 +767,36 @@ def random_search_16_tvf():
         score_thresholds=[5*2, 2000*2, 150*2],
     )
 
+def setup_experiments_17():
+
+    for run in [1, 2, 3]:
+        add_job(
+            f"TVF_17_Regression",
+            env_name="DemonAttack",
+            run_name=f"Run {run}",
+            default_params=v16_0009_args,
+            epochs=100,
+            priority=200,
+        )
+
+    # 2.1 sampling
+    for samples in [32, 64, 128, 256]:
+        for distribution in ['uniform', 'advanced', 'fixed_linear', 'fixed_geometric']:
+            add_job(
+                f"TVF_17_Sampling",
+                env_name="DemonAttack",
+                run_name=f"tvs={samples} ({distribution})",
+                default_params=v16_0009_args,
+                tvf_value_samples=samples,
+                tvf_value_distribution=distribution,
+                epochs=50,
+                priority=200,
+            )
+
 
 def setup_experiments_16():
+
+    # these did not go well as they used unstable hyperparmeters guessed early from HPS.
 
     # ---------------------------------------
     # Regression run...
@@ -985,6 +1014,7 @@ if __name__ == "__main__":
     job_list = []
     random_search_15_tvf()
     setup_experiments_16()
+    setup_experiments_17()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

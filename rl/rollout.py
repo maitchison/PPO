@@ -1664,6 +1664,12 @@ class Runner():
         if samples == -1 or samples >= (max_value + 1):
             return np.arange(0, max_value + 1)
 
+        # these distributions don't require random sampling, and always include first and last by default.
+        if distribution == "fixed_linear":
+            return np.linspace(0, max_value, num=samples, dtype=np.integer, endpoint=True)
+        elif distribution == "fixed_geometric":
+            return np.geomspace(1, 1+max_value, num=samples, dtype=np.integer, endpoint=True)-1
+
         # make sure first and last horizons are always included.
         if force_first_and_last:
             f_and_l = 1
@@ -1673,20 +1679,25 @@ class Runner():
             required = np.asarray([], dtype=np.int32)
 
         sample_range = np.arange(f_and_l, max_value - f_and_l + 1)
+        required_samples = samples - (f_and_l * 2)
+
+        def get_sample(p):
+            if p is not None:
+                p /= np.sum(p)
+            return np.random.choice(sample_range, required_samples, replace=False, p=p)
 
         if distribution in ["uniform", "constant"]:
             # constant was the old name for this
-            p = None
+            sampled = get_sample(None)
         elif distribution == "linear":
             p = np.asarray([max_value - h for h in sample_range], dtype=np.float32)
-            p /= np.sum(p)
+            sampled = get_sample(p)
         elif distribution == "hyperbolic":
             p = np.asarray([1 / (h + 1) for h in sample_range])
-            p /= np.sum(p)
+            sampled = get_sample(p)
         elif distribution == "advanced":
             def prob_from_effective_n_step(effective_n_step: float):
                 return (self.current_max_horizon - sample_range + effective_n_step) / effective_n_step
-
             # this uses the number of times a horizon will (on average) be copied)
             if args.tvf_mode == "exponential":
                 p = prob_from_effective_n_step(1) * 0
@@ -1705,15 +1716,14 @@ class Runner():
                     p = prob_from_effective_n_step(min(1 / (1 - args.tvf_lambda), args.n_steps))
             else:
                 raise ValueError()
-            p /= np.sum(p)
+            sampled = get_sample(p)
         elif distribution == "exponential":
             # adjust exponential so mean is half horizon
             p = np.asarray([np.exp(-(2 / max_value * h)) for h in sample_range])
-            p /= np.sum(p)
+            sampled = get_sample(p)
         else:
             raise Exception("invalid distribution")
 
-        sampled = np.random.choice(sample_range, samples - (f_and_l * 2), replace=False, p=p)
         result = list(np.concatenate((required, sampled)))
         result.sort()
         return np.asarray(result)
