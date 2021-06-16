@@ -126,6 +126,8 @@ class Config:
 
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
+        if self.use_compression == "auto":
+            self.use_compression = self.batch_size >= 128*256
 
     @property
     def propagate_intrinsic_rewards(self):
@@ -214,12 +216,15 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_value_distribution", type=str, default="uniform", help="Sampling distribution to use when generating value samples.")
     parser.add_argument("--tvf_horizon_distribution", type=str, default="uniform", help="Sampling distribution to use when generating horizon samples.")
     parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
+
     parser.add_argument("--tvf_hidden_units", type=int, default=512)
     parser.add_argument("--tvf_n_value_heads", type=int, default=1)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
-    parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|zero]")
-    parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|zero]")
+
+    parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
+    parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
+
     parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
     parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
     parser.add_argument("--tvf_exp_gamma", type=float, default=2.0)
@@ -253,7 +258,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
-    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--export_trajectories", type=str2bool, default=False)
     parser.add_argument("--device", type=str, default="auto")
@@ -269,7 +274,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--deferred_rewards", type=int, default=0,
                         help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
-    parser.add_argument("--use_compression", type=str2bool, default=False,
+    parser.add_argument("--use_compression", type=str, default=False,
                         help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
 
     parser.add_argument("--eb_alpha", type=float, default=0.0)
@@ -285,7 +290,7 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--log_folder", type=str, default=None)
 
-    parser.add_argument("--use_clipped_value_loss", type=str2bool, default=True, help="Use the improved clipped value loss.")
+    parser.add_argument("--use_clipped_value_loss", type=str2bool, default=False, help="Use the improved clipped value loss.")
 
     # icm stuff
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")

@@ -6,9 +6,45 @@ import sys
 from rl import wrappers, utils
 
 import gym.vector.async_vector_env
-from gym.vector.utils import write_to_shared_memory
+from gym.vector.utils import write_to_shared_memory, concatenate
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+
 
 # modified to support vector environments...
+
+class ThreadVectorEnv(gym.vector.SyncVectorEnv):
+    """Vectorized environment that uses threads to run multiple environments."""
+
+    def __init__(self, env_fns, observation_space=None, action_space=None,
+                 copy=True):
+        self.pool = ThreadPoolExecutor(max_workers=4)
+        super().__init__(env_fns, observation_space, action_space, copy)
+
+    def step_wait(self):
+
+        N = len(self.envs)
+        infos = [None]*N
+
+        def run_env(i):
+
+            env = self.envs[i]
+            action = self._actions[i]
+
+            observation, self._rewards[i], self._dones[i], info = env.step(action)
+            if self._dones[i]:
+                observation = env.reset()
+            infos[i] = info
+            return observation
+
+        result = self.pool.map(run_env, range(len(self.envs)))
+        observations = list(result)
+
+        self.observations = concatenate(observations, self.observations, self.single_observation_space)
+
+        return (deepcopy(self.observations) if self.copy else self.observations,
+                np.copy(self._rewards), np.copy(self._dones), infos)
+
 
 class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
     """
@@ -18,6 +54,7 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
     """
 
     def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True):
+
         if len(env_fns) <= max_cpus:
             # this is just a standard vec env
             super().__init__(env_fns, copy=copy, shared_memory=True)
@@ -30,7 +67,9 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             vec_functions = []
             for i in range(self.n_parallel):
                 # I prefer the lambda, but it won't work with pickle, and I want to multiprocessor this...
-                constructor = functools.partial(gym.vector.SyncVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
+                # Note: thread vector env is a lot faster than gym.vector.sync_vector_env
+                # but I'm not 100% sure ALE is thread safe (I think it is ...), but just in case...
+                constructor = functools.partial(ThreadVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
                 vec_functions.append(constructor)
 
             if verbose:
@@ -103,6 +142,10 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             return super().step(actions)
 
 def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
+
+    import os
+    os.nice(1) # give priority to the main threads so they can keep the GPU full
+
     assert shared_memory is not None
     env = env_fn()
     observation_space = env.observation_space

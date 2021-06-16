@@ -21,6 +21,7 @@ class BufferSlot():
         self._decompression_time: float = None
         self._dtype: np.dtype
         self._shape: tuple
+        self._thread_job = None
 
         if initial_data is not None:
             self.compress(initial_data)
@@ -43,10 +44,19 @@ class BufferSlot():
         self._compression_time = (time.time() - start_time)
 
     def decompress(self) -> np.ndarray:
+
+        # if we have not finished compression wait for it to finish...
+        if self._thread_job is not None:
+            if not self._thread_job.done():
+                print('join')
+                _ = self._thread_job.result(10.0)
+            self._thread_job = None
+
         start_time = time.time()
         result = np.frombuffer(COMPRESSION_LIBRARY.decompress(self._compressed_data), dtype=self._dtype).reshape(
             self._shape)
         self._decompression_time = (time.time() - start_time)
+
         return result
 
 

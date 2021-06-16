@@ -26,143 +26,7 @@ WORKERS=8
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
-# these are really just an 'informed' guess
-v16_lh_args = {
-    'checkpoint_every': int(5e6),
-    'workers': WORKERS,
-    'epochs': 50,
-    'export_video': False,
-
-    # PPO args
-    'max_grad_norm': 25.0,
-    'agents': 256,                          # want this to be higher, but memory constrained...
-    'n_steps': 256,                         # large n_steps might be needed for long horizon?
-    'policy_mini_batch_size': 512,
-    'value_mini_batch_size': 256,
-    'policy_epochs': 3,
-    'value_epochs': 2,
-    'distill_epochs': 1,
-    'target_kl': 0.1,
-    'ppo_epsilon': 0.2,
-    'value_lr': 2.5e-4,
-    'policy_lr': 1.0e-4,
-    'entropy_bonus': 0.01,
-    'time_aware': True,
-    'distill_beta': 1.0,
-
-    # TVF args
-    'use_tvf': True,
-    'tvf_value_distribution': 'advanced',
-    'tvf_horizon_distribution': 'advanced',
-    'tvf_horizon_scale': 'wider',
-    'tvf_time_scale': 'wider',
-    'tvf_hidden_units': 256,               # more is probably better, but we need just ok for the moment
-    'tvf_value_samples': 128,              # again, more is probably better...
-    'tvf_horizon_samples': 128,
-    'tvf_mode': 'adaptive',                # adaptive seems like a good tradeoff
-    'tvf_n_step': 40,                      # perhaps experiment with higher later on?
-    'tvf_coef': 2.0,                       # this is an important parameter...
-    'tvf_soft_anchor': 0.1,                # isn't this essentially off?
-    'tvf_max_horizon': 30000,              # 50k is actually better, probably because it emphasises the final value more
-
-    'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-
- }
-
-
-# slightly safer hps
-v16_safe_args = {
-    'checkpoint_every': int(5e6),
-    'workers': WORKERS,
-    'epochs': 50,
-    'export_video': False,
-
-    # PPO args
-    'max_grad_norm': 25.0,
-    'agents': 256,                          # want this to be higher, but memory constrained...
-    'n_steps': 1024,                        # large n_steps might be needed for long horizon?
-    'policy_mini_batch_size': 1024,         # slower but better...
-    'value_mini_batch_size': 512,
-    'policy_epochs': 3,
-    'value_epochs': 2,
-    'distill_epochs': 1,
-    'target_kl': 0.07,
-    'ppo_epsilon': 0.2,
-    'value_lr': 1.0e-4,
-    'policy_lr': 1.0e-4,
-    'entropy_bonus': 0.003,
-    'time_aware': True,
-    'distill_beta': 1.0,
-
-    # TVF args
-    'use_tvf': True,
-    'tvf_value_distribution': 'uniform',
-    'tvf_horizon_distribution': 'uniform',
-    'tvf_horizon_scale': 'wide',
-    'tvf_time_scale': 'wide',
-    'tvf_hidden_units': 512,               # more is probably better, but we need just ok for the moment
-    'tvf_value_samples': 128,              # again, more is probably better...
-    'tvf_horizon_samples': 128,
-    'tvf_mode': 'adaptive',                # adaptive seems like a good tradeoff
-    'tvf_n_step': 40,                      # perhaps experiment with higher later on?
-    'tvf_coef': 1.5,                       # this is an important parameter...
-    'tvf_soft_anchor': 0.1,                # isn't this essentially off?
-    'tvf_max_horizon': 50000,              # 50k is actually better, probably because it emphasises the final value more
-
-    'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-
- }
-
-
-# args to match run 0009, which had good results and was stable.
-# ram usage will be extremly high though. (but it works really well if trained for long enough...)
-v16_0009_args = {
-    'checkpoint_every': int(5e6),
-    'workers': WORKERS,
-    'epochs': 50,
-    'export_video': False,
-    'use_compression': True,
-
-    # PPO args
-    'max_grad_norm': 25.0,
-    'agents': 512,                          # want this to be higher, but memory constrained...
-    'n_steps': 1024,                        # large n_steps might be needed for long horizon?
-    'policy_mini_batch_size': 1024,         # slower but better...
-    'value_mini_batch_size': 512,
-    'policy_epochs': 3,
-    'value_epochs': 2,
-    'distill_epochs': 1,
-    'target_kl': 0.13,                      # remove target_kl
-    'ppo_epsilon': 0.2,
-    'value_lr': 1.0e-4,
-    'policy_lr': 1.0e-4,
-    'entropy_bonus': 0.003,                 # was 0.01 but this was on old settings so we need to go lower
-    'time_aware': True,
-    'distill_beta': 1.0,
-
-    # TVF args
-    'use_tvf': True,
-    'tvf_value_distribution': 'advanced',
-    'tvf_horizon_distribution': 'advanced',
-    'tvf_horizon_scale': 'wide',
-    'tvf_time_scale': 'wide',
-    'tvf_hidden_units': 384,               # more is probably better, but we need just ok for the moment
-    'tvf_value_samples': 192,              # again, more is probably better...
-    'tvf_horizon_samples': 128,
-    'tvf_mode': 'adaptive',                # adaptive seems like a good tradeoff
-    'tvf_n_step': 32,                      # perhaps experiment with higher later on?
-    'tvf_coef': 1.5,                       # this is an important parameter...
-    'tvf_soft_anchor': 1.5,                # isn't this essentially off?
-    'tvf_max_horizon': 60000,              # This is a lot higher than 30k...
-
-    'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-
- }
-
-def add_job(experiment_name, run_name, priority=0, chunk_size:int=200, default_params=None, score_threshold=None, **kwargs):
+def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
 
     if default_params is not None:
         for k,v in default_params.items():
@@ -405,6 +269,53 @@ class Job:
         if return_code != 0:
             raise Exception("Error {}.".format(return_code))
 
+
+def nice_format(x):
+    if type(x) is str:
+        return f'"{x}"'
+    if x is None:
+        return "None"
+    if type(x) in [int, float, bool]:
+        return str(x)
+
+    return f'"{x}"'
+
+# ---------------------------------------------------------------------------------------------------------
+
+class Categorical():
+
+    def __init__(self, *args):
+        self._values = args
+
+    def sample(self):
+        return random.choice(self._values)
+
+
+class Uniform():
+    def __init__(self, min, max, force_int=False):
+        self._min = min
+        self._max = max
+        self._force_int = force_int
+
+    def sample(self):
+        r = (self._max-self._min)
+        a = self._min
+        result = a + random.random() * r
+        return int(result) if self._force_int else result
+
+class LogUniform():
+    def __init__(self, min, max, force_int=False):
+        self._min = math.log(min)
+        self._max = math.log(max)
+        self._force_int = force_int
+
+    def sample(self):
+        r = (self._max - self._min)
+        a = self._min
+        result = math.exp(a + random.random() * r)
+        return int(result) if self._force_int else result
+
+
 def run_next_experiment(filter_jobs=None):
 
     job_list.sort()
@@ -504,14 +415,13 @@ def show_fps(filter_jobs=None):
     for k,v in fps.items():
         print(f"{k:<20} {v:,.0f} FPS")
 
-
 def random_search(
         run:str,
         main_params: dict,
         search_params:dict,
         envs: list,
         score_thresholds: list,
-        count: int = 128,
+        count: int = 64,
         process_up_to=None,
         base_seed=0,
 
@@ -568,442 +478,82 @@ def random_search(
         # agents must divide workers (which we assume divides 8)
         params['agents'] = (params['agents'] // 8) * 8
 
+        batch_size = params["agents"] * params["n_steps"]
+
         # make sure mini_batch_size is not larger than batch_size
-        params["policy_mini_batch_size"] = min(params["agents"] * params["n_steps"], params["policy_mini_batch_size"])
-        params["value_mini_batch_size"] = min(params["agents"] * params["n_steps"], params["value_mini_batch_size"])
+        params["policy_mini_batch_size"] = min(batch_size, params["policy_mini_batch_size"])
+        params["value_mini_batch_size"] = min(batch_size, params["value_mini_batch_size"])
 
         for env_name, score_threshold in zip(envs, score_thresholds):
             main_params['env_name'] = env_name
             add_job(run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold, **main_params, **params)
 
 
-def nice_format(x):
-    if type(x) is str:
-        return f'"{x}"'
-    if x is None:
-        return "None"
-    if type(x) in [int, float, bool]:
-        return str(x)
+def random_search_TVF3k():
 
-    return f'"{x}"'
+    main_params = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'export_video': False, # save some space...
+        'use_tvf': True,
+        'gamma': 0.9997,
+        'tvf_gamma': 0.9997,
+        'epochs': 50,   # really want to see where these go...
+        'use_compression': 'auto',
+        'priority': -100,
+
+        # parameters I don't want to search over...
+        'max_grad_norm': 5.0,
+        'target_kl': 1000,   # ignore...
+        'tvf_coef': 1.0,
+        'timeout': 60*60*3,  # short games...
+        'time_aware': True,
+    }
+
+    search_params = {
+
+        # ppo params
+        'agents':           Categorical(128, 256, 512, 1024),
+        'n_steps':          Categorical(128, 256, 512, 1024),
+
+        'policy_mini_batch_size': Categorical(512, 1024, 2048),
+        'value_mini_batch_size': Categorical(512, 1024, 2048),
+
+        'policy_epochs':    Categorical(1, 2, 3, 4),
+        'value_epochs':     Categorical(1, 2, 3, 4),
+        'distill_epochs':   Categorical(0, 1, 2),
+        'distill_beta':     Categorical(0.3, 1, 3),
+        'ppo_epsilon':      Categorical(0.1, 0.2, 0.3),
+        'value_lr':         Categorical(1e-4, 2.5e-4),
+        'policy_lr':        Categorical(1e-4, 2.5e-4),
+        'entropy_bonus':    Categorical(0.001, 0.003, 0.01, 0.03),
+
+        # tvf params
+        'tvf_mode':         Categorical("exponential"),
+        'tvf_exp_gamma':    Categorical(2.0),
+        'tvf_max_horizon':  Categorical(3000),
+        'tvf_value_samples': Categorical(128),
+        'tvf_horizon_samples': Categorical(128),
+        'tvf_value_distribution': Categorical("uniform"),
+        'tvf_horizon_distribution': Categorical("uniform"),
+
+        'tvf_hidden_units': Categorical(256),
+        'tvf_soft_anchor': Categorical(1),
+        'tvf_horizon_scale': Categorical("wide"),
+        'tvf_time_scale': Categorical("wide"),
+    }
+
+    random_search(
+        "TVFA_Search_3k",
+        main_params,
+        search_params,
+        count=64,
+        process_up_to=64,
+        envs=['Krull', 'KungFuMaster', 'Seaquest'],
+        score_thresholds=[0,0,0],
+    )
 
 # ---------------------------------------------------------------------------------------------------------
-
-def setup_experiments_13_eval():
-
-    for env_name in ["Alien", "BankHeist", "CrazyClimber"]:
-        pass
-
-class Categorical():
-
-    def __init__(self, *args):
-        self._values = args
-
-    def sample(self):
-        return random.choice(self._values)
-
-
-class Uniform():
-    def __init__(self, min, max, force_int=False):
-        self._min = min
-        self._max = max
-        self._force_int = force_int
-
-    def sample(self):
-        r = (self._max-self._min)
-        a = self._min
-        result = a + random.random() * r
-        return int(result) if self._force_int else result
-
-class LogUniform():
-    def __init__(self, min, max, force_int=False):
-        self._min = math.log(min)
-        self._max = math.log(max)
-        self._force_int = force_int
-
-    def sample(self):
-        r = (self._max - self._min)
-        a = self._min
-        result = math.exp(a + random.random() * r)
-        return int(result) if self._force_int else result
-
-def random_search_15_tvf():
-
-    # this is the long horizon HPS
-    # let's go for broke... (30k effective horizion)
-    # changes:
-    # * removed first and last
-    # * fixed advanced exponential mode
-    # * fixed policy epochs limited to 1.0
-    # * tighten most hps
-
-
-    main_params = {
-        'checkpoint_every': int(5e6),
-        'workers': WORKERS,
-        'export_video': False, # save some space...
-        'use_tvf': True,
-        'gamma': 0.99997,
-        'tvf_gamma': 0.99997,
-        'epochs': 100,   # really want to see where these go...
-        'use_compression': True,
-        'priority': -100,
-    }
-
-    search_params = {
-
-        # ppo params
-        'max_grad_norm':    LogUniform(10, 100),
-        'agents':           LogUniform(256, 2048, force_int=True),
-        'n_steps':          LogUniform(128, 1024, force_int=True),
-
-        'policy_mini_batch_size': Categorical(256, 512, 1024),
-        'value_mini_batch_size': Categorical(256, 512, 1024),
-
-        'value_epochs':     Categorical(2, 3),
-        'policy_epochs':    Categorical(3),
-        'distill_epochs':   Categorical(1, 2),
-        'distill_beta':     LogUniform(0.3, 3),     # << need to know
-        'target_kl':        LogUniform(0.001, 1.0), # << need to know
-        'ppo_epsilon':      Uniform(0.03, 0.3),     # << need to know
-        'value_lr':         Categorical(1e-4, 2.5e-4),
-        'policy_lr':        Categorical(1e-4, 2.5e-4),
-        'entropy_bonus':    LogUniform(0.01, 0.04),
-
-        # tvf params
-        'tvf_coef':         LogUniform(1, 3),       # this might change with higher horizon
-        'tvf_mode':         Categorical("exponential", "adaptive", "nstep"),
-        'tvf_n_step':       LogUniform(20, 80, force_int=True),
-
-        'time_aware':       Categorical(True, False),
-        'tvf_max_horizon':  LogUniform(10000, 90000, force_int=True), # there's a bit of an advantage to having horizon much longer than tl.
-        'tvf_value_samples': LogUniform(16, 256, force_int=True),
-        'tvf_horizon_samples': LogUniform(16, 256, force_int=True),
-        'tvf_value_distribution': Categorical("uniform", "advanced"),
-        'tvf_horizon_distribution': Categorical("uniform", "advanced"),
-        'tvf_hidden_units': LogUniform(32, 1024, force_int=True), # << big unknown...
-        'tvf_soft_anchor': LogUniform(0.1, 3),      # << need to know (now that first and last is removed
-        'tvf_horizon_scale': Categorical("wide", "wider"),
-        'tvf_time_scale': Categorical("wide", "wider", "zero"),
-    }
-
-    # score threshold should be 200, but I want some early good results...
-    random_search(
-        "TVF_15_Search_30k",
-        main_params,
-        search_params,
-        count=32,
-        process_up_to=16,
-        envs=['BattleZone', 'DemonAttack', 'Amidar'],
-        # set roughly to 1x random
-        score_thresholds=[2000*2, 150*2, 5*2],
-    )
-
-
-def random_search_16_tvf():
-
-    # a few tweaks
-    #  * better system for restoring from checkpoint (much faster when there are lots of environments)
-
-
-    main_params = {
-        'checkpoint_every': int(5e6),
-        'workers': WORKERS,
-        'export_video': False, # save some space...
-        'use_tvf': True,
-        'gamma': 0.99997,
-        'tvf_gamma': 0.99997,
-        'epochs': 50,
-        'use_compression': True,
-        'priority': 0,
-    }
-
-    search_params = {
-
-        # ppo params
-        'max_grad_norm':    LogUniform(10, 100),
-        'agents':           LogUniform(256, 2048, force_int=True),
-        'n_steps':          LogUniform(128, 1024, force_int=True),
-
-        'policy_mini_batch_size': Categorical(256, 512, 1024),
-        'value_mini_batch_size': Categorical(256, 512, 1024),
-
-        'value_epochs':     Categorical(2, 3),
-        'policy_epochs':    Categorical(3),
-        'distill_epochs':   Categorical(1, 2),
-        'distill_beta':     LogUniform(0.3, 3),     # << need to know
-        'target_kl':        LogUniform(0.001, 1.0), # << need to know
-        'ppo_epsilon':      Uniform(0.03, 0.3),     # << need to know
-        'value_lr':         Categorical(1e-4, 2.5e-4),
-        'policy_lr':        Categorical(1e-4, 2.5e-4),
-        'entropy_bonus':    LogUniform(0.01, 0.04),
-
-        # tvf params
-        'tvf_coef':         LogUniform(1, 3),       # this might change with higher horizon
-        'tvf_mode':         Categorical("exponential", "adaptive", "nstep"),
-        'tvf_n_step':       LogUniform(20, 80, force_int=True),
-
-        'time_aware':       Categorical(True, False),
-        'tvf_max_horizon':  LogUniform(10000, 90000, force_int=True), # there's a bit of an advantage to having horizon much longer than tl.
-        'tvf_value_samples': LogUniform(16, 256, force_int=True),
-        'tvf_horizon_samples': LogUniform(16, 256, force_int=True),
-        'tvf_value_distribution': Categorical("uniform", "advanced"),
-        'tvf_horizon_distribution': Categorical("uniform", "advanced"),
-        'tvf_hidden_units': LogUniform(32, 1024, force_int=True), # << big unknown...
-        'tvf_soft_anchor': LogUniform(0.1, 3),      # << need to know (now that first and last is removed
-        'tvf_horizon_scale': Categorical("wide", "wider"),
-        'tvf_time_scale': Categorical("wide", "wider", "zero"),
-    }
-
-    # score threshold should be 200, but I want some early good results...
-    random_search(
-        "TVF_16_Search_30k",
-        main_params,
-        search_params,
-        count=32,
-        process_up_to=16,
-        envs=['Amidar', 'BattleZone', 'DemonAttack', ],
-        # set roughly to 1x random
-        score_thresholds=[5*2, 2000*2, 150*2],
-    )
-
-def setup_experiments_17():
-
-    for run in [1, 2, 3]:
-        add_job(
-            f"TVF_17_Regression",
-            env_name="DemonAttack",
-            run_name=f"Run {run}",
-            default_params=v16_0009_args,
-            epochs=100,
-            priority=200,
-        )
-
-    # 2.1 sampling
-    for samples in [32, 64, 128, 256]:
-        for distribution in ['uniform', 'advanced', 'fixed_linear', 'fixed_geometric']:
-            add_job(
-                f"TVF_17_Sampling",
-                env_name="DemonAttack",
-                run_name=f"tvs={samples} ({distribution})",
-                default_params=v16_0009_args,
-                tvf_value_samples=samples,
-                tvf_value_distribution=distribution,
-                epochs=50,
-                priority=200,
-            )
-
-
-def setup_experiments_16():
-
-    # these did not go well as they used unstable hyperparmeters guessed early from HPS.
-
-    # ---------------------------------------
-    # Regression run...
-
-    for tvf_n_step in [20, 40, 80]:
-        add_job(
-            f"TVF_16_Regression",
-            env_name="DemonAttack",
-            run_name=f"lh ({tvf_n_step})",
-            tvf_n_step=tvf_n_step,
-            default_params=v16_lh_args,
-            epochs=100,
-            priority=200,
-        )
-    add_job(
-        f"TVF_16_Regression",
-        env_name="DemonAttack",
-        run_name=f"v0009",
-        default_params=v16_0009_args,
-        epochs=100,
-        priority=400,
-    )
-    add_job(
-        f"TVF_16_Regression",
-        env_name="DemonAttack",
-        run_name=f"safe",
-        default_params=v16_safe_args,
-        epochs=100,
-        priority=400,
-    )
-
-    # ---------------------------------------
-    # Distill tests
-
-    if True:
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"tvf_full",
-            default_params=v16_lh_args,
-            epochs=50,
-            priority=100,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"tvf_300",
-            default_params=v16_lh_args,
-            tvf_max_horizon=3000,
-            gamma=0.99,
-            tvf_gamma=0.99,
-            epochs=50,
-            priority=100,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"tvf_ext",
-            default_params=v16_lh_args,
-            tvf_force_ext_value_distill=True,
-            epochs=50,
-            priority=100,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"tvf_off",
-            default_params=v16_lh_args,
-            distill_epochs=0,
-            epochs=50,
-            priority=100,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"ppg_99997",
-            use_tvf=False,
-            default_params=v16_lh_args,
-            epochs=50,
-            priority=1000,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"ppo_99997",
-            use_tvf=False,
-            distill_epochs=0,
-            default_params=v16_lh_args,
-            epochs=50,
-            priority=100,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"ppg_99",
-            use_tvf=False,
-            gamma=0.99,
-            default_params=v16_lh_args,
-            epochs=50,
-            priority=1000,
-        )
-
-        add_job(
-            f"TVF_16_Distill",
-            env_name="DemonAttack",
-            run_name=f"ppo_99",
-            use_tvf=False,
-            gamma=0.99,
-            distill_epochs=0,
-            default_params=v16_lh_args,
-            epochs=50,
-            priority=100,
-        )
-
-    # ---------------------------------------
-    # Entropy Bonus Schedule
-
-    # entropy annealing
-    for alpha in [0, 1.0]:
-        for beta in [0, -0.5]:
-            theta = 1.0
-            add_job(
-                f"TVF_16_EBS_CrazyClimber",
-                env_name="CrazyClimber",
-                run_name=f"alpha={alpha} beta={beta} theta={theta}",
-                default_params=v16_lh_args,
-                eb_alpha=alpha,
-                eb_beta=beta,
-                eb_theta=theta,
-                epochs=50,
-                priority=200,
-            )
-    for theta in [0, 1, 1/2, 1/5]:
-            alpha = 1
-            beta = -0.5
-            add_job(
-                f"TVF_16_EBS_CrazyClimber",
-                env_name="CrazyClimber",
-                run_name=f"alpha={alpha} beta={beta} theta={theta}",
-                default_params=v16_lh_args,
-                eb_alpha=alpha,
-                eb_beta=beta,
-                eb_theta=theta,
-                epochs=50,
-                priority=200,
-            )
-
-    # try on skiing
-    add_job(
-        f"TVF_16_EBS_Skiing",
-        env_name="Skiing",
-        run_name=f"alpha=1.0 beta=-0.5 theta=1",
-        default_params=v16_lh_args,
-        eb_alpha=1.0,
-        eb_beta=-0.5,
-        eb_theta=1.0,
-        epochs=50, # reduced to 50 epochs as beta is too high
-        priority=200,
-    )
-
-    # ---------------------------------------
-    # 2.2 Axis Search: mode / n_steps
-
-    # for tvf_n_step in [10, 20, 40, 80, 160]:
-    #     add_job(
-    #         f"TVF_16_22A",
-    #         env_name="DemonAttack",
-    #         run_name=f"nstep {tvf_n_step}",
-    #         default_params=v16_safe_args,
-    #         tvf_mode="nstep",
-    #         tvf_n_step=tvf_n_step,
-    #         epochs=100,
-    #         priority=0,
-    #     )
-
-    # for tvf_n_step in [10, 20, 40, 80, 160]:
-    #     add_job(
-    #         f"TVF_16_22B",
-    #         env_name="DemonAttack",
-    #         run_name=f"adaptive {tvf_n_step}",
-    #         default_params=v16_safe_args,
-    #         tvf_mode="adaptive",
-    #         tvf_n_step=tvf_n_step,
-    #         epochs=100,
-    #         priority=0,
-    #     )
-
-    # for tvf_exp_gamma in [1.5, 2.0, 3.0, 4.0]:
-    #     add_job(
-    #         f"TVF_16_22B",
-    #         env_name="DemonAttack",
-    #         run_name=f"exponential {tvf_exp_gamma}",
-    #         default_params=v16_safe_args,
-    #         tvf_mode="exponential",
-    #         tvf_exp_gamma=tvf_exp_gamma,
-    #         epochs=100,
-    #         priority=0,
-    #     )
-
-
-
 
 if __name__ == "__main__":
 
@@ -1012,9 +562,7 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    random_search_15_tvf()
-    setup_experiments_16()
-    setup_experiments_17()
+    random_search_TVF3k()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

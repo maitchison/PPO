@@ -20,7 +20,6 @@ from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
 from .config import args
 
-
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
 
@@ -46,7 +45,7 @@ def save_progress(log: Logger):
         json.dump(details, f, indent=4)
 
 
-def calculate_returns(rewards, dones, final_value_estimate, gamma) -> np.ndarray:
+def calculate_mc_returns(rewards, dones, final_value_estimate, gamma) -> np.ndarray:
     """
     Calculates returns given a batch of rewards, dones, and a final value estimate.
     Input is vectorized so it can calculate returns for multiple agents at once.
@@ -209,7 +208,7 @@ def calculate_tvf_n_step(
         for n in range(1, n_step + 1):
             if (t + n - 1) >= N:
                 break
-            # n_step is longer that horizon required
+            # n_step is longer than horizon required
             if n >= H:
                 break
             this_reward = rewards[t + n - 1]
@@ -344,7 +343,11 @@ def _interpolate(horizons, values, target_horizon: int):
         return values[..., -1]
     value_pre = values[..., index - 1]
     value_post = values[..., index]
-    factor = (target_horizon - horizons[index - 1]) / (horizons[index] - horizons[index - 1])
+    dx = (horizons[index] - horizons[index - 1])
+    if dx == 0:
+        # this happens if there are repeated values, in this case just take leftmost result
+        return value_pre
+    factor = (target_horizon - horizons[index - 1]) / dx
     return value_pre * (1 - factor) + value_post * factor
 
 
@@ -729,9 +732,13 @@ class Runner():
         n_steps = self.get_exponential_n_steps()
 
         returns = n_step_func(n_steps[0], required_horizons)
+        count = np.ones_like(required_horizons)
         for n in n_steps[1:]:
-            returns += n_step_func(n, required_horizons)
-        returns *= 1/(len(n_steps))
+            # mask out returns that have nsteps > horizon
+            mask = n <= required_horizons
+            count += mask
+            returns += n_step_func(n, required_horizons) * mask
+        returns *= 1/count
 
         return returns
 
@@ -1066,6 +1073,12 @@ class Runner():
                 max_rollout_batch_size //= horizon_factor
             max_final_batch_size //= horizon_factor
 
+        # times are...
+        # Forward: 1.1ms
+        # Step: 33ms
+        # Compress: 2ms
+        # everything else should be minimal.
+
         for t in range(self.N):
 
             prev_obs = self.obs.copy()
@@ -1135,6 +1148,7 @@ class Runner():
 
             if args.use_compression:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
+
             self.all_obs[t] = prev_obs
 
             self.all_time[t] = prev_time
@@ -1262,7 +1276,8 @@ class Runner():
                 rewards=self.ext_rewards[:, agent_filter],
                 dones=self.terminals[:, agent_filter],
                 no_debug=True,
-                tvf_mode="exponential", # <-- this seems like a fair benchmark to compare against
+                tvf_mode="nstep", # <-- MC is the least bias method we can do...
+                tvf_n_step=args.tvf_max_horizon,
             )
 
             for index, h in enumerate(self.tvf_debug_horizons):
@@ -1271,44 +1286,49 @@ class Runner():
                 self.log.watch_mean(
                     f"ev_{h:04d}",
                     utils.explained_variance(value, target),
-                    display_width=8 if h < 100 or h == args.tvf_max_horizon else 0
+                    display_width=8 if h < 100 or h == args.tvf_max_horizon else 0,
+                    history_length=1
                 )
                 # raw is RMS on unscaled error
                 self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5),
-                                    display_width=0)
-                self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)), display_width=0)
+                                    display_width=0, history_length=1)
+                self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)),
+                                    display_width=0, history_length=1)
 
 
             # do ev over random horizons, 100 samples, uniform with replacement
-            random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=True)
-            random_horizon_samples = np.sort(random_horizon_samples)
-
-            targets = self.calculate_sampled_returns(
-                value_sample_horizons=value_samples,
-                required_horizons=random_horizon_samples,
-                obs=self.all_obs[:, agent_filter],
-                time=self.all_time[:, agent_filter],
-                rewards=self.ext_rewards[:, agent_filter],
-                dones=self.terminals[:, agent_filter],
-                no_debug=True,
-            )
-
-            values = self.get_value_estimates(
-                obs=self.prev_obs[:, agent_filter],
-                time=self.prev_time[:, agent_filter],
-                horizons=random_horizon_samples,
-            )
-
-            value = values.reshape(-1)
-            target = targets.reshape(-1)
-
-            self.log.watch_mean(f"ev_av", utils.explained_variance(value, target), display_width=8)
-            self.log.watch_mean(f"raw_av", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5), display_width=0)
-            self.log.watch_mean(f"mse_av", np.mean(np.square(value - target)), display_width=0)
+            # this is a bit slow and not useful...
+            # random_horizon_samples = np.random.choice(args.tvf_max_horizon+1, [100], replace=True)
+            # random_horizon_samples = np.sort(random_horizon_samples)
+            #
+            # targets = self.calculate_sampled_returns(
+            #     value_sample_horizons=value_samples,
+            #     required_horizons=random_horizon_samples,
+            #     obs=self.all_obs[:, agent_filter],
+            #     time=self.all_time[:, agent_filter],
+            #     rewards=self.ext_rewards[:, agent_filter],
+            #     dones=self.terminals[:, agent_filter],
+            #     no_debug=True,
+            # )
+            #
+            # values = self.get_value_estimates(
+            #     obs=self.prev_obs[:, agent_filter],
+            #     time=self.prev_time[:, agent_filter],
+            #     horizons=random_horizon_samples,
+            # )
+            #
+            # value = values.reshape(-1)
+            # target = targets.reshape(-1)
+            #
+            # self.log.watch_mean(f"ev_av", utils.explained_variance(value, target), display_width=8)
+            # self.log.watch_mean(f"raw_av", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5), display_width=0)
+            # self.log.watch_mean(f"mse_av", np.mean(np.square(value - target)), display_width=0)
         else:
-            targets = self.ext_returns
-            values = self.get_value_estimates(obs=self.prev_obs)
-            self.log.watch_mean("ev_ext", utils.explained_variance(targets.ravel(), values.ravel()))
+            targets = calculate_mc_returns(
+                self.ext_rewards, self.terminals, self.ext_value[self.N], args.gamma
+            )
+            values = self.ext_value[:self.N]
+            self.log.watch_mean("ev_ext", utils.explained_variance(values.ravel(), targets.ravel()), history_length=1)
 
     @property
     def prev_obs(self):
@@ -1371,6 +1391,8 @@ class Runner():
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
 
+        self.ext_value = ext_value_estimates
+
         self.ext_advantage = calculate_gae(
             self.ext_rewards,
             ext_value_estimates[:N],
@@ -1379,12 +1401,13 @@ class Runner():
             args.gamma,
             args.gae_lambda
         )
+
         # calculate ext_returns for PPO targets
         self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
-            self.int_returns_raw = calculate_returns(
+            self.int_returns_raw = calculate_mc_returns(
                 self.int_rewards,
                 args.intrinsic_reward_propagation * self.terminals,
                 self.int_final_value_estimate,
@@ -1406,7 +1429,7 @@ class Runner():
             else:
                 self.intrinsic_reward_norm_scale = 1
 
-            self.int_returns = calculate_returns(
+            self.int_returns = calculate_mc_returns(
                 self.int_rewards,
                 args.intrinsic_reward_propagation * self.terminals,
                 self.int_final_value_estimate,
@@ -1425,7 +1448,7 @@ class Runner():
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0)
-        self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0)
+        self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)
 
         self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0)
         self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0)
@@ -1442,9 +1465,7 @@ class Runner():
 
         self.log.watch("tvf_horizon", self.current_max_horizon)
 
-        if self.batch_counter % 4 == 3:
-            # this can take a few seconds so we only calculate it every so often
-            self.log_value_quality(samples=64)
+        self.log_value_quality(samples=64)
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
@@ -1657,8 +1678,10 @@ class Runner():
         generates random samples from 0 to max (inclusive) using sampling with replacement
         and always including the first and last value
         distribution is the distribution to sample from
-        force_first_and_last: if true horzion 0 and horizon max_value will always be included.
-        output is always sorted
+        force_first_and_last: if true horzon 0 and horizon max_value will always be included.
+        output is always sorted..
+
+        Note: fixed_geometric may return less than the expected number of samples.
 
         """
         if samples == -1 or samples >= (max_value + 1):
@@ -1666,9 +1689,10 @@ class Runner():
 
         # these distributions don't require random sampling, and always include first and last by default.
         if distribution == "fixed_linear":
-            return np.linspace(0, max_value, num=samples, dtype=np.integer, endpoint=True)
+            return np.rint(np.linspace(0, max_value, num=samples, endpoint=True)).astype(int)
         elif distribution == "fixed_geometric":
-            return np.geomspace(1, 1+max_value, num=samples, dtype=np.integer, endpoint=True)-1
+            # note: round is needed here otherwise last value will sometimes be off by 1.
+            return np.rint(np.geomspace(1, 1+max_value, num=samples, endpoint=True)).astype(int)-1
 
         # make sure first and last horizons are always included.
         if force_first_and_last:
@@ -1685,6 +1709,10 @@ class Runner():
             if p is not None:
                 p /= np.sum(p)
             return np.random.choice(sample_range, required_samples, replace=False, p=p)
+
+        # new idea, either fixed or random,
+        # but apply transform first then apply transform again
+        # although remove duplicates
 
         if distribution in ["uniform", "constant"]:
             # constant was the old name for this
@@ -1946,7 +1974,6 @@ class Runner():
                 optimizer=self.policy_optimizer,
                 label="train",
                 hooks={
-                    # 'after_mini_batch': lambda x: x["outputs"][-1]["kl_true"] > args.target_kl
                     'after_mini_batch': lambda x: x["outputs"][-1]["kl_approx"] > 1.5 * args.target_kl
                 }
             )
@@ -1967,7 +1994,7 @@ class Runner():
             batch_data["int_returns"] = self.int_returns.reshape(B)
             batch_data["int_value"] = self.int_value.reshape(B)
 
-        if not args.use_tvf and args.use_clipped_value_loss:
+        if (not args.use_tvf) and args.use_clipped_value_loss:
             # these are needed if we are using the clipped value objective...
             batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
 
@@ -2168,13 +2195,15 @@ def package_aux_features(horizons: Union[np.ndarray, torch.Tensor], time: Union[
     return aux_features
 
 
-def horizon_scale_function(x):
-    if args.tvf_horizon_scale == "default":
+def _scale_function(x, method):
+    if method == "default":
         return x / args.tvf_max_horizon
     elif args.tvf_horizon_scale == "zero":
         return x*0
     elif args.tvf_horizon_scale == "log":
-        return (10+x).log()
+        return (1+x).log2()
+    elif args.tvf_horizon_scale == "sqrt":
+        return x.sqrt()
     elif args.tvf_horizon_scale == "centered":
         # this will be roughly unit normal
         return ((x / args.tvf_max_horizon) - 0.5) * 3.0
@@ -2185,24 +2214,13 @@ def horizon_scale_function(x):
         # this will be roughly 30x normal
         return ((x / args.tvf_max_horizon) - 0.5) * 100.0
     else:
-        raise ValueError("Invalid args.tvf_horizon_scale.")
+        raise ValueError(f"Invalid scale mode {method}. Please use [zero|log|sqrt|centered|wide|wider]")
+
+def horizon_scale_function(x):
+    return _scale_function(x, args.tvf_horizon_scale)
 
 def time_scale_function(x):
-    if args.tvf_time_scale == "default":
-        return x
-    if args.tvf_time_scale == "zero":
-        return x*0
-    elif args.tvf_time_scale == "centered":
-        # this will be roughly unit normal
-        return (x - 0.5) * 3.0
-    elif args.tvf_time_scale == "wide":
-        # this will be roughly 10x unit normal
-        return (x - 0.5) * 30.0
-    elif args.tvf_time_scale == "wider":
-        # this will be roughly 30x unit normal
-        return (x - 0.5) * 100.0
-    else:
-        raise ValueError("Invalid args.tvf_time_scale.")
+    return _scale_function(x, args.tvf_time_scale)
 
 def expand_to_na(n,a,x):
     """
