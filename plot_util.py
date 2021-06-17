@@ -99,7 +99,8 @@ def read_log(file_path):
 
     game = params["environment"]
 
-    result["ep_score_norm"] = [asn.normalize(game, score, count) for score, count in zip(result["ep_score_mean"], result["ep_count"])]
+    result["ep_score_norm"] = np.asarray(
+        [asn.normalize(game, score, count) for score, count in zip(result["ep_score_mean"], result["ep_count"])])
 
     if "tvf_horizon_transform" in result:
         result["tvf_horizon_transform"] = "log" if result["tvf_horizon_transform"] == "log" else "off"
@@ -651,7 +652,7 @@ def read_combined_log(path: str, key: str, subset='default'):
         # c = 0.00
         # game_list = ['BattleZone', 'CrazyClimber', 'TimePilot']
         # game_weights = [0.38186622, 0.19303045, 0.02880996]
-        game_list =['Krull', 'KungFuMaster', 'Seaquest']
+        game_list = ['Krull', 'KungFuMaster', 'Seaquest']
         game_weights = [0.04573467, 0.61623311, 0.14444]
         c = 1.7093517175190982
 

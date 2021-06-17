@@ -1975,7 +1975,7 @@ class Runner():
                 label="train",
                 hooks={
                     'after_mini_batch': lambda x: x["outputs"][-1]["kl_approx"] > 1.5 * args.target_kl
-                }
+                } if args.target_kl > 0 else {}
             )
             expected_mini_batches = (args.batch_size / args.policy_mini_batch_size)
             policy_epochs += results["mini_batches"] / expected_mini_batches
