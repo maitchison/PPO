@@ -26,6 +26,7 @@ if __name__ == "__main__":
     from rl import utils, models, atari, config, logger, rollout
     from rl import ppo
     from rl.config import args
+    import numpy as np
 
     log = logger.Logger()
 
@@ -84,6 +85,10 @@ if __name__ == "__main__":
     else:
         args.guid = str(uuid.uuid4().hex)
 
+    # set seeds
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
     # work out the logging folder...
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
     log.info("Logging to folder " + args.log_folder)
@@ -105,8 +110,6 @@ if __name__ == "__main__":
     model_args = {}
 
     try:
-
-
         utils.lock_job()
 
         if args.model == "cnn":

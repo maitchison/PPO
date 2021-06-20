@@ -8,8 +8,6 @@ import math
 
 import socket
 
-import atari3
-
 HOST_NAME = socket.gethostname()
 
 class bcolors:
@@ -30,6 +28,66 @@ if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
 
+canonical_57 = [
+    "Alien",
+    "Amidar",
+    "Assault",
+    "Asterix",
+    "Asteroids",
+    "Atlantis",
+    "BankHeist",
+    "BattleZone",
+    "BeamRider",
+    "Berzerk",
+    "Bowling",
+    "Boxing",
+    "Breakout",
+    "Centipede",
+    "ChopperCommand",
+    "CrazyClimber",
+    "Defender",
+    "DemonAttack",
+    "DoubleDunk",
+    "Enduro",
+    "FishingDerby",
+    "Freeway",
+    "Frostbite",
+    "Gopher",
+    "Gravitar",
+    "Hero",
+    "IceHockey",
+    "JamesBond",
+    "Kangaroo",
+    "Krull",
+    "KungFuMaster",
+    "MontezumaRevenge",
+    "MsPacman",
+    "NameThisGame",
+    "Phoenix",
+    "Pitfall",
+    "Pong",
+    "PrivateEye",
+    "QBert",
+    "Riverraid",
+    "RoadRunner",
+    "Robotank",
+    "Seaquest",
+    "Skiing",
+    "Solaris",
+    "SpaceInvaders",
+    "StarGunner",
+    "Surround",
+    "Tennis",
+    "TimePilot",
+    "Tutankham",
+    "UpnDown",
+    "Venture",
+    "VideoPinball",
+    "WizardofWor",
+    "YarsRevenge",
+    "Zaxxon"
+]
+
 # very similar to the v16_0009 args, but with log 30k horizon, and some tweaks
 v18_args = {
     'checkpoint_every': int(5e6),
@@ -45,15 +103,61 @@ v18_args = {
     'policy_mini_batch_size': 1024,         # slower but better...
     'value_mini_batch_size': 512,
     'policy_epochs': 3,
-    'value_epochs': 2,
+    'value_epochs': 4,                      # slightly better with 4
     'distill_epochs': 1,
-    'target_kl': -1,                     # remove target_kl
+    'target_kl': -1,                        # remove target_kl
     'ppo_epsilon': 0.2,
     'value_lr': 2.5e-4,
     'policy_lr': 2.5e-4,
-    'entropy_bonus': 0.003,                 # was 0.01 but this was on old settings so we need to go lower
+    'entropy_bonus': 0.01,                  # was 0.01 but this was on old settings so we need to go lower
     'time_aware': True,
     'distill_beta': 1.0,
+    'tvf_force_ext_value_distill': True,    # slightly better, slightly faster...
+
+    # TVF args
+    'use_tvf': True,
+    'tvf_value_distribution': 'fixed_geometric',
+    'tvf_horizon_distribution': 'fixed_geometric',
+    'tvf_horizon_scale': 'log',
+    'tvf_time_scale': 'log',
+    'tvf_hidden_units': 256,               # more is probably better, but we need just ok for the moment
+    'tvf_value_samples': 128,
+    'tvf_horizon_samples': 128,
+    'tvf_mode': 'exponential',             # adaptive seems like a good tradeoff
+    'tvf_n_step': 32,                      # perhaps experiment with higher later on?
+    'tvf_coef': 1.0,                       # this is an important parameter...
+    'tvf_soft_anchor': 1.0,
+    'tvf_max_horizon': 30000,
+
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+
+ }
+
+v18_args = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'epochs': 50,
+    'export_video': False,
+    'use_compression': True,
+
+    # PPO args
+    'max_grad_norm': 25.0,
+    'agents': 512,                          # want this to be higher, but memory constrained...
+    'n_steps': 1024,                        # large n_steps might be needed for long horizon?
+    'policy_mini_batch_size': 1024,         # slower but better...
+    'value_mini_batch_size': 512,
+    'policy_epochs': 3,
+    'value_epochs': 4,                      # slightly better with 4
+    'distill_epochs': 1,
+    'target_kl': -1,                        # remove target_kl
+    'ppo_epsilon': 0.2,
+    'value_lr': 2.5e-4,
+    'policy_lr': 2.5e-4,
+    'entropy_bonus': 0.01,                  # was 0.01 but this was on old settings so we need to go lower
+    'time_aware': True,
+    'distill_beta': 1.0,
+    'tvf_force_ext_value_distill': True,    # slightly better, slightly faster...
 
     # TVF args
     'use_tvf': True,
@@ -604,36 +708,133 @@ def random_search_TVF3k():
     )
 
 def setup_experiments_18():
-    # try again on validation set... slow, but should give us the results we need...
+
+    # Standard regression run (with new V18 settings)
     for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [1, 2, 3]:
+        for run in [1]:
             add_job(
                 f"TVF_18_Regression",
                 env_name=env,
-                run_name=f"{env}_Run_{run}",
+                run_name=f"{env}_run_{run}",
                 default_params=v18_args,
                 epochs=50,
                 priority=200,
             )
 
-    add_job(
-        f"TVF_18_E5_Skiing",
-        env_name="Skiing",
-        run_name=f"default",
-        default_params=v18_args,
-        epochs=50,
-        priority=200,
-    )
+    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
+        for run in [4]:
+            add_job(
+                f"TVF_18_Regression",
+                env_name=env,
+                run_name=f"{env}_run_{run}",
+                default_params=v18_args,
+                eb_beta=-0.2, # reduce entropy bonus by 10x over the 50 epochs period.
+                epochs=50,
+                priority=100,
+            )
 
-    for env in atari3.canonical_57:
+    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
+        for run in [5]:
+            add_job(
+                f"TVF_18_Regression",
+                env_name=env,
+                run_name=f"{env}_run_{run}",
+                default_params=v18_args,
+                value_epochs=2, # try less epochs
+                epochs=50,
+                priority=100,
+            )
+
+    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
+        for run in [6]:
+            add_job(
+                f"TVF_18_Regression",
+                env_name=env,
+                run_name=f"{env}_run_{run}",
+                default_params=v18_args,
+                value_lr=1e-4, # try less learning rate (but with the more epochs)
+                epochs=50,
+                priority=100,
+            )
+
+    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
+        for run in [7]:
+            add_job(
+                f"TVF_18_Regression",
+                env_name=env,
+                run_name=f"{env}_run_{run}",
+                default_params=v18_args,
+                tvf_force_ext_value_distill=False, # try old distill
+                epochs=50,
+                priority=100,
+            )
+
+    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
+        for run in [8]:
+            add_job(
+                f"TVF_18_Regression",
+                env_name=env,
+                run_name=f"{env}_run_{run}",
+                default_params=v18_args,
+                value_lr=1e-4,  # try less learning rate (but with the more epochs)
+                tvf_force_ext_value_distill=False, # try old distill
+                eb_beta=-0.2,  # reduce entropy bonus by 10x over the 50 epochs period.
+                epochs=50,
+                priority=200,
+            )
+
+    # best settings, but with lots of entropy...
+    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
+        for run in [9]:
+            add_job(
+                f"TVF_18_Regression",
+                env_name=env,
+                run_name=f"{env}_run_{run}",
+                default_params=v18_args,
+                value_lr=1e-4,  # try less learning rate (but with the more epochs)
+                tvf_force_ext_value_distill=False, # try old distill
+                eb_beta=-0.4,  # reduce entropy bonus by 50x over the 50 epochs period.
+                entropy_bonus=0.03, # start at 0.03, end at 0.0003
+                epochs=50,
+                priority=200,
+            )
+
+    # tp run, just out of interest...
+    for env in ['Krull', 'KungFuMaster', 'Seaquest', "MontezumaRevenge"]:
+        for alpha in [0, 1, 10, 100]:
+            add_job(
+                f"TVF_18_TerminalPrediction",
+                env_name=env,
+                run_name=f"{env}_alpha_{alpha}",
+                default_params=v18_args,
+                use_tp=True,
+                tp_alpha=alpha,
+                epochs=50,
+                priority=-100,
+            )
+
+    # average performance over 3 runs...
+    # world record is 32.83 seconds, so see if we get that...
+    # game timeouts after 5 minutes so min score should be 30k?
+    for run in [1, 2, 3]:
         add_job(
-            f"TVF_18_E3_Atari57",
-            env_name=env,
-            run_name=f"{env}",
+            f"TVF_18_E5_Skiing",
+            env_name="Skiing",
+            run_name=f"run_{run}",
             default_params=v18_args,
             epochs=50,
-            priority=-100,
+            priority=200,
         )
+
+    # for env in canonical_57:
+    #     add_job(
+    #         f"TVF_18_E3_Atari57",
+    #         env_name=env,
+    #         run_name=f"{env}",
+    #         default_params=v18_args,
+    #         epochs=50,
+    #         priority=-100,
+    #     )
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -646,7 +847,7 @@ if __name__ == "__main__":
     id = 0
     job_list = []
     setup_experiments_18()
-    random_search_TVF3k()
+    #random_search_TVF3k()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

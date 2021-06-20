@@ -1,6 +1,7 @@
 import uuid
 import socket
 import argparse
+import random
 
 class Config:
 
@@ -119,6 +120,11 @@ class Config:
         self.per_step_reward    = float()
         self.debug_terminal_logging = bool()
         self.debug_value_logging = bool()
+        self.seed = int()
+
+        self.use_tp = bool()
+        self.tp_gamma = float()
+        self.tp_alpha = float()
 
         self.use_compression = bool()
 
@@ -128,6 +134,9 @@ class Config:
         self.__dict__.update(kwargs)
         if self.use_compression == "auto":
             self.use_compression = self.batch_size >= 128*256
+        if self.seed < 0:
+            self.seed = random.randint(1e6)
+
 
     @property
     def propagate_intrinsic_rewards(self):
@@ -305,6 +314,11 @@ def parse_args(no_env=False, args_override=None):
                         help="allows intrinsic returns to propagate through end of episode."
     )
 
+    # terminal prediction
+    parser.add_argument("--use_tp", type=str2bool, default=False, help="Enables terminal state prediction")
+    parser.add_argument("--tp_gamma", type=float, default=0.99)
+    parser.add_argument("--tp_alpha", type=float, default=1.0)
+
     # debuging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
@@ -314,6 +328,9 @@ def parse_args(no_env=False, args_override=None):
                         help="Log information around terminals.")
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
+
+
+    parser.add_argument("--seed", type=int, default=-1)
 
     # model
     parser.add_argument("--model", type=str, default="cnn", help="['cnn']")

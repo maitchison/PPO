@@ -45,6 +45,26 @@ def save_progress(log: Logger):
         json.dump(details, f, indent=4)
 
 
+def calculate_tp_returns(dones: np.ndarray, final_tp_estimate: np.ndarray):
+    """
+    Calculate terminal prediction estimates using bootstrapping
+    """
+
+    # todo: make this td(\lambda) style...)
+
+    N, A = dones.shape
+
+    returns = np.zeros([N, A], dtype=np.float32)
+    current_return = final_tp_estimate
+
+    gamma = 0.99 # this is a very interesting idea, discount the terminal time.
+
+    for i in reversed(range(N)):
+        returns[i] = current_return = 1 + current_return * gamma * (1.0 - dones[i])
+
+    return returns
+
+
 def calculate_mc_returns(rewards, dones, final_value_estimate, gamma) -> np.ndarray:
     """
     Calculates returns given a batch of rewards, dones, and a final value estimate.
@@ -403,8 +423,13 @@ class Runner():
 
         # returns generation
         self.ext_returns = np.zeros([N, A], dtype=np.float32)
+
         self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
+
+        # terminal prediction
+        self.tp_final_value_estimate = np.zeros([A], dtype=np.float32)
+        self.tp_returns = np.zeros([N, A], dtype=np.float32)  # terminal state predictions are generated the same was as returns.
 
         self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
 
@@ -454,7 +479,8 @@ class Runner():
 
     def create_envs(self):
         """ Creates environments for runner"""
-        env_fns = [lambda: atari.make(args=args) for _ in range(args.agents)]
+        base_seed = args.seed
+        env_fns = [lambda: atari.make(args=args, seed=base_seed+i) for i in range(args.agents)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
@@ -1166,6 +1192,11 @@ class Runner():
         self.all_obs[-1] = last_obs
         self.all_time[-1] = self.time
 
+        if args.use_tp:
+            # get final discount steps until terminal state  estimate on last step.
+            model_out = self.forward(self.obs, output="value")
+            self.tp_final_value_estimate[:] = model_out["tp_value"].detach().cpu()
+
         if args.debug_terminal_logging:
             for t in range(self.N):
 
@@ -1405,6 +1436,10 @@ class Runner():
         # calculate ext_returns for PPO targets
         self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
 
+        # calculate terminal prediction targets
+        if args.use_tp:
+            self.tp_returns = calculate_tp_returns(self.terminals, self.tp_final_value_estimate)
+
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
             self.int_returns_raw = calculate_mc_returns(
@@ -1596,6 +1631,22 @@ class Runner():
             )
 
         model_out = self.model.forward(data["prev_state"], output="value", **kwargs)
+
+        # -------------------------------------------------------------------------
+        # Calculate terminal state prediction loss
+        # -------------------------------------------------------------------------
+
+        if args.use_tp:
+            # normalize error based on discount rate
+            if args.tp_gamma == 1:
+                scale = 1 / (np.mean(self.episode_len)*2)
+            else:
+                scale = 1 / (1 - args.tp_gamma)
+            targets = data["tp_returns"]/scale
+            predictions = model_out["tp_value"]/scale
+            tp_loss = args.tp_alpha * 0.5 * torch.mean(torch.square(targets - predictions))
+            self.log.watch_mean("loss_tp", tp_loss, display_width=8)
+            loss = loss + tp_loss
 
         # -------------------------------------------------------------------------
         # Calculate loss_value_function_horizons
@@ -1989,6 +2040,9 @@ class Runner():
         batch_data = {}
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
         batch_data["ext_returns"] = self.ext_returns.reshape(B)
+
+        if args.use_tp:
+            batch_data["tp_returns"] = self.tp_returns.reshape(B)
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)

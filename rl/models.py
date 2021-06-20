@@ -193,6 +193,7 @@ class DualNet(nn.Module):
             self.tvf_hidden_units = int(tvf_hidden_units)
             self.horizon_transform = tvf_horizon_transform
             self.time_transform = tvf_time_transform
+            self.tp_head = nn.Linear(self.encoder.hidden_units, 1)
 
             # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
             self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
@@ -246,6 +247,7 @@ class DualNet(nn.Module):
             value_values = self.value_net_value(features)
             result['ext_value'] = value_values[:, 0]
             result['int_value'] = value_values[:, 1]
+            result['tp_value'] = self.tp_head(features)[:, 0]
 
             # auxiliary features
             if aux_features is not None:

@@ -275,12 +275,18 @@ class RunLog():
             result["value_loss_alt"] = np.asarray(result["value_loss"]) - 1e-8
 
         for k, v in result.items():
-            if type(v) == list:
+            if type(v) is list:
                 result[k] = np.asarray(v)
 
         # calculate average ev as ev_av seems to not work well right now...
         evs = [k for k in result.keys() if "ev_" in k and "ev_av" not in k]
         evs.sort()
+
+        for ev in evs:
+            if None in result[ev]:
+                print(f"Warning, None found in {ev} on file {file_path}")
+                result[ev] = np.asarray([x if x is not None else 0 for x in result[ev]])
+
         if len(evs) > 0:
             result["ev_average"] = np.mean(np.stack([result[ev] for ev in evs]), axis=0)
             result["ev_max"] = result[evs[-1]]
