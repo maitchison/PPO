@@ -183,9 +183,14 @@ v18_args = {
 def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
 
     if default_params is not None:
-        for k,v in default_params.items():
-            if k not in kwargs:
-                kwargs[k]=v
+        for k, v in default_params.items():
+            if k == "chunk_size":
+                chunk_size = v
+            elif k == "priority":
+                priority = v
+            else:
+                if k not in kwargs:
+                    kwargs[k] = v
 
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
@@ -704,8 +709,87 @@ def random_search_TVF3k():
         count=64,
         process_up_to=64,
         envs=['Krull', 'KungFuMaster', 'Seaquest'],
-        score_thresholds=[0,0,0],
+        score_thresholds=[0, 0, 0],
     )
+
+def setup_paper_experiments():
+    default_args = v18_args.copy()
+    default_args['value_lr'] = 1e-4
+    default_args['tvf_force_ext_value_distill'] = False
+    default_args['entropy_bonus'] = 0.01
+    default_args['seed'] = 1 # force deterministic
+    default_args['use_compression'] = False  # speed things up a bit... does increase the memory requirements though...
+
+    ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
+    ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
+
+    for run in [1, 2, 3]:
+        add_job(
+            f"PAPER_A_E5_Skiing",
+            env_name="Skiing",
+            run_name=f"run_{run}",
+            default_params=default_args,
+            priority=200,
+            seed=run,
+        )
+
+    for env in canonical_57:
+        add_job(
+            f"PAPER_A_E3_Atari57",
+            env_name=env,
+            run_name=f"{env}",
+            default_params=default_args,
+            priority=-100,
+        )
+
+    # E6 Ablation study
+    for env in ATARI_3:
+
+        add_job(
+            f"PAPER_A_E6_Ablation",
+            env_name=env,
+            run_name=f"{env}_tvf_30k_fullactions",
+            default_params=default_args,
+            full_action_space=True,
+            priority=100,
+        )
+
+        add_job(
+            f"PAPER_A_E6_Ablation",
+            env_name=env,
+            run_name=f"{env}_tvf_30k_stickyactions",
+            default_params=default_args,
+            sticky_actions=True,
+            priority=100,
+        )
+
+        add_job(
+            f"PAPER_A_E6_Ablation",
+            env_name=env,
+            run_name=f"{env}_tvf_30k",
+            default_params=default_args,
+            priority=100,
+        )
+
+        add_job(
+            f"PAPER_A_E6_Ablation",
+            env_name=env,
+            run_name=f"{env}_ppg_30k",
+            use_tvf=False,
+            default_params=default_args,
+            priority=100,
+        )
+
+        add_job(
+            f"PAPER_A_E6_Ablation",
+            env_name=env,
+            run_name=f"{env}_ppg_1k",
+            use_tvf=False,
+            gamma=0.999,
+            default_params=default_args,
+            priority=100,
+        )
+
 
 def setup_experiments_18():
 
@@ -846,7 +930,8 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    setup_experiments_18()
+    #setup_experiments_18()
+    setup_paper_experiments()
     #random_search_TVF3k()
 
     if len(sys.argv) == 1:

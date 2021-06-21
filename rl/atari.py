@@ -25,7 +25,7 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
         if env_name in v:
             env_type = k
 
-    env = gym.make(env_name)
+    env = gym.make(env_name, full_action_space=args.full_action_space)
 
     if seed is not None:
         np.random.seed(seed)

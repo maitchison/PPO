@@ -355,7 +355,9 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
         self.ret_rms.update(self.current_returns)
 
-        scaled_rewards = np.clip(rewards / self.std, -self.clip, +self.clip)
+        scaled_rewards = rewards / self.std
+        if self.clip is not None:
+            scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
 
         return obs, scaled_rewards, dones, infos
 

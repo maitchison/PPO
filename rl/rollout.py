@@ -407,8 +407,10 @@ class Runner():
         # includes final state as well, which is needed for final value estimate
         if args.use_compression:
             # states must be decompressed with .decompress before use.
+            print(f"Compression [{utils.Color.OKGREEN}enabled{utils.Color.ENDC}]")
             self.all_obs = np.zeros([N + 1, A], dtype=np.object)
         else:
+            print("Compression [disabled]")
             self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         self.actions = np.zeros([N, A], dtype=np.int64)

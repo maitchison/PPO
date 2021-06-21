@@ -122,6 +122,8 @@ class Config:
         self.debug_value_logging = bool()
         self.seed = int()
 
+        self.full_action_space = bool()
+
         self.use_tp = bool()
         self.tp_gamma = float()
         self.tp_alpha = float()
@@ -132,11 +134,11 @@ class Config:
 
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
-        if self.use_compression == "auto":
-            self.use_compression = self.batch_size >= 128*256
-        if self.seed < 0:
-            self.seed = random.randint(1e6)
-
+        if type(self.use_compression) is str:
+            if self.use_compression == "auto":
+                self.use_compression = self.batch_size >= 128*256
+            else:
+                self.use_compression = str2bool(str(self.use_compression))
 
     @property
     def propagate_intrinsic_rewards(self):
@@ -294,6 +296,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--time_aware", type=str2bool, default=True)
     parser.add_argument("--ed_type", type=str, default="none", help="[none|geometric|hyperbolic]")
     parser.add_argument("--ed_gamma", type=float, default=1.0)
+
+    parser.add_argument("--full_action_space", type=str2bool, default=False)
 
     parser.add_argument("--frame_stack", type=int, default=4)
 

@@ -753,3 +753,29 @@ def read_combined_log(path: str, key: str, subset='default'):
                 result["exp_" + k] = np.exp(v)
 
     return result
+
+def plot_validation(path, keys, hold=False, color=None, label=None):
+    if not hold:
+        plt.figure(figsize=(12,4))
+    cmap = plt.cm.get_cmap('tab10')
+    for key in keys:
+        result = read_combined_log(path, key, subset='atari-val')
+        if result is None:
+            print(f"No run matching {path} {key}")
+            continue
+        xs = result["env_step"]
+        ys = result["score"]
+        plt.grid(True, alpha=0.2)
+        ax=plt.gca()
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        if label is None:
+            _label = key
+        else:
+            _label = label
+        plt.plot(xs, ys, label=_label, color=color)
+    plt.xlim(0,50e6)
+    plt.ylim(0,300)
+    if not hold:
+        plt.legend()
+        plt.show()

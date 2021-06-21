@@ -21,6 +21,9 @@ def get_previous_experiment_guid(experiment_path, run_name):
 
 if __name__ == "__main__":
 
+    # see http://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
     # import here to make workers load faster / use less memory
     import torch
     from rl import utils, models, atari, config, logger, rollout
@@ -85,9 +88,15 @@ if __name__ == "__main__":
     else:
         args.guid = str(uuid.uuid4().hex)
 
-    # set seeds
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    # if seed was defined then set the seed and enable determanistic mode.
+    if args.seed >= 0:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
+
 
     # work out the logging folder...
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
