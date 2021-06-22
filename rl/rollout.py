@@ -1689,9 +1689,9 @@ class Runner():
         for value_head in value_heads:
             value_prediction = model_out["{}_value".format(value_head)]
             returns = data["{}_returns".format(value_head)]
-            old_pred_values = data["{}_value".format(value_head)]
 
             if args.use_clipped_value_loss:
+                old_pred_values = data["{}_value".format(value_head)]
                 # is is essentially trust region for value learning, and seems to help a lot.
                 value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
                                                                          -args.ppo_epsilon, +args.ppo_epsilon)

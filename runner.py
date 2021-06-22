@@ -714,11 +714,11 @@ def random_search_TVF3k():
 
 def setup_paper_experiments():
     default_args = v18_args.copy()
-    default_args['value_lr'] = 1e-4
+    default_args['value_lr'] = 2.5e-4
     default_args['tvf_force_ext_value_distill'] = False
     default_args['entropy_bonus'] = 0.01
     default_args['seed'] = 1 # force deterministic
-    default_args['use_compression'] = False  # speed things up a bit... does increase the memory requirements though...
+    default_args['use_compression'] = True
 
     ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
     ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
@@ -765,6 +765,15 @@ def setup_paper_experiments():
 
         add_job(
             f"PAPER_A_E6_Ablation",
+            env_name = env,
+            run_name = f"{env}_tvf_30k_nosoftanchor",
+            default_params = default_args,
+            tvf_soft_anchor = 0.0,
+            priority = 100,
+        )
+
+        add_job(
+            f"PAPER_A_E6_Ablation",
             env_name=env,
             run_name=f"{env}_tvf_30k",
             default_params=default_args,
@@ -787,9 +796,8 @@ def setup_paper_experiments():
             use_tvf=False,
             gamma=0.999,
             default_params=default_args,
-            priority=100,
+            priority=500,
         )
-
 
 def setup_experiments_18():
 
