@@ -291,6 +291,12 @@ class RunLog():
             result["ev_average"] = np.mean(np.stack([result[ev] for ev in evs]), axis=0)
             result["ev_max"] = result[evs[-1]]
 
+        try:
+            params = read_params(os.path.split(file_path)[0]+"/params.txt")
+            result[f"ep_score_norm"] = asn.normalize(params["environment"], result["ep_score_mean"])
+        except:
+            pass
+
         self._fields = result
 
 
@@ -304,7 +310,8 @@ def compare_runs(path,
                  run_filter=None,
                  color_filter=None,
                  smooth_factor=None,
-                 reference_run=None
+                 reference_run=None,
+                 skip_rows=1,
                  ):
     """ Compare runs stored in given path. """
 
@@ -314,7 +321,7 @@ def compare_runs(path,
     if title is None and highlight is not None: title = "".join(highlight) + " by " + y_axis
     if title is None: title = "Training Graph"
 
-    runs = get_runs(path)
+    runs = get_runs(path, skip_rows=skip_rows)
 
     if len(runs) == 0:
         return
@@ -406,24 +413,29 @@ def compare_runs(path,
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
 
-    if show_legend:
-        plt.legend()
+    if show_legend is not False:
+        if show_legend is True:
+            loc = "best"
+        else:
+            loc = show_legend
+        plt.legend(loc=loc)
     plt.show()
 
 
-def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, **kwargs):
+def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, max_step=50, **kwargs):
     title_args = {}
+
+    if include_table:
+        table_runs(path, run_filter=kwargs.get("run_filter", None), max_step=max_step)
 
     for y_axis in y_axes:
         if 'title' not in kwargs:
             title_args["title"] = y_axis
         compare_runs(path, y_axis=y_axis, **{**kwargs, **title_args})
 
-    if include_table:
-        table_runs(path, run_filter=kwargs.get("run_filter", None))
 
 
-def table_runs(path, run_filter=None):
+def table_runs(path, run_filter=None, max_step=50):
     runs = get_runs(path)
 
     print("|{:<50}|{:>16}|{:>16}|{:>16}|".format(
@@ -441,9 +453,8 @@ def table_runs(path, run_filter=None):
             if not run_filter(run_name):
                 continue
 
-        score_50 = compute_score(run_data, 50)
-        score_200 = compute_score(run_data, 200)
-        steps = run_data["env_step"][-1] / 1000 / 1000
+        score = compute_score(run_data, max_step)
+        steps = min(run_data["env_step"][-1] / 1000 / 1000, max_step)
 
         run_params["color"] = bool(run_params.get("color", False))
         if "ent_bouns" in run_params:
@@ -456,24 +467,27 @@ def table_runs(path, run_filter=None):
         run_id = run_name[-17:-1]
 
         print("| {:<49}|{:>15} |{:>15} |{:>16}|".format(
-            run_name[:-(8 + 3)], comma(score_200), "{:.0f}M".format(steps), run_id))
+            run_name[:-(8 + 3)], comma(score), "{:.0f}M".format(steps), run_id))
 
 
-def load_eval_results(path):
+def load_eval_results(path, temperature=None):
     """
     Load evaluation results for each epoch.
     """
 
-    if path in cache:
-        return cache[path]
+    key = (path, temperature)
+
+    if key in cache:
+        return cache[key]
 
     results = {
         'epoch': [],
         'lengths': [],
         'scores': []
     }
-    for epoch in range(100):
-        data_filename = os.path.join(path, f"checkpoint-{epoch:03d}M-eval.dat")
+    for epoch in range(201):
+        temp_postfix = f"_t={temperature}" if temperature is not None else ""
+        data_filename = os.path.join(path, f"checkpoint-{epoch:03d}M-eval{temp_postfix}.dat")
 
         try:
             with open(data_filename, "rb") as f:
@@ -485,47 +499,44 @@ def load_eval_results(path):
         results['lengths'].append(data["episode_lengths"])
         results['scores'].append(data["episode_scores"])
 
-        # errors at horizons
-        errors = data["return_estimates"][0.99]["trunc_err_k"]
-        ks = set(x[0] for x in errors)
-        for k in ks:
-            estimated_values = np.asarray([x[1] for x in errors if x[0] == k])
-            true_values_truncated = np.asarray([x[2] for x in errors if x[0] == k])
-            true_values_discounted = np.asarray([x[3] for x in errors if x[0] == k])
-            true_values = np.asarray([x[4] for x in errors if x[0] == k])
-
-            key = f'h_{k}_error'
-            if key not in results:
-                results[key] = []
-            results[key].append((estimated_values - true_values_truncated) ** 2)
-
-            key = f'd_{k}_error'
-            if key not in results:
-                results[key] = []
-            results[key].append((estimated_values - true_values_discounted) ** 2)
-
-            key = f't_{k}_error'
-            if key not in results:
-                results[key] = []
-            results[key].append((estimated_values - true_values) ** 2)
-
-    cache[path] = results
+    cache[key] = results
 
     return results
 
 
-def plot_eval_results(path, y_axis="scores", label=None):
-    results = load_eval_results(path)
+def plot_eval_results(path, y_axis="scores", label=None, temperature=None, quantile=None):
+    results = load_eval_results(path, temperature=temperature)
 
     if len(results["epoch"]) == 0:
         return
 
     xs = np.asarray(results["epoch"])
     ys = np.asarray([np.mean(x) for x in results[y_axis]])
-    y_err = np.asarray([np.std(x) / len(x) ** 0.5 for x in results[y_axis]])
-    plt.plot(xs, ys, label=label)
-    plt.fill_between(xs, ys - y_err * 1.96, ys + y_err * 1.96, alpha=0.1)
 
+    if quantile is not None:
+        ys = np.asarray([np.quantile(x, quantile) for x in results[y_axis]])
+
+    y_err = np.asarray([np.std(x) / len(x) ** 0.5 for x in results[y_axis]])
+    p = plt.plot(xs, ys, label=label)
+    c = p[0].get_color()
+    if quantile is None:
+        plt.fill_between(xs, ys - y_err * 1.96, ys + y_err * 1.96, alpha=0.1, color=c)
+
+    print(f"{path}:{ys[-1]:<10.1f} at {np.max(xs)}")
+
+
+def plot_eval_temperature(path, temps=(0.5, 1, 2), y_axis="scores", y_label="Score", **kwargs):
+    plt.figure(figsize=(12, 4))
+    plt.title(f"{path} - {y_axis}")
+    plt.grid(True)
+    plt.xlabel("Epoch")
+    plt.ylabel(y_label)
+
+    for temperature in temps:
+        plot_eval_results(path, y_axis=y_axis, label=f"t={temperature}", temperature=temperature, **kwargs)
+
+    plt.legend()
+    plt.show()
 
 def plot_eval_experiment(path, y_axis="scores", y_label="Score"):
     plt.figure(figsize=(12, 4))
@@ -584,6 +595,7 @@ def plot_experiment(
         y_axes=("ep_score_mean", "err_trunc", "ev_ext", "opt_grad"),
         run_filter=None,
         smooth_factor=0.95,
+        include_table=False,
         **kwargs
 ):
     global cache
@@ -592,7 +604,7 @@ def plot_experiment(
     eval_runs(
         path,
         y_axes=y_axes,
-        include_table=False,
+        include_table=include_table,
         smooth_factor=smooth_factor,
         run_filter=run_filter,
         **kwargs
@@ -624,7 +636,7 @@ class AtariScoreNormalizer:
             score = np.asarray(score)
         key = game.lower()
         if key not in self._normalization_scores:
-            print(f"Game not found {game}")
+            print(f"Warning: Game not found {game}")
             return score * 0
         random, human = self._normalization_scores[key]
         return 100 * (score - random) / (human - random)
@@ -636,7 +648,7 @@ asn = AtariScoreNormalizer()
 from collections import defaultdict
 
 
-def read_combined_log(path: str, key: str, subset='default'):
+def read_combined_log(path: str, key: str, subset='atari-3'):
     """
     Load multiple games and average their scores
     """
@@ -648,6 +660,10 @@ def read_combined_log(path: str, key: str, subset='default'):
         game_list = ['Amidar', 'BattleZone', 'DemonAttack']
         game_weights = [0.35144866, 0.55116459, 0.01343885]
         c = 20.78141750170289
+    elif subset == "atari-3":
+        game_list = ['BattleZone', 'Gopher', 'TimePilot']
+        game_weights = [0.4669, 0.0229, 0.0252]
+        c = 44.8205
     elif subset == "atari-val":
         # game_list = ['Amidar', 'BankHeist', 'Centipede']
         # game_weights = [0.6795, 0.0780, 0.0711]
@@ -754,12 +770,12 @@ def read_combined_log(path: str, key: str, subset='default'):
 
     return result
 
-def plot_validation(path, keys, hold=False, color=None, label=None):
+def plot_validation(path, keys, hold=False, color=None, label=None, subset="atari-val"):
     if not hold:
         plt.figure(figsize=(12,4))
     cmap = plt.cm.get_cmap('tab10')
     for key in keys:
-        result = read_combined_log(path, key, subset='atari-val')
+        result = read_combined_log(path, key, subset=subset)
         if result is None:
             print(f"No run matching {path} {key}")
             continue

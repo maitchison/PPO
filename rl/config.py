@@ -34,6 +34,8 @@ class Config:
         self.extrinsic_reward_scale = float()
 
         self.reward_normalization = bool()
+        self.reward_scale       = float()
+        self.override_reward_normalization_gamma = float()
 
         self.sync_envs          = bool()
         self.resolution         = str()
@@ -55,6 +57,8 @@ class Config:
         self.use_tvf            = bool()
         self.tvf_coef           = float()
         self.tvf_max_horizon    = int()
+        self.auto_horizon   = bool()
+        self.auto_gamma     = str()
         self.tvf_value_samples  = int()
         self.tvf_horizon_samples= int()
         self.tvf_value_distribution = str()
@@ -62,7 +66,6 @@ class Config:
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_lambda_samples = int()
-        self.tvf_horizon_warmup = float()
         self.tvf_hidden_units   = int()
         self.tvf_activation     = str()
         self.tvf_soft_anchor    = float()
@@ -70,9 +73,12 @@ class Config:
         self.tvf_time_scale = str()
         self.tvf_n_step         = int()
         self.tvf_mode           = str()
-        self.tvf_n_value_heads  = int()
+        self.tvf_sample_reduction = str()
+        self.tvf_n_dedicated_value_heads  = int()
         self.tvf_exp_gamma      = float()
+        self.tvf_exp_masked     = bool()
         self.tvf_force_ext_value_distill = bool()
+        self.tvf_implicit_zero = bool()
 
         # entropy bonus constants
         self.eb_alpha           = float()
@@ -116,6 +122,7 @@ class Config:
 
         self.model              = str()
         self.use_rnd            = bool()
+        self.warmup_period      = int()
 
         self.per_step_reward    = float()
         self.debug_terminal_logging = bool()
@@ -143,6 +150,10 @@ class Config:
     @property
     def propagate_intrinsic_rewards(self):
         return not self.use_rnd
+
+    @property
+    def reward_normalization_gamma(self):
+        return self.override_reward_normalization_gamma if self.override_reward_normalization_gamma >= 0 else self.gamma
 
     @property
     def use_intrinsic_rewards(self):
@@ -222,14 +233,16 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda)")
     parser.add_argument("--tvf_lambda_samples", type=int, default=16, help="Number of n-step samples to use for tvf_lambda calculation")
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
+    parser.add_argument("--auto_horizon", type=str2bool, default=False, help="Automatically adjust max_horizon to clip(mean episode length + 3std, max(horizon samples, value samples), max_horizon)")
+    parser.add_argument("--auto_gamma", type=str, default="off",
+                        help="[off|tvf|gamma|both]")
     parser.add_argument("--tvf_value_samples", type=int, default=64, help="Number of values to sample during training.")
     parser.add_argument("--tvf_horizon_samples", type=int, default=64, help="Number of horizons to sample during training. (-1 = all)")
     parser.add_argument("--tvf_value_distribution", type=str, default="uniform", help="Sampling distribution to use when generating value samples.")
     parser.add_argument("--tvf_horizon_distribution", type=str, default="uniform", help="Sampling distribution to use when generating horizon samples.")
-    parser.add_argument("--tvf_horizon_warmup", type=float, default=0, help="Fraction of training before horizon reaches max_horizon (-1 = all)")
 
     parser.add_argument("--tvf_hidden_units", type=int, default=512)
-    parser.add_argument("--tvf_n_value_heads", type=int, default=1)
+    parser.add_argument("--tvf_n_dedicated_value_heads", type=int, default=0)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
 
@@ -238,7 +251,10 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
     parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
+    parser.add_argument("--tvf_sample_reduction", type=str, default="mean", help="[sum|mean]")
     parser.add_argument("--tvf_exp_gamma", type=float, default=2.0)
+    parser.add_argument("--tvf_exp_masked", type=str2bool, default=False, help="Uses only valid n-steps in mixture.")
+    parser.add_argument("--tvf_implicit_zero", type=str2bool, default=False, help="Does not learn zero horizon.")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
@@ -251,6 +267,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--ppo_epsilon", type=float, default=0.2, help="PPO epsilon parameter.")
     parser.add_argument("--n_steps", type=int, default=256, help="Number of environment steps per training step.")
     parser.add_argument("--agents", type=int, default=256)
+    parser.add_argument("--warmup_period", type=int, default=250, help="Number of random steps to take before training agent.")
 
     parser.add_argument("--value_lr", type=float, default=3e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--policy_lr", type=float, default=1e-4, help="Learning rate for Adam optimizer")
@@ -283,10 +300,12 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--per_step_reward", type=float, default=0.0)
     parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
+    parser.add_argument("--reward_scale", type=float, default=1.0)
     parser.add_argument("--deferred_rewards", type=int, default=0,
                         help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
     parser.add_argument("--use_compression", type=str, default=False,
                         help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
+    parser.add_argument("--override_reward_normalization_gamma", type=float, default=-1)
 
     parser.add_argument("--eb_alpha", type=float, default=0.0)
     parser.add_argument("--eb_beta", type=float, default=0.0)
@@ -357,4 +376,3 @@ def parse_args(no_env=False, args_override=None):
 
     assert args.tvf_value_samples <= args.tvf_max_horizon, "tvf_value_samples must be <= tvf_max_horizon."
     assert args.tvf_horizon_samples <= args.tvf_max_horizon, "tvf_horizon_samples must be <= tvf_max_horizon."
-

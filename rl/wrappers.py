@@ -168,7 +168,7 @@ class FrameSkipWrapper(gym.Wrapper):
         self._reduce_op = reduce_op
 
     def step(self, action):
-        """Repeat action, sum reward, and mean over last observations."""
+        """Repeat action, sum reward, and max over last observations."""
         total_reward = 0.0
         done = None
         info = None
@@ -321,6 +321,15 @@ class NormalizeObservationsWrapper(gym.Wrapper):
     def restore_state(self, buffer):
         self.obs_rms.restore_state(buffer["obs_rms"])
 
+class RewardScaleWrapper(gym.Wrapper):
+
+    def __init__(self, env:gym.Env, scale:float):
+        super().__init__(env)
+        self.scale = scale
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        return obs, reward*self.scale, done, info
 
 class VecNormalizeRewardWrapper(gym.Wrapper):
     """
@@ -329,7 +338,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     Also clips rewards
     """
 
-    def __init__(self, env:VectorEnv, initial_state=None, gamma=1, clip=10):
+    def __init__(self, env:VectorEnv, initial_state=None, gamma:float=1.0, clip:float = 10.0, scale:float=1.0):
         """
         Normalizes returns
         """
@@ -340,6 +349,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.current_returns = np.zeros([env.num_envs], dtype=np.float32)
         self.ret_rms = utils.RunningMeanStd(shape=())
         self.gamma = gamma
+        self.scale = scale
         if initial_state is not None:
             self.ret_rms.restore_state(initial_state)
 
@@ -355,9 +365,13 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
         self.ret_rms.update(self.current_returns)
 
-        scaled_rewards = rewards / self.std
+        scaled_rewards = self.scale * rewards / self.std
         if self.clip is not None:
+            rewards_copy = scaled_rewards.copy()
             scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
+            if not (rewards_copy == scaled_rewards).all():
+                # log if clipping occurred.
+                infos[0]["reward_clip"] = True
 
         return obs, scaled_rewards, dones, infos
 
@@ -607,12 +621,9 @@ class NoopResetWrapper(gym.Wrapper):
 class FrameStack(gym.Wrapper):
     """ This is the original frame stacker that works by making duplicates of the frames,
         For large numbers of frames this can be quite slow.
-
-        Note: due to a bug the stack order for this function is n-1, 0, 1, 2, ... n-2
-            to enable the ordering 0, 1, 2, 3 set ordering = "ascending".
     """
 
-    def __init__(self, env, n_stacks=4, ordering="ascending"):
+    def __init__(self, env, n_stacks=4):
 
         super().__init__(env)
 
@@ -629,8 +640,6 @@ class FrameStack(gym.Wrapper):
 
         self.stack = np.zeros((self.n_channels, h, w), dtype=np.uint8)
 
-        self.ordering = ordering
-
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
@@ -639,27 +648,10 @@ class FrameStack(gym.Wrapper):
         )
 
     def _push_obs(self, obs):
-
-        if self.ordering == "default":
-            # most recent is in slot 0, then ascending from there... strange ordering, but it's what I used
-            # previously so I keep it for compatibility.
-            self.stack = np.roll(self.stack, shift=-(1 if self.grayscale else 3), axis=0)
-
-            if self.original_channels == 1:
-                self.stack[0:1, :, :] = obs[:, :, 0]
-            elif self.original_channels == 3:
-                obs = np.swapaxes(obs, 0, 2)
-                obs = np.swapaxes(obs, 1, 2)
-                self.stack[0:3, :, :] = obs
-            else:
-                raise Exception("Invalid number of channels.")
-        elif self.ordering == "ascending":
-            # note, in this case slot 0 is the oldest observation, not the newest.
-            assert self.original_channels == 1, "Ascending order does not support color at the moment."
-            self.stack = np.roll(self.stack, shift=-1, axis=0)
-            self.stack[-1:, :, :] = obs[:, :, 0]
-        else:
-            raise Exception(f"Invalid ordering {self.ordering}.")
+        # note, in this case slot 0 is the oldest observation, not the newest.
+        assert self.original_channels == 1, "Stacking does not support color at the moment."
+        self.stack = np.roll(self.stack, shift=-1, axis=0)
+        self.stack[-1:, :, :] = obs[:, :, 0]
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)

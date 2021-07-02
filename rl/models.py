@@ -158,7 +158,7 @@ class DualNet(nn.Module):
             tvf_horizon_transform,
             tvf_time_transform,
             tvf_max_horizon,
-            tvf_n_value_heads: int = 1,
+            tvf_n_dedicated_value_heads: int = 0,
             actions=None,
             policy_head=True,
             value_head=True,
@@ -182,12 +182,7 @@ class DualNet(nn.Module):
 
         if self.value_head:
 
-            if tvf_n_value_heads < 0:
-                self.n_value_heads = -tvf_n_value_heads
-                self.tvf_blending = True
-            else:
-                self.n_value_heads = tvf_n_value_heads
-                self.tvf_blending = False
+            self.tvf_n_dedicated_value_heads = tvf_n_dedicated_value_heads
 
             self.tvf_activation = tvf_activation
             self.tvf_hidden_units = int(tvf_hidden_units)
@@ -199,7 +194,7 @@ class DualNet(nn.Module):
             self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
             self.value_net_hidden = nn.Linear(self.encoder.hidden_units, self.tvf_hidden_units)
             self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units, bias=False)
-            self.value_net_tvf = nn.Linear(self.tvf_hidden_units, self.n_value_heads)
+            self.value_net_tvf = nn.Linear(self.tvf_hidden_units, self.tvf_n_dedicated_value_heads+1)
 
             # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
             torch.nn.init.uniform_(
@@ -259,56 +254,34 @@ class DualNet(nn.Module):
                 aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
                 _, H, _ = aux_features.shape
 
-                def get_tvf_values(features, aux_features, horizon_offsets=None):
-                    if horizon_offsets is None:
-                        horizon_offsets = 0.0
+                def get_tvf_values(features, aux_features):
                     transformed_aux_features = torch.zeros_like(aux_features)
-                    transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0]) - horizon_offsets
+                    transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
                     transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
                     features_part = self.value_net_hidden(features)
                     aux_part = self.value_net_hidden_aux(transformed_aux_features)
                     tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
                     return self.value_net_tvf(tvf_h)
 
-                def get_head_location(heads, transform=True):
-                    locations = ((2 ** (heads * scale_factor)) - 1).to(dtype=torch.float32)
-                    if transform:
-                        locations = self.horizon_transform(locations)
-                    return locations
-
-                if self.n_value_heads == 1:
-                    # this is the old code
+                if self.tvf_n_dedicated_value_heads == 0:
+                    # this is the old solution, just one head that predicts all horizons
                     result['tvf_value'] = get_tvf_values(features, aux_features)[..., 0]
                 else:
-                    # spread heads out over range, first head is always h=0 and last head is h=tvf_max_horizon
-                    scale_factor = np.log2(1+self.tvf_max_horizon) / (self.n_value_heads-1)
-
-                    # in multi head work out which head predicts which horizon
-                    log2_horizon = torch.log2(1 + aux_features[..., 0]) / scale_factor
-
-                    if self.tvf_blending:
-                        head_low = torch.clamp(torch.floor(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
-                        head_high = torch.clamp(torch.ceil(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
-                        head_factor = torch.frac(log2_horizon)
-
-                        # it's a shame but we run this twice, once for each centered h_value...
-                        # if we where not centering transformed_h we wouldn't have to do this
-                        tvf_values_low = get_tvf_values(features, aux_features, get_head_location(head_low))
-                        tvf_values_high = get_tvf_values(features, aux_features, get_head_location(head_high))
-
-                        value_low = torch.gather(tvf_values_low, dim=2, index=head_low[:, :, None])[:, :, 0]
-                        value_high = torch.gather(tvf_values_high, dim=2, index=head_high[:, :, None])[:, :, 0]
-                        result['tvf_value'] = value_low * (1 - head_factor) + value_high * head_factor
-                    else:
-                        head_near = torch.clamp(torch.round(log2_horizon), 0, self.n_value_heads - 1).to(dtype=torch.int64)
-                        tvf_values = get_tvf_values(
-                            features,
-                            aux_features,
-                            get_head_location(head_near, transform=self.n_value_heads > 1)
-                        )
-                        value_near = torch.gather(tvf_values, dim=2, index=head_near[:, :, None])[:, :, 0]
-                        result['tvf_value'] = value_near
-
+                    # for n heads are for horizons h, final head is the generic one.
+                    # this isn't the most efficent code, but i'll do...
+                    # what I'd like to do is to have separate networks, so dedicated heads do not require the horizon
+                    # to be input...
+                    values = get_tvf_values(features, aux_features)
+                    specific_values = values[..., :-1]
+                    specific_values[..., 0] = 0 # set h_0 = 0
+                    generic_values = values[..., -1]
+                    result['tvf_value'] = generic_values
+                    horizons = aux_features[:, :, 0]
+                    for h in range(0, self.tvf_n_dedicated_value_heads):
+                        # there's probably a better 'masked select' way to do this...
+                        mask = (horizons == h)
+                        inv_mask = torch.logical_not(mask)
+                        result['tvf_value'] = result['tvf_value'] * inv_mask + specific_values[..., h] * mask
         return result
 
 
@@ -349,7 +322,7 @@ class TVFModel(nn.Module):
             tvf_time_transform = lambda x: x,
             tvf_hidden_units:int = 512,
             tvf_activation:str = "relu",
-            tvf_n_value_heads:int=1,
+            tvf_n_dedicated_value_heads:int=0,
 
             network_args:Union[dict, None] = None,
     ):
@@ -374,7 +347,7 @@ class TVFModel(nn.Module):
             tvf_hidden_units=tvf_hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
             tvf_time_transform=tvf_time_transform,
-            tvf_n_value_heads=tvf_n_value_heads,
+            tvf_n_dedicated_value_heads=tvf_n_dedicated_value_heads,
             tvf_max_horizon=tvf_max_horizon,
             actions=actions,
             **(network_args or {})

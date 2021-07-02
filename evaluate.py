@@ -145,14 +145,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generates videos and evaluation results")
     parser.add_argument("mode", help="[video|eval]")
     parser.add_argument("run_filter", type=str, default="", help="Filter for runs.")
-    parser.add_argument("--temperatures", type=str, default="[None]", help="Temperatures to generate.")
+    parser.add_argument("--experiment_filter", type=str, default="", help="Filter for experiments.")
+    parser.add_argument("--temperatures", type=str, default="[None]",
+                        help="Temperatures to generate. e.g. [0.1, 1.0, 10.0]")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
     eval_args = parser.parse_args()
 
     assert eval_args.mode in ["video", "video_nt", "eval"]
 
     ZERO_TIME = eval_args.mode == "video_nt"
-    GENERATE_EVAL = eval_args.mode=="eval"
+    GENERATE_EVAL = eval_args.mode == "eval"
     GENERATE_MOVIES = eval_args.mode == "video"
 
     temperatures = ast.literal_eval(eval_args.temperatures)
@@ -164,7 +166,12 @@ if __name__ == "__main__":
     for max_epoch in range(0, 201, 5):
         for folder in folders:
             if eval_args.run_filter in folder:
+                if eval_args.experiment_filter:
+                    exp_filter = lambda x : eval_args.experiment_filter in x
+                else:
+                    exp_filter = None
                 monitor(
                     os.path.join('./Run', folder),
+                    experiment_filter=exp_filter,
                     max_epoch=max_epoch,
                 )

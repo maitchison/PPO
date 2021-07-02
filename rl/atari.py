@@ -90,6 +90,9 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
         if args.ed_type != "none":
             env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
 
+        if args.reward_scale != 1.0 and not args.reward_normalization:
+            env = wrappers.RewardScaleWrapper(env, args.reward_scale)
+
         if args.deferred_rewards != 0:
             env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
 

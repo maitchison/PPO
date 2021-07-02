@@ -18,7 +18,7 @@ from .config import args
 def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     if verbose:
         print(f"Warming up environments for {min_duration} to {max_duration} steps:", end='', flush=True)
-    max_steps = np.random.randint(min_duration, max_duration, [args.agents])
+    max_steps = np.random.randint(min_duration, max_duration+1, [args.agents])
     for t in range(max(max_steps)):
         masks = t < max_steps
         with torch.no_grad():
@@ -95,8 +95,7 @@ def train(model: models.TVFModel, log: Logger):
             # this will get an initial estimate for the normalization constants.
             runner.run_random_agent(20)
 
-        warmup_duration = 250
-        desync_envs(runner, 5, warmup_duration)
+        desync_envs(runner, 0, args.warmup_period)
     else:
         # this is really just the throw a few new frames through the wrappers
         desync_envs(runner, 2, 4, verbose=False)

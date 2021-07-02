@@ -37,6 +37,7 @@ import os
 
 DEVICE = "cuda:1"
 REWARD_SCALE = float()
+CURRENT_HORIZON = int()
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 TEMP_LOCATION = os.path.expanduser("~/.cache/")
 
@@ -100,6 +101,7 @@ def load_checkpoint(checkpoint_path, device=None):
     """ Restores model from checkpoint. Returns current env_step"""
 
     global REWARD_SCALE
+    global CURRENT_HORIZON
 
     load_args(checkpoint_path)
 
@@ -114,6 +116,7 @@ def load_checkpoint(checkpoint_path, device=None):
     model.load_state_dict(checkpoint['model_state_dict'])
     step = checkpoint['step']
     env_state = checkpoint["env_state"]
+    CURRENT_HORIZON = checkpoint.get("current_horizon", 0)
 
     if "VecNormalizeRewardWrapper" in env_state:
         # the new way
@@ -369,6 +372,7 @@ def generate_rollouts(
 
     _ = env.reset()
     states = env.reset()
+    infos = None
 
     is_running = [True] * num_rollouts
 
@@ -435,8 +439,17 @@ def generate_rollouts(
 
         prev_states = states.copy()
         prev_times = times.copy()
+        if infos is not None:
+            prev_infos = infos.copy()
+        else:
+            prev_infos = None
 
         states, rewards, dones, infos = env.step(action)
+
+        # this happens on the first frame, prev_infos is set to None as reset does not generate an info
+        # so we use the next info to get the rendered frame... what a pain...
+        if prev_infos is None:
+            prev_infos = infos.copy()
 
         for i in range(len(states)):
 
@@ -453,8 +466,8 @@ def generate_rollouts(
 
             if 'frames' in buffers[i]:
                 agent_layers = prev_states[i]
-                channels = infos[i].get("channels", None)
-                rendered_frame = infos[i].get("monitor_obs", prev_states[i])
+                channels = prev_infos[i].get("channels", None)
+                rendered_frame = prev_infos[i].get("monitor_obs", prev_states[i])
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 buffers[i]['frames'].append(frame)
 
@@ -493,13 +506,14 @@ class QuickPlot():
     Supports only basic functions.
     Old plt.draw was ~40ms, this one is ?
     """
-    def __init__(self, y_min=0, y_max=1000, log_scale=False):
+    def __init__(self, y_min=0, y_max=1000, log_scale=False, invert_score=False):
         self._y_min = y_min
         self._y_max = y_max
         self._background:np.ndarray
         self._transform: matplotlib.transforms.Transform
         self.log_scale = log_scale
         self._generate_background()
+        self.invert_score = invert_score
         self.buffer = self._background.copy()
 
     def _generate_background(self):
@@ -578,6 +592,9 @@ class QuickPlot():
         We assume xs are sorted.
         """
 
+        if self.invert_score:
+            ys = -np.asarray(ys)
+
         if self.log_scale:
             xs = np.log10(10+np.asarray(xs))
 
@@ -620,7 +637,10 @@ def export_movie(
     a lot of memory.
     """
 
-    assert args.tvf_gamma == args.gamma, "Rediscounting not supported yet"
+    #assert args.tvf_gamma == args.gamma, "Rediscounting not supported yet"
+    if args.tvf_gamma != args.gamma:
+        print("Rediscounting not supported yet")
+        return
 
     scale = 4
 
@@ -660,8 +680,9 @@ def export_movie(
     y_min = 0
 
     # draw background plot
-    log_fig = QuickPlot(y_min, y_max, log_scale=True)
-    linear_fig = QuickPlot(y_min, y_max, log_scale=False)
+    inv_score = args.environment == "Skiing" # hack to make skiing plot correctly.
+    log_fig = QuickPlot(y_min, y_max, log_scale=True, invert_score=inv_score)
+    linear_fig = QuickPlot(y_min, y_max, log_scale=False, invert_score=inv_score)
     plot_height, plot_width = log_fig.buffer.shape[:2]
 
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
@@ -714,6 +735,10 @@ def export_movie(
         ys = true_returns
         log_fig.plot(xs, ys, 'lightcoral')
         linear_fig.plot(xs, ys, 'lightcoral')
+
+        # show current horizon
+        log_fig.plot([CURRENT_HORIZON], [0], 'white')
+        linear_fig.plot([CURRENT_HORIZON], [0], 'white')
 
         # plot predicted values...
         # note: these are the TVF discounted values, so this will not be right if gamma=tvf_gamma

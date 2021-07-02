@@ -88,52 +88,6 @@ canonical_57 = [
     "Zaxxon"
 ]
 
-# very similar to the v16_0009 args, but with log 30k horizon, and some tweaks
-v18_args = {
-    'checkpoint_every': int(5e6),
-    'workers': WORKERS,
-    'epochs': 50,
-    'export_video': False,
-    'use_compression': True,
-
-    # PPO args
-    'max_grad_norm': 25.0,
-    'agents': 512,                          # want this to be higher, but memory constrained...
-    'n_steps': 1024,                        # large n_steps might be needed for long horizon?
-    'policy_mini_batch_size': 1024,         # slower but better...
-    'value_mini_batch_size': 512,
-    'policy_epochs': 3,
-    'value_epochs': 4,                      # slightly better with 4
-    'distill_epochs': 1,
-    'target_kl': -1,                        # remove target_kl
-    'ppo_epsilon': 0.2,
-    'value_lr': 2.5e-4,
-    'policy_lr': 2.5e-4,
-    'entropy_bonus': 0.01,                  # was 0.01 but this was on old settings so we need to go lower
-    'time_aware': True,
-    'distill_beta': 1.0,
-    'tvf_force_ext_value_distill': True,    # slightly better, slightly faster...
-
-    # TVF args
-    'use_tvf': True,
-    'tvf_value_distribution': 'fixed_geometric',
-    'tvf_horizon_distribution': 'fixed_geometric',
-    'tvf_horizon_scale': 'log',
-    'tvf_time_scale': 'log',
-    'tvf_hidden_units': 256,               # more is probably better, but we need just ok for the moment
-    'tvf_value_samples': 128,
-    'tvf_horizon_samples': 128,
-    'tvf_mode': 'exponential',             # adaptive seems like a good tradeoff
-    'tvf_n_step': 32,                      # perhaps experiment with higher later on?
-    'tvf_coef': 1.0,                       # this is an important parameter...
-    'tvf_soft_anchor': 1.0,
-    'tvf_max_horizon': 30000,
-
-    'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-
- }
-
 v18_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
@@ -180,7 +134,16 @@ v18_args = {
  }
 
 
-def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_params=None, score_threshold=None, **kwargs):
+def add_job(
+        experiment_name,
+        run_name,
+        priority=0,
+        chunk_size: int = 10,
+        default_params=None,
+        score_threshold=None,
+        hostname: str = '',
+        **kwargs
+):
 
     if default_params is not None:
         for k, v in default_params.items():
@@ -195,7 +158,7 @@ def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_pa
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
 
-    job = Job(experiment_name, run_name, priority, chunk_size, kwargs)
+    job = Job(experiment_name, run_name, priority, chunk_size, kwargs, hostname=hostname)
 
     if score_threshold is not None and chunk_size > 0:
         job_details = job.get_details()
@@ -204,7 +167,7 @@ def add_job(experiment_name, run_name, priority=0, chunk_size:int=10, default_pa
             chunks_completed = job_details['completed_epochs'] / chunk_size
             if job_details['score'] < score_threshold * chunks_completed and chunks_completed > 0.75:
                 modified_kwargs["epochs"] = chunk_size
-            job = Job(experiment_name, run_name, priority, chunk_size, modified_kwargs)
+            job = Job(experiment_name, run_name, priority, chunk_size, modified_kwargs, hostname=hostname)
 
     job_list.append(job)
     return job
@@ -259,13 +222,14 @@ class Job:
     # class variable to keep track of insertion order.
     id = 0
 
-    def __init__(self, experiment_name, run_name, priority, chunk_size:int, params):
+    def __init__(self, experiment_name, run_name, priority, chunk_size:int, params, hostname=None):
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.priority = priority
         self.params = params
         self.id = Job.id
         self.chunk_size = chunk_size
+        self.hostname = hostname
         Job.id += 1
 
     def __lt__(self, other):
@@ -480,8 +444,13 @@ def run_next_experiment(filter_jobs=None):
     job_list.sort()
 
     for job in job_list:
+
         if filter_jobs is not None and not filter_jobs(job):
             continue
+
+        if job.hostname is not None and not job.hostname in HOST_NAME:
+            continue
+
         status = job.get_status()
 
         if status in ["", "pending"]:
@@ -712,221 +681,660 @@ def random_search_TVF3k():
         score_thresholds=[0, 0, 0],
     )
 
-def setup_paper_experiments():
+def setup_tests():
+
+    default_args = v18_args.copy()
+    default_args['value_lr'] = 1.0e-4
+    default_args['tvf_force_ext_value_distill'] = True
+    default_args['entropy_bonus'] = 0.01
+    default_args['seed'] = 1  # force deterministic
+    default_args['use_compression'] = True
+    default_args['eb_beta'] = -0.2
+    default_args['tvf_exp_masked'] = True
+    #default_args['warmup_period'] = 1000 # needed to make time pilot initial score correct (otherwise we get all low scores then all high scores).
+
+    # trying to get to the bottom of the time pilot issues
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"default",
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"tvf_1k",
+        tvf_gamma=0.999,
+        gamma=0.999,
+        tvf_max_horizon=3000,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"no_eb_decay",
+        eb_beta=0,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"sample_sum",
+        tvf_sample_reduction="sum",
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"random_sample",
+        tvf_value_distribution="geometric",
+        tvf_horizon_distribution="geometric",
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"reward_scale",
+        reward_scale=2.0,
+        default_params=default_args,
+        priority=300,
+    )
+
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"default (bugfixed)",
+        default_params=default_args,
+        priority=400,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"no_mask",
+        tvf_exp_masked=False,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"no_compression",
+        use_compression=False,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"lower_entropy",
+        entropy_bonus=0.003,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"very_low_entropy",
+        entropy_bonus=0.001,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"full_distill",
+        tvf_force_ext_value_distill=False,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"no_distill",
+        distill_epochs=0,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"faster_value_lr",
+        value_lr=2.5e-4,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"ppo_1k",
+        use_tvf=False,
+        gamma=0.999,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"ppo_10k",
+        use_tvf=False,
+        gamma=0.9999,
+        default_params=default_args,
+        priority=300,
+    )
+
+    add_job(
+        f"PAPER_Test_A",
+        env_name="TimePilot",
+        run_name=f"no_soft_anchor",
+        tvf_soft_anchor=0,
+        default_params=default_args,
+        priority=300,
+    )
+
+    for auto_gamma in ["off", "tvf", "both", "gamma"]:
+        add_job(
+            f"PAPER_AutoGamma",
+            env_name="TimePilot",
+            run_name=f"{auto_gamma}",
+            auto_gamma=auto_gamma,
+            auto_horizon=True,
+            default_params=default_args,
+            priority=0,
+        )
+
+    if True:
+        for reward_clipping in ["off", "sqrt", "1"]:
+            add_job(
+                f"PAPER_RewardClipping",
+                env_name="TimePilot",
+                run_name=f"reward_clipping={reward_clipping}",
+                reward_clipping=reward_clipping,
+                default_params=default_args,
+                priority=50,
+            )
+
+
+    if True:
+        add_job(
+            f"PAPER_Test_E",
+            env_name="TimePilot",
+            run_name=f"implicit_zero",
+            tvf_implicit_zero=True,
+            default_params=default_args,
+            priority=450,
+        )
+
+        add_job(
+            f"PAPER_Test_F",
+            env_name="TimePilot",
+            run_name=f"fixed_heads=16",
+            tvf_n_dedicated_value_heads=16,
+            default_params=default_args,
+            priority=300,
+        )
+
+        add_job(
+            f"PAPER_Test_E",
+            env_name="TimePilot",
+            run_name=f"no_warmup",
+            warmup_period=1,
+            default_params=default_args,
+            priority=300,
+        )
+
+        add_job(
+            f"PAPER_Test_E",
+            env_name="TimePilot",
+            run_name=f"long_warmup",
+            warmup_period=2000,
+            default_params=default_args,
+            priority=300,
+        )
+
+
+    if True:
+        add_job(
+            f"PAPER_1k",
+            env_name="TimePilot",
+            run_name=f"gamma=0.999",
+            gamma=0.999,
+            default_params=default_args,
+            priority=0,
+        )
+        add_job(
+            f"PAPER_1k",
+            env_name="TimePilot",
+            run_name=f"tvf_gamma=0.999",
+            tvf_gamma=0.999,
+            default_params=default_args,
+            priority=0,
+        )
+        add_job(
+            f"PAPER_1k",
+            env_name="TimePilot",
+            run_name=f"both_gamma=0.999",
+            tvf_gamma=0.999,
+            gamma=0.999,
+            default_params=default_args,
+            priority=0,
+        )
+        add_job(
+            f"PAPER_1k",
+            env_name="TimePilot",
+            run_name=f"tvf_max_horizon=1000",
+            tvf_max_horizon=1000,
+            default_params=default_args,
+            priority=0,
+        )
+        add_job(
+            f"PAPER_1k",
+            env_name="TimePilot",
+            run_name=f"reward_gamma=0.999",
+            override_reward_normalization_gamma=0.999,
+            default_params=default_args,
+            priority=0,
+        )
+
+
+def setup_paper_experiments2():
+
+    # changes:
+    # faster value lr, with less epochs
+    # use of 'implicit zero'.
+
     default_args = v18_args.copy()
     default_args['value_lr'] = 2.5e-4
     default_args['tvf_force_ext_value_distill'] = False
     default_args['entropy_bonus'] = 0.01
-    default_args['seed'] = 1 # force deterministic
+    default_args['seed'] = 1  # force deterministic
     default_args['use_compression'] = True
+    default_args['eb_beta'] = -0.2
+    default_args['tvf_exp_masked'] = False
+    default_args['tvf_implicit_zero'] = True
+    default_args['tvf_soft_anchor'] = 0
+    default_args['value_epochs'] = 2
+    default_args['auto_gamma'] = "both"
+    default_args['auto_horizon'] = True
 
     ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
     ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
 
+    # default_args['warmup_period'] = 1000 # needed to make time pilot initial score correct (otherwise we get all low scores then all high scores).
+
+    for env in ATARI_3:
+        add_job(
+            f"PAPER_Trial",
+            env_name=env,
+            run_name=f"{env}_default",
+            default_params=default_args,
+            priority=100,
+            hostname='ML-Rig',
+        )
+        add_job(
+            f"PAPER_Trial",
+            env_name=env,
+            run_name=f"{env}_lowentropy",
+            entropy_bonus=0.003,
+            default_params=default_args,
+            priority=100,
+            hostname='ML-Rig',
+        )
+
     for run in [1, 2, 3]:
         add_job(
-            f"PAPER_A_E5_Skiing",
+            f"PAPER_Trial_Skiing",
             env_name="Skiing",
-            run_name=f"run_{run}",
+            run_name=f"default_{run}",
             default_params=default_args,
-            priority=200,
+            priority=150,
             seed=run,
+            hostname='ML-Rig',
+        )
+        add_job(
+            f"PAPER_Trial_Solaris",
+            env_name="Solaris",
+            run_name=f"default_{run}",
+            default_params=default_args,
+            priority=100,
+            seed=run,
+            hostname='desktop',
         )
 
     for env in canonical_57:
+        if env in ["Defender", "JamesBond"]:
+            # doesn't work...
+            continue
+
+        # front run these to see how it's going
+        if env in ["DemonAttack", "Breakout", "Skiing"]:
+            priority = 100
+        elif env in ATARI_3 or env in ATARI_VAL:
+            priority = 50
+        else:
+            priority = 0
+
         add_job(
-            f"PAPER_A_E3_Atari57",
+            f"PAPER_Trial_Atari57",
             env_name=env,
             run_name=f"{env}",
             default_params=default_args,
-            priority=-100,
+            priority=priority,
+            hostname='ML-Rig',
         )
+
+
+
+def setup_paper_experiments():
+    default_args = v18_args.copy()
+    default_args['value_lr'] = 1.0e-4
+    default_args['tvf_force_ext_value_distill'] = True
+    default_args['entropy_bonus'] = 0.01
+    default_args['seed'] = 1  # force deterministic
+    default_args['use_compression'] = True
+    default_args['eb_beta'] = -0.2
+
+    ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
+    ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
+
+    # E0 Regression
+    for env in ATARI_3:
+
+        # agent-57 says that in skiing −3272 is the best one can achieve.
+        # for TP 4k is DQN level, 12k in rainbow DQN, random is 3.5k human is 5.2k
+        # NGU seems to use 0.9999, maybe I should stick to this too?
+
+        # question: why is tp worse than random??
+
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_30k_default",
+            default_params=default_args,
+            priority=300,
+        )
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_30k_auto",
+            default_params=default_args,
+            tvf_auto_horizon=True,
+            priority=350,
+        )
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_10k_auto",
+            default_params=default_args,
+            tvf_auto_horizon=True,
+            tvf_max_horizon=10000,
+            tvf_gamma=0.9999, # this is what NGU and Agent-57 use, might want to show 99997 works too...
+            gamma=0.9999,
+            priority=350,
+        )
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_10k_default",
+            default_params=default_args,
+            tvf_max_horizon=10000,
+            tvf_gamma=0.9999,  # this is what NGU and Agent-57 use, might want to show 99997 works too...
+            gamma=0.9999,
+            priority=350,
+        )
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_3k_default",
+            default_params=default_args,
+            tvf_max_horizon=3000,
+            tvf_gamma=0.9997,  # this is what NGU and Agent-57 use, might want to show 99997 works too...
+            gamma=0.9997,
+            priority=350,
+            hostname="matthew-desktop",
+        )
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_1k_default",
+            default_params=default_args,
+            tvf_max_horizon=1000,
+            tvf_gamma=0.999,  # this is what NGU and Agent-57 use, might want to show 99997 works too...
+            gamma=0.999,
+            priority=350,
+            hostname="matthew-desktop",
+
+        )
+        add_job(
+            f"PAPER_A_E0_Regression",
+            env_name=env,
+            run_name=f"{env}_tvf_1k",
+            default_params=default_args,
+            tvf_max_horizon=1000, # this does much better for some reason?
+            priority=300,
+        )
+
+    if True:
+        # this is to verify that the determanism works...
+        add_job(
+            f"PAPER_A_Determinism",
+            env_name="DemonAttack",
+            run_name=f"ML-Rig_A",
+            default_params=default_args,
+            priority=100,
+            seed=1,
+        )
+        add_job(
+            f"PAPER_A_Determinism",
+            env_name="DemonAttack",
+            run_name=f"ML-Rig_B",
+            default_params=default_args,
+            priority=100,
+            seed=1,
+        )
+        add_job(
+            f"PAPER_A_Determinism",
+            env_name="DemonAttack",
+            run_name=f"Desktop",
+            default_params=default_args,
+            priority=100,
+            seed=1,
+            hostname="matthew-desktop",
+        )
+
+
+    # Experiment 5: Defered reward games, Skiing and solaris... (run on 3 seeds so we know this is not just random chance)
+    for run in [1, 2, 3]:
+        # try with exact old settings
+        # if this doesn't work it's either the determanism, or a change in the code, both of which can be verified...
+        add_job(
+            f"PAPER_A_E5_Skiing",
+            env_name="Skiing",
+            run_name=f"tvf_30k_{run}",
+            default_params=default_args,
+            priority=100,
+            seed=run,
+        )
+
+        # show that PPO doesn't work...
+        add_job(
+            f"PAPER_A_E5_Skiing",
+            env_name="Skiing",
+            run_name=f"ppo_30k_{run}",
+            default_params=default_args,
+            use_tvf=False,
+            priority=100,
+            seed=run,
+        )
+
+        # again with solaris...
+        # rainbow is 2,860.7
+        add_job(
+            f"PAPER_A_E5_Solaris",
+            env_name="Solaris",
+            run_name=f"tvf_30k_{run}",
+            default_params=default_args,
+            priority=100,
+            seed=run,
+        )
+
+        # show that PPO doesn't work...
+        add_job(
+            f"PAPER_A_E5_Solaris",
+            env_name="Solaris",
+            run_name=f"ppo_30k_{run}",
+            default_params=default_args,
+            use_tvf=False,
+            priority=100,
+            seed=run,
+        )
+
+    # for env in canonical_57:
+    #     add_job(
+    #         f"PAPER_A_E3_Atari57",
+    #         env_name=env,
+    #         run_name=f"{env}",
+    #         default_params=default_args,
+    #         priority=-100,
+    #     )
 
     # E6 Ablation study
     for env in ATARI_3:
 
-        add_job(
-            f"PAPER_A_E6_Ablation",
-            env_name=env,
-            run_name=f"{env}_tvf_30k_fullactions",
-            default_params=default_args,
-            full_action_space=True,
-            priority=100,
-        )
-
-        add_job(
-            f"PAPER_A_E6_Ablation",
-            env_name=env,
-            run_name=f"{env}_tvf_30k_stickyactions",
-            default_params=default_args,
-            sticky_actions=True,
-            priority=100,
-        )
-
-        add_job(
-            f"PAPER_A_E6_Ablation",
-            env_name = env,
-            run_name = f"{env}_tvf_30k_nosoftanchor",
-            default_params = default_args,
-            tvf_soft_anchor = 0.0,
-            priority = 100,
-        )
-
+        # the default run...
         add_job(
             f"PAPER_A_E6_Ablation",
             env_name=env,
             run_name=f"{env}_tvf_30k",
             default_params=default_args,
+
             priority=100,
         )
 
-        add_job(
-            f"PAPER_A_E6_Ablation",
-            env_name=env,
-            run_name=f"{env}_ppg_30k",
-            use_tvf=False,
-            default_params=default_args,
-            priority=100,
-        )
+        # add_job(
+        #     f"PAPER_A_E6_Ablation",
+        #     env_name=env,
+        #     run_name=f"{env}_tvf_30k_fullactions",
+        #     default_params=default_args,
+        #     full_action_space=True,
+        #     priority=100,
+        # )
 
+    #     add_job(
+    #         f"PAPER_A_E6_Ablation",
+    #         env_name=env,
+    #         run_name=f"{env}_tvf_30k_stickyactions",
+    #         default_params=default_args,
+    #         sticky_actions=True,
+    #         priority=100,
+    #     )
+    #
+    #     add_job(
+    #         f"PAPER_A_E6_Ablation",
+    #         env_name = env,
+    #         run_name = f"{env}_tvf_30k_nosoftanchor",
+    #         default_params = default_args,
+    #         tvf_soft_anchor = 0.0,
+    #         priority = 100,
+    #     )
+    #
+    #     add_job(
+    #         f"PAPER_A_E6_Ablation",
+    #         env_name=env,
+    #         run_name=f"{env}_tvf_30k", # reference run
+    #         default_params=default_args,
+    #         priority=150,
+    #     )
+    #
+    #     add_job(
+    #         f"PAPER_A_E6_Ablation",
+    #         env_name=env,
+    #         run_name=f"{env}_ppg_30k",
+    #         use_tvf=False,
+    #         default_params=default_args,
+    #         priority=100,
+    #     )
+    #
+    #     add_job(
+    #         f"PAPER_A_E6_Ablation",
+    #         env_name=env,
+    #         run_name=f"{env}_ppg_1k",
+    #         use_tvf=False,
+    #         gamma=0.999,
+    #         default_params=default_args,
+    #         priority=100,
+    #     )
+    #
+    # E7 Rediscounting
+    for env in ATARI_3:
         add_job(
-            f"PAPER_A_E6_Ablation",
+            f"PAPER_A_E7_Rediscounting",
             env_name=env,
-            run_name=f"{env}_ppg_1k",
-            use_tvf=False,
-            gamma=0.999,
+            run_name=f"{env}_rediscount",
             default_params=default_args,
+            tvf_gamma=1.0,
             priority=500,
         )
 
-def setup_experiments_18():
-
-    # Standard regression run (with new V18 settings)
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [1]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                epochs=50,
-                priority=200,
-            )
-
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [4]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                eb_beta=-0.2, # reduce entropy bonus by 10x over the 50 epochs period.
-                epochs=50,
-                priority=100,
-            )
-
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [5]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                value_epochs=2, # try less epochs
-                epochs=50,
-                priority=100,
-            )
-
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [6]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                value_lr=1e-4, # try less learning rate (but with the more epochs)
-                epochs=50,
-                priority=100,
-            )
-
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [7]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                tvf_force_ext_value_distill=False, # try old distill
-                epochs=50,
-                priority=100,
-            )
-
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [8]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                value_lr=1e-4,  # try less learning rate (but with the more epochs)
-                tvf_force_ext_value_distill=False, # try old distill
-                eb_beta=-0.2,  # reduce entropy bonus by 10x over the 50 epochs period.
-                epochs=50,
-                priority=200,
-            )
-
-    # best settings, but with lots of entropy...
-    for env in ['Krull', 'KungFuMaster', 'Seaquest']:
-        for run in [9]:
-            add_job(
-                f"TVF_18_Regression",
-                env_name=env,
-                run_name=f"{env}_run_{run}",
-                default_params=v18_args,
-                value_lr=1e-4,  # try less learning rate (but with the more epochs)
-                tvf_force_ext_value_distill=False, # try old distill
-                eb_beta=-0.4,  # reduce entropy bonus by 50x over the 50 epochs period.
-                entropy_bonus=0.03, # start at 0.03, end at 0.0003
-                epochs=50,
-                priority=200,
-            )
-
-    # tp run, just out of interest...
-    for env in ['Krull', 'KungFuMaster', 'Seaquest', "MontezumaRevenge"]:
-        for alpha in [0, 1, 10, 100]:
-            add_job(
-                f"TVF_18_TerminalPrediction",
-                env_name=env,
-                run_name=f"{env}_alpha_{alpha}",
-                default_params=v18_args,
-                use_tp=True,
-                tp_alpha=alpha,
-                epochs=50,
-                priority=-100,
-            )
-
-    # average performance over 3 runs...
-    # world record is 32.83 seconds, so see if we get that...
-    # game timeouts after 5 minutes so min score should be 30k?
-    for run in [1, 2, 3]:
         add_job(
-            f"TVF_18_E5_Skiing",
-            env_name="Skiing",
-            run_name=f"run_{run}",
-            default_params=v18_args,
-            epochs=50,
-            priority=200,
+            f"PAPER_A_E7_Rediscounting",
+            env_name=env,
+            run_name=f"{env}_nodiscount",
+            default_params=default_args,
+            tvf_gamma=1.0,
+            gamma=1.0,
+            priority=500,
         )
 
-    # for env in canonical_57:
-    #     add_job(
-    #         f"TVF_18_E3_Atari57",
-    #         env_name=env,
-    #         run_name=f"{env}",
-    #         default_params=v18_args,
-    #         epochs=50,
-    #         priority=-100,
-    #     )
+    # # E8 Max Horizon
+    # for env in ATARI_3:
+    #     for tvf_max_horizon in [1000, 3000, 10000, 30000, 100000]:
+    #         add_job(
+    #             f"PAPER_A_E8_MaxHorizon",
+    #             env_name=env,
+    #             run_name=f"{env}_mh={tvf_max_horizon}",
+    #             default_params=default_args,
+    #             tvf_max_horizon=tvf_max_horizon,
+    #             priority=140,
+    #             hostname="matthew-desktop"
+    #         )
+
+    # # E* Breakout (I think we need to do this...)
+    # for env in ATARI_3:
+    #     for tvf_max_horizon in [1000, 3000, 10000, 30000, 100000]:
+    #         add_job(
+    #             f"PAPER_A_E8_MaxHorizon",
+    #             env_name=env,
+    #             run_name=f"{env}_mh={tvf_max_horizon}",
+    #             default_params=default_args,
+    #             tvf_max_horizon=tvf_max_horizon,
+    #             priority=140,
+    #             hostname="matthew-desktop"
+    #         )
+
+
+
+
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -938,9 +1346,10 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    #setup_experiments_18()
-    setup_paper_experiments()
-    #random_search_TVF3k()
+    # setup_paper_experiments()
+    # setup_tests()
+    setup_paper_experiments2()
+
 
     if len(sys.argv) == 1:
         experiment_name = "show"
@@ -956,4 +1365,4 @@ if __name__ == "__main__":
     elif experiment_name == "auto":
         run_next_experiment()
     else:
-        run_next_experiment(filter_jobs=lambda x: x.experiment_name == experiment_name)
+        run_next_experiment(filter_jobs=lambda x: experiment_name in x.run_name)
