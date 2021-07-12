@@ -2,7 +2,7 @@ import gym
 import numpy as np
 from collections import defaultdict
 
-from . import wrappers, config
+from . import wrappers, config, ale_roms
 
 # get list of game environments...
 _game_envs = defaultdict(set)
@@ -49,12 +49,12 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
         non_determinism = non_determinism.lower()
         if non_determinism == "noop":
             env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
-            env = wrappers.FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+            env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
         elif non_determinism == "frame-skip":
             env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
-            env = wrappers.FrameSkipWrapper(env, min_skip=2, max_skip=5, reduce_op=np.max)
+            env = wrappers.FrameSkipWrapper(env, min_skip=int(args.frame_skip*0.5), max_skip=int(args.frame_skip*1.5), reduce_op=np.max)
         elif non_determinism == "none":
-            env = wrappers.FrameSkipWrapper(env, min_skip=4, max_skip=4, reduce_op=np.max)
+            env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
         else:
             raise Exception("Invalid non determinism type {}.".format(non_determinism))
 
@@ -92,6 +92,9 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
 
         if args.reward_scale != 1.0 and not args.reward_normalization:
             env = wrappers.RewardScaleWrapper(env, args.reward_scale)
+
+        if args.terminal_on_loss_of_life:
+            env = wrappers.EpisodicLifeEnv(env)
 
         if args.deferred_rewards != 0:
             env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)

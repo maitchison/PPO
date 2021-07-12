@@ -115,76 +115,8 @@ class CnnDownStack(nn.Module):
             return (self.outchan, h, w)
 
 
-class ImpalaCNN(nn.Module):
-    name = "ImpalaCNN"  # put it here to preserve pickle compat
-
-    def __init__(
-        self, inshape, chans, outsize, scale_ob, nblock, final_relu=True, **kwargs
-    ):
-        super().__init__()
-        self.scale_ob = scale_ob
-        h, w, c = inshape
-        curshape = (c, h, w)
-        s = 1 / math.sqrt(len(chans))  # per stack scale
-        self.stacks = nn.ModuleList()
-        for outchan in chans:
-            stack = CnnDownStack(
-                curshape[0], nblock=nblock, outchan=outchan, scale=s, **kwargs
-            )
-            self.stacks.append(stack)
-            curshape = stack.output_shape(curshape)
-        self.dense = NormedLinear(intprod(curshape), outsize, scale=1.4)
-        self.outsize = outsize
-        self.final_relu = final_relu
-
-    def forward(self, x):
-        x = x.to(dtype=th.float32) / self.scale_ob
-
-        b, t = x.shape[:-3]
-        x = x.reshape(b * t, *x.shape[-3:])
-        x = transpose(x, "bhwc", "bchw")
-        x = sequential(self.stacks, x, diag_name=self.name)
-        x = x.reshape(b, t, *x.shape[1:])
-        x = flatten_image(x)
-        x = th.relu(x)
-        x = self.dense(x)
-        if self.final_relu:
-            x = th.relu(x)
-        return x
-
-
-class ImpalaEncoder(Encoder):
-    def __init__(
-        self,
-        inshape,
-        device,
-        outsize=256,
-        chans=(16, 32, 32),
-        scale_ob=255.0,
-        nblock=2,
-        **kwargs
-    ):
-        super().__init__()
-        self.cnn = ImpalaCNN(
-            inshape=inshape,
-            chans=chans,
-            scale_ob=scale_ob,
-            nblock=nblock,
-            outsize=outsize,
-            **kwargs
-        )
-        self.device = device
-        self.ccn.to(self.device)
-
-    def forward(self, x, first, state_in):
-        x = self.cnn(x)
-        return x, state_in
-
-    def initial_state(self, batchsize):
-        return th.zeros(batchsize, 0, device=self.device)
-
 # -----------------------------------------------------
-# from tensor utilties
+# from tensor utilities
 
 
 def NormedLinear(*args, scale=1.0, dtype=th.float32, **kwargs):

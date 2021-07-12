@@ -121,19 +121,8 @@ if __name__ == "__main__":
     try:
         utils.lock_job()
 
-        if args.model == "cnn":
-            head_name = "Nature"
-        else:
-            raise Exception("invalid model name {}.".format(args.model))
-
-        # reduce default hidden units from 512 to 64
-        # otherwise we have a 512x512 array, which will be 0.25M parameters
-        # actually... this is probably ok...
-        # if args.use_rnn and "hidden_units" not in model_args:
-        #     model_args["hidden_units"] = 64
-
         actor_critic_model = models.TVFModel(
-            network=head_name,
+            network=args.network,
             input_dims=obs_space,
             actions=n_actions,
             device=args.device,
@@ -145,8 +134,9 @@ if __name__ == "__main__":
             tvf_time_transform=rollout.time_scale_function,
             tvf_n_dedicated_value_heads=args.tvf_n_dedicated_value_heads,
             tvf_max_horizon=args.tvf_max_horizon,
+            architecture=args.architecture,
 
-            tvf_hidden_units=args.tvf_hidden_units,
+            hidden_units=args.hidden_units,
             tvf_activation=args.tvf_activation,
         )
         ppo.train(actor_critic_model, log)

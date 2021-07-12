@@ -212,6 +212,7 @@ def calculate_tvf_n_step(
 ):
     """
     Returns the n_step value estimate.
+    This is the old, non sampled version
     """
 
     N, A, H = values.shape
@@ -380,15 +381,20 @@ class Runner():
 
         self.name = name
         self.model = model
+        self.step = 0
 
-        self.policy_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=args.policy_lr, eps=args.adam_epsilon)
-        self.value_optimizer = torch.optim.Adam(model.value_net.parameters(), lr=args.value_lr, eps=args.adam_epsilon)
+        self.policy_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=self.policy_lr, eps=args.adam_epsilon)
+        self.value_optimizer = torch.optim.Adam(model.value_net.parameters(), lr=self.value_lr, eps=args.adam_epsilon)
         if args.distill_epochs > 0:
-            self.distill_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=args.value_lr,
+            self.distill_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=self.distill_lr,
                                                     eps=args.adam_epsilon)
+        else:
+            self.distill_optimizer = None
 
         if args.use_rnd:
-            self.rnd_optimizer = torch.optim.Adam(model.prediction_net.parameters(), lr=args.value_lr, eps=args.adam_epsilon)
+            self.rnd_optimizer = torch.optim.Adam(model.prediction_net.parameters(), lr=self.rnd_lr, eps=args.adam_epsilon)
+        else:
+            self.rnd_optimizer = None
 
         self.vec_env = None
         self.log = log
@@ -443,7 +449,6 @@ class Runner():
         # outputs tensors when clip loss is very high.
         self.log_high_grad_norm = True
 
-        self.step = 0
         self.game_crashes = 0
         self.reward_clips = 0
         self.ep_count = 0
@@ -455,6 +460,59 @@ class Runner():
         if args.tvf_max_horizon not in self.tvf_debug_horizons:
             self.tvf_debug_horizons.append(args.tvf_max_horizon)
         self.tvf_debug_horizons.sort()
+
+        # quick check to make sure value transform is correct
+        for x in [3.1415, -3.1415, 0, 10, -10, 1, -1, 10000, -10000]:
+            new_x = self.H(self.H_inv(x))
+            assert abs(new_x - x) < 1e-6, f"Expected H(H^-1({x})) to be {x} but was {new_x}"
+
+    def learning_rate_function(self, lr):
+        if args.learning_rate_anneal:
+            return lr * np.clip(1-(self.step / (args.epochs * 1e6)), 0, 1)
+        else:
+            return lr
+
+    @property
+    def value_lr(self):
+        return self.learning_rate_function(args.value_lr)
+
+    @property
+    def policy_lr(self):
+        return self.learning_rate_function(args.policy_lr)
+
+    @property
+    def distill_lr(self):
+        return self.learning_rate_function(args.value_lr)
+
+    @property
+    def rnd_lr(self):
+        return self.learning_rate_function(args.value_lr)
+
+    def update_learning_rates(self):
+        """
+        Update learning rates for all optimizers
+        Also log learning rates
+        """
+
+        self.log.watch("lr_policy", self.policy_lr, display_width=0)
+        for g in self.policy_optimizer.param_groups:
+            g['lr'] = self.policy_lr
+
+        self.log.watch("lr_value", self.value_lr, display_width=0)
+        for g in self.value_optimizer.param_groups:
+            g['lr'] = self.value_lr
+
+
+        if self.distill_optimizer is not None:
+            self.log.watch("lr_distill", self.distill_lr, display_width=0)
+            for g in self.distill_optimizer.param_groups:
+                g['lr'] = self.distill_lr
+
+        if self.rnd_optimizer is not None:
+            self.log.watch("lr_rnd", self.rnd_lr, display_width=0)
+            for g in self.rnd_optimizer.param_groups:
+                g['lr'] = self.rnd_lr
+
 
     def create_envs(self):
         """ Creates environments for runner"""
@@ -478,6 +536,7 @@ class Runner():
                 #       in a really strange way...
                 gamma=args.reward_normalization_gamma,
                 scale=args.reward_scale,
+                returns_transform=lambda x: self.H(x)
             )
 
         self.log.important("Generated {} agents ({}) using {} ({}) model.".
@@ -563,6 +622,8 @@ class Runner():
         self.reward_clips = 0
         self.batch_counter = 0
         self.episode_length_buffer.clear()
+        # so that there is something in the buffer to start with.
+        self.episode_length_buffer.append(1000)
 
     def run_random_agent(self, iterations):
         self.log.info("Warming up model with random agent...")
@@ -654,7 +715,7 @@ class Runner():
             else:
                 h_lookup[h].append(index)
 
-        returns = np.zeros([N, A, K], dtype=np.float32)
+        returns = np.zeros([N, A, K], dtype=np.float32) + self.H(0)
 
         # generate return estimates using n-step returns
         for t in range(N):
@@ -677,16 +738,33 @@ class Runner():
 
                 # the first n_step returns are just the discounted rewards, no bootstrap estimates...
                 if n in h_lookup:
-                    returns[t, :, h_lookup[n]] = reward_sum
+                    returns[t, :, h_lookup[n]] = self.H(reward_sum)
 
             for h_index, h in enumerate(required_horizons):
                 if h-steps_made <= 0:
                     # these are just the accumulated sums and don't need horizon bootstrapping
                     continue
                 interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made, :], h - steps_made)
-                returns[t, :, h_index] = reward_sum + interpolated_value * discount
+                returns[t, :, h_index] = self.H(reward_sum + self.H_inv(interpolated_value) * discount)
 
         return returns
+
+    TRANSFORM_EPSILON = 1e-2
+
+    def H(self, x):
+        if args.value_transform == "identity":
+            return x
+        elif args.value_transform == "sqrt":
+            # formula was designed to handle large returns, but mine are scaled, so scale up by 1000
+            # as ext_value is ~1.2, but returns in games are usually ~1000
+            return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + self.TRANSFORM_EPSILON * x
+
+    def H_inv(self, x):
+        if args.value_transform == "identity":
+            return x
+        elif args.value_transform == "sqrt":
+            # from https://openreview.net/pdf?id=Sye57xStvB (but with corrected square...)
+            return np.sign(x) * (((np.sqrt(1 + (4*self.TRANSFORM_EPSILON) * (np.abs(x)+1+self.TRANSFORM_EPSILON)) - 1) / (2*self.TRANSFORM_EPSILON))**2 - 1)
 
     def _calculate_lambda_sampled_returns(
             self,
@@ -741,6 +819,9 @@ class Runner():
         This allows information to transform more quickly from short horizons to long
         But does not require many calculations, and should work fine for large n_steps
         """
+
+        # note: this averages over the transformed values, which is just fine as it means that we will be more
+        # robust to outliers. (assuming the transform compresses to value function)
 
         n_steps = self.get_exponential_n_steps()
         returns = n_step_func(n_steps[0], required_horizons)
@@ -818,7 +899,7 @@ class Runner():
             tvf_n_step=None
     ):
         """
-        Calculates and returns the (tvf_gamma discounted) return estimates for given rollout.
+        Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
 
         prev_states: ndarray of dims [N+1, B, *state_shape] containing prev_states
         rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
@@ -854,7 +935,7 @@ class Runner():
         # for MC this is just an estimate at the end of the window
         assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == self.current_horizon, "First and value horizon are required."
 
-        value_samples = self.get_value_estimates(obs=obs, time=time, horizons=value_sample_horizons)
+        value_samples = self.get_value_estimates(obs=obs, time=time, horizons=value_sample_horizons, return_transformed=True)
 
         n_step_func = lambda x, y: self._calculate_n_step_sampled_returns(
             n_step=x,
@@ -941,6 +1022,11 @@ class Runner():
             model_out = self.model.forward(state[np.newaxis], **additional_params)
 
             log_probs = model_out["log_policy"][0].detach().cpu().numpy()
+
+            if np.any(np.isnan(log_probs)):
+                self.log.important("Nans found in policy, halting...")
+                raise Exception("Nans found in policy, halting...")
+
             action = utils.sample_action_from_logp(log_probs)
 
             if include_rollout:
@@ -1066,6 +1152,14 @@ class Runner():
 
             for i, (done, info) in enumerate(zip(dones, infos)):
                 if done:
+
+                    # this should be always updated, even if it's just a loss of life terminal
+                    self.episode_length_buffer.append(info["ep_length"])
+
+                    if "fake_done" in info:
+                        # this is a fake reset on loss of life...
+                        continue
+
                     # reset is handled automatically by vectorized environments
                     # so just need to keep track of book-keeping
                     if not is_warmup:
@@ -1073,11 +1167,11 @@ class Runner():
                         self.log.watch_full("ep_score", info["ep_score"], history_length=100)
                         self.log.watch_full("ep_length", info["ep_length"])
                         self.log.watch_mean("ep_count", self.ep_count, history_length=1)
-                        if "game_freeze" in infos[i]:
+
+                        if "game_freeze" in info:
                             self.game_crashes += 1
-                        if "reward_clip" in infos[i]:
+                        if "reward_clip" in info:
                             self.reward_clips += 1
-                        self.episode_length_buffer.append(info["ep_length"])
 
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
@@ -1124,7 +1218,9 @@ class Runner():
 
     @torch.no_grad()
     def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
-                            horizons: Union[None, np.ndarray, int] = None) -> np.ndarray:
+                            horizons: Union[None, np.ndarray, int] = None,
+                            return_transformed: bool = False,
+                            ) -> np.ndarray:
         """
         Returns value estimates for each given observation
         If horizons are none current_horizon is used.
@@ -1134,6 +1230,8 @@ class Runner():
             ndarray of dims [K] (returns NAK)
             integer (returns NA for horizon given
             none (returns NA for current horizon
+        return_transformed: By default returns the true value, but can optionally return transformed value estimates.
+
 
         returns: ndarray of dims [N, A, K] if horizons was array else [N, A]
         """
@@ -1169,16 +1267,21 @@ class Runner():
             values = model_out["tvf_value"]
 
             if scalar_output:
-                return values.reshape([N, A]).cpu().numpy()
+                result = values.reshape([N, A]).cpu().numpy()
             else:
-                return values.reshape([N, A, horizons.shape[-1]]).cpu().numpy()
+                result = values.reshape([N, A, horizons.shape[-1]]).cpu().numpy()
         else:
             assert horizons is None, "PPO only supports max horizon value estimates"
             model_out = self.forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 output="value",
             )
-            return model_out["ext_value"].reshape([N, A]).cpu().numpy()
+            result = model_out["ext_value"].reshape([N, A]).cpu().numpy()
+
+        if return_transformed:
+            return result
+        else:
+            return self.H_inv(result)
 
 
     @torch.no_grad()
@@ -1209,7 +1312,7 @@ class Runner():
                 force_first_and_last=True,
             )
 
-            targets = self.calculate_sampled_returns(
+            targets = self.H_inv(self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=self.tvf_debug_horizons,
                 obs=self.all_obs[:, agent_filter],
@@ -1219,7 +1322,7 @@ class Runner():
                 no_debug=True,
                 tvf_mode="nstep", # <-- MC is the least bias method we can do...
                 tvf_n_step=self.current_horizon,
-            )
+            ))
 
             total_not_explained_var = 0
             total_var = 0
@@ -1295,7 +1398,7 @@ class Runner():
         if args.use_tvf:
             # if gamma's match we only need to generate the final horizon
             # if they don't we need to generate them all and rediscount
-            if self.tvf_gamma == self.gamma:
+            if abs(self.tvf_gamma - self.gamma) < 1e-6:
                 ext_value_estimates = self.get_value_estimates(obs=self.all_obs, time=self.all_time)
             else:
                 # note: we could down sample the value estimates and adjust the gamma calculations if
@@ -1398,9 +1501,11 @@ class Runner():
         self.log.watch("game_crashes", self.game_crashes, display_width=0 if self.game_crashes == 0 else 8)
         self.log.watch("reward_clips", self.reward_clips, display_width=0 if self.reward_clips == 0 else 8)
 
-        self.log.watch("tvf_horizon", self.current_horizon)
-        self.log.watch("gamma", self.gamma)
-        self.log.watch("tvf_gamma", self.tvf_gamma)
+        if args.mode == "TVF":
+            self.log.watch("tvf_horizon", self.current_horizon)
+            self.log.watch("tvf_gamma", self.tvf_gamma)
+
+        self.log.watch("gamma", self.gamma, display_width=0)
 
         self.log_value_quality(samples=64)
 
@@ -1675,6 +1780,7 @@ class Runner():
     def generate_all_returns(self):
         """
         Generates return estimates for current batch of data.
+        This is the old algorithm with no sampling, and locked to nstep returns.
         """
 
         assert args.tvf_mode == "nstep", "Only nstep returns supported with tvf_value_samples=-1 at the moment."
@@ -1682,7 +1788,8 @@ class Runner():
         value_estimates = self.get_value_estimates(
             obs=self.all_obs,
             time=self.all_time,
-            horizons=np.arange(0, self.current_horizon + 1)
+            horizons=np.arange(0, self.current_horizon + 1),
+            return_transformed=True,
         )
 
         returns = calculate_tvf_n_step(
@@ -1800,6 +1907,32 @@ class Runner():
             kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
 
         # -------------------------------------------------------------------------
+        # Value learning for PPO mode
+        # -------------------------------------------------------------------------
+
+        if args.mode == "PPO":
+            value_head = "ext"
+
+            value_prediction = model_out["{}_value".format(value_head)]
+            returns = data["{}_returns".format(value_head)]
+
+            if args.use_clipped_value_loss:
+                old_pred_values = data["{}_value".format(value_head)]
+                # is is essentially trust region for value learning, and seems to help a lot.
+                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
+                                                                         -args.ppo_epsilon, +args.ppo_epsilon)
+                vf_losses1 = (value_prediction - returns).pow(2)
+                vf_losses2 = (value_prediction_clipped - returns).pow(2)
+                loss_value = torch.mean(torch.max(vf_losses1, vf_losses2))
+            else:
+                # simpler version, just use MSE.
+                vf_losses1 = (value_prediction - returns).pow(2)
+                loss_value = torch.mean(vf_losses1)
+            loss_value = loss_value * args.vf_coef
+            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
+            loss = loss - loss_value # negative because we're doing gradient ascent.
+
+        # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
@@ -1812,7 +1945,7 @@ class Runner():
         # Calculate gradients
         # -------------------------------------------------------------------------
 
-        opt_loss = -loss * loss_scale
+        opt_loss = loss * -loss_scale
         opt_loss.backward()
 
         # -------------------------------------------------------------------------
@@ -1879,20 +2012,23 @@ class Runner():
         else:
             return 1.0
 
-    def train(self, step):
 
-        self.step = step
+    def train_policy(self):
 
         # ----------------------------------------------------
         # policy phase
 
+        batch_data = {}
         B = args.batch_size
         N, A, *state_shape = self.prev_obs.shape
 
-        batch_data = {}
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
         batch_data["actions"] = self.actions.reshape(B).astype(np.long)
         batch_data["log_policy"] = self.log_policy.reshape([B, *self.policy_shape])
+
+        if args.mode == "PPO":
+            # ppo trains value during policy update
+            batch_data["ext_returns"] = self.ext_returns.reshape([B])
 
         if args.normalize_advantages:
             # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
@@ -1923,10 +2059,15 @@ class Runner():
                 break
         self.log.watch_full("policy_epochs", policy_epochs, display_width=8)
 
+    def train_value(self):
+
         # ----------------------------------------------------
         # value phase
 
         batch_data = {}
+        B = args.batch_size
+        N, A, *state_shape = self.prev_obs.shape
+
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
         batch_data["ext_returns"] = self.ext_returns.reshape(B)
 
@@ -1962,33 +2103,46 @@ class Runner():
                 label="value",
             )
 
+    def train_distill(self):
+
         # ----------------------------------------------------
         # distill phase
 
-        if args.distill_epochs > 0:
-            batch_data = {}
-            batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
+        if args.distill_epochs == 0:
+            return
 
-            if args.use_tvf and not args.tvf_force_ext_value_distill:
-                horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
-                                                        args.tvf_horizon_distribution)
-                H = len(horizons)
-                target_values = self.get_value_estimates(
-                    obs=self.prev_obs, time=self.prev_time, horizons=horizons).reshape([B, H])
+        batch_data = {}
+        B = args.batch_size
+        N, A, *state_shape = self.prev_obs.shape
 
-                batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
-                batch_data["tvf_time"] = self.prev_time.reshape([B])
-                batch_data["value_targets"] = target_values.reshape([B, H])
-            else:
-                target_values = self.get_value_estimates(
-                    obs=self.prev_obs, time=self.prev_time).reshape([B])
-                batch_data["value_targets"] = target_values.reshape([B])
+        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
 
-            with torch.no_grad():
-                model_out = self.forward(
-                    obs=self.prev_obs.reshape([B, *state_shape]), output="policy"
-                )
-            batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+        if args.use_tvf and not args.tvf_force_ext_value_distill:
+            horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
+                                                    args.tvf_horizon_distribution)
+            H = len(horizons)
+            target_values = self.get_value_estimates(
+                obs=self.prev_obs,
+                time=self.prev_time,
+                horizons=horizons,
+                return_transformed=True,
+            ).reshape([B, H])
+
+            batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
+            batch_data["tvf_time"] = self.prev_time.reshape([B])
+            batch_data["value_targets"] = target_values.reshape([B, H])
+        else:
+            target_values = self.get_value_estimates(
+                obs=self.prev_obs, time=self.prev_time,
+                return_transformed=True,
+            ).reshape([B])
+            batch_data["value_targets"] = target_values.reshape([B])
+
+        with torch.no_grad():
+            model_out = self.forward(
+                obs=self.prev_obs.reshape([B, *state_shape]), output="policy"
+            )
+        batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
         for distill_epoch in range(args.distill_epochs):
             # we do this here so it is only run if there is at least one epoch
@@ -2001,6 +2155,19 @@ class Runner():
                 optimizer=self.distill_optimizer,
                 label="distill",
             )
+
+    def train(self, step):
+
+        self.step = step
+
+        self.update_learning_rates()
+
+        self.train_policy()
+
+        if args.mode in ["DNA", "TVF"]:
+            # value learning is handled with policy in PPO mode.
+            self.train_value()
+            self.train_distill()
 
         # todo: include rnd ...
 

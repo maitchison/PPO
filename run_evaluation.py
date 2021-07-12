@@ -35,14 +35,16 @@ from rl.config import args
 import lz4.frame as lib
 import os
 
-DEVICE = "cuda:1"
+DEVICE = "cuda:0"
 REWARD_SCALE = float()
 CURRENT_HORIZON = int()
-PARALLEL_ENVS = 64 # number of environments to run in parallel
+PARALLEL_ENVS = 50 # number of environments to run in parallel
 TEMP_LOCATION = os.path.expanduser("~/.cache/")
 
 GENERATE_EVAL = False
 GENERATE_MOVIES = True
+
+WORKERS = 10
 
 class CompressedStack():
     """
@@ -95,6 +97,7 @@ def load_args(checkpoint_path):
         for k, v in checkpoint_args.items():
             vars(args)[k] = v
         args.log_folder = ''
+        args.terminal_on_loss_of_life = False # always off for evaluation...
 
 # load a model and evaluate performance
 def load_checkpoint(checkpoint_path, device=None):
@@ -109,6 +112,11 @@ def load_checkpoint(checkpoint_path, device=None):
     args.res_x, args.res_y = (84, 84)
 
     args.experiment_name = Path(os.path.join(os.path.join(os.getcwd(), checkpoint_path))).parts[-3]
+
+    # fix up frameskip, this happens for older versions of the code.
+    if args.frame_skip == 0:
+        args.frame_skip = 4
+
     env = atari.make(monitor_video=True)
 
     model = make_model(env)
@@ -145,21 +153,41 @@ def make_model(env):
         additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
 
     try:
+        network = args.network
+    except:
+        network = "nature"
+
+    try:
         additional_args['tvf_time_transform'] = rollout.time_scale_function
     except:
         pass
 
-    additional_args['tvf_hidden_units'] = args.tvf_hidden_units
+    try:
+        additional_args['tvf_hidden_units'] = args.tvf_hidden_units
+    except:
+        pass
+
+    try:
+        additional_args['hidden_units'] = args.hidden_units
+    except:
+        pass
+
     additional_args['tvf_activation'] = args.tvf_activation
     additional_args['tvf_max_horizon'] = args.tvf_max_horizon
+
+
+    try:
+        additional_args['architecture'] = args.architecture
+    except:
+        pass
 
     try:
         additional_args['tvf_n_value_heads'] = args.tvf_n_value_heads
     except:
         pass
 
-    additional_args['head'] = "Nature"
-    additional_args['network'] = "Nature"
+    additional_args['head'] = network
+    additional_args['network'] = network
 
     return models.TVFModel(
             input_dims=env.observation_space.shape,
@@ -366,7 +394,7 @@ def generate_rollouts(
 
     env_fns = [lambda: atari.make(monitor_video=include_video, seed=(i*997)+seed_base) for i in range(num_rollouts)]
     if num_rollouts > 16:
-        env = hybridVecEnv.HybridAsyncVectorEnv(env_fns)
+        env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
     else:
         env = sync_vector_env.SyncVectorEnv(env_fns)
 
@@ -529,8 +557,8 @@ class QuickPlot():
         plt.ylim(self._y_min, self._y_max)
         plt.grid(alpha=0.2)
         if self.log_scale:
-            plt.xlabel("log_10(10+h)")
-            plt.xlim(1, np.log10(args.tvf_max_horizon + 10))
+            plt.xlabel("log_2(1+h)")
+            plt.xlim(1, np.log2(args.tvf_max_horizon + 1))
         else:
             plt.xlabel("h")
             plt.xlim(0, args.tvf_max_horizon)
@@ -638,7 +666,7 @@ def export_movie(
     """
 
     #assert args.tvf_gamma == args.gamma, "Rediscounting not supported yet"
-    if args.tvf_gamma != args.gamma:
+    if args.tvf_gamma != args.gamma and args.use_tvf:
         print("Rediscounting not supported yet")
         return
 
@@ -790,7 +818,7 @@ if __name__ == "__main__":
     parser.add_argument("checkpoint", type=str)
     parser.add_argument("output_file", type=str)
     parser.add_argument("--temperature", type=float, help="Temperature to use during evaluation (float).")
-    parser.add_argument("--samples", type=int, default=64, help="Temperature to use during evaluation (float).")
+    parser.add_argument("--samples", type=int, default=64, help="Number of samples to use during evaluation.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed")
 
     eval_args = parser.parse_args()

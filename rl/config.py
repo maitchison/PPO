@@ -15,6 +15,8 @@ class Config:
         self.hash_size          = int()
         self.restore            = bool()
 
+        self.mode               = str()
+
         self.gamma              = float()
         self.gamma_int          = float()
         self.gae_lambda         = float()
@@ -53,8 +55,9 @@ class Config:
         self.max_micro_batch_size = float()
         self.policy_mini_batch_size = int()
         self.value_mini_batch_size = int()
+        self.network = str()
 
-        self.use_tvf            = bool()
+
         self.tvf_coef           = float()
         self.tvf_max_horizon    = int()
         self.auto_horizon   = bool()
@@ -66,7 +69,7 @@ class Config:
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_lambda_samples = int()
-        self.tvf_hidden_units   = int()
+        self.hidden_units   = int()
         self.tvf_activation     = str()
         self.tvf_soft_anchor    = float()
         self.tvf_horizon_scale  = str()
@@ -99,6 +102,7 @@ class Config:
         self.n_steps = int()
         self.value_lr = float()
         self.policy_lr = float()
+        self.architecture = str()
 
         self.use_icm            = bool()
         self.icm_eta            = str()
@@ -106,10 +110,12 @@ class Config:
         self.debug_print_freq   = int()
         self.debug_log_freq     = int()
         self.noop_duration      = int()
+        self.learning_rate_anneal = bool()
 
         self.deferred_rewards   = int()
 
         self.frame_stack        = int()
+        self.frame_skip         = int()
         self.timeout = int()
 
         self.normalize_advantages = bool()
@@ -120,7 +126,6 @@ class Config:
         self.log_folder         = str()
         self.checkpoint_every   = int()
 
-        self.model              = str()
         self.use_rnd            = bool()
         self.warmup_period      = int()
 
@@ -130,6 +135,8 @@ class Config:
         self.seed = int()
 
         self.full_action_space = bool()
+        self.terminal_on_loss_of_life = bool()
+        self.value_transform = str()
 
         self.use_tp = bool()
         self.tp_gamma = float()
@@ -146,6 +153,10 @@ class Config:
                 self.use_compression = self.batch_size >= 128*256
             else:
                 self.use_compression = str2bool(str(self.use_compression))
+
+    @property
+    def use_tvf(self):
+        return self.mode == "TVF"
 
     @property
     def propagate_intrinsic_rewards(self):
@@ -207,11 +218,16 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
+    parser.add_argument("--mode", type=str, default="TVF", help="[PPO|DNA|TVF]")
+
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model if it exists. If set to false and new run will be started.")
+
+    parser.add_argument("--network", type=str, default="nature", help="Encoder used, [nature|impala]")
+    parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
 
     parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
@@ -220,13 +236,13 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--input_crop", type=str2bool, default=False, help="Enables atari input cropping.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
-    parser.add_argument("--epochs", type=int, default=200,
+    parser.add_argument("--epochs", type=int, default=50,
                         help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Loss multiplier for default value loss.")
     parser.add_argument("--timeout", type=int, default=60*60*30, help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
+    parser.add_argument("--hidden_units", type=int, default=512)
 
-    parser.add_argument("--use_tvf", type=str2bool, default=True, help="Use truncated value function.")
     parser.add_argument("--tvf_force_ext_value_distill", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
@@ -241,7 +257,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_value_distribution", type=str, default="uniform", help="Sampling distribution to use when generating value samples.")
     parser.add_argument("--tvf_horizon_distribution", type=str, default="uniform", help="Sampling distribution to use when generating horizon samples.")
 
-    parser.add_argument("--tvf_hidden_units", type=int, default=512)
     parser.add_argument("--tvf_n_dedicated_value_heads", type=int, default=0)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
     parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
@@ -257,11 +272,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_implicit_zero", type=str2bool, default=False, help="Does not learn zero horizon.")
 
     # phasic inspired stuff
-    parser.add_argument("--policy_epochs", type=int, default=2, help="Number of policy training epochs per training batch.")
-    parser.add_argument("--value_epochs", type=int, default=6, help="Number of value training epochs per training batch.")
+    parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
+    parser.add_argument("--value_epochs", type=int, default=2, help="Number of value training epochs per training batch.")
     parser.add_argument("--distill_epochs", type=int, default=0, help="Number of distilation epochs")
     parser.add_argument("--distill_beta", type=float, default=1.0)
-    parser.add_argument("--target_kl", type=float, default=0.01, help="Approximate divergence before early stopping on policy.")
+    parser.add_argument("--target_kl", type=float, default=-1, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
     parser.add_argument("--value_mini_batch_size", type=int, default=256)
     parser.add_argument("--ppo_epsilon", type=float, default=0.2, help="PPO epsilon parameter.")
@@ -269,9 +284,13 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--agents", type=int, default=256)
     parser.add_argument("--warmup_period", type=int, default=250, help="Number of random steps to take before training agent.")
 
-    parser.add_argument("--value_lr", type=float, default=3e-4, help="Learning rate for Adam optimizer")
-    parser.add_argument("--policy_lr", type=float, default=1e-4, help="Learning rate for Adam optimizer")
-    
+    parser.add_argument("--value_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
+    parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
+
+    parser.add_argument("--learning_rate_anneal", type=str2bool, nargs='?', const=True, default=False,
+                        help="Anneals learning rate to 0 (linearly) over training")
+    parser.add_argument("--value_transform", type=str, default="identity", help="[identity|sqrt]")
+
     # -----------------
 
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
@@ -317,8 +336,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--ed_gamma", type=float, default=1.0)
 
     parser.add_argument("--full_action_space", type=str2bool, default=False)
+    parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)
 
     parser.add_argument("--frame_stack", type=int, default=4)
+    parser.add_argument("--frame_skip", type=int, default=4)
 
     parser.add_argument("--log_folder", type=str, default=None)
 
@@ -354,9 +375,6 @@ def parse_args(no_env=False, args_override=None):
 
 
     parser.add_argument("--seed", type=int, default=-1)
-
-    # model
-    parser.add_argument("--model", type=str, default="cnn", help="['cnn']")
 
     if args_override is not None:
         args.update(**parser.parse_args(args_override).__dict__)

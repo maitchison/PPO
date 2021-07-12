@@ -13,7 +13,7 @@ from shutil import copyfile
 
 DEVICE = "cuda:1"
 REWARD_SCALE = float()
-SAMPLES = 64 # 16 is too few, might need 256...
+SAMPLES = 100 # 16 is too few, might need 256...
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 
 GENERATE_EVAL = False
@@ -26,7 +26,7 @@ def update_file(source, destination):
         copyfile(source, destination)
         print(f"<updated {destination}>")
 
-def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperature=None, samples=None):
+def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperature=None, samples=None, seed=None):
     """
     Runs "run_evaluation.py" on given checkpoint to produce evaluation / video results.
     """
@@ -50,6 +50,9 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
     if samples is not None:
         args.append('--samples')
         args.append(str(samples))
+    if seed is not None:
+        args.append('--seed')
+        args.append(str(seed))
 
     old_path = os.getcwd()
     try:
@@ -63,7 +66,7 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
     finally:
         os.chdir(old_path)
 
-def evaluate_run(run_path, temperature, max_epoch:int = 200):
+def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None):
     """
     Evaluate all runs in run_path, will skip already done evaluations
     """
@@ -80,10 +83,13 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
         if ZERO_TIME:
             postfix = postfix + "_no_time"
 
+        if seed is not None:
+            postfix = postfix + f"_{seed}"
 
         checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt")
         checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{postfix}"
         checkpoint_eval_file = os.path.join(os.path.split(run_path)[-1], f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
+        checkpoint_full_path_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
 
         if os.path.exists(checkpoint_name):
 
@@ -116,17 +122,18 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200):
                         temperature=temperature
                     )
 
-            if GENERATE_EVAL and not os.path.exists(checkpoint_eval_file):
+            if GENERATE_EVAL and not os.path.exists(checkpoint_full_path_eval_file):
                 run_evaluation_script(
                     mode='eval',
                     checkpoint=checkpoint_name,
                     output_file=checkpoint_eval_file,
                     temperature=temperature,
+                    seed=seed,
                     samples=SAMPLES
                 )
 
 
-def monitor(path, experiment_filter=None, max_epoch=200):
+def monitor(path, experiment_filter=None, max_epoch=200, seed=None):
 
     folders = [x[0] for x in os.walk(path)]
     for folder in folders:
@@ -136,7 +143,7 @@ def monitor(path, experiment_filter=None, max_epoch=200):
             continue
         try:
             for temperature in temperatures:
-                evaluate_run(folder, temperature=temperature, max_epoch=max_epoch)
+                evaluate_run(folder, temperature=temperature, max_epoch=max_epoch, seed=seed)
         except Exception as e:
             print("Error:"+str(e))
 
@@ -147,8 +154,9 @@ if __name__ == "__main__":
     parser.add_argument("run_filter", type=str, default="", help="Filter for runs.")
     parser.add_argument("--experiment_filter", type=str, default="", help="Filter for experiments.")
     parser.add_argument("--temperatures", type=str, default="[None]",
-                        help="Temperatures to generate. e.g. [0.1, 1.0, 10.0]")
+                        help="Temperatures to generate. e.g. [0.1, 0.5, 1.0] (lower temperature has higher entropy)")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
+    parser.add_argument("--seed", type=int, default=None, help="Random Seed to use.")
     eval_args = parser.parse_args()
 
     assert eval_args.mode in ["video", "video_nt", "eval"]
@@ -161,7 +169,7 @@ if __name__ == "__main__":
     if type(temperatures) in [float, int]:
         temperatures = [temperatures]
 
-    folders = [name for name in os.listdir("./Run/") if os.path.isdir(os.path.join('./Run',name))]
+    folders = [name for name in os.listdir("./Run/") if os.path.isdir(os.path.join('./Run', name))]
 
     for max_epoch in range(0, 201, 5):
         for folder in folders:
@@ -174,4 +182,5 @@ if __name__ == "__main__":
                     os.path.join('./Run', folder),
                     experiment_filter=exp_filter,
                     max_epoch=max_epoch,
+                    seed=eval_args.seed
                 )

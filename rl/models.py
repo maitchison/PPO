@@ -2,10 +2,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 from typing import Union
 
-from . import utils
+from . import utils, impala
 
 # ----------------------------------------------------------------------------------------------------------------
 # Heads (feature extractors)
@@ -17,20 +18,62 @@ class Base_Net(nn.Module):
         self.input_dims = input_dims
         self.hidden_units = hidden_units
 
+class ImpalaCNN_Net(Base_Net):
+    """
+        Drop in replacement for Nature CNN network.
+        input_dims: dims of input (C, H, W)
+    """
+
+    name = "ImpalaCNN"  # put it here to preserve pickle compat
+
+    def __init__(self, input_dims:tuple, hidden_units:int = 256, channels=(16, 32, 32), n_block:int = 2):
+
+        super().__init__(input_dims, hidden_units)
+
+        curshape = input_dims
+
+        s = 1 / math.sqrt(len(channels))  # per stack scale
+        self.stacks = nn.ModuleList()
+        for out_channel in channels:
+            stack = impala.CnnDownStack(curshape[0], nblock=n_block, outchan=out_channel, scale=s)
+            self.stacks.append(stack)
+            curshape = stack.output_shape(curshape)
+
+        self.dense = impala.NormedLinear(utils.prod(curshape), hidden_units, scale=1.4)
+
+        self.out_shape = curshape
+        self.d = utils.prod(self.out_shape)
+        self.hidden_units = hidden_units
+        if self.hidden_units > 0:
+            self.fc = nn.Linear(self.d, hidden_units)
+
+    def forward(self, x):
+        """ forwards input through model, returns features (without relu)
+            input should be in B,C,H,W format
+         """
+        x = impala.sequential(self.stacks, x, diag_name=self.name)
+        x = impala.flatten_image(x)
+        x = torch.relu(x)
+        x = self.dense(x)
+        return x
+
+
+
+
 class NatureCNN_Net(Base_Net):
     """ Takes stacked frames as input, and outputs features.
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
     """
 
-    def __init__(self, input_dims, hidden_units=512, norm_layer=None):
+    def __init__(self, input_dims, hidden_units=512):
 
         super().__init__(input_dims, hidden_units)
 
         input_channels = input_dims[0]
 
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=(8,8), stride=(4,4))
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=(4,4), stride=(2,2))
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3,3), stride=(1,1))
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=(8,8), stride=(4, 4))
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=(4,4), stride=(2, 2))
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3,3), stride=(1, 1))
 
         fake_input = torch.zeros((1, *input_dims))
         _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
@@ -154,7 +197,7 @@ class DualNet(nn.Module):
             network,
             input_dims,
             tvf_activation,
-            tvf_hidden_units,
+            hidden_units,
             tvf_horizon_transform,
             tvf_time_transform,
             tvf_max_horizon,
@@ -185,16 +228,16 @@ class DualNet(nn.Module):
             self.tvf_n_dedicated_value_heads = tvf_n_dedicated_value_heads
 
             self.tvf_activation = tvf_activation
-            self.tvf_hidden_units = int(tvf_hidden_units)
+            self.hidden_units = int(hidden_units)
             self.horizon_transform = tvf_horizon_transform
             self.time_transform = tvf_time_transform
             self.tp_head = nn.Linear(self.encoder.hidden_units, 1)
 
             # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
             self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
-            self.value_net_hidden = nn.Linear(self.encoder.hidden_units, self.tvf_hidden_units)
-            self.value_net_hidden_aux = nn.Linear(2, self.tvf_hidden_units, bias=False)
-            self.value_net_tvf = nn.Linear(self.tvf_hidden_units, self.tvf_n_dedicated_value_heads+1)
+            self.value_net_hidden = nn.Linear(self.encoder.hidden_units, self.hidden_units)
+            self.value_net_hidden_aux = nn.Linear(2, self.hidden_units, bias=False)
+            self.value_net_tvf = nn.Linear(self.hidden_units, self.tvf_n_dedicated_value_heads+1)
 
             # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
             torch.nn.init.uniform_(
@@ -288,7 +331,7 @@ class DualNet(nn.Module):
 class TVFModel(nn.Module):
     """
     Truncated Value Function model
-    based on PPG, and (optionaly) using RND
+    based on PPG, and (optionally) using RND
 
     network: the network to use, [nature_cnn]
     input_dims: tuple containing input dims with channels first, e.g. (4, 84, 84)
@@ -300,7 +343,7 @@ class TVFModel(nn.Module):
     use_rnn: enables recurrent model (not implemented yet)
 
     tvf_horizon_transform: transform to use on horizons before input.
-    tvf_hidden_units: number of hidden units to use on FC layer before output
+    hidden_units: number of hidden units to use on FC layer before output
     tvf_activation: activation to use on TVF FC layer
 
     network_args: dict containing arguments for network
@@ -312,6 +355,7 @@ class TVFModel(nn.Module):
             input_dims: tuple,
             actions: int,
             device: str = "cuda",
+            architecture: str = "dual",
             dtype: torch.dtype=torch.float32,
 
             use_rnd:bool = False,
@@ -320,7 +364,7 @@ class TVFModel(nn.Module):
             tvf_max_horizon:int = 65536,
             tvf_horizon_transform = lambda x : x,
             tvf_time_transform = lambda x: x,
-            tvf_hidden_units:int = 512,
+            hidden_units:int = 512,
             tvf_activation:str = "relu",
             tvf_n_dedicated_value_heads:int=0,
 
@@ -344,7 +388,7 @@ class TVFModel(nn.Module):
             network=network,
             input_dims=input_dims,
             tvf_activation=tvf_activation,
-            tvf_hidden_units=tvf_hidden_units,
+            hidden_units=hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
             tvf_time_transform=tvf_time_transform,
             tvf_n_dedicated_value_heads=tvf_n_dedicated_value_heads,
@@ -354,7 +398,14 @@ class TVFModel(nn.Module):
         )
 
         self.policy_net = make_net()
-        self.value_net = make_net()
+        if architecture == "dual":
+            self.value_net = make_net()
+        elif architecture == "single":
+            self.value_net = self.policy_net
+        else:
+            raise Exception("Invalid architecture, use [dual|single]")
+
+        self.architecture = architecture
 
         if self.use_rnd:
             self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
@@ -462,6 +513,14 @@ class TVFModel(nn.Module):
         result = {}
         x = self.prep_for_model(x)
 
+        # special case for single model version (faster)
+        if self.architecture == "single":
+            network_output = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
+            for k,v in network_output.items():
+                result["policy_" + k] = v
+                result["value_" + k] = v
+            return result
+
         if output == "full":
             # this is a special case where we return all heads from both networks
             # required for distillation.
@@ -529,6 +588,8 @@ def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
     head_name = head_name.lower()
     if head_name == "nature":
         return NatureCNN_Net(input_dims, **kwargs)
+    if head_name == "impala":
+        return ImpalaCNN_Net(input_dims, **kwargs)
     else:
         raise Exception("No model head named {}".format(head_name))
 

@@ -59,10 +59,10 @@ def read_log(file_path):
     result["batch_size"] = batch_size
     result["params"] = params
     params["batch_size"] = params["agents"] * params["n_steps"]
-    for v in ["tvf_max_horizon", "distill_beta", "tvf_n_step", "tvf_horizon_samples", "tvf_value_samples",
-              "tvf_soft_anchor", "tvf_coef"]:
-        if v in params:
-            params["quant_" + v] = 2 ** int(math.log2(params[v]))
+    # for v in ["tvf_max_horizon", "distill_beta", "tvf_n_step", "tvf_horizon_samples", "tvf_value_samples",
+    #           "tvf_soft_anchor", "tvf_coef"]:
+    #     if v in params:
+    #         params["quant_" + v] = 2 ** int(math.log2(params[v]))
 
     for k in list(result.keys()):
         v = result[k]
@@ -408,10 +408,7 @@ def compare_runs(path,
         plt.xlabel(x_axis)
         plt.ylabel(y_axis)
 
-    plt.grid(True, alpha=0.2)
-    ax = plt.gca()
-    ax.spines['right'].set_visible(False)
-    ax.spines['top'].set_visible(False)
+    standard_grid()
 
     if show_legend is not False:
         if show_legend is True:
@@ -421,6 +418,12 @@ def compare_runs(path,
         plt.legend(loc=loc)
     plt.show()
 
+
+def standard_grid():
+    plt.grid(True, alpha=0.2)
+    ax = plt.gca()
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
 
 def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, max_step=50, **kwargs):
     title_args = {}
@@ -523,6 +526,7 @@ def plot_eval_results(path, y_axis="scores", label=None, temperature=None, quant
         plt.fill_between(xs, ys - y_err * 1.96, ys + y_err * 1.96, alpha=0.1, color=c)
 
     print(f"{path}:{ys[-1]:<10.1f} at {np.max(xs)}")
+    return ys[-1]
 
 
 def plot_eval_temperature(path, temps=(0.5, 1, 2), y_axis="scores", y_label="Score", **kwargs):
@@ -532,11 +536,14 @@ def plot_eval_temperature(path, temps=(0.5, 1, 2), y_axis="scores", y_label="Sco
     plt.xlabel("Epoch")
     plt.ylabel(y_label)
 
+    results = {}
     for temperature in temps:
-        plot_eval_results(path, y_axis=y_axis, label=f"t={temperature}", temperature=temperature, **kwargs)
+        results[temperature ] = plot_eval_results(path, y_axis=y_axis, label=f"t={temperature}", temperature=temperature, **kwargs)
 
     plt.legend()
     plt.show()
+
+    return results
 
 def plot_eval_experiment(path, y_axis="scores", y_label="Score"):
     plt.figure(figsize=(12, 4))
@@ -626,8 +633,20 @@ class AtariScoreNormalizer:
         result = {}
         for index, row in data.iterrows():
             key = pascal_case(row["Game"]).lower()
-            result[key] = row["Random"], row["Human"]
+            result[key] = (row["Random"], row["Human"])
         return result
+
+    @property
+    def games(self):
+        return list(self._normalization_scores.keys())
+
+    @property
+    def random(self):
+        return {k:v[0] for k, v in self._normalization_scores.items()}
+
+    @property
+    def human(self):
+        return {k:v[1] for k, v in self._normalization_scores.items()}
 
     def normalize(self, game, score, count=1):
         if count is None or count == "" or count == 0:
@@ -664,6 +683,11 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
         game_list = ['BattleZone', 'Gopher', 'TimePilot']
         game_weights = [0.4669, 0.0229, 0.0252]
         c = 44.8205
+    elif subset == "atari-6":
+        # this is an average of the validation and atari-3 score.
+        game_list = ['BattleZone', 'Gopher', 'TimePilot', 'Krull', 'KungFuMaster', 'Seaquest']
+        game_weights = np.asarray([0.4669, 0.0229, 0.0252] + [0.04573467, 0.61623311, 0.14444]) / 2
+        c = (44.8205 + 1.7093517175190982) / 2
     elif subset == "atari-val":
         # game_list = ['Amidar', 'BankHeist', 'Centipede']
         # game_weights = [0.6795, 0.0780, 0.0711]
@@ -683,15 +707,17 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
 
     epoch_scores = defaultdict(lambda: {game: [] for game in game_list})
 
-    folders = [x for x in os.listdir(path) if key in x]
+    folders = [x for x in os.listdir(path) if key in x and os.path.isdir(os.path.join(path, x))]
     for folder in folders:
+        if folder in ["rl"]:
+            continue
         game_log = read_log(os.path.join(path, folder))
         if game_log is None:
             print(f"no log for {path} {folder}")
             return None
         game = game_log["params"]["environment"]
         if game not in game_list:
-            print(f"Skipping {game}")
+            #print(f"Skipping {game}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[env_step // 1e6][game].append(ep_score)
@@ -795,3 +821,69 @@ def plot_validation(path, keys, hold=False, color=None, label=None, subset="atar
     if not hold:
         plt.legend()
         plt.show()
+
+def plot_mode(path):
+    ref_result = None
+    results = get_runs(path, skip_rows=1)
+    for name, data, params in results:
+        if "ppg" in name:
+            ref_result = data
+
+    for run_filter in ["nstep", "adaptive", "exponential"]:
+        plot_experiment(
+            path,
+            smooth_factor=0.5,
+            title=run_filter,
+            run_filter = lambda x : ((run_filter in x) or ("ppg" in x)) and "Krull" in x,
+            y_axes=(
+                "ep_score_mean",
+                "log_1m_ev_max",
+            ))
+
+    # show each run
+    plt.figure(figsize=(16, 4))
+    for run_filter in ["nstep", "adaptive"]:
+        xs = []
+        ys = []
+        for nsteps in [10, 20, 30, 40, 80, 160, 320, 480, 640]:
+            run_code = f"{run_filter}_{nsteps}"
+            for name, data, params in results:
+                if run_code in name:
+                    score = np.mean(data["neg_log_1m_ev_max"][-10:])
+                    xs.append(math.log2(nsteps))
+                    ys.append(score)
+
+        if run_filter == "nstep":
+            ref_score = np.mean(ref_result["neg_log_1m_ev_max"][-10:])
+            plt.hlines(ref_score, 1, 10, label="PPO", color="black", ls='--')
+
+        plt.plot(xs, ys, label=run_filter)
+    plt.ylim(0,1.8)
+    standard_grid()
+    plt.xlabel("$\log_2(n\_step)$")
+    plt.legend()
+    plt.show()
+
+    plt.figure(figsize=(16, 4))
+    for run_filter in ["exponential"]:
+        xs = []
+        ys = []
+        for gamma in [1.5, 2.0, 2.5, 3.0]:
+            run_code = f"{run_filter}_{gamma}"
+            for name, data, params in results:
+                if run_code in name:
+                    score = np.mean(data["neg_log_1m_ev_max"][-10:])
+                    xs.append(math.log2(gamma))
+                    ys.append(score)
+
+        if run_filter == "exponential":
+            ref_score = np.mean(ref_result["neg_log_1m_ev_max"][-10:])
+            plt.hlines(ref_score, 0, 2, label="PPG", color="black", ls='--')
+
+        plt.plot(xs, ys, label=run_filter)
+    plt.ylim(0,1.8)
+    standard_grid()
+    plt.xlabel("$\log_2(\gamma)$")
+    plt.ylabel("$-\log(1-EV_{max})$")
+    plt.legend()
+    plt.show()
