@@ -137,8 +137,10 @@ if __name__ == "__main__":
             architecture=args.architecture,
 
             hidden_units=args.hidden_units,
+            tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
         )
+
         ppo.train(actor_critic_model, log)
 
         utils.release_lock()

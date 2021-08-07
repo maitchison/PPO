@@ -108,7 +108,7 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
         splits = [{} for _ in range(self.n_parallel)]
         for i in range(self.n_parallel):
             for j in range(self.n_sequential):
-                 splits[i][f"vec_{j:03d}"] = buffer[f"vec_{i*self.n_parallel+j:03d}"]
+                splits[i][f"vec_{j:03d}"] = buffer[f"vec_{i*self.n_sequential+j:03d}"]
 
         for pipe, save_split in zip(self.parent_pipes, splits):
             pipe.send(('load', save_split))

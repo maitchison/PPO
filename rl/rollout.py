@@ -418,7 +418,7 @@ class Runner():
             print(f"Compression [{utils.Color.OKGREEN}enabled{utils.Color.ENDC}]")
             self.all_obs = np.zeros([N + 1, A], dtype=np.object)
         else:
-            print("Compression [disabled]")
+            print(f"Compression [{utils.Color.FAIL}disabled{utils.Color.ENDC}]")
             self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         self.actions = np.zeros([N, A], dtype=np.int64)
@@ -466,27 +466,24 @@ class Runner():
             new_x = self.H(self.H_inv(x))
             assert abs(new_x - x) < 1e-6, f"Expected H(H^-1({x})) to be {x} but was {new_x}"
 
-    def learning_rate_function(self, lr):
-        if args.learning_rate_anneal:
-            return lr * np.clip(1-(self.step / (args.epochs * 1e6)), 0, 1)
-        else:
-            return lr
+    def anneal(self, x, enable=True):
+        return x * np.clip(1-(self.step / (args.epochs * 1e6)), 0, 1) if enable else x
 
     @property
     def value_lr(self):
-        return self.learning_rate_function(args.value_lr)
+        return self.anneal(args.value_lr, enable=args.value_lr_anneal)
 
     @property
     def policy_lr(self):
-        return self.learning_rate_function(args.policy_lr)
+        return self.anneal(args.policy_lr, enable=args.policy_lr_anneal)
 
     @property
     def distill_lr(self):
-        return self.learning_rate_function(args.value_lr)
+        return self.anneal(args.distill_lr, enable=args.distill_lr_anneal)
 
     @property
     def rnd_lr(self):
-        return self.learning_rate_function(args.value_lr)
+        return args.value_lr
 
     def update_learning_rates(self):
         """
@@ -502,7 +499,6 @@ class Runner():
         for g in self.value_optimizer.param_groups:
             g['lr'] = self.value_lr
 
-
         if self.distill_optimizer is not None:
             self.log.watch("lr_distill", self.distill_lr, display_width=0)
             for g in self.distill_optimizer.param_groups:
@@ -517,7 +513,9 @@ class Runner():
     def create_envs(self):
         """ Creates environments for runner"""
         base_seed = args.seed
-        env_fns = [lambda: atari.make(args=args, seed=base_seed+i) for i in range(args.agents)]
+        if base_seed is None or base_seed < 0:
+            base_seed = np.random.randint(0, 9999)
+        env_fns = [lambda i=i: atari.make(args=args, seed=base_seed+(i*997)) for i in range(args.agents)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
@@ -821,16 +819,16 @@ class Runner():
         """
 
         # note: this averages over the transformed values, which is just fine as it means that we will be more
-        # robust to outliers. (assuming the transform compresses to value function)
+        # robust to outliers. (assuming the transform compresses the value function)
 
         n_steps = self.get_exponential_n_steps()
-        returns = n_step_func(n_steps[0], required_horizons)
 
-        if args.tvf_exp_masked:
+        if args.tvf_exp_mode == "masked":
             # this is the masked version, not sure if it's right...
             # the advantage of this method is that it puts less weight on the highest n-step.
             # i.e. for h=5 the n-step values would be [1, 2, 4, 5, 5, 5, 5, 5, 5, 5]
             # which means we don't get (much) bootstrapping...
+            returns = n_step_func(n_steps[0], required_horizons)
             count = np.ones_like(required_horizons)
             for n in n_steps[1:]:
                 # mask out returns that have nsteps > horizon
@@ -838,10 +836,19 @@ class Runner():
                 count += mask
                 returns += n_step_func(n, required_horizons) * mask
             returns *= 1/count
-        else:
+        elif args.tvf_exp_mode == "default":
+            returns = n_step_func(n_steps[0], required_horizons)
             for n in n_steps[1:]:
                 returns += n_step_func(n, required_horizons)
             returns *= 1/(len(n_steps))
+        elif args.tvf_exp_mode == "transformed":
+            returns = self.H_inv(n_step_func(n_steps[0], required_horizons))
+            for n in n_steps[1:]:
+                returns += self.H_inv(n_step_func(n, required_horizons))
+            returns *= 1/(len(n_steps))
+            returns = self.H(returns)
+        else:
+            raise ValueError(f"Invalid exp mode {args.tvf_exp_mode}")
 
         return returns
 
@@ -894,7 +901,6 @@ class Runner():
             time=None,
             rewards=None,
             dones=None,
-            no_debug=False,
             tvf_mode=None,
             tvf_n_step=None
     ):
@@ -1196,11 +1202,6 @@ class Runner():
         self.all_obs[-1] = last_obs
         self.all_time[-1] = self.time
 
-        if args.use_tp:
-            # get final discount steps until terminal state  estimate on last step.
-            model_out = self.forward(self.obs, output="value")
-            self.tp_final_value_estimate[:] = model_out["tp_value"].detach().cpu()
-
         if args.debug_terminal_logging:
             for t in range(self.N):
 
@@ -1319,7 +1320,6 @@ class Runner():
                 time=self.all_time[:, agent_filter],
                 rewards=self.ext_rewards[:, agent_filter],
                 dones=self.terminals[:, agent_filter],
-                no_debug=True,
                 tvf_mode="nstep", # <-- MC is the least bias method we can do...
                 tvf_n_step=self.current_horizon,
             ))
@@ -1426,6 +1426,7 @@ class Runner():
 
         self.ext_value = ext_value_estimates
 
+        # GAE requires inputs to be true value not transformed value...
         self.ext_advantage = calculate_gae(
             self.ext_rewards,
             ext_value_estimates[:N],
@@ -1436,11 +1437,7 @@ class Runner():
         )
 
         # calculate ext_returns for PPO targets
-        self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
-
-        # calculate terminal prediction targets
-        if args.use_tp:
-            self.tp_returns = calculate_tp_returns(self.terminals, self.tp_final_value_estimate)
+        self.ext_returns = self.H(self.ext_advantage + ext_value_estimates[:N])
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -1501,13 +1498,14 @@ class Runner():
         self.log.watch("game_crashes", self.game_crashes, display_width=0 if self.game_crashes == 0 else 8)
         self.log.watch("reward_clips", self.reward_clips, display_width=0 if self.reward_clips == 0 else 8)
 
-        if args.mode == "TVF":
+        if args.use_tvf:
             self.log.watch("tvf_horizon", self.current_horizon)
             self.log.watch("tvf_gamma", self.tvf_gamma)
 
         self.log.watch("gamma", self.gamma, display_width=0)
 
-        self.log_value_quality(samples=64)
+        if not args.disable_ev:
+            self.log_value_quality(samples=64)
 
         if args.use_intrinsic_rewards:
             self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
@@ -1640,22 +1638,6 @@ class Runner():
         model_out = self.model.forward(data["prev_state"], output="value", **kwargs)
 
         # -------------------------------------------------------------------------
-        # Calculate terminal state prediction loss
-        # -------------------------------------------------------------------------
-
-        if args.use_tp:
-            # normalize error based on discount rate
-            if args.tp_gamma == 1:
-                scale = 1 / (np.mean(self.episode_len)*2)
-            else:
-                scale = 1 / (1 - args.tp_gamma)
-            targets = data["tp_returns"]/scale
-            predictions = model_out["tp_value"]/scale
-            tp_loss = args.tp_alpha * 0.5 * torch.mean(torch.square(targets - predictions))
-            self.log.watch_mean("loss_tp", tp_loss, display_width=8)
-            loss = loss + tp_loss
-
-        # -------------------------------------------------------------------------
         # Calculate loss_value_function_horizons
         # -------------------------------------------------------------------------
 
@@ -1666,17 +1648,28 @@ class Runner():
             targets = data["tvf_returns"]
             value_predictions = model_out["tvf_value"]
 
-            if args.tvf_soft_anchor != 0:
+            if args.tvf_soft_anchor > 0:
                 assert torch.all(data["tvf_horizons"][:, 0] == 0)
                 anchor_loss = 0.5 * args.tvf_soft_anchor * torch.mean(torch.square(value_predictions[:,  0]))
                 self.log.watch_mean("loss_anchor", anchor_loss, display_width=8)
                 loss = loss + anchor_loss
 
-            # MSE loss, sum across samples, mean across batch.
-            tvf_loss = torch.square(targets - value_predictions)
+            if args.use_huber_loss:
+                if args.huber_loss_delta == 0:
+                    tvf_loss = torch.abs(targets - value_predictions)
+                else:
+                    # Smooth huber loss
+                    # see https://en.wikipedia.org/wiki/Huber_loss
+                    errors = targets - value_predictions
+                    tvf_loss = args.huber_loss_delta**2 * (
+                               torch.sqrt(1+(errors/args.huber_loss_delta)**2)-1
+                    )
+            else:
+                # MSE loss, sum across samples
+                tvf_loss = torch.square(targets - value_predictions)
 
-            # zero out loss for 0 horizon
-            if args.tvf_implicit_zero:
+            # zero out loss for 0 horizon in this special case
+            if args.tvf_soft_anchor == -1:
                 tvf_loss = tvf_loss * torch.not_equal(data["tvf_horizons"], 0)
 
             if args.tvf_sample_reduction == "mean":
@@ -1741,7 +1734,7 @@ class Runner():
             self,
             max_value: int,
             samples: int,
-            distribution: str = "uniform",
+            distribution: str = "linear",
             force_first_and_last: bool = False) -> np.ndarray:
         """
         generates random samples from 0 to max (inclusive) using sampling with replacement
@@ -1813,7 +1806,6 @@ class Runner():
         """
         Generates return estimates for current batch of data.
 
-
         force_first_and_last: if true always includes first and last horizon
 
         Note: could roll this into calculate_sampled_returns, and just have it return the horizons aswell?
@@ -1883,7 +1875,13 @@ class Runner():
         logpac = logps[range(mini_batch_size), actions]
         old_logpac = old_policy_logprobs[range(mini_batch_size), actions]
         ratio = torch.exp(logpac - old_logpac)
-        clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
+
+        if args.use_tanh_clipping:
+            # soft clipping
+            factor = 1/args.ppo_epsilon
+            clipped_ratio = torch.tanh(factor*(ratio-1))/factor + 1.0
+        else:
+            clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
 
         loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
         loss_clip_mean = loss_clip.mean()
@@ -1910,7 +1908,7 @@ class Runner():
         # Value learning for PPO mode
         # -------------------------------------------------------------------------
 
-        if args.mode == "PPO":
+        if args.architecture == "single":
             value_head = "ext"
 
             value_prediction = model_out["{}_value".format(value_head)]
@@ -2026,7 +2024,7 @@ class Runner():
         batch_data["actions"] = self.actions.reshape(B).astype(np.long)
         batch_data["log_policy"] = self.log_policy.reshape([B, *self.policy_shape])
 
-        if args.mode == "PPO":
+        if args.architecture == "single":
             # ppo trains value during policy update
             batch_data["ext_returns"] = self.ext_returns.reshape([B])
 
@@ -2070,9 +2068,6 @@ class Runner():
 
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
         batch_data["ext_returns"] = self.ext_returns.reshape(B)
-
-        if args.use_tp:
-            batch_data["tp_returns"] = self.tp_returns.reshape(B)
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
@@ -2164,7 +2159,7 @@ class Runner():
 
         self.train_policy()
 
-        if args.mode in ["DNA", "TVF"]:
+        if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
             self.train_distill()

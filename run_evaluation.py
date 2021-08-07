@@ -14,6 +14,7 @@ import json
 import pickle
 import time
 import sys
+import socket
 
 from typing import Union, List, Dict
 
@@ -38,7 +39,7 @@ import os
 DEVICE = "cuda:0"
 REWARD_SCALE = float()
 CURRENT_HORIZON = int()
-PARALLEL_ENVS = 50 # number of environments to run in parallel
+PARALLEL_ENVS = 20 # number of environments to run in parallel
 TEMP_LOCATION = os.path.expanduser("~/.cache/")
 
 GENERATE_EVAL = False
@@ -182,6 +183,11 @@ def make_model(env):
         pass
 
     try:
+        additional_args['architecture'] = args.architecture
+    except:
+        pass
+
+    try:
         additional_args['tvf_n_value_heads'] = args.tvf_n_value_heads
     except:
         pass
@@ -312,6 +318,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
     return_estimates = {}
 
     counter = 0
+    noops_used = []
 
     while remaining_samples > 0:
 
@@ -332,7 +339,7 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
             episode_length = len(raw_rewards)
             episode_scores.append(episode_score)
             episode_lengths.append(episode_length)
-
+            noops_used.append(buffer["noops"])
             print(".", end='')
 
         remaining_samples -= batch_samples
@@ -352,6 +359,8 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
         'episode_lengths': episode_lengths,
         'episode_scores': episode_scores,
         'return_estimates': return_estimates,
+        'noops': noops_used,
+        'hostname': socket.gethostname()
     }
 
     with open(filename+".dat", "wb") as f:
@@ -392,13 +401,12 @@ def generate_rollouts(
 
     seed_base = seed_base or eval_args.seed
 
-    env_fns = [lambda: atari.make(monitor_video=include_video, seed=(i*997)+seed_base) for i in range(num_rollouts)]
+    env_fns = [lambda i=i: atari.make(monitor_video=include_video, seed=(i*997)+seed_base) for i in range(num_rollouts)]
     if num_rollouts > 16:
         env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
     else:
         env = sync_vector_env.SyncVectorEnv(env_fns)
 
-    _ = env.reset()
     states = env.reset()
     infos = None
 
@@ -417,6 +425,7 @@ def generate_rollouts(
             'model_values': [], # models predicted value (float)
             'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
             'raw_rewards': [], # raw unscaled reward from the atari environment
+            'noops': 0,
         })
 
         if include_video:
@@ -458,12 +467,14 @@ def generate_rollouts(
                 **({'policy_temperature':temperature} if temperature is not None else {})
             )
 
-        log_probs = model_out["log_policy"].detach().cpu().numpy()
-
-        if np.isnan(log_probs).any():
-            raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
-
-        action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
+        if temperature == 0:
+            probs = model_out["argmax_policy"].detach().cpu().numpy()
+            action = np.asarray([np.argmax(prob) for prob in probs], dtype=np.int32)
+        else:
+            log_probs = model_out["log_policy"].detach().cpu().numpy()
+            if np.isnan(log_probs).any():
+                raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
+            action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
         prev_states = states.copy()
         prev_times = times.copy()
@@ -487,6 +498,10 @@ def generate_rollouts(
             # make sure to include last state
             if dones[i]:
                 is_running[i] = False
+
+            # check for infos
+            if "noop_start" in infos[i]:
+                buffers[i]["noops"] = infos[i]["noop_start"]
 
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
@@ -518,6 +533,8 @@ def generate_rollouts(
         keys = list(buffer.keys())
         for key in keys:
             if key == "frames":
+                continue
+            if type(buffer[key]) in [int, float, str]:
                 continue
             if len(buffer[key]) == 0:
                 del buffer[key]
@@ -813,15 +830,19 @@ if __name__ == "__main__":
     # usage
     # python run_evaluation.py video ./bundle_0 temperatures=[-0.01 , -0.1, -0.5, -1] --max_epochs=200
 
-    parser = argparse.ArgumentParser(description="Evaluaton script for PPO/PPG/TVF")
+    parser = argparse.ArgumentParser(description="Evaluation script for PPO/PPG/TVF")
     parser.add_argument("mode", help="[video|eval]")
     parser.add_argument("checkpoint", type=str)
     parser.add_argument("output_file", type=str)
     parser.add_argument("--temperature", type=float, help="Temperature to use during evaluation (float).")
     parser.add_argument("--samples", type=int, default=64, help="Number of samples to use during evaluation.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed")
+    parser.add_argument("--device", type=str, default=None, help="device to train on")
 
     eval_args = parser.parse_args()
+
+    if eval_args.device is not None:
+        DEVICE = eval_args.device
 
     if eval_args.mode == "video":
         GENERATE_EVAL = False

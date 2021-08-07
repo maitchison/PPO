@@ -24,6 +24,10 @@ DEVICE="auto"
 OUTPUT_FOLDER="./Run"
 WORKERS=8
 
+ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
+ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
+
+
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
@@ -413,6 +417,14 @@ class Categorical():
     def sample(self):
         return random.choice(self._values)
 
+class LinkedCategorical():
+
+    def __init__(self, *args):
+        self._values = args
+
+    def sample(self):
+        return random.choice(self._values)
+
 
 class Uniform():
     def __init__(self, min, max, force_int=False):
@@ -552,6 +564,7 @@ def random_search(
         count: int = 64,
         process_up_to=None,
         base_seed=0,
+        hook=None,
 
 ):
     """
@@ -569,7 +582,7 @@ def random_search(
     import numpy as np
     import hashlib
 
-    def smart_round_sig(x, sig=4):
+    def smart_round_sig(x, sig=8):
         if int(x) == x:
             return x
         return round(x, sig - int(math.floor(math.log10(abs(x)))) - 1)
@@ -589,7 +602,7 @@ def random_search(
         elif type(v) is LogUniform:
             samples = np.logspace(v._min, v._max, base=math.e, num=count)
         else:
-            raise TypeError()
+            raise TypeError(f"Type {type(v)} is invalid.")
 
         random.shuffle(samples)
         even_dist_samples[k] = samples[:count]
@@ -608,17 +621,41 @@ def random_search(
 
         batch_size = params["agents"] * params["n_steps"]
 
+        # convert negative learning rates to annealing
+        for key in ["policy_lr", "value_lr", "distill_lr"]:
+            if key in params and params[key] < 0:
+                params[key] = -params[key]
+                params[key+"_anneal"] = True
+
+        # convert negative max_horizon to auto
+        if params.get("tvf_max_horizon", 0) < 0:
+            params["tvf_max_horizon"] = 30000
+            params["auto_horizon"] = True
+
         # make sure mini_batch_size is not larger than batch_size
-        params["policy_mini_batch_size"] = min(batch_size, params["policy_mini_batch_size"])
-        params["value_mini_batch_size"] = min(batch_size, params["value_mini_batch_size"])
+        if "policy_mini_batch_size" in params:
+            params["policy_mini_batch_size"] = min(batch_size, params["policy_mini_batch_size"])
+        if "value_mini_batch_size" in params:
+            params["value_mini_batch_size"] = min(batch_size, params["value_mini_batch_size"])
+
+        # post processing hook
+        if hook is not None:
+            hook(params)
 
         for env_name, score_threshold in zip(envs, score_thresholds):
-            hostname = "desktop" if i % 3 == 0 else "ML-Rig"
+
+            hostname = "ML" if env_name == "Krull" else "desktop"
+            priority = 0
+
+            main_params['priority'] = priority
+
             main_params['env_name'] = env_name
             add_job(
                 run, run_name=f"{i:04d}_{env_name}", chunk_size=10, score_threshold=score_threshold,
                 hostname=hostname,
+                seed=-1, # no need to make these deterministic
                 **main_params, **params)
+
 
 
 def random_search_PPO():
@@ -626,13 +663,15 @@ def random_search_PPO():
     main_params = {
         'checkpoint_every': int(5e6),
         'workers': WORKERS,
-        'mode': "PPO",
+        'use_tvf': False,
+        'architecture': 'single',
         'export_video': False, # save some space...
         'epochs': 50,   # really want to see where these go...
         'use_compression': 'auto',
         'priority': 0,
         'max_grad_norm': 25,
         'warmup_period': 1000, # helps on some games to make sure they are really out of sync at the beginning of training.
+        'disable_ev': True,    # a bit faster, and not needed for HPS
 
         # parameters I don't want to search over...
         'target_kl': -1,   # ignore...
@@ -646,21 +685,22 @@ def random_search_PPO():
 
     search_params = {
 
-        # general parameters
-
-
         # ppo params
         'agents':           Categorical(32, 64, 128, 256, 512),
         'n_steps':          Categorical(32, 64, 128, 256, 512),
 
-        'gamma':            Categorical(0.97, 0.99, 0.997, 0.9999, 0.99997),
+        # what we actually got was... (in terms of effective horizon)
+        # 30, 100, 300, <missing 1000>, <missing 3000>, <10000>, <inf>
+        # so redo with
+        # 100, 300, 1000, 3000, 10000, 30000
+
+        'gamma':            Categorical(0.99, 0.997, 0.999, 0.9997, 0.9999, 0.99997),
         'vf_coef':          Categorical(0.25, 0.5, 1.0),
 
-        'policy_mini_batch_size': Categorical(64, 128, 256, 512, 1024),
-        'value_mini_batch_size': Categorical(64, 128, 256, 512, 1024),
+        'policy_mini_batch_size': Categorical(128, 256, 512, 1024),
         'hidden_units':     Categorical(128, 256, 512),
 
-        'policy_epochs':    Categorical(4),
+        'policy_epochs':    Categorical(3, 4, 5),
         'ppo_epsilon':      Categorical(0.1, 0.2, 0.3),
 
         'policy_lr':         Categorical(1e-4, 2.5e-4, 5.0e-4, 1e-3),
@@ -673,75 +713,92 @@ def random_search_PPO():
         "PPO_SEARCH",
         main_params,
         search_params,
-        count=50,
-        process_up_to=50,
+        count=60,
+        process_up_to=60,
         envs=['Krull', 'KungFuMaster', 'Seaquest'],
         score_thresholds=[0, 0, 0],
     )
 
+def random_search_TVF():
 
-def random_search_TVF3k():
+    # would have been nice to do...
+    # include gae 0.9, 0.95, 0.97
+    # include sqrt...
 
     main_params = {
         'checkpoint_every': int(5e6),
         'workers': WORKERS,
         'export_video': False, # save some space...
-        'use_tvf': True,
-        'gamma': 0.9997,
-        'tvf_gamma': 0.9997,
         'epochs': 50,   # really want to see where these go...
         'use_compression': 'auto',
-        'priority': -100,
+        'priority': 0,
+        'warmup_period': 1000, # helps on some games to make sure they are really out of sync at the beginning of training.
+        'disable_ev': True,    # a bit faster, and not needed for HPS
 
-        # parameters I don't want to search over...
-        'max_grad_norm': 5.0,
-        'target_kl': 1000,   # ignore...
-        'tvf_coef': 1.0,
-        'timeout': 60*60*3,  # short games...
+        'architecture': 'dual',
         'time_aware': True,
     }
 
     search_params = {
 
         # ppo params
-        'agents':           Categorical(128, 256, 512, 1024),
+        'max_grad_norm':    Categorical(5.0, 25.0),
+        'agents':           Categorical(128, 256, 512),
         'n_steps':          Categorical(128, 256, 512, 1024),
-
-        'policy_mini_batch_size': Categorical(512, 1024, 2048),
-        'value_mini_batch_size': Categorical(512, 1024, 2048),
-
-        'policy_epochs':    Categorical(1, 2, 3, 4),
-        'value_epochs':     Categorical(1, 2, 3, 4),
-        'distill_epochs':   Categorical(0, 1, 2),
-        'distill_beta':     Categorical(0.3, 1, 3),
-        'ppo_epsilon':      Categorical(0.1, 0.2, 0.3),
-        'value_lr':         Categorical(1e-4, 2.5e-4),
-        'policy_lr':        Categorical(1e-4, 2.5e-4),
-        'entropy_bonus':    Categorical(0.001, 0.003, 0.01, 0.03),
+        'policy_mini_batch_size': Categorical(256, 512, 1024),
+        'value_mini_batch_size': Categorical(256, 512, 1024),
+        'policy_epochs':    Categorical(2, 3, 4),
+        'value_epochs':     Categorical(2, 3, 4),
+        'distill_epochs':   Categorical(0, 1, 2, 3),
+        'distill_beta':     Categorical(0.5, 1.0, 2.0),
+        'target_kl':        Categorical(-1, 0.01, 0.003, 0.03),
+        'ppo_epsilon':      Categorical(0.1, 0.15, 0.2, 0.25, 0.3),
+        'policy_lr':        Categorical(1e-4, 2.5e-4, -5.0e-4),
+        'value_lr':         Categorical(1e-4, 2.5e-4, -5.0e-4),
+        'distill_lr':       Categorical(1e-4, 2.5e-4, -5.0e-4),
+        'entropy_bonus':    Categorical(0.001, 0.003, 0.01),
+        'tvf_force_ext_value_distill': Categorical(True, False),
+        'hidden_units':     Categorical(128, 256, 512),
+        'value_transform':  Categorical('identity', 'sqrt'),
+        'gae_lambda':       Categorical(0.9, 0.95, 0.97),
 
         # tvf params
-        'tvf_mode':         Categorical("exponential"),
-        'tvf_exp_gamma':    Categorical(2.0),
-        'tvf_max_horizon':  Categorical(3000),
-        'tvf_value_samples': Categorical(128),
-        'tvf_horizon_samples': Categorical(128),
-        'tvf_value_distribution': Categorical("uniform"),
-        'tvf_horizon_distribution': Categorical("uniform"),
+        'use_tvf': Categorical(True, False),
+        'tvf_value_distribution': Categorical('fixed_geometric', 'fixed_linear'),
+        'tvf_horizon_distribution': Categorical('fixed_geometric', 'fixed_linear'),
+        'tvf_horizon_scale': Categorical('log'),
+        'tvf_time_scale': Categorical('log'),
+        'tvf_hidden_units': Categorical(128, 256, 512),
+        'tvf_value_samples': Categorical(32, 64, 128),
+        'tvf_horizon_samples': Categorical(32, 64, 128),
+        'tvf_mode': Categorical('exponential', 'nstep'),
+        'tvf_n_step': Categorical(40, 80, 120),
+        'tvf_exp_gamma': Categorical(1.5, 2.0, 2.5),
+        'tvf_coef': Categorical(0.5, 1.0, 2.0),
+        'tvf_soft_anchor': Categorical(-1, 0, 1.0, 10.0),
+        'tvf_exp_mode': Categorical("default", "transformed", "masked"),
 
-        'tvf_hidden_units': Categorical(256),
-        'tvf_soft_anchor': Categorical(1),
-        'tvf_horizon_scale': Categorical("wide"),
-        'tvf_time_scale': Categorical("wide"),
+        # linked...
+        'tvf_max_horizon': Categorical(1000, 10000, 30000, -1),
     }
 
+    def set_gammas(params):
+        HORIZONS = [1000, 10000, 30000, -1]
+        GAMMAS   = [0.997, 0.9997, 0.99997, 0.99997]
+        assert params["tvf_max_horizon"] in HORIZONS
+        idx = HORIZONS.index(params["tvf_max_horizon"])
+        params["gamma"] = GAMMAS[idx]
+        params["tvf_gamma"] = GAMMAS[idx]
+
     random_search(
-        "TVFA_Search_3k",
+        "TVF_SEARCH",
         main_params,
         search_params,
-        count=64,
-        process_up_to=64,
-        envs=['Krull', 'KungFuMaster', 'Seaquest'],
-        score_thresholds=[0, 0, 0],
+        count=120,
+        process_up_to=120,
+        envs=['Krull', 'KungFuMaster'],
+        score_thresholds=[0, 0],
+        hook=set_gammas,
     )
 
 def setup_tests():
@@ -1040,8 +1097,6 @@ def setup_paper_experiments2():
     default_args['auto_horizon'] = True
     default_args['warmup_period'] = 1000  # needed to make time pilot initial score correct (otherwise we get all low scores then all high scores).
 
-    ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
-    ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
 
     # check the effect of terminal on loss of life...
     # basically the value function is going to be extremely noisy until the agent learns the number of lives
@@ -1233,9 +1288,9 @@ def setup_paper_experiments2():
     # )
 
     for env in canonical_57:
-        if env in ["Surround", "Defender"]:
-            # These games both have problems, we I rerun the experiment with ALE roms I think this should solve itself.
-            # (I can get defender to work if I change the rom I think).
+
+        if env in ["Surround"]:
+            # Surround has (known) problem with gym... will have to skip it.
             continue
 
         # front run these to see how it's going
@@ -1329,52 +1384,41 @@ def setup_paper_experiments_sqrt():
     ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
     ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
 
-    # I forget what good results are, but maybe 10k?
-    add_job(
-        f"PAPER_SQRT",
-        env_name="TimePilot",
-        run_name=f"sqrt",
-        default_params=default_args,
-        value_transform="sqrt",
-        priority=350,
-        hostname='desktop',
-    )
+    # # I forget what good results are, but maybe 10k?
+    # add_job(
+    #     f"PAPER_SQRT",
+    #     env_name="TimePilot",
+    #     run_name=f"sqrt",
+    #     default_params=default_args,
+    #     value_transform="sqrt",
+    #     priority=350,
+    #     hostname='desktop',
+    # )
+    #
+    # # fixed so input to GAE is untransformed
+    # add_job(
+    #     f"PAPER_SQRT_FIX",
+    #     env_name="TimePilot",
+    #     run_name=f"sqrt",
+    #     default_params=default_args,
+    #     value_transform="sqrt",
+    #     priority=350,
+    #     hostname='desktop',
+    # )
 
-    # fixed so input to GAE is untransformed
-    add_job(
-        f"PAPER_SQRT_FIX",
-        env_name="TimePilot",
-        run_name=f"sqrt",
-        default_params=default_args,
-        value_transform="sqrt",
-        priority=350,
-        hostname='desktop',
-    )
-
-    # scaled transform by 1000
-    add_job(
-        f"PAPER_SQRT_FIX2",
-        env_name="TimePilot",
-        run_name=f"sqrt",
-        default_params=default_args,
-        value_transform="sqrt",
-        priority=350,
-        hostname='desktop',
-    )
-
-    # scaled transform by 25
-    add_job(
-        f"PAPER_SQRT_FIX3",
-        env_name="TimePilot",
-        run_name=f"sqrt",
-        default_params=default_args,
-        value_transform="sqrt",
-        priority=300,
-        hostname='desktop',
-    )
+    # # scaled transform by 25
+    # add_job(
+    #     f"PAPER_SQRT_FIX3",
+    #     env_name="TimePilot",
+    #     run_name=f"sqrt",
+    #     default_params=default_args,
+    #     value_transform="sqrt",
+    #     priority=300,
+    #     hostname='desktop',
+    # )
 
     # fixed inverse transform and now has a scale setting
-    for reward_scale in [1, 25, 100, 1000]:
+    for reward_scale in [0.1, 1, 10, 25, 100, 1000]:
         add_job(
             f"PAPER_SQRT_FIX4",
             env_name="TimePilot",
@@ -1407,37 +1451,323 @@ def setup_paper_experiments_sqrt():
         hostname='desktop',
     )
 
+    # add_job(
+    #     f"PAPER_SQRT_FIX",
+    #     env_name="TimePilot",
+    #     run_name=f"sqrt_toll",
+    #     default_params=default_args,
+    #     value_transform="sqrt",
+    #     terminal_on_loss_of_life=True,
+    #     priority=200,
+    #     hostname='desktop',
+    # )
+    #
+    # add_job(
+    #     f"PAPER_SQRT",
+    #     env_name="TimePilot",
+    #     run_name=f"default",
+    #     default_params=default_args,
+    #     priority=300,
+    #     hostname='desktop',
+    # )
+    #
+    # add_job(
+    #     f"PAPER_SQRT",
+    #     env_name="TimePilot",
+    #     run_name=f"toll_clip",
+    #     default_params=default_args,
+    #     terminal_on_loss_of_life=True,
+    #     reward_clipping=1,
+    #     priority=300,
+    #     hostname='desktop',
+    # )
+
+    # quick EMA test
+
+    for env in ATARI_3:
+        add_job(
+            f"BONUS_EMA",
+            env_name=env,
+            run_name=f"{env}_gamma=2.0",
+            default_params=default_args,
+            ema_frame_stack_gamma=2.0,
+            ema_frame_stack=True,
+            priority=-500,
+        )
+        add_job(
+            f"BONUS_EMA",
+            env_name=env,
+            run_name=f"{env}_gamma=2.0_x8",
+            default_params=default_args,
+            ema_frame_stack_gamma=2.0,
+            frame_stack=8,
+            ema_frame_stack=True,
+            priority=-500,
+        )
+
+
+
     add_job(
-        f"PAPER_SQRT_FIX",
-        env_name="TimePilot",
-        run_name=f"sqrt_toll",
+        f"BONUS_EMA",
+        env_name="Seaquest",
+        run_name=f"default",
         default_params=default_args,
-        value_transform="sqrt",
-        terminal_on_loss_of_life=True,
+        priority=500,
+        hostname='desktop',
+    )
+
+    add_job(
+        f"BONUS_EMA",
+        env_name="Seaquest",
+        run_name=f"ema_gamma=2.0",
+        default_params=default_args,
+        ema_frame_stack_gamma=2.0,
+        ema_frame_stack=True,
+        priority=500,
+        hostname='desktop',
+    )
+
+    add_job(
+        f"BONUS_EMA",
+        env_name="Seaquest",
+        run_name=f"ema_gamma=4.0",
+        default_params=default_args,
+        ema_frame_stack_gamma=4.0,
+        ema_frame_stack=True,
+        priority=500,
+        hostname='desktop',
+    )
+
+
+def setup_experiments_extra():
+
+    # changes:
+    # faster value lr, with less epochs
+    # use of 'implicit zero'.
+
+    default_args = v18_args.copy()
+    default_args['value_lr'] = 2.5e-4
+    default_args['tvf_force_ext_value_distill'] = False
+    default_args['entropy_bonus'] = 0.01
+    default_args['seed'] = 1  # force deterministic
+    default_args['use_compression'] = True
+    default_args['eb_beta'] = -0.2
+    default_args['tvf_exp_masked'] = False
+    default_args['tvf_implicit_zero'] = True
+    default_args['tvf_soft_anchor'] = 0
+    default_args['value_epochs'] = 2
+    default_args['auto_gamma'] = "both"
+    default_args['auto_horizon'] = True
+    default_args['warmup_period'] = 1000  # needed to make time pilot initial score correct (otherwise we get all low scores then all high scores).
+
+    default_args['hidden_units'] = default_args["tvf_hidden_units"]
+    default_args['architecture'] = 'dual'
+    default_args['use_tvf'] = True
+
+    del default_args["tvf_hidden_units"]
+
+    ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
+    ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
+
+    # note: should redo baseline as rom may have changed..
+
+    # check huber loss, with delta=0 being L1
+    # fixed inverse transform and now has a scale setting
+    for delta in [1.0]:
+        add_job(
+            f"EXTRA",
+            env_name="TimePilot",
+            run_name=f"huber_{delta}",
+            default_params=default_args,
+            use_huber_loss=True,
+            huber_loss_delta=delta,
+            priority=200,
+            hostname='desktop',
+        )
+
+    add_job(
+        f"EXTRA",
+        env_name="TimePilot",
+        run_name=f"tanh_0.2",  # I think epsilon is 0.2?
+        default_params=default_args,
+        use_tanh_clipping=True,
         priority=200,
         hostname='desktop',
     )
 
-    add_job(
-        f"PAPER_SQRT",
-        env_name="TimePilot",
-        run_name=f"default",
-        default_params=default_args,
-        priority=300,
-        hostname='desktop',
-    )
 
-    add_job(
-        f"PAPER_SQRT",
-        env_name="TimePilot",
-        run_name=f"toll_clip",
-        default_params=default_args,
-        terminal_on_loss_of_life=True,
-        reward_clipping=1,
-        priority=300,
-        hostname='desktop',
-    )
+def setup_PPO_Atari57():
 
+    default_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'use_tvf': False,
+        'architecture': 'single',
+        'export_video': False,  # save some space...
+        'epochs': 50,  # really want to see where these go...
+        'use_compression': 'auto',
+        'max_grad_norm': 25,
+        'warmup_period': 1000,
+        # helps on some games to make sure they are really out of sync at the beginning of training.
+        'disable_ev': False,
+        'seed': 0,
+
+        # parameters I don't want to search over...
+        'target_kl': -1,  # ignore...
+
+        # env parameters
+        'time_aware': False,
+        'terminal_on_loss_of_life': True,  # to match rainbow
+        'reward_clipping': 1,  # to match rainbow
+
+        # ppo params
+        'agents': 256,
+        'n_steps': 64,
+
+        'gamma': 0.997,
+        'vf_coef': 1.0,
+
+        'policy_mini_batch_size': 256,
+        'hidden_units': 512, # should be 128, but stick to this as we want to use the same model as rainbow-dqn
+
+        'policy_epochs': 5,
+        'ppo_epsilon': 0.1, # less might be better.
+
+        'policy_lr': 1.0e-4,
+        'learning_rate_anneal': False,
+        'entropy_bonus': 0.01, # not optimal, but close
+    }
+
+    for env in canonical_57:
+        if env in ["Surround"]:
+            continue
+
+        # # front run Atari-3 and Atari-Val to see how it's going
+        # if env in ATARI_3 or env in ATARI_VAL:
+        #     priority = 50
+        # else:
+        #     priority = 0
+
+        priority = 0
+
+        add_job(
+            f"PPO_Atari57_med",
+            env_name=env,
+            run_name=f"{env}_best",
+            default_params=default_args,
+            priority=50,
+            hostname='ML-Rig',
+        )
+
+        add_job(
+            f"PPO_Atari57_low",
+            env_name=env,
+            run_name=f"{env}_low",
+            entropy_bonus=0.003,
+            default_params=default_args,
+            priority=50,
+            hostname='ML-Rig',
+        )
+
+        add_job(
+            f"PPO_Atari57_high",
+            env_name=env,
+            run_name=f"{env}_high",
+            entropy_bonus=0.03,
+            default_params=default_args,
+            priority=50,
+            hostname='ML-Rig',
+        )
+
+
+def setup_PPO_Additional():
+
+    default_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'use_tvf': False,
+        'architecture': 'single',
+        'export_video': False,  # save some space...
+        'epochs': 50,  # really want to see where these go...
+        'use_compression': 'auto',
+        'max_grad_norm': 25,
+        'warmup_period': 1000,
+        # helps on some games to make sure they are really out of sync at the beginning of training.
+        'disable_ev': False,
+
+        # parameters I don't want to search over...
+        'target_kl': -1,  # ignore...
+
+        # env parameters
+        'time_aware': False,
+        'terminal_on_loss_of_life': True,  # to match rainbow
+        'reward_clipping': 1,  # to match rainbow
+
+        # ppo params
+        'agents': 256,
+        'n_steps': 64,
+
+        'gamma': 0.997,
+        'vf_coef': 1.0,
+
+        'policy_mini_batch_size': 256,
+        'hidden_units': 512, # should be 128, but stick to this as we want to use the same model as rainbow-dqn
+
+        'policy_epochs': 5,
+        'ppo_epsilon': 0.1, # less might be better.
+
+        'policy_lr': 1.0e-4,
+        'learning_rate_anneal': False, # does not help
+        'entropy_bonus': 0.01, # not optimal, but close
+    }
+
+    for run in [1, 2, 3]:
+        for env in ATARI_3:
+            add_job(
+                f"PPO_Atari3",
+                env_name=env,
+                run_name=f"{env}_sticky_{run}",
+                default_params=default_args,
+                sticky_actions=True,
+                noop_duration=0,
+                entropy_bonus=0.01,
+                priority=-50,
+                hostname='',
+                seed=run,
+            )
+
+            add_job(
+                f"PPO_Atari3",
+                env_name=env,
+                run_name=f"{env}_default_{run}",
+                default_params=default_args,
+                entropy_bonus=0.01,
+                priority=-50,
+                hostname='',
+                seed=run,
+            )
+
+            add_job(
+                f"PPO_Atari3",
+                env_name=env,
+                run_name=f"{env}_lowentropy_{run}",
+                default_params=default_args,
+                entropy_bonus=0.003,
+                priority=-50,
+                hostname='',
+                seed=run,
+            )
+
+            add_job(
+                f"PPO_Atari3",
+                env_name=env,
+                run_name=f"{env}_highentropy_{run}",
+                default_params=default_args,
+                entropy_bonus=0.03,
+                priority=-50,
+                hostname='',
+                seed=run,
+            )
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1449,14 +1779,11 @@ if __name__ == "__main__":
 
     id = 0
     job_list = []
-    # setup_paper_experiments()
-    # setup_tests()
-    #setup_paper_experiments2()
-    #bonus_experiments()
 
-    random_search_PPO()
-    setup_paper_experiments_sqrt()
+    setup_PPO_Atari57()
 
+    #random_search_PPO()
+    random_search_TVF()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

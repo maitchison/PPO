@@ -207,11 +207,17 @@ class FrameSkipWrapper(gym.Wrapper):
         """Repeat action, sum reward, and max over last two observations."""
         total_reward = 0.0
         done = None
-        info = None
+        info = {}
         skip = np.random.randint(self._min_skip, self._max_skip+1)
 
         for i in range(skip):
-            obs, reward, done, info = self.env.step(action)
+            obs, reward, done, _info = self.env.step(action)
+
+            # combine infos, with overwriting
+            if _info is not None:
+                for k, v in _info.items():
+                    info[k] = v
+
             if i == skip - 2:
                 self._obs_buffer[0] = obs
             if i == skip - 1:
@@ -639,6 +645,7 @@ class NoopResetWrapper(gym.Wrapper):
         self.noop_max = noop_max
         self.override_num_noops = None
         self.noop_action = 0
+        self.noop_given = None
         assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
 
     def reset(self, **kwargs):
@@ -659,6 +666,9 @@ class NoopResetWrapper(gym.Wrapper):
             noops = self.unwrapped.np_random.randint(1, self.noop_max+1)
 
         assert noops >= 0
+
+        self.noop_given = noops
+
         for _ in range(noops):
             obs, _, done, _ = self.env.step(self.noop_action)
             if done:
@@ -666,7 +676,11 @@ class NoopResetWrapper(gym.Wrapper):
         return obs
 
     def step(self, ac):
-        return self.env.step(ac)
+        obs, reward, done, info = self.env.step(ac)
+        if self.noop_given is not None:
+            info['noop_start'] = self.noop_given
+            self.noop_given = None
+        return obs, reward, done, info
 
 class FrameStack(gym.Wrapper):
     """ This is the original frame stacker that works by making duplicates of the frames,
@@ -721,6 +735,67 @@ class FrameStack(gym.Wrapper):
 
     def restore_state(self, buffer):
         self.stack = buffer["stack"]
+
+
+class EMAFrameStack(gym.Wrapper):
+    """
+        Maintain EMA of previous states with different alpha values.
+    """
+
+    def __init__(self, env, n_stacks=4, gamma=2.0):
+
+        super().__init__(env)
+
+        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
+
+        c,h,w = env.observation_space.shape
+
+        assert c in [1, 3], "Invalid shape {}".format(env.observation_space.shape)
+
+        self.n_stacks = n_stacks
+        self.original_channels = c
+        self.n_channels = self.n_stacks * self.original_channels
+        self.gamma = gamma
+
+        self.stack = np.zeros((self.n_channels, h, w), dtype=np.float32)
+
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(self.n_channels, h, w),
+            dtype=np.uint8,
+        )
+
+    def _push_obs(self, obs):
+        assert self.original_channels == 1, "Stacking does not support color at the moment."
+        # alpha is ema
+        for i in range(self.n_stacks):
+            alpha = 1/(self.gamma ** i)
+            self.stack[i] = self.stack[i] * (1-alpha) + obs[:, :, 0] * alpha
+
+    def _get_obs(self):
+        return np.clip(self.stack, 0, 255).astype(np.uint8)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self._push_obs(obs)
+        if "channels" in info:
+            info["channels"] = info["channels"] * self.n_stacks
+        return self._get_obs(), reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        for i in range(self.n_stacks):
+            self.stack[i] = obs[:, :, 0]
+        return self._get_obs()
+
+    def save_state(self, buffer):
+        buffer["stack"] = self.stack
+
+    def restore_state(self, buffer):
+        self.stack = buffer["stack"]
+
 
 class FrameStack_Lazy(gym.Wrapper):
     # taken from https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py

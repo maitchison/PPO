@@ -8,12 +8,12 @@ import argparse
 import os
 import sys
 from pathlib import Path
+import random
 
 from shutil import copyfile
 
 DEVICE = "cuda:1"
 REWARD_SCALE = float()
-SAMPLES = 100 # 16 is too few, might need 256...
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 
 GENERATE_EVAL = False
@@ -54,6 +54,10 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
         args.append('--seed')
         args.append(str(seed))
 
+    # set device
+    args.append('--device')
+    args.append('cuda:'+str(random.randint(0, 1)))
+
     old_path = os.getcwd()
     try:
         os.chdir(experiment_folder)
@@ -66,7 +70,8 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
     finally:
         os.chdir(old_path)
 
-def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None):
+
+def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epoch=None):
     """
     Evaluate all runs in run_path, will skip already done evaluations
     """
@@ -76,7 +81,9 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None):
 
     files_in_dir = [os.path.join(run_path, x) for x in os.listdir(run_path)]
 
-    for epoch in range(0, max_epoch+1):
+    epochs = range(0, max_epoch+1, eval_args.every_epoch) if eval_epoch is None else [eval_epoch]
+
+    for epoch in epochs:
 
         postfix = f"_t={temperature}" if temperature is not None else ""
 
@@ -129,13 +136,14 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None):
                     output_file=checkpoint_eval_file,
                     temperature=temperature,
                     seed=seed,
-                    samples=SAMPLES
+                    samples=eval_args.samples
                 )
 
 
-def monitor(path, experiment_filter=None, max_epoch=200, seed=None):
-
+def monitor(path, experiment_filter=None, max_epoch=200, seed=None, eval_epoch=None):
     folders = [x[0] for x in os.walk(path)]
+    # random order so we can have multiple workers working on this
+    random.shuffle(folders)
     for folder in folders:
         if experiment_filter is not None and not experiment_filter(folder):
             continue
@@ -143,7 +151,7 @@ def monitor(path, experiment_filter=None, max_epoch=200, seed=None):
             continue
         try:
             for temperature in temperatures:
-                evaluate_run(folder, temperature=temperature, max_epoch=max_epoch, seed=seed)
+                evaluate_run(folder, temperature=temperature, max_epoch=max_epoch, seed=seed, eval_epoch=eval_epoch)
         except Exception as e:
             print("Error:"+str(e))
 
@@ -153,10 +161,14 @@ if __name__ == "__main__":
     parser.add_argument("mode", help="[video|eval]")
     parser.add_argument("run_filter", type=str, default="", help="Filter for runs.")
     parser.add_argument("--experiment_filter", type=str, default="", help="Filter for experiments.")
+    parser.add_argument("--epoch", type=int, default=None, help="Epoch to evaluate (None evaluates all).")
+    parser.add_argument("--every_epoch", type=int, default=1,
+                        help="Only epochs where epoch % every_epoch==0 will be processed.")
     parser.add_argument("--temperatures", type=str, default="[None]",
                         help="Temperatures to generate. e.g. [0.1, 0.5, 1.0] (lower temperature has higher entropy)")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
-    parser.add_argument("--seed", type=int, default=None, help="Random Seed to use.")
+    parser.add_argument("--seed", type=int, default=1, help="Random Seed to use.")
+    parser.add_argument("--samples", type=int, default=100, help="Number of samples to generate in eval mode.")
     eval_args = parser.parse_args()
 
     assert eval_args.mode in ["video", "video_nt", "eval"]
@@ -182,5 +194,6 @@ if __name__ == "__main__":
                     os.path.join('./Run', folder),
                     experiment_filter=exp_filter,
                     max_epoch=max_epoch,
-                    seed=eval_args.seed
+                    seed=eval_args.seed,
+                    eval_epoch=eval_args.epoch,
                 )
