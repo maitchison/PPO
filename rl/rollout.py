@@ -91,7 +91,6 @@ def calculate_mc_returns(rewards, dones, final_value_estimate, gamma) -> np.ndar
 
     return returns
 
-
 def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma: float, lamb=1.0,
                   normalize=False):
     N, A = batch_rewards.shape
@@ -1437,7 +1436,14 @@ class Runner():
         )
 
         # calculate ext_returns for PPO targets
+        # this is from https://github.com/Stable-Baselines-Team/stable-baselines/blob/master/stable_baselines/ppo2/ppo2.py
         self.ext_returns = self.H(self.ext_advantage + ext_value_estimates[:N])
+
+        # apply risk penality to advantages
+        if args.use_lo:
+            clipped_ext_variance = np.clamp(self.ext_variance, 0, float('inf'))
+            rho = np.exp(-0.5 * clipped_ext_variance / (self.ext_returns**2+1e-6) )
+            self.ext_advantage *= rho
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -1694,6 +1700,9 @@ class Runner():
 
         if args.use_intrinsic_rewards:
             value_heads.append("int")
+
+        if args.use_lo:
+            value_heads.append("var")
 
         for value_head in value_heads:
             value_prediction = model_out["{}_value".format(value_head)]

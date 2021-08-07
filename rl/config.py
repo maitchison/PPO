@@ -104,6 +104,10 @@ class Config:
         self.distill_lr = float()
         self.architecture = str()
 
+        # log optimal
+        self.use_lo = bool()
+        self.lo_c = float()
+
         self.use_icm            = bool()
         self.icm_eta            = str()
 
@@ -365,6 +369,12 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--log_folder", type=str, default=None)
 
     parser.add_argument("--use_clipped_value_loss", type=str2bool, default=False, help="Use the improved clipped value loss.")
+
+    # log optimal stuff
+    parser.add_argument("--use_lo", type=str2bool, default=False,
+                        help="Enable log-optimal mode.")
+    parser.add_argument("--lo_c", type=float, default=1.0,
+                        help="Constant for log-optimal")
 
     # icm stuff
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")
