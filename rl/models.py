@@ -224,7 +224,7 @@ class DualNet(nn.Module):
             # policy outputs policy, but also value so that we can train it to predict value as an aux task
             # value outputs extrinsic and intrinsic value
             self.policy_net_policy = nn.Linear(self.encoder.hidden_units, actions)
-            self.policy_net_value = nn.Linear(self.encoder.hidden_units, 2)
+            self.policy_net_value = nn.Linear(self.encoder.hidden_units, 4)
 
         if self.value_head:
 
@@ -233,10 +233,9 @@ class DualNet(nn.Module):
             self.tvf_activation = tvf_activation
             self.horizon_transform = tvf_horizon_transform
             self.time_transform = tvf_time_transform
-            self.tp_head = nn.Linear(self.encoder.hidden_units, 1)
 
             # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
-            self.value_net_value = nn.Linear(self.encoder.hidden_units, 2)
+            self.value_net_value = nn.Linear(self.encoder.hidden_units, 4)
             self.value_net_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
             self.value_net_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
             self.value_net_tvf = nn.Linear(tvf_hidden_units, self.tvf_n_dedicated_value_heads+1)
@@ -303,7 +302,7 @@ class DualNet(nn.Module):
             value_values = self.value_net_value(features)
             result['ext_value'] = value_values[:, 0]
             result['int_value'] = value_values[:, 1]
-            result['tp_value'] = self.tp_head(features)[:, 0]
+            result['sqr_value'] = value_values[:, 2]
 
             # auxiliary features
             if aux_features is not None:

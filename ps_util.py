@@ -27,7 +27,7 @@ def safe(f, X):
         return None
 
 
-def get_scores(game, epoch, temperature=1.0, seed=1, norm=False):
+def get_scores(game:str, mode:str, epoch:int, temperature:float=1.0, seed:int=1, norm:bool=False):
     """
     Get the score for given game at given temperature and given epoch
     If results do not exist returns None
@@ -38,10 +38,10 @@ def get_scores(game, epoch, temperature=1.0, seed=1, norm=False):
     if seed is None:
         seed = 1
 
-    key = (game, epoch, temperature, seed, norm)
+    key = (game, mode, epoch, temperature, seed, norm)
     if key in cache:
         return cache[key]
-    path = eval_paths[game]
+    path = eval_paths[(game, mode)]
     results = pu.load_eval_epoch(path, epoch, temperature, seed)
     if results is None:
         if VERBOSE:
@@ -52,26 +52,26 @@ def get_scores(game, epoch, temperature=1.0, seed=1, norm=False):
         return cache[key]
 
 
-def get_score_mean(game, epoch, temperature=1.0, seed=1, norm=False):
+def get_score_mean(game:str, mode:str, epoch:int, temperature:float=1.0, seed:int=1, norm:bool=False):
     """
     Get the score for given game at given temperature and given epoch
     If results do not exist returns None
     """
-    return safe(np.mean, get_scores(game, epoch, temperature, seed, norm))
+    return safe(np.mean, get_scores(game, mode, epoch, temperature, seed, norm))
 
 
-def get_score_error(game, epoch, temperature=1.0, seed=1, norm=False):
+def get_score_error(game:str, mode: str, epoch:int, temperature=1.0, seed:int=1, norm:bool=False):
     """
     Get the score for given game at given temperature and given epoch
     If results do not exist returns None
     """
-    scores = get_scores(game, epoch, temperature, seed, norm)
+    scores = get_scores(game, mode, epoch, temperature, seed, norm)
     if scores is None:
         return None
     else:
         return np.std(scores) / (len(scores) ** 0.5)
 
-def get_result(game, epoch, temperature_code, seed=None, norm=False):
+def get_result(game:str, mode: str, epoch:int, temperature_code:str, seed=None, norm=False):
     """
     Gets temperature score, but using temperature codes.
     If result does not exist returns None
@@ -96,19 +96,19 @@ def get_result(game, epoch, temperature_code, seed=None, norm=False):
             raise ValueError(f"Invalid temperature code {temperature_code}")
 
         if parts[0] == "max":
-            return safe(np.max, [get_score_mean(game, epoch, t, norm=norm) for t in temps])
+            return safe(np.max, [get_score_mean(game, mode, epoch, t, norm=norm) for t in temps])
         elif parts[0] == "argmax":
-            argmax = safe(np.argmax, [get_score_mean(game, epoch, t, norm=norm) for t in temps])
+            argmax = safe(np.argmax, [get_score_mean(game, mode, epoch, t, norm=norm) for t in temps])
             return None if argmax is None else temps[argmax]
         elif parts[0] == "best":
-            argmax = safe(np.argmax, [get_score_mean(game, epoch, t, norm=norm) for t in temps])
+            argmax = safe(np.argmax, [get_score_mean(game, mode, epoch, t, norm=norm) for t in temps])
             if argmax is None:
                 return None
-            return get_score_mean(game, epoch, temps[argmax], seed=1337, norm=norm)
+            return get_score_mean(game, mode, epoch, temps[argmax], seed=1337, norm=norm)
         else:
             raise ValueError(f"Invalid temperature code {temperature_code}")
 
     if type(temperature_code) not in [int, float]:
         raise ValueError(f"Invalid temperature code {temperature_code}")
 
-    return get_score_mean(game, epoch, float(temperature_code), seed=seed, norm=norm)
+    return get_score_mean(game, mode, epoch, float(temperature_code), seed=seed, norm=norm)

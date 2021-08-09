@@ -1595,6 +1595,67 @@ def setup_experiments_extra():
         hostname='desktop',
     )
 
+def setup_LO_tests():
+    default_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'use_tvf': False,
+        'architecture': 'single',
+        'export_video': False,  # save some space...
+        'epochs': 50,  # really want to see where these go...
+        'use_compression': 'auto',
+        'max_grad_norm': 25,
+        'warmup_period': 1000,
+        # helps on some games to make sure they are really out of sync at the beginning of training.
+        'disable_ev': False,
+        'seed': 0,
+
+        # parameters I don't want to search over...
+        'target_kl': -1,  # ignore...
+
+        # env parameters
+        'time_aware': False,
+        'terminal_on_loss_of_life': True,  # to match rainbow
+        'reward_clipping': 1,  # to match rainbow
+
+        # ppo params
+        'agents': 256,
+        'n_steps': 64,
+
+        'gamma': 0.997,
+        'vf_coef': 1.0,
+
+        'policy_mini_batch_size': 256,
+        'hidden_units': 512,  # should be 128, but stick to this as we want to use the same model as rainbow-dqn
+
+        'policy_epochs': 5,
+        'ppo_epsilon': 0.1,  # less might be better.
+
+        'policy_lr': 1.0e-4,
+        'entropy_bonus': 0.01,  # not optimal, but close
+    }
+    for alpha in [-1, -0.1, 0, 0.1, 1]:
+        add_job(
+            f"PPO_LogOptimal",
+            env_name="TimePilot",
+            run_name=f"alpha={alpha}",
+            default_params=default_args,
+            use_log_optimal=True,
+            lo_alpha=alpha,
+            priority=100,
+            hostname='ML-Rig',
+        )
+    add_job(
+        f"PPO_LogOptimal",
+        env_name="TimePilot",
+        run_name=f"reference",
+        default_params=default_args,
+        use_log_optimal=False,
+        priority=100,
+        hostname='ML-Rig',
+    )
+
+
 
 def setup_PPO_Atari57():
 
@@ -1781,6 +1842,7 @@ if __name__ == "__main__":
     job_list = []
 
     setup_PPO_Atari57()
+    setup_LO_tests()
 
     #random_search_PPO()
     random_search_TVF()

@@ -15,6 +15,7 @@ from collections import defaultdict
 from typing import Union
 import bisect
 import math
+import copy
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
@@ -430,6 +431,10 @@ class Runner():
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
         self.int_value = np.zeros([N, A], dtype=np.float32)
+
+        # log optimal
+        self.sqr_value = np.zeros([N, A], dtype=np.float32)
+        self.sqr_returns = np.zeros([N, A], dtype=np.float32)
 
         # returns generation
         self.ext_returns = np.zeros([N, A], dtype=np.float32)
@@ -1389,6 +1394,26 @@ class Runner():
         """
         return self.all_time[-1]
 
+    def calculate_second_moment_estimate(
+            self,
+            rewards:np.ndarray,
+            first_moment_estimates:np.ndarray,
+            second_moment_estimates:np.ndarray,
+            gamma: float
+    ):
+        """
+        rewards: ndarray of dims N, A
+        first_moment_estimates: ndarray of dims N+1, A
+        second_moment_estimates: ndarray of dims N+1, A
+        gamma: float
+        """
+
+        # based on https://jmlr.org/papers/volume17/14-335/14-335.pdf
+        # the idea here is to learn the second moment, then use the first and second moments to estimate variance.
+        # this is simply a td update, might extend to n-steps later on, if I can...
+
+        return rewards**2 + 2*gamma*rewards * first_moment_estimates[1:] + (gamma**2)*second_moment_estimates[1:]
+
     def calculate_returns(self):
 
         N, A, *state_shape = self.prev_obs.shape
@@ -1424,6 +1449,22 @@ class Runner():
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
 
+        if args.use_log_optimal:
+            assert not args.use_tvf, "TVF not supported with log-optimal yet."
+            # get square value estimates..., would be better to not have to forward this a second time
+
+            with torch.no_grad():
+                model_out = self.model.forward(self.all_obs.reshape([(N+1)*A, *state_shape]), output='value')
+                sqr_value = model_out['sqr_value'].reshape([(N+1), A]).cpu().numpy()
+
+            self.sqr_value = sqr_value[:-1]  # exclude final value estimate
+            self.sqr_returns = self.calculate_second_moment_estimate(
+                rewards=self.ext_rewards,
+                first_moment_estimates=ext_value_estimates,
+                second_moment_estimates=sqr_value,
+                gamma=args.gamma
+            )
+
         self.ext_value = ext_value_estimates
 
         # GAE requires inputs to be true value not transformed value...
@@ -1438,6 +1479,21 @@ class Runner():
 
         # calculate ext_returns for PPO targets
         self.ext_returns = self.H(self.ext_advantage + ext_value_estimates[:N])
+
+        # log-optimal adjustment
+        if args.use_log_optimal:
+            assert args.value_transform == "identity", "Log optimal will (probably) not work with value transforms."
+            var = np.clip(self.sqr_value - (self.ext_value[:-1] ** 2), 0, float('inf'))
+            sqr_exp = (self.ext_value[:-1] ** 2) + 1e-6
+            ratios = var / (sqr_exp+1e-6)
+            ratios = np.clip(ratios, -5, 5) # just so we don't get an overflow
+            rho = np.exp(-0.5 * args.lo_alpha * ratios)
+
+            self.log.watch("lo_rho_mean", np.mean(rho))
+            self.log.watch("lo_std_mean", np.std(rho))
+
+            rho = np.clip(rho, -5, 5)
+            self.ext_advantage *= rho
 
         if args.use_intrinsic_rewards:
             # calculate the returns, but let returns propagate through terminal states.
@@ -1622,6 +1678,21 @@ class Runner():
 
         self.log.watch_mean("loss_distill", loss, history_length=64, display_width=8)
 
+    @property
+    def value_heads(self):
+        """
+        Returns a list containing value heads that need to be calculated.
+        """
+        value_heads = []
+        if not args.use_tvf:
+            value_heads.append("ext")
+        if args.use_intrinsic_rewards:
+            value_heads.append("int")
+        if args.use_log_optimal:
+            value_heads.append("sqr")
+        return value_heads
+
+
     def train_value_minibatch(self, data, loss_scale=1.0):
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
@@ -1687,33 +1758,7 @@ class Runner():
         # Calculate loss_value
         # -------------------------------------------------------------------------
 
-        value_heads = []
-
-        if not args.use_tvf:
-            value_heads.append("ext")
-
-        if args.use_intrinsic_rewards:
-            value_heads.append("int")
-
-        for value_head in value_heads:
-            value_prediction = model_out["{}_value".format(value_head)]
-            returns = data["{}_returns".format(value_head)]
-
-            if args.use_clipped_value_loss:
-                old_pred_values = data["{}_value".format(value_head)]
-                # is is essentially trust region for value learning, and seems to help a lot.
-                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
-                                                                         -args.ppo_epsilon, +args.ppo_epsilon)
-                vf_losses1 = (value_prediction - returns).pow(2)
-                vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = 0.5 * torch.mean(torch.max(vf_losses1, vf_losses2))
-            else:
-                # simpler version, just use MSE.
-                vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = 0.5 * torch.mean(vf_losses1)
-            loss_value = loss_value * args.vf_coef
-            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
-            loss = loss + loss_value
+        loss = loss + self.train_value_heads(model_out, data)
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -1853,6 +1898,32 @@ class Runner():
         t = self.step / 10e6
         return args.entropy_bonus * 10 ** (args.eb_alpha * -math.cos(args.eb_theta*t*math.pi*2) + args.eb_beta * t)
 
+    def train_value_heads(self, model_out, data):
+        """
+        Calculates loss for each value head, then returns their sum.
+        """
+        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        for value_head in self.value_heads:
+            value_prediction = model_out["{}_value".format(value_head)]
+            returns = data["{}_returns".format(value_head)]
+
+            if args.use_clipped_value_loss:
+                old_pred_values = data["{}_value".format(value_head)]
+                # is is essentially trust region for value learning, and seems to help a lot.
+                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
+                                                                         -args.ppo_epsilon, +args.ppo_epsilon)
+                vf_losses1 = (value_prediction - returns).pow(2)
+                vf_losses2 = (value_prediction_clipped - returns).pow(2)
+                loss_value = torch.mean(torch.max(vf_losses1, vf_losses2))
+            else:
+                # simpler version, just use MSE.
+                vf_losses1 = (value_prediction - returns).pow(2)
+                loss_value = torch.mean(vf_losses1)
+            loss_value = loss_value * args.vf_coef
+            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
+            loss = loss + loss_value
+        return loss
+
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
         mini_batch_size = len(data["prev_state"])
@@ -1909,26 +1980,8 @@ class Runner():
         # -------------------------------------------------------------------------
 
         if args.architecture == "single":
-            value_head = "ext"
-
-            value_prediction = model_out["{}_value".format(value_head)]
-            returns = data["{}_returns".format(value_head)]
-
-            if args.use_clipped_value_loss:
-                old_pred_values = data["{}_value".format(value_head)]
-                # is is essentially trust region for value learning, and seems to help a lot.
-                value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
-                                                                         -args.ppo_epsilon, +args.ppo_epsilon)
-                vf_losses1 = (value_prediction - returns).pow(2)
-                vf_losses2 = (value_prediction_clipped - returns).pow(2)
-                loss_value = torch.mean(torch.max(vf_losses1, vf_losses2))
-            else:
-                # simpler version, just use MSE.
-                vf_losses1 = (value_prediction - returns).pow(2)
-                loss_value = torch.mean(vf_losses1)
-            loss_value = loss_value * args.vf_coef
-            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
-            loss = loss - loss_value # negative because we're doing gradient ascent.
+            # negative because we're doing gradient ascent.
+            loss = loss - self.train_value_heads(model_out, data)
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
@@ -2027,6 +2080,8 @@ class Runner():
         if args.architecture == "single":
             # ppo trains value during policy update
             batch_data["ext_returns"] = self.ext_returns.reshape([B])
+            if args.use_log_optimal:
+                batch_data["sqr_returns"] = self.sqr_returns.reshape([B])
 
         if args.normalize_advantages:
             # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
@@ -2072,6 +2127,10 @@ class Runner():
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
             batch_data["int_value"] = self.int_value.reshape(B)
+
+        if args.use_log_optimal:
+            batch_data["sqr_returns"] = self.sqr_returns.reshape(B)
+            batch_data["sqr_value"] = self.sqr_value.reshape(B)
 
         if (not args.use_tvf) and args.use_clipped_value_loss:
             # these are needed if we are using the clipped value objective...

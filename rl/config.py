@@ -142,6 +142,10 @@ class Config:
         self.terminal_on_loss_of_life = bool()
         self.value_transform = str()
 
+        # log optimal
+        self.use_log_optimal = bool()
+        self.lo_alpha = float()
+
         # ema frame stack
         self.ema_frame_stack_gamma = float()
         self.ema_frame_stack = bool()
@@ -274,6 +278,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_exp_gamma", type=float, default=2.0)
     parser.add_argument("--tvf_exp_mode", type=str, default="default", help="[default|masked|transformed]")
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Enabled TVF mode.")
+
+    # log-optimal
+    parser.add_argument("--use_log_optimal", type=str2bool, default=False, help="Enabled Log-Optimal mode.")
+    parser.add_argument("--lo_alpha", type=float, default=1.0, help="Risk factor for log-optimal mode.")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
