@@ -726,7 +726,7 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
             return None
         game = game_log["params"]["environment"]
         if game not in game_list:
-            #print(f"Skipping {game}")
+            print(f"Skipping {game}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[env_step // 1e6][game].append(ep_score)
@@ -743,10 +743,9 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
         return None
 
     # normalize the results
-
     for epoch in epochs:
         es = epoch_scores[epoch]
-        # make sure we have data for all 3 games
+        # make sure we have data for all games
         if not all(len(es[game]) > 0 for game in game_list):
             break
         # work out game scores for each game
@@ -984,7 +983,7 @@ def marginalize_categorical(results, var_name, sample_filter=None, setup_figure=
     best_index = np.argmax(ys_mean)
     best_x = xs[best_index]
     best_y = ys_mean[best_index]
-    plt.scatter([best_x], [best_y], marker='.', s=75, color='black')
+    plt.scatter([best_x], [best_y], marker='.', s=75, color=color)
 
     if not hold:
         plt.show()

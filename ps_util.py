@@ -51,6 +51,30 @@ def get_scores(game:str, mode:str, epoch:int, temperature:float=1.0, seed:int=1,
         cache[key] = pu.asn.normalize(game, results["episode_scores"]) if norm else results["episode_scores"]
         return cache[key]
 
+def get_lengths(game:str, mode:str, epoch:int, temperature:float=1.0, seed:int=1):
+    """
+    Get the score for given game at given temperature and given epoch
+    If results do not exist returns None
+    """
+
+    assert type(temperature) in [int, float]
+
+    if seed is None:
+        seed = 1
+
+    key = (game, mode, epoch, temperature, seed, "length")
+    if key in cache:
+        return cache[key]
+    path = eval_paths[(game, mode)]
+    results = pu.load_eval_epoch(path, epoch, temperature, seed)
+    if results is None:
+        if VERBOSE:
+            print(f"Warning, missing data for {game} {epoch} {temperature} {seed}")
+        return None
+    else:
+        cache[key] = results["episode_lengths"]
+        return cache[key]
+
 
 def get_score_mean(game:str, mode:str, epoch:int, temperature:float=1.0, seed:int=1, norm:bool=False):
     """

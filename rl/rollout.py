@@ -23,6 +23,37 @@ from .config import args
 
 import collections
 
+
+class GBOGH(torch.optim.Adam):
+    """
+    Go big or go home.
+    Filter out small steps from optimization process on the hypothesis that they introduce more noise than signal.
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False, min_threshold=0.5):
+        super().__init__(params, lr, betas, eps, weight_decay, amsgrad)
+        self.min_threshold = min_threshold
+
+    @torch.no_grad()
+    def step(self):
+        # get parameters
+        parameters = []
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is not None:
+                    parameters.append(p)
+
+        # 1. work out the magnitude of the update.
+        device = parameters[0].grad.device
+        total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2.0).to(device) for p in parameters]), 2.0)
+        if total_norm < self.min_threshold:
+            pass
+        else:
+            super().step()
+
+        return total_norm
+
+
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
 
@@ -384,16 +415,28 @@ class Runner():
         self.model = model
         self.step = 0
 
-        self.policy_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=self.policy_lr, eps=args.adam_epsilon)
-        self.value_optimizer = torch.optim.Adam(model.value_net.parameters(), lr=self.value_lr, eps=args.adam_epsilon)
+        optimizer_params = {
+            'eps': args.adam_epsilon
+        }
+
+        if args.optimizer == "GBOGH":
+            optimizer = GBOGH
+        elif args.optimizer == "Adam":
+            optimizer = torch.optim.Adam
+            optimizer_params['min_threshold'] = args.gbogh_threshold
+        else:
+            raise ValueError(f"Invalid optimizer {args.optimizer}")
+
+        self.policy_optimizer = optimizer(model.policy_net.parameters(), lr=self.policy_lr, **optimizer_params)
+        self.value_optimizer = optimizer(model.value_net.parameters(), lr=self.value_lr, **optimizer_params)
         if args.distill_epochs > 0:
-            self.distill_optimizer = torch.optim.Adam(model.policy_net.parameters(), lr=self.distill_lr,
-                                                    eps=args.adam_epsilon)
+            self.distill_optimizer = optimizer(model.policy_net.parameters(), lr=self.distill_lr,
+                                                    **optimizer_params)
         else:
             self.distill_optimizer = None
 
         if args.use_rnd:
-            self.rnd_optimizer = torch.optim.Adam(model.prediction_net.parameters(), lr=self.rnd_lr, eps=args.adam_epsilon)
+            self.rnd_optimizer = optimizer(model.prediction_net.parameters(), lr=self.rnd_lr, **optimizer_params)
         else:
             self.rnd_optimizer = None
 
@@ -1483,11 +1526,15 @@ class Runner():
         # log-optimal adjustment
         if args.use_log_optimal:
             assert args.value_transform == "identity", "Log optimal will (probably) not work with value transforms."
-            var = np.clip(self.sqr_value - (self.ext_value[:-1] ** 2), 0, float('inf'))
-            sqr_exp = (self.ext_value[:-1] ** 2) + 1e-6
+            sqr_exp = (self.ext_value[:-1] ** 2)
+            var = np.clip(self.sqr_value - sqr_exp, 0, float('inf'))
+
             ratios = var / (sqr_exp+1e-6)
             ratios = np.clip(ratios, -5, 5) # just so we don't get an overflow
-            rho = np.exp(-0.5 * args.lo_alpha * ratios)
+
+            alpha = self.anneal(args.lo_alpha, enable=args.lo_alpha_anneal)
+
+            rho = np.exp(-0.5 * alpha * ratios)
 
             self.log.watch("lo_rho_mean", np.mean(rho))
             self.log.watch("lo_std_mean", np.std(rho))

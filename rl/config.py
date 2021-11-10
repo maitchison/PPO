@@ -24,6 +24,7 @@ class Config:
 
         self.input_crop         = bool()
         self.adam_epsilon       = float()
+        self.gbogh_threshold    = float()
         self.workers            = int()
         self.epochs             = int()
         self.limit_epochs       = int()
@@ -145,6 +146,7 @@ class Config:
         # log optimal
         self.use_log_optimal = bool()
         self.lo_alpha = float()
+        self.lo_alpha_anneal = bool()
 
         # ema frame stack
         self.ema_frame_stack_gamma = float()
@@ -282,6 +284,7 @@ def parse_args(no_env=False, args_override=None):
     # log-optimal
     parser.add_argument("--use_log_optimal", type=str2bool, default=False, help="Enabled Log-Optimal mode.")
     parser.add_argument("--lo_alpha", type=float, default=1.0, help="Risk factor for log-optimal mode.")
+    parser.add_argument("--lo_alpha_anneal", type=str2bool, default=False)
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
@@ -386,6 +389,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
                         help="allows intrinsic returns to propagate through end of episode."
     )
+
+    parser.add_argument("--optimizer", type=str, default="Adam", help="[Adam|GBOGH]")
+    parser.add_argument("--gbogh_threshold", type=float, default=0.5)
 
     parser.add_argument("--disable_ev", type=str2bool, default=False,
                         help="disables explained variance calculations (faster)."
