@@ -47,11 +47,10 @@ class GBOGH(torch.optim.Adam):
         device = parameters[0].grad.device
         total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2.0).to(device) for p in parameters]), 2.0)
         if total_norm < self.min_threshold:
-            pass
+            return False
         else:
             super().step()
-
-        return total_norm
+            return True
 
 
 def save_progress(log: Logger):
@@ -421,9 +420,9 @@ class Runner():
 
         if args.optimizer == "GBOGH":
             optimizer = GBOGH
+            optimizer_params['min_threshold'] = args.gbogh_threshold
         elif args.optimizer == "Adam":
             optimizer = torch.optim.Adam
-            optimizer_params['min_threshold'] = args.gbogh_threshold
         else:
             raise ValueError(f"Invalid optimizer {args.optimizer}")
 
@@ -1174,8 +1173,9 @@ class Runner():
             # time fraction
             self.time = np.asarray([info["time_frac"] for info in infos])
 
-            # per step reward
-            ext_rewards += args.per_step_reward
+            # per step reward noise
+            if args.per_step_reward_noise > 0:
+                ext_rewards += np.random.normal(0, args.per_step_reward_noise, size=ext_rewards.shape)
 
             # work out our intrinsic rewards
             if args.use_intrinsic_rewards:
@@ -1682,7 +1682,13 @@ class Runner():
             grad_norm = grad_norm ** 0.5
 
         self.log.watch_mean(f"grad_{label}", grad_norm)
-        optimizer.step()
+
+        if optimizer is GBOGH:
+            did_update = optimizer.step()
+            # monitor frequency of updates.
+            self.log.watch_mean("optimizer_updates", int(did_update), history_length=1000)
+        else:
+            optimizer.step()
         return float(grad_norm)
 
     def train_distill_minibatch(self, data, loss_scale=1.0):

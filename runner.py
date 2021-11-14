@@ -675,9 +675,141 @@ def setup_DNA_Atari57():
         )
 
 
+def setup_TVF_Extra():
+
+    default_args = {
+        'checkpoint_every': int(5e6),
+        'workers': WORKERS,
+        'architecture': 'dual',
+        'export_video': False,
+        'epochs': 50,  # really want to see where these go...
+        'use_compression': 'auto',
+        'warmup_period': 1000,  # helps on some games to make sure they are really out of sync at the beginning of training.
+        'disable_ev': False,
+        'seed': 0,
+
+        # env parameters
+        'time_aware': True,
+        'terminal_on_loss_of_life': True,  # to match rainbow
+        'reward_clipping': 1,  # to match rainbow
+
+        # parameters found by hyperparameter search...
+        'max_grad_norm': 5.0,
+        'agents': 128,
+        'n_steps': 128,
+        'policy_mini_batch_size': 512,
+        'value_mini_batch_size': 512,
+        'policy_epochs': 3,
+        'value_epochs': 2,
+        'distill_epochs': 1,
+        'distill_beta': 1.0,
+        'target_kl': -1,
+        'ppo_epsilon': 0.1,
+        'policy_lr': 2.5e-4,
+        'value_lr': 2.5e-4,
+        'distill_lr': 2.5e-4,
+        'entropy_bonus': 1e-3,
+        'tvf_force_ext_value_distill': False,
+        'hidden_units': 256,
+        'value_transform': 'sqrt',
+        'gae_lambda': 0.95, # would be nice to try 0.99...
+
+        # tvf params
+        'use_tvf': True,
+        'tvf_value_distribution': 'fixed_geometric',
+        'tvf_horizon_distribution': 'fixed_geometric',
+        'tvf_horizon_scale': 'log',
+        'tvf_time_scale': 'log',
+        'tvf_hidden_units': 256,
+        'tvf_value_samples': 128,
+        'tvf_horizon_samples': 32,
+        'tvf_mode': 'exponential',
+        'tvf_n_step': 80, # makes no difference...
+        'tvf_exp_gamma': 2.0, # 2.0 would be faster, but 1.5 tested slightly better.
+        'tvf_coef': 0.5,
+        'tvf_soft_anchor': 0,
+        'tvf_exp_mode': "transformed",
+
+        # horizon
+        'gamma': 0.99997,
+        'tvf_gamma': 0.99997,
+        'tvf_max_horizon': 30000,
+    }
+
+    # this tests if there is any improvement if we skip small updates.
+    for threshold in [0, 0.25, 0.5, 0.75, 1.0]:
+        add_job(
+            f"Extra",
+            env_name="Krull",
+            run_name=f"threshold_{threshold}",
+            use_tvf=False, # want to know how this works without TVF as TVF is more noise resistant.
+            default_params=default_args,
+            optimizer = "GBOGH",
+            gbogh_threshold = threshold,
+            priority=0,
+            epochs=30,
+            hostname='desktop',
+        )
+
+    # this tests impact of gae_lambda
+    for gae_lambda in [0.9, 0.95, 0.97, 0.99, 1.0]:
+        add_job(
+            f"Extra",
+            env_name="Krull",
+            run_name=f"gae_lambda={gae_lambda}",
+            default_params=default_args,
+            gae_lambda=gae_lambda,
+            priority=0,
+            hostname='desktop',
+        )
+
+    # this tests how robust algorithm is to reward noise.
+    for use_tvf in [True, False]:
+        for per_step_reward_noise in [0.0, 0.1, 0.5, 1.0, 2.0, 4.0]:
+            add_job(
+                f"Extra",
+                env_name="Krull",
+                run_name=f"use_tvf={use_tvf} per_step_reward_noise={per_step_reward_noise}",
+                use_tvf=use_tvf,
+                per_step_reward_noise=per_step_reward_noise,
+                default_params=default_args,
+                priority=50,
+                hostname='desktop',
+            )
+
+    # see how we do with deferred rewards
+    for use_tvf in [True, False]:
+        for horizon in [1000, 5000, 20000]:
+            add_job(
+                f"Extra",
+                env_name="Krull",
+                run_name=f"use_tvf={use_tvf} horizon={horizon}",
+                use_tvf=use_tvf,
+                timeout=-1,
+                default_params=default_args,
+                priority=50,
+                hostname='desktop',
+            )
+
+    # check how no discounting works...
+    for use_tvf in [True, False]:
+        for gamma in [0.99, 1.0]:
+            add_job(
+                f"Extra",
+                env_name="Krull",
+                run_name=f"use_tvf={use_tvf} gamma={gamma}",
+                use_tvf=use_tvf,
+                gamma=gamma,
+                tvf_gamma=gamma,
+                horizon=30000 if gamma == 1 else 300,
+                default_params=default_args,
+                priority=50,
+                hostname='desktop',
+            )
 
 def setup_TVF_Atari57():
 
+    """ setup experiment for a few extra ideas."""
     default_args = {
         'checkpoint_every': int(5e6),
         'workers': WORKERS,
@@ -750,6 +882,43 @@ def setup_TVF_Atari57():
             hostname='ML-Rig',
         )
 
+    # check why pong isn't working...
+    for seed in [0, 1, 2]:
+        add_job(
+            f"Pong",
+            env_name="Pong",
+            run_name=f"seed={seed}",
+            default_params=default_args,
+            seed=seed,
+            priority=100,
+            epochs=20,
+            hostname='ML-Rig',
+        )
+
+    add_job(
+        f"Pong",
+        env_name="Pong",
+        run_name=f"value_transform=identity",
+        default_params=default_args,
+        value_transform='identity',
+        priority=100,
+        epochs=20,
+        hostname='ML-Rig',
+    )
+
+    add_job(
+        f"Pong",
+        env_name="Pong",
+        run_name=f"use_tvf=False",
+        default_params=default_args,
+        use_tvf=False,
+        priority=100,
+        epochs=20,
+        hostname='ML-Rig',
+    )
+
+
+
 # ---------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -762,6 +931,7 @@ if __name__ == "__main__":
 
     setup_DNA_Atari57()
     setup_TVF_Atari57()
+    setup_TVF_Extra()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

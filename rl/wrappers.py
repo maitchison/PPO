@@ -255,7 +255,6 @@ class ClipRewardWrapper(gym.Wrapper):
 class DeferredRewardWrapper(gym.Wrapper):
     """
     All rewards are delayed until given frame. If frame is -1 then uses terminal state
-
     """
 
     def __init__(self, env: gym.Env, time_limit=-1):

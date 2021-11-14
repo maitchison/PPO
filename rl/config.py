@@ -133,7 +133,7 @@ class Config:
         self.use_rnd            = bool()
         self.warmup_period      = int()
 
-        self.per_step_reward    = float()
+        self.per_step_reward_noise    = float()
         self.debug_terminal_logging = bool()
         self.debug_value_logging = bool()
         self.seed = int()
@@ -341,7 +341,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--sticky_actions", type=str2bool, default=False)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
-    parser.add_argument("--per_step_reward", type=float, default=0.0)
+    parser.add_argument("--per_step_reward_noise", type=float, default=0.0, help="Standard deviation of noise added to (normalized) reward each step.")
     parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_scale", type=float, default=1.0)
