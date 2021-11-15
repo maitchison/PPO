@@ -24,7 +24,6 @@ class Config:
 
         self.input_crop         = bool()
         self.adam_epsilon       = float()
-        self.gbogh_threshold    = float()
         self.workers            = int()
         self.epochs             = int()
         self.limit_epochs       = int()
@@ -389,9 +388,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
                         help="allows intrinsic returns to propagate through end of episode."
     )
-
-    parser.add_argument("--optimizer", type=str, default="Adam", help="[Adam|GBOGH]")
-    parser.add_argument("--gbogh_threshold", type=float, default=0.5)
 
     parser.add_argument("--disable_ev", type=str2bool, default=False,
                         help="disables explained variance calculations (faster)."

@@ -23,6 +23,50 @@ class EpisodicDiscounting(gym.Wrapper):
         self.discount_type = discount_type
         self.discount_gamma = discount_gamma
 
+    @staticmethod
+    def get_discount(i, gamma, discount_type):
+        """
+        Returns discount (gamma_i) for reward (r_i), with discounting parameter gamma.
+        """
+
+        if discount_type == "finite":
+            m = 1/(1-gamma)
+            discount = 1.0 if i < m else 0
+        elif discount_type == "geometric":
+            discount = gamma ** i
+        elif discount_type == "quadratic":
+            discount = 1 / (i*(i+1))
+        elif discount_type == "power": # also called hyperbolic
+            epsilon = 1e-6
+            discount = i ** (-1-epsilon) # minus epsilon so sequence converges
+        elif discount_type == "harmonic":
+            discount = 1 / (i * (math.log(i)**2))
+        elif discount_type == "none":
+            discount = 1.0
+        else:
+            raise ValueError(f"Invalid discount_type {discount_type}")
+        return discount
+
+    @staticmethod
+    def get_normalization_constant(k, gamma, discount_type):
+        if discount_type == "finite":
+            m = 1/(1-discount_gamma)
+            normalizer = m-k+1
+        elif discount_type == "geometric":
+            normalizer = (gamma ** k) / (1-gamma)
+        elif discount_type == "quadratic":
+            normalizer = 1 / k
+        elif discount_type == "power": # also called hyperbolic
+            epsilon = 1e-6
+            normalizer = (1 / epsilon) * i **(-epsilon)
+        elif discount_type == "harmonic":
+            normalizer = 1 / math.log(k)
+        elif discount_type == "none":
+            normalizer = 1.0
+        else:
+            raise ValueError(f"Invalid discount_type {discount_type}")
+        return normalizer
+
     def reset(self):
         self.t = 0
         return self.env.reset()
@@ -30,10 +74,9 @@ class EpisodicDiscounting(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
 
-        if self.discount_type == "geometric":
-            reward = reward * self.discount_gamma**self.t
-        if self.discount_type == "hyperbolic":
-            reward = reward * 1/(1-math.log(self.discount_gamma)*self.t)
+        self.t += 1
+        discount = EpisodicDiscounting.get_discount(self.t, self.discount_gamma, self.discount_type)
+        reward *= discount
 
         return obs, reward, done, info
 

@@ -23,36 +23,6 @@ from .config import args
 
 import collections
 
-
-class GBOGH(torch.optim.Adam):
-    """
-    Go big or go home.
-    Filter out small steps from optimization process on the hypothesis that they introduce more noise than signal.
-    """
-
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False, min_threshold=0.5):
-        super().__init__(params, lr, betas, eps, weight_decay, amsgrad)
-        self.min_threshold = min_threshold
-
-    @torch.no_grad()
-    def step(self):
-        # get parameters
-        parameters = []
-        for group in self.param_groups:
-            for p in group['params']:
-                if p.grad is not None:
-                    parameters.append(p)
-
-        # 1. work out the magnitude of the update.
-        device = parameters[0].grad.device
-        total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2.0).to(device) for p in parameters]), 2.0)
-        if total_norm < self.min_threshold:
-            return False
-        else:
-            super().step()
-            return True
-
-
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
 
@@ -418,13 +388,7 @@ class Runner():
             'eps': args.adam_epsilon
         }
 
-        if args.optimizer == "GBOGH":
-            optimizer = GBOGH
-            optimizer_params['min_threshold'] = args.gbogh_threshold
-        elif args.optimizer == "Adam":
-            optimizer = torch.optim.Adam
-        else:
-            raise ValueError(f"Invalid optimizer {args.optimizer}")
+        optimizer = torch.optim.Adam
 
         self.policy_optimizer = optimizer(model.policy_net.parameters(), lr=self.policy_lr, **optimizer_params)
         self.value_optimizer = optimizer(model.value_net.parameters(), lr=self.value_lr, **optimizer_params)
@@ -1683,12 +1647,8 @@ class Runner():
 
         self.log.watch_mean(f"grad_{label}", grad_norm)
 
-        if optimizer is GBOGH:
-            did_update = optimizer.step()
-            # monitor frequency of updates.
-            self.log.watch_mean("optimizer_updates", int(did_update), history_length=1000)
-        else:
-            optimizer.step()
+        optimizer.step()
+
         return float(grad_norm)
 
     def train_distill_minibatch(self, data, loss_scale=1.0):
