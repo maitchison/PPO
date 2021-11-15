@@ -363,8 +363,8 @@ def parse_args(no_env=False, args_override=None):
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=True)
-    parser.add_argument("--ed_type", type=str, default="none", help="[none|geometric|hyperbolic]")
-    parser.add_argument("--ed_gamma", type=float, default=1.0)
+    parser.add_argument("--ed_type", type=str, default="none", help="[none|finite|geometric|quadratic|power|harmonic]")
+    parser.add_argument("--ed_gamma", type=float, default=0.99)
 
     parser.add_argument("--full_action_space", type=str2bool, default=False)
     parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)

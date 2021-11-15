@@ -1456,6 +1456,14 @@ class Runner():
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
 
+        # if using episodic discounting then apply the reward normalization constant
+        if args.ed_type is not "none":
+            assert args.timeout > 0, "Episodic discounting requires a timelimit to be set."
+
+            time_steps = self.all_time * (args.timeout / 4) # timeout is in Atari frames, but we want this to be in environment steps
+            big_gamma_k = wrappers.EpisodicDiscounting.get_normalization_constant(time_steps, args.ed_gamma, args.ed_type)
+            ext_value_estimates *= big_gamma_k
+
         if args.use_log_optimal:
             assert not args.use_tvf, "TVF not supported with log-optimal yet."
             # get square value estimates..., would be better to not have to forward this a second time

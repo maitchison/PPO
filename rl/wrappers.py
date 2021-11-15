@@ -24,14 +24,14 @@ class EpisodicDiscounting(gym.Wrapper):
         self.discount_gamma = discount_gamma
 
     @staticmethod
-    def get_discount(i, gamma, discount_type):
+    def get_discount(i:float, gamma:float, discount_type:str):
         """
         Returns discount (gamma_i) for reward (r_i), with discounting parameter gamma.
         """
 
         if discount_type == "finite":
             m = 1/(1-gamma)
-            discount = 1.0 if i < m else 0
+            discount = 1.0 if i <= m else 0
         elif discount_type == "geometric":
             discount = gamma ** i
         elif discount_type == "quadratic":
@@ -48,24 +48,26 @@ class EpisodicDiscounting(gym.Wrapper):
         return discount
 
     @staticmethod
-    def get_normalization_constant(k, gamma, discount_type):
+    def get_normalization_constant(k:np.ndarray, gamma:float, discount_type:str):
         if discount_type == "finite":
-            m = 1/(1-discount_gamma)
-            normalizer = m-k+1
+            m = 1/(1-gamma)
+            steps_remaining = (m-k)
+            steps_remaining = np.clip(steps_remaining, 0, float('inf')) # make sure steps remaining is not negative
+            normalizer = steps_remaining+1
         elif discount_type == "geometric":
             normalizer = (gamma ** k) / (1-gamma)
         elif discount_type == "quadratic":
             normalizer = 1 / k
         elif discount_type == "power": # also called hyperbolic
             epsilon = 1e-6
-            normalizer = (1 / epsilon) * i **(-epsilon)
+            normalizer = (1 / epsilon) * (k ** -epsilon)
         elif discount_type == "harmonic":
-            normalizer = 1 / math.log(k)
+            normalizer = 1 / np.log(k)
         elif discount_type == "none":
             normalizer = 1.0
         else:
             raise ValueError(f"Invalid discount_type {discount_type}")
-        return normalizer
+        return 1 / normalizer
 
     def reset(self):
         self.t = 0
@@ -536,7 +538,7 @@ class TimeLimitWrapper(gym.Wrapper):
             done = True
             info['TimeLimit.truncated'] = True
         # when a done occurs we will reset and the observation returned will be the first frame of a new
-        # espisode, so time_frac should be 0. Remember time_frac is the time of the state we *land in* not
+        # episode, so time_frac should be 0. Remember time_frac is the time of the state we *land in* not
         # of the state we started from.
         info['time_frac'] = (self._elapsed_steps / self._max_episode_steps) if not done else 0
         return observation, reward, done, info
