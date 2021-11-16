@@ -1456,14 +1456,6 @@ class Runner():
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
 
-        # if using episodic discounting then apply the reward normalization constant
-        if args.ed_type is not "none":
-            assert args.timeout > 0, "Episodic discounting requires a timelimit to be set."
-
-            time_steps = self.all_time * (args.timeout / 4) # timeout is in Atari frames, but we want this to be in environment steps
-            big_gamma_k = wrappers.EpisodicDiscounting.get_normalization_constant(time_steps, args.ed_gamma, args.ed_type)
-            ext_value_estimates *= big_gamma_k
-
         if args.use_log_optimal:
             assert not args.use_tvf, "TVF not supported with log-optimal yet."
             # get square value estimates..., would be better to not have to forward this a second time
@@ -2051,27 +2043,52 @@ class Runner():
         return np.std(self.episode_length_buffer)
 
     @property
-    def current_horizon(self):
-        if args.auto_horizon:
+    def agent_age(self):
+        """
+        Approximate age of agent in terms of environment steps.
+        Measure individual agents age, so if 128 agents each walk 10 steps, agents will be 10 steps old, not 1280.
+        """
+        return self.step / args.agents
+
+    @property
+    def _auto_horizon(self):
+        if args.auto_strategy == "episode_length":
             if len(self.episode_length_buffer) == 0:
                 auto_horizon = 0
             else:
                 auto_horizon = self.episode_length_mean + (2 * self.episode_length_std)
-            return int(np.clip(auto_horizon, max(100, args.tvf_horizon_samples, args.tvf_value_samples), args.tvf_max_horizon))
+            return int(np.clip(auto_horizon, 0, args.tvf_max_horizon))
+        elif args.auto_strategy == "agent_age_slow":
+            return self.agent_age / 10
+        else:
+            raise ValueError(f"Invalid auto_strategy {args.auto_strategy}")
+
+    @property
+    def _auto_gamma(self):
+        horizon = np.clip(self._auto_horizon, 30, float("inf"))
+        # usually we want horizon to be about 3x the effective horizon (so that error is very small)
+        # we also fix the horizon so gamma will be >= 0.9
+        return 1 - (1 / (horizon / 3))
+
+    @property
+    def current_horizon(self):
+        if args.auto_horizon:
+            min_horizon = max(128, args.tvf_horizon_samples, args.tvf_value_samples)
+            return int(np.clip(self._auto_horizon, min_horizon, args.tvf_max_horizon))
         else:
             return int(args.tvf_max_horizon)
 
     @property
     def gamma(self):
         if args.auto_gamma in ["gamma", "both"]:
-            return 1-(1/self.episode_length_mean)
+            return self._auto_gamma
         else:
             return args.gamma
 
     @property
     def tvf_gamma(self):
         if args.auto_gamma in ["tvf", "both"]:
-            return 1-(1/self.episode_length_mean)
+            return self._auto_gamma
         else:
             return args.tvf_gamma
 

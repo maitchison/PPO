@@ -301,6 +301,7 @@ def compare_runs(path,
                  title=None,
                  highlight=None,
                  run_filter=None,
+                 label_filter=None,
                  color_filter=None,
                  smooth_factor=None,
                  reference_run=None,
@@ -339,7 +340,10 @@ def compare_runs(path,
 
         i += 1
 
-        run_label = "[{}]".format(run_name[:20])
+        if label_filter is not None:
+            run_label = label_filter(run_name)
+        else:
+            run_label = "[{}]".format(run_name[:20])
 
         xs = run_data[x_axis]
         if x_axis == "env_step":

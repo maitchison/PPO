@@ -37,7 +37,7 @@ class EpisodicDiscounting(gym.Wrapper):
         elif discount_type == "quadratic":
             discount = 1 / (i*(i+1))
         elif discount_type == "power": # also called hyperbolic
-            epsilon = 1e-6
+            epsilon = 1e-1
             discount = i ** (-1-epsilon) # minus epsilon so sequence converges
         elif discount_type == "harmonic":
             discount = 1 / (i * (math.log(i)**2))
@@ -59,7 +59,7 @@ class EpisodicDiscounting(gym.Wrapper):
         elif discount_type == "quadratic":
             normalizer = 1 / k
         elif discount_type == "power": # also called hyperbolic
-            epsilon = 1e-6
+            epsilon = 1e-1
             normalizer = (1 / epsilon) * (k ** -epsilon)
         elif discount_type == "harmonic":
             normalizer = 1 / np.log(k)

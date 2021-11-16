@@ -60,6 +60,7 @@ class Config:
         self.tvf_max_horizon    = int()
         self.auto_horizon   = bool()
         self.auto_gamma     = str()
+        self.auto_strategy = str()
         self.tvf_value_samples  = int()
         self.tvf_horizon_samples= int()
         self.tvf_value_distribution = str()
@@ -260,6 +261,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--auto_horizon", type=str2bool, default=False, help="Automatically adjust max_horizon to clip(mean episode length + 3std, max(horizon samples, value samples), max_horizon)")
     parser.add_argument("--auto_gamma", type=str, default="off",
                         help="[off|tvf|gamma|both]")
+    parser.add_argument("--auto_strategy", type=str, default="episode_length",
+                        help="[episode_length|agent_age_slow]")
+
     parser.add_argument("--tvf_value_samples", type=int, default=64, help="Number of values to sample during training.")
     parser.add_argument("--tvf_horizon_samples", type=int, default=64, help="Number of horizons to sample during training. (-1 = all)")
     parser.add_argument("--tvf_value_distribution", type=str, default="fixed_linear", help="Sampling distribution to use when generating value samples.")
