@@ -65,6 +65,7 @@ class Config:
         self.tvf_horizon_samples= int()
         self.tvf_value_distribution = str()
         self.tvf_horizon_distribution = str()
+        self.tvf_gae = bool()
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_lambda_samples = int()
@@ -252,6 +253,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--timeout", type=int, default=60*60*30, help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
     parser.add_argument("--hidden_units", type=int, default=512)
 
+    parser.add_argument("--tvf_gae", type=str2bool, default=False, help="Uses TVF aware GAE (with support for alternative discounts)")
     parser.add_argument("--tvf_force_ext_value_distill", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")

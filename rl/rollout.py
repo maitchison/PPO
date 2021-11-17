@@ -93,8 +93,18 @@ def calculate_mc_returns(rewards, dones, final_value_estimate, gamma) -> np.ndar
     return returns
 
 
-def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma: float, lamb=1.0,
-                  normalize=False):
+def calculate_gae(
+        batch_rewards,
+        batch_value,
+        final_value_estimate,
+        batch_terminal,
+        gamma: float,
+        lamb=1.0,
+        normalize=False
+    ):
+    """
+    Calculates GAE based on rollout data.
+    """
     N, A = batch_rewards.shape
 
     batch_advantage = np.zeros_like(batch_rewards, dtype=np.float32)
@@ -112,59 +122,83 @@ def calculate_gae(batch_rewards, batch_value, final_value_estimate, batch_termin
 
 
 def calculate_gae_tvf(
-        rewards: np.ndarray,
-        dones: np.ndarray,
-        values: np.ndarray,
-        final_value_estimates: np.ndarray,
-        gamma,
+        batch_reward: np.ndarray,
+        batch_value: np.ndarray,
+        final_value_estimate: np.ndarray,
+        batch_terminal: np.ndarray,
+        discount_fn = lambda t: 0.999**t,
         lamb: float = 0.95):
-    N, A, H = values.shape
+
+    """
+    A modified version of GAE that uses truncated value estimates to support any discount function.
+    This works by extracting estimated rewards from the value curve via a finite difference.
+
+    batch_reward: [N, A] rewards for each timestep
+    batch_value: [N, A, H] value at each timestep, for each horizon (0..max_horizon)
+    final_value_estimate: [A, H] value at timestep N+1
+    batch_terminal [N, A] terminal signals for each timestep
+    discount_fn A discount function in terms of t, the number of timesteps in the future.
+    lamb: lambda, as per GAE lambda.
+    """
+
+    N, A, H = batch_value.shape
+
 
     advantages = np.zeros([N, A], dtype=np.float32)
+    values = np.concatenate([batch_value, final_value_estimate[None, :, :]], axis=0)
 
-    # note: this webpage helped a lot with writing this...
-    # https://amreis.github.io/ml/reinf-learn/2017/11/02/reinforcement-learning-eligibility-traces.html
+    # get expected rewards. Note: I'm assuming here that the rewards have not been discounted
+    assert args.tvf_gamma == 1, "General discounting function requires TVF estimates to be undiscounted (might fix later)"
+    expected_rewards = values[:, :, 0] - batch_value[:, :, 1]
 
-    values = np.concatenate([values, final_value_estimates[None, :, :]], axis=0)
+    def calculate_g(t, n:int):
+        """ Calculate G^(n) (s_t) """
+        # we use the rewards first, then use expected rewards from 'pivot' state.
+        # pivot state is either the final state in rollout, or t+n, which ever comes first.
+        sum_of_rewards = np.zeros([N], dtype=np.float32)
+        discount = np.ones([N], dtype=np.float32) # just used to handle terminals
+        pivot_state = min(t+n, N)
+        for i in range(H):
+            if t+i < pivot_state:
+                reward = batch_reward[t+i, :]
+                discount *= 1-batch_terminal[t+i, :]
+            else:
+                reward = expected_rewards[pivot_state, :, (t+i)-pivot_state]
+            sum_of_rewards += reward * discount * discount_fn(i)
 
-    # note, we could calculate advantage for all horizons if we want.
+    def get_g_weights(max_n: int):
+        """
+        Returns the weights for each G estimate, given some lambda.
+        Assumption is G^(>n) = G^(n), therefore final G value gets remaining weight
+        """
+
+        weights = np.zeros([max_n], dtype=np.float32)
+
+        if lamb == 1:
+            weights[-1] = 1.0
+            return weights
+
+        current_weight = 0
+        expected_weight = 1 / (1 - lamb)
+        for i in range(max_n):
+            weights[i] = current_weight
+            current_weight *= lamb
+        remaining_weight = expected_weight - np.sum(weights)
+        weights[-1] += remaining_weight
+        weights /= expected_weight
+        return weights
+
+    # advantage^(n) = -V(s_t) + r_t + r_t+1 ... + r_{t+n-1} + V(s_{t+n})
 
     for t in range(N):
-        h = H - 1
-        total_weight = np.zeros([A], dtype=np.float32)
-        current_weight = np.ones([A], dtype=np.float32) * (1 - lamb)
-        discount = np.ones([A], dtype=np.float32)
-        advantage = np.zeros([A], dtype=np.float32)
-        weighted_estimate = np.zeros([A], dtype=np.float32)
-        # for the moment limit n_step to 10 for performance reasons (slow python, slow algorithm)
-        # I have a NH version coming (instead of this NNH version)
-        # if lamb is 0 we just do TD(0), which is much faster.
-        advantage -= values[t, :, h]
-        for n in range(1, 60):  # 60 should be enough for lamb=0.95
-            # here we calculate the n_step estimate for V(s_t, h) (i.e. G(n))
-            if t + n - 1 >= N:
-                # we reached the end, so best we can do is stop here and use the estimates we have already
-                # created
-                weighted_estimate += current_weight * advantage
-                total_weight += current_weight
-                current_weight *= lamb
+        max_n = N - t
+        weights = get_g_weights(max_n)
+        for n, weight in zip(range(1, max_n+1), weights):
+            if weight <= 1e-6:
+                # ignore small or zero weights.
                 continue
-            this_reward = rewards[t + n - 1]
-            advantage += discount * this_reward
-
-            terminals = (1 - dones[t + n - 1])
-            discount *= terminals * gamma
-
-            bootstrap_estimate = discount * values[t + n, :, h - n] if (h - n) > 0 else 0
-            weighted_estimate += current_weight * (advantage + bootstrap_estimate)
-            total_weight += current_weight
-            # note, I'm not sure if we should multiply by (1-dones[t+n]) here.
-            # I think it's best not to, otherwise short n_steps get more weight close to a terminal...
-            # actually maybe this is right?
-            # actually terminal should get all remaining weight.
-            current_weight *= lamb
-
-        advantages[t, :] = weighted_estimate / total_weight
+            advantages[t, :] += weight * calculate_g(t, n)
+        advantages[t, :] -= batch_value[t, :, -1]
 
     return advantages
 
@@ -1475,14 +1509,25 @@ class Runner():
         self.ext_value = ext_value_estimates
 
         # GAE requires inputs to be true value not transformed value...
-        self.ext_advantage = calculate_gae(
-            self.ext_rewards,
-            ext_value_estimates[:N],
-            ext_value_estimates[N],
-            self.terminals,
-            self.gamma,
-            args.gae_lambda
-        )
+        if args.tvf_gae and args.use_tvf:
+            self.ext_advantage = calculate_gae_tvf(
+                self.ext_rewards,
+                ext_value_estimates[:N],
+                ext_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                args.gae_lambda
+            )
+        else:
+            self.ext_advantage = calculate_gae(
+                self.ext_rewards,
+                ext_value_estimates[:N],
+                ext_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                args.gae_lambda
+            )
+
 
         # calculate ext_returns for PPO targets
         self.ext_returns = self.H(self.ext_advantage + ext_value_estimates[:N])
