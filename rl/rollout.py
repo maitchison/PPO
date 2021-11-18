@@ -15,7 +15,6 @@ from collections import defaultdict
 from typing import Union
 import bisect
 import math
-import copy
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
@@ -153,7 +152,7 @@ def calculate_gae_tvf(
 
     def calculate_g(t, n:int):
         """ Calculate G^(n) (s_t) """
-        # we use the rewards first, then use expected rewards from 'pivot' state.
+        # we use the rewards first, then use expected rewards from 'pivot' state onwards.
         # pivot state is either the final state in rollout, or t+n, which ever comes first.
         sum_of_rewards = np.zeros([N], dtype=np.float32)
         discount = np.ones([N], dtype=np.float32) # just used to handle terminals
@@ -165,27 +164,27 @@ def calculate_gae_tvf(
             else:
                 reward = expected_rewards[pivot_state, :, (t+i)-pivot_state]
             sum_of_rewards += reward * discount * discount_fn(i)
+        return sum_of_rewards
 
     def get_g_weights(max_n: int):
         """
         Returns the weights for each G estimate, given some lambda.
-        Assumption is G^(>n) = G^(n), therefore final G value gets remaining weight
         """
 
-        weights = np.zeros([max_n], dtype=np.float32)
+        # weights are assigned with exponential decay, except that the weight of the final g_return uses
+        # all remaining weight. This is the same as assuming that g(>max_n) = g(n)
+        # because of this 1/(1-lambda) should be a fair bit larger than max_n, so if a window of length 128 is being
+        # used, lambda should be < 0.99 otherwise the final estimate carries a significant proportion of the weight
 
-        if lamb == 1:
-            weights[-1] = 1.0
-            return weights
+        weight = (1-lamb)
+        weights = []
+        for _ in range(max_n-1):
+            weights.append(weight)
+            weight *= lamb
+        weights.append(lamb**max_n)
+        weights = np.asarray(weights)
 
-        current_weight = 0
-        expected_weight = 1 / (1 - lamb)
-        for i in range(max_n):
-            weights[i] = current_weight
-            current_weight *= lamb
-        remaining_weight = expected_weight - np.sum(weights)
-        weights[-1] += remaining_weight
-        weights /= expected_weight
+        assert abs(weights.sum() - 1.0) < 1e-6
         return weights
 
     # advantage^(n) = -V(s_t) + r_t + r_t+1 ... + r_{t+n-1} + V(s_{t+n})
@@ -508,7 +507,7 @@ class Runner():
 
         # quick check to make sure value transform is correct
         for x in [3.1415, -3.1415, 0, 10, -10, 1, -1, 10000, -10000]:
-            new_x = self.H(self.H_inv(x))
+            new_x = ValueTransform.H(ValueTransform.H_inv(x))
             assert abs(new_x - x) < 1e-6, f"Expected H(H^-1({x})) to be {x} but was {new_x}"
 
     def anneal(self, x, enable=True):
@@ -579,7 +578,7 @@ class Runner():
                 #       in a really strange way...
                 gamma=args.reward_normalization_gamma,
                 scale=args.reward_scale,
-                returns_transform=lambda x: self.H(x)
+                returns_transform=lambda x: ValueTransform.H(x)
             )
 
         self.log.important("Generated {} agents ({}) using {} ({}) model.".
@@ -758,7 +757,7 @@ class Runner():
             else:
                 h_lookup[h].append(index)
 
-        returns = np.zeros([N, A, K], dtype=np.float32) + self.H(0)
+        returns = np.zeros([N, A, K], dtype=np.float32) + ValueTransform.H(0)
 
         # generate return estimates using n-step returns
         for t in range(N):
@@ -781,33 +780,16 @@ class Runner():
 
                 # the first n_step returns are just the discounted rewards, no bootstrap estimates...
                 if n in h_lookup:
-                    returns[t, :, h_lookup[n]] = self.H(reward_sum)
+                    returns[t, :, h_lookup[n]] = ValueTransform.H(reward_sum)
 
             for h_index, h in enumerate(required_horizons):
                 if h-steps_made <= 0:
                     # these are just the accumulated sums and don't need horizon bootstrapping
                     continue
                 interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made, :], h - steps_made)
-                returns[t, :, h_index] = self.H(reward_sum + self.H_inv(interpolated_value) * discount)
+                returns[t, :, h_index] = ValueTransform.H(reward_sum + ValueTransform.H_inv(interpolated_value) * discount)
 
         return returns
-
-    TRANSFORM_EPSILON = 1e-2
-
-    def H(self, x):
-        if args.value_transform == "identity":
-            return x
-        elif args.value_transform == "sqrt":
-            # formula was designed to handle large returns, but mine are scaled, so scale up by 1000
-            # as ext_value is ~1.2, but returns in games are usually ~1000
-            return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + self.TRANSFORM_EPSILON * x
-
-    def H_inv(self, x):
-        if args.value_transform == "identity":
-            return x
-        elif args.value_transform == "sqrt":
-            # from https://openreview.net/pdf?id=Sye57xStvB (but with corrected square...)
-            return np.sign(x) * (((np.sqrt(1 + (4*self.TRANSFORM_EPSILON) * (np.abs(x)+1+self.TRANSFORM_EPSILON)) - 1) / (2*self.TRANSFORM_EPSILON))**2 - 1)
 
     def _calculate_lambda_sampled_returns(
             self,
@@ -887,11 +869,11 @@ class Runner():
                 returns += n_step_func(n, required_horizons)
             returns *= 1/(len(n_steps))
         elif args.tvf_exp_mode == "transformed":
-            returns = self.H_inv(n_step_func(n_steps[0], required_horizons))
+            returns = ValueTransform.H_inv(n_step_func(n_steps[0], required_horizons))
             for n in n_steps[1:]:
-                returns += self.H_inv(n_step_func(n, required_horizons))
+                returns += ValueTransform.H_inv(n_step_func(n, required_horizons))
             returns *= 1/(len(n_steps))
-            returns = self.H(returns)
+            returns = ValueTransform.H(returns)
         else:
             raise ValueError(f"Invalid exp mode {args.tvf_exp_mode}")
 
@@ -1328,7 +1310,7 @@ class Runner():
         if return_transformed:
             return result
         else:
-            return self.H_inv(result)
+            return ValueTransform.H_inv(result)
 
 
     @torch.no_grad()
@@ -1359,7 +1341,7 @@ class Runner():
                 force_first_and_last=True,
             )
 
-            targets = self.H_inv(self.calculate_sampled_returns(
+            targets = ValueTransform.H_inv(self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=self.tvf_debug_horizons,
                 obs=self.all_obs[:, agent_filter],
@@ -1530,7 +1512,7 @@ class Runner():
 
 
         # calculate ext_returns for PPO targets
-        self.ext_returns = self.H(self.ext_advantage + ext_value_estimates[:N])
+        self.ext_returns = ValueTransform.H(self.ext_advantage + ext_value_estimates[:N])
 
         # log-optimal adjustment
         if args.use_log_optimal:
@@ -1700,7 +1682,7 @@ class Runner():
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
-        if args.use_tvf == False or args.tvf_force_ext_value_distill:
+        if not args.use_tvf or args.tvf_force_ext_value_distill:
             # method 1. just learn the final value
             model_out = self.model.forward(data["prev_state"], output="policy")
             targets = data["value_targets"]
@@ -2487,3 +2469,26 @@ def expand_to_h(h,x):
     x = x[:, :, None]
     x = np.repeat(x, h, axis=2)
     return x
+
+class ValueTransform():
+
+    TRANSFORM_EPSILON = 1e-2
+
+    @staticmethod
+    def H(x):
+        if args.value_transform == "identity":
+            return x
+        elif args.value_transform == "sqrt":
+            # formula was designed to handle large returns, but mine are scaled, so scale up by 1000
+            # as ext_value is ~1.2, but returns in games are usually ~1000
+            return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + ValueTransform.TRANSFORM_EPSILON * x
+
+    @staticmethod
+    def H_inv(x):
+        if args.value_transform == "identity":
+            return x
+        elif args.value_transform == "sqrt":
+            # from https://openreview.net/pdf?id=Sye57xStvB (but with corrected square...)
+            return np.sign(x) * (((np.sqrt(
+                1 + (4 * ValueTransform.TRANSFORM_EPSILON) * (np.abs(x) + 1 + ValueTransform.TRANSFORM_EPSILON)) - 1) / (
+                                              2 * ValueTransform.TRANSFORM_EPSILON)) ** 2 - 1)

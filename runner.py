@@ -783,49 +783,98 @@ def setup_TVF_Extra():
     for horizon in [1000, 5000, 20000]:
         for use_tvf in [True, False]:
             add_job(
-                f"Extra",
+                f"Deferred",
                 env_name="Krull",
                 run_name=f"use_tvf={use_tvf} horizon={horizon}",
                 use_tvf=use_tvf,
                 timeout=horizon*4,
                 deferred_rewards=-1,  # reward given at end of episode
+                reward_clipping="off",
                 default_params=default_args,
                 priority=100,
-                hostname='desktop',
+                hostname='',
             )
         add_job(
-            f"Extra",
+            f"Deferred",
             env_name="Krull",
             run_name=f"use_tvf=auto horizon={horizon}",
             use_tvf=True,
             timeout=horizon * 4,
             tvf_max_horizon=horizon,
+            reward_clipping="off",
             deferred_rewards=-1,  # reward given at end of episode
             default_params=default_args,
             priority=100,
-            hostname='desktop',
+            hostname='',
         )
 
     # check how no discounting works...
-    for use_tvf in [True, False]:
-        for gamma in [0.99, 1.0]:
-            add_job(
-                f"Extra",
-                env_name="Krull",
-                run_name=f"use_tvf={use_tvf} gamma={gamma}",
-                use_tvf=use_tvf,
-                gamma=gamma,
-                tvf_gamma=gamma,
-                tvf_max_horizon=30000 if gamma == 1.0 else 300,
-                default_params=default_args,
-                priority=50,
-                hostname='desktop',
-            )
+    for env in ["Krull", "Breakout"]:
+        for use_tvf in [True, False]:
+            for gamma in [0.99, 1.0]:
+                add_job(
+                    f"Gamma_{env}",
+                    env_name=env,
+                    run_name=f"use_tvf={use_tvf} gamma={gamma}",
+                    use_tvf=use_tvf,
+                    gamma=gamma,
+                    tvf_gamma=gamma,
+                    tvf_max_horizon=30000 if gamma == 1.0 else round(3/(1-gamma)),
+                    default_params=default_args,
+                    epochs=20,
+                    priority=50,
+                    hostname='',
+                )
+
+                add_job(
+                    f"Gamma_{env}",
+                    env_name=env,
+                    run_name=f"use_tvf={use_tvf} gamma={gamma} (simple)",
+                    use_tvf=use_tvf,
+                    gamma=gamma,
+                    tvf_gamma=gamma,
+                    reward_clipping="off",
+                    value_transform="identity",
+                    terminal_on_loss_of_life=False,
+                    tvf_max_horizon=30000 if gamma == 1.0 else round(3 / (1 - gamma)),
+                    default_params=default_args,
+                    epochs=20,
+                    priority=250,
+                    hostname='',
+                )
+
+        add_job(
+            f"Gamma_{env}",
+            env_name=env,
+            run_name=f"use_tvf=True gamma=1.0 tvf_gamma=0.99",
+            use_tvf=True,
+            gamma=1.0,
+            tvf_gamma=0.99,
+            tvf_max_horizon=300,
+            default_params=default_args,
+            epochs=20,
+            priority=200,
+            hostname='',
+        )
+
+        add_job(
+            f"Gamma_{env}",
+            env_name=env,
+            run_name=f"use_tvf=True gamma=0.99 tvf_gamma=1.0",
+            use_tvf=True,
+            gamma=0.99,
+            tvf_gamma=1.0,
+            tvf_max_horizon=300,
+            default_params=default_args,
+            epochs=20,
+            priority=200,
+            hostname='',
+        )
 
     # check if increasing gamma over time helps
     for auto_gamma in ["gamma", "tvf", "off", "both"]:
         add_job(
-            f"Extra",
+            f"DynamicGamma",
             env_name="Krull",
             run_name=f"(agent_age) auto_gamma={auto_gamma}",
             use_tvf=True,
@@ -837,7 +886,7 @@ def setup_TVF_Extra():
         )
 
         add_job(
-            f"Extra",
+            f"DynamicGamma",
             env_name="Krull",
             run_name=f"(ep_length) auto_gamma={auto_gamma}",
             use_tvf=True,
@@ -1238,6 +1287,38 @@ def setup_TVF_Atari57():
         # policy_lr=1e-4,
         # value_lr=2.5e-4,
         # distill_lr=1e-4,
+
+        priority=100,
+        epochs=20,
+        hostname='ML-Rig',
+    )
+
+    add_job(
+        f"Pong",
+        env_name="Pong",
+        run_name=f"split=5a",
+        default_params=default_args,
+
+        use_tvf=False,
+
+        #target_kl=0.03,
+        ppo_epsilon=0.2,
+
+        priority=100,
+        epochs=20,
+        hostname='ML-Rig',
+    )
+
+    add_job(
+        f"Pong",
+        env_name="Pong",
+        run_name=f"split=5b",
+        default_params=default_args,
+
+        use_tvf=False,
+
+        target_kl=0.03,
+        #ppo_epsilon=0.2,
 
         priority=100,
         epochs=20,

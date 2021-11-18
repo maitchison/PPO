@@ -203,6 +203,33 @@ def make_model(env):
             **{k:v for k,v in additional_args.items() if k in allowed_args},
         )
 
+class VT():
+    """
+    Coppied from rollout, should use rollout.ValueTransform, but older scripts won't have it...
+    """
+
+    TRANSFORM_EPSILON = 1e-2
+
+    @staticmethod
+    def H(x):
+        if args.value_transform == "identity":
+            return x
+        elif args.value_transform == "sqrt":
+            # formula was designed to handle large returns, but mine are scaled, so scale up by 1000
+            # as ext_value is ~1.2, but returns in games are usually ~1000
+            return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + VT.TRANSFORM_EPSILON * x
+
+    @staticmethod
+    def H_inv(x):
+        if args.value_transform == "identity":
+            return x
+        elif args.value_transform == "sqrt":
+            # from https://openreview.net/pdf?id=Sye57xStvB (but with corrected square...)
+            return np.sign(x) * (((np.sqrt(
+                1 + (4 * VT.TRANSFORM_EPSILON) * (np.abs(x) + 1 + VT.TRANSFORM_EPSILON)) - 1) / (
+                                              2 * VT.TRANSFORM_EPSILON)) ** 2 - 1)
+
+
 def discount_rewards(rewards, gamma):
     """
     Returns discounted sum of rewards
@@ -438,6 +465,12 @@ def generate_rollouts(
 
     times = np.zeros([num_rollouts])
 
+    # get value transform (will not be in some of the older scripts)
+    try:
+        ValueTransform = rollout.ValueTransform
+    except:
+        ValueTransform = VT
+
     # set seeds
     torch.manual_seed(seed_base)
     np.random.seed(seed_base)
@@ -516,6 +549,9 @@ def generate_rollouts(
 
             if horizons is not None:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
+
+                values = ValueTransform.H_inv(values)
+
                 buffers[i]['values'].append(values)
                 if "tvf_raw_value" in model_out:
                     raw_values = model_out["tvf_raw_value"][i, :].detach().cpu().numpy()
