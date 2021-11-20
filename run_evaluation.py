@@ -88,6 +88,9 @@ class CompressedStack():
         dtype, shape, data = self.buffer[index]
         return np.frombuffer(lib.decompress(data), dtype=dtype).reshape(shape)
 
+def needs_rediscount():
+    return args.tvf_gamma != args.gamma and args.use_tvf
+
 def load_args(checkpoint_path):
     """
     Load config arguments from a checkpoint_path
@@ -169,6 +172,11 @@ def make_model(env):
         pass
 
     try:
+        additional_args['tvf_average_reward'] = args.tvf_average_reward
+    except:
+        pass
+
+    try:
         additional_args['hidden_units'] = args.hidden_units
     except:
         pass
@@ -243,23 +251,25 @@ def rediscount_TVF(values, new_gamma):
     """
     Uses truncated value function to estimate value for given states.
     Rewards will be undiscounted, then rediscounted to the correct gamma.
-    An alternative to this is to learn multiple discounts at once and get the MLP to generalize
 
-    values: np array of shape [K]
-    returns: value estimate (float)
+    values: np array of shape [H]
+    returns: rediscounted value estimates of shale [H]
     """
-    K = len(values)
+    H = len(values)
+    rediscounted_values = np.zeros_like(values)
     prev = 0
     discounted_reward_sum = 0
     old_discount = 1
     discount = 1
-    for k in range(K):
-        reward = (values[k] - prev) / old_discount
-        prev = values[k]
+
+    for h in range(H):
+        reward = (values[h] - prev) / old_discount
+        prev = values[h]
         discounted_reward_sum += reward * discount
         old_discount *= args.tvf_gamma
         discount *= new_gamma
-    return discounted_reward_sum
+        rediscounted_values[h] = discounted_reward_sum
+    return rediscounted_values
 
 
 def rediscount_TVF_minimize_error(value_mu, value_std, new_gamma):
@@ -446,6 +456,7 @@ def generate_rollouts(
     for i in range(num_rollouts):
         buffers.append({
             'values': [],   # values for each horizon of dims [K]
+            'tvf_discounted_values': [],  # values for each horizon discounted with TVF_gamma instead of gamma, [K]
             'times': [],  # normalized time step
             'raw_values': [],  # values for each horizon of dims [K] (unscaled)
             'errors': [],   # std error estimates for each horizon of dims [K]
@@ -523,6 +534,7 @@ def generate_rollouts(
         if prev_infos is None:
             prev_infos = infos.copy()
 
+        # go though each agent...
         for i in range(len(states)):
 
             if not is_running[i]:
@@ -549,8 +561,11 @@ def generate_rollouts(
 
             if horizons is not None:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
-
                 values = ValueTransform.H_inv(values)
+
+                if needs_rediscount():
+                    buffers[i]['tvf_discounted_values'].append(values)
+                    values = rediscount_TVF(values, args.gamma)
 
                 buffers[i]['values'].append(values)
                 if "tvf_raw_value" in model_out:
@@ -718,11 +733,6 @@ def export_movie(
     a lot of memory.
     """
 
-    #assert args.tvf_gamma == args.gamma, "Rediscounting not supported yet"
-    if args.tvf_gamma != args.gamma and args.use_tvf:
-        print("Rediscounting not supported yet")
-        return
-
     scale = 4
 
     env = atari.make(monitor_video=True, seed=1)
@@ -821,14 +831,25 @@ def export_movie(
         log_fig.plot([CURRENT_HORIZON], [0], 'white')
         linear_fig.plot([CURRENT_HORIZON], [0], 'white')
 
-        # plot predicted values...
-        # note: these are the TVF discounted values, so this will not be right if gamma=tvf_gamma
+        # plot predicted values
         if args.use_tvf:
             xs = list(range(len(buffer["values"][t])))
             ys = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
             log_fig.plot(xs, ys, 'greenyellow')
             linear_fig.plot(xs, ys, 'greenyellow')
+        else:
+            xs = list(range(len(buffer["values"][t])))
+            ys = buffer["model_values"] * REWARD_SCALE
+            log_fig.plot(xs, ys, 'greenyellow')
+            linear_fig.plot(xs, ys, 'greenyellow')
 
+
+        if needs_rediscount():
+            # plot originally predicted values (without rediscounting)
+            xs = list(range(len(buffer["tvf_discounted_values"][t])))
+            ys = buffer["tvf_discounted_values"][t] * REWARD_SCALE  # model learned scaled rewards
+            log_fig.plot(xs, ys, 'green')
+            linear_fig.plot(xs, ys, 'green')
 
         frame[:plot_height, -plot_width:] = log_fig.buffer
         frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer

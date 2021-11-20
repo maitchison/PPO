@@ -203,6 +203,7 @@ class DualNet(nn.Module):
             tvf_time_transform,
             tvf_max_horizon,
             tvf_n_dedicated_value_heads: int = 0,
+            tvf_average_reward:bool = False,
             actions=None,
             policy_head=True,
             value_head=True,
@@ -218,6 +219,7 @@ class DualNet(nn.Module):
         self.policy_head = policy_head
         self.value_head = value_head
         self.tvf_max_horizon = tvf_max_horizon
+        self.tvf_average_reward = tvf_average_reward
 
         if self.policy_head:
             assert actions is not None
@@ -316,19 +318,27 @@ class DualNet(nn.Module):
 
                 def get_tvf_values(features, aux_features):
                     transformed_aux_features = torch.zeros_like(aux_features)
-                    transformed_aux_features[:, :, 0] = self.horizon_transform(aux_features[:, :, 0])
-                    transformed_aux_features[:, :, 1] = self.time_transform(aux_features[:, :, 1])
+                    horizon_in = aux_features[:, :, 0]
+                    time_in = aux_features[:, :, 1]
+                    transformed_aux_features[:, :, 0] = self.horizon_transform(horizon_in)
+                    transformed_aux_features[:, :, 1] = self.time_transform(time_in)
                     features_part = self.value_net_hidden(features)
                     aux_part = self.value_net_hidden_aux(transformed_aux_features)
                     tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
-                    return self.value_net_tvf(tvf_h)
+                    values = self.value_net_tvf(tvf_h)
+                    if self.tvf_average_reward:
+                        # with average_reward mode we have the model predict the average reward, but we always output
+                        # the true return. We also scale the output so that the model is predicting values approximately
+                        # the same scale as without average_reward prediction.
+                        values = values * (horizon_in / self.tvf_max_horizon)[:, :, np.newaxis]
+                    return values
 
                 if self.tvf_n_dedicated_value_heads == 0:
                     # this is the old solution, just one head that predicts all horizons
                     result['tvf_value'] = get_tvf_values(features, aux_features)[..., 0]
                 else:
                     # for n heads are for horizons h, final head is the generic one.
-                    # this isn't the most efficent code, but i'll do...
+                    # this isn't the most efficient code, but it'll do...
                     # what I'd like to do is to have separate networks, so dedicated heads do not require the horizon
                     # to be input...
                     values = get_tvf_values(features, aux_features)
@@ -385,6 +395,7 @@ class TVFModel(nn.Module):
             tvf_hidden_units: int = 512,
             tvf_activation:str = "relu",
             tvf_n_dedicated_value_heads:int=0,
+            tvf_average_reward=False,
 
             network_args:Union[dict, None] = None,
     ):
@@ -412,6 +423,7 @@ class TVFModel(nn.Module):
             tvf_time_transform=tvf_time_transform,
             tvf_n_dedicated_value_heads=tvf_n_dedicated_value_heads,
             tvf_max_horizon=tvf_max_horizon,
+            tvf_average_reward=tvf_average_reward,
             actions=actions,
             **(network_args or {})
         )

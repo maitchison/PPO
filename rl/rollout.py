@@ -458,7 +458,7 @@ class Runner():
             print(f"Compression [{utils.Color.OKGREEN}enabled{utils.Color.ENDC}]")
             self.all_obs = np.zeros([N + 1, A], dtype=np.object)
         else:
-            print(f"Compression [{utils.Color.FAIL}disabled{utils.Color.ENDC}]")
+            print(f"Compression [disabled]")
             self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         self.actions = np.zeros([N, A], dtype=np.int64)
@@ -1449,24 +1449,32 @@ class Runner():
             if abs(self.tvf_gamma - self.gamma) < 1e-6:
                 ext_value_estimates = self.get_value_estimates(obs=self.all_obs, time=self.all_time)
             else:
+
+                # work out a range and skip to use so that we never use more than around 100 samples and we don't waste
+                # samples on heavily discounted rewards
+                if self.gamma >= 1:
+                    effective_horizon = round(self.current_horizon)
+                else:
+                    effective_horizon = round(3/(1-self.gamma))
+
                 # note: we could down sample the value estimates and adjust the gamma calculations if
                 # this ends up being too slow..
-                step_skip = math.ceil(self.current_horizon / 100)
+                step_skip = math.ceil(effective_horizon / 100)
+
+                # going backwards makes sure that final horizon is always included
+                horizons = np.asarray(range(effective_horizon, 0, -step_skip))[::-1]
 
                 value_estimates = self.get_value_estimates(
                     obs=self.all_obs,
                     time=self.all_time,
-                    # going backwards makes sure that final horizon is always included
-                    horizons=np.asarray(range(self.current_horizon, 0, -step_skip))
+                    horizons=horizons
                 )
-                # add h=0
-                value_estimates = np.concatenate((value_estimates, np.zeros_like(value_estimates[..., 0:1])), axis=-1)
-                value_estimates = value_estimates[..., ::-1].copy() # reverse order
 
                 ext_value_estimates = get_rediscounted_value_estimate(
                     values=value_estimates.reshape([(N+1)*A, -1]),
-                    old_gamma=self.tvf_gamma**step_skip,
-                    new_gamma=self.gamma**step_skip
+                    old_gamma=self.tvf_gamma,
+                    new_gamma=self.gamma,
+                    horizons=horizons
                 ).reshape([(N+1), A])
         else:
             # in this case just generate ext value estimates from model
@@ -1678,6 +1686,53 @@ class Runner():
 
         return float(grad_norm)
 
+    def calculate_value_loss(self, targets:torch.tensor, predictions:torch.tensor, horizons:torch.tensor = None):
+        """
+        Calculate loss between predicted value and actual value
+
+        targets: tensor of dims [N, A, H]
+        predictions: tensor of dims [N, A, H]
+        horizons: tensor of dims [N, A, H] of type int (optional)
+
+        returns: loss as a tensor of dims [N, A]
+
+        """
+
+        if args.tvf_loss_fn == "MSE":
+            # MSE loss, sum across samples
+            return torch.square(targets - predictions)
+        elif args.tvf_loss_fn == "huber":
+            if args.huber_loss_delta == 0:
+                loss = torch.abs(targets - predictions)
+            else:
+                # Smooth huber loss
+                # see https://en.wikipedia.org/wiki/Huber_loss
+                errors = targets - predictions
+                loss = args.huber_loss_delta ** 2 * (
+                        torch.sqrt(1 + (errors / args.huber_loss_delta) ** 2) - 1
+                )
+            return loss
+        elif args.tvf_loss_fn == "h_weighted":
+
+            assert args.value_transform == "identity", "h_weighting will not work properly with transformed value."
+
+            if horizons is None:
+                # assume h = args.tvf_max_horizon for all elements.
+                return torch.square(targets - predictions) / args.tvf_max_horizon
+
+            # we need to remove all zero horizons from this calculation as they will result in NaN
+            horizons = horizons[0]
+            assert torch.abs(horizons - horizons[np.newaxis, :]).sum() == 0, "Batch entries must have matched horizons."
+            non_zero_horizon_ids = [i for i in range(len(horizons)) if horizons[i] != 0]
+            horizons = horizons[non_zero_horizon_ids]
+
+            av_targets = targets[:, non_zero_horizon_ids] / (horizons / args.tvf_max_horizon)
+            av_predictions = predictions[:, non_zero_horizon_ids] / (horizons / args.tvf_max_horizon)
+            # scale so that loss scale is roughly the same as MSE loss
+            return torch.square(av_targets - av_predictions) / args.tvf_max_horizon
+        else:
+            raise ValueError(f"Invalid tvf_loss_fn {args.tvf_loss_fn}")
+
     def train_distill_minibatch(self, data, loss_scale=1.0):
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
@@ -1687,6 +1742,7 @@ class Runner():
             model_out = self.model.forward(data["prev_state"], output="policy")
             targets = data["value_targets"]
             predictions = model_out["ext_value"]
+            loss = loss + 0.5 * self.calculate_value_loss(targets, predictions).mean()
         else:
             # method 2. try to learn the entire curve...
             aux_features = package_aux_features(
@@ -1696,14 +1752,10 @@ class Runner():
             model_out = self.model.forward(data["prev_state"], output="policy", aux_features=aux_features)
             targets = data["value_targets"]
             predictions = model_out["tvf_value"]
+            loss = loss + 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
 
         old_policy_logprobs = data["old_log_policy"]
         logps = model_out["log_policy"]
-
-        # MSE loss
-        target_loss = torch.square(targets - predictions)
-        target_loss = 0.5 * target_loss.mean() # note we average across horizons, not sum.
-        loss = loss + target_loss
 
         # KL loss
         kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
@@ -1765,30 +1817,14 @@ class Runner():
                 self.log.watch_mean("loss_anchor", anchor_loss, display_width=8)
                 loss = loss + anchor_loss
 
-            if args.use_huber_loss:
-                if args.huber_loss_delta == 0:
-                    tvf_loss = torch.abs(targets - value_predictions)
-                else:
-                    # Smooth huber loss
-                    # see https://en.wikipedia.org/wiki/Huber_loss
-                    errors = targets - value_predictions
-                    tvf_loss = args.huber_loss_delta**2 * (
-                               torch.sqrt(1+(errors/args.huber_loss_delta)**2)-1
-                    )
-            else:
-                # MSE loss, sum across samples
-                tvf_loss = torch.square(targets - value_predictions)
+            tvf_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
 
             # zero out loss for 0 horizon in this special case
             if args.tvf_soft_anchor == -1:
                 tvf_loss = tvf_loss * torch.not_equal(data["tvf_horizons"], 0)
 
-            if args.tvf_sample_reduction == "mean":
-                tvf_loss = tvf_loss.mean(dim=-1)
-            elif args.tvf_sample_reduction == "sum":
-                tvf_loss = tvf_loss.sum(dim=-1)
-            else:
-                raise ValueError(f"Invalid sample reduction method {args.tvf_sample_reduction}")
+            tvf_loss = tvf_loss.mean(dim=-1)
+
             tvf_loss = 0.5 * args.tvf_coef * tvf_loss.mean()
             loss = loss + tvf_loss
 
@@ -1811,7 +1847,7 @@ class Runner():
         # Logging
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("value_loss", loss)
+        self.log.watch_mean("loss_value", loss)
 
         return {}
 
@@ -2049,7 +2085,7 @@ class Runner():
         self.log.watch_mean("clip_frac", clip_frac, display_width=8)
         self.log.watch_mean("entropy", entropy)
         self.log.watch_mean("loss_ent", loss_entropy)
-        self.log.watch_mean("policy_loss", loss)
+        self.log.watch_mean("loss_policy", loss)
 
         return {
             'kl_approx': float(kl_approx.detach()),  # make sure we don't pass the graph through.
@@ -2358,7 +2394,7 @@ class Runner():
         return context
 
 
-def get_rediscounted_value_estimate(values: Union[np.ndarray, torch.Tensor], old_gamma: float, new_gamma: float):
+def get_rediscounted_value_estimate(values: Union[np.ndarray, torch.Tensor], old_gamma: float, new_gamma: float, horizons):
     """
     Returns rediscounted return at horizon H
 
@@ -2380,14 +2416,10 @@ def get_rediscounted_value_estimate(values: Union[np.ndarray, torch.Tensor], old
     device = values.device
     prev = torch.zeros([B], dtype=torch.float32, device=device)
     discounted_reward_sum = torch.zeros([B], dtype=torch.float32, device=device)
-    old_discount = 1
-    discount = 1
-    for h in range(H):
-        reward = (values[:, h] - prev) / old_discount
-        prev = values[:, h]
-        discounted_reward_sum += reward * discount
-        old_discount *= old_gamma
-        discount *= new_gamma
+    for i, h in enumerate(horizons):
+        reward = (values[:, i] - prev) / (old_gamma ** h)
+        prev = values[:, i]
+        discounted_reward_sum += reward * (new_gamma ** h)
 
     return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
 

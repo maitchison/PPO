@@ -66,6 +66,7 @@ class Config:
         self.tvf_value_distribution = str()
         self.tvf_horizon_distribution = str()
         self.tvf_gae = bool()
+        self.tvf_average_reward = bool()
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_lambda_samples = int()
@@ -76,7 +77,6 @@ class Config:
         self.tvf_time_scale = str()
         self.tvf_n_step         = int()
         self.tvf_mode           = str()
-        self.tvf_sample_reduction = str()
         self.tvf_n_dedicated_value_heads  = int()
         self.tvf_exp_gamma      = float()
         self.tvf_exp_mode       = str()
@@ -153,9 +153,9 @@ class Config:
         self.ema_frame_stack_gamma = float()
         self.ema_frame_stack = bool()
 
-        # experimental
-        self.use_huber_loss = bool()
-        self.huber_loss_delta = bool()
+        # tvf loss
+        self.tvf_loss_fn = bool()
+        self.tvf_huber_loss_delta = bool()
         self.use_tanh_clipping = bool()
 
         self.use_compression = bool()
@@ -254,6 +254,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--hidden_units", type=int, default=512)
 
     parser.add_argument("--tvf_gae", type=str2bool, default=False, help="Uses TVF aware GAE (with support for alternative discounts)")
+    parser.add_argument("--tvf_average_reward", type=str2bool, default=False,
+                        help="Enables average reward mode, where model predicts value / h instead of value.")
     parser.add_argument("--tvf_force_ext_value_distill", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
@@ -281,7 +283,6 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
     parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
-    parser.add_argument("--tvf_sample_reduction", type=str, default="mean", help="[sum|mean]")
     parser.add_argument("--tvf_exp_gamma", type=float, default=2.0)
     parser.add_argument("--tvf_exp_mode", type=str, default="default", help="[default|masked|transformed]")
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Enabled TVF mode.")
@@ -309,8 +310,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distill_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
 
     # experimental...
-    parser.add_argument("--use_huber_loss", type=str2bool, default=False)
-    parser.add_argument("--huber_loss_delta", type=float, default=1.0)
+    parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
+    parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
     parser.add_argument("--use_tanh_clipping", type=str2bool, default=False)
 
     parser.add_argument("--policy_lr_anneal", type=str2bool, nargs='?', const=True, default=False,

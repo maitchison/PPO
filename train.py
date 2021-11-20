@@ -134,6 +134,7 @@ if __name__ == "__main__":
             tvf_time_transform=rollout.time_scale_function,
             tvf_n_dedicated_value_heads=args.tvf_n_dedicated_value_heads,
             tvf_max_horizon=args.tvf_max_horizon,
+            tvf_average_reward=args.tvf_average_reward,
             architecture=args.architecture,
 
             hidden_units=args.hidden_units,
