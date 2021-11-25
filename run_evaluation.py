@@ -177,6 +177,12 @@ def make_model(env):
         pass
 
     try:
+        additional_args['tvf_value_scale_fn'] = args.tvf_value_scale_fn
+        additional_args['tvf_value_scale_norm'] = args.tvf_value_scale_norm
+    except:
+        pass
+
+    try:
         additional_args['hidden_units'] = args.hidden_units
     except:
         pass
@@ -838,11 +844,12 @@ def export_movie(
             log_fig.plot(xs, ys, 'greenyellow')
             linear_fig.plot(xs, ys, 'greenyellow')
         else:
-            xs = list(range(len(buffer["values"][t])))
-            ys = buffer["model_values"] * REWARD_SCALE
-            log_fig.plot(xs, ys, 'greenyellow')
-            linear_fig.plot(xs, ys, 'greenyellow')
-
+            # white dot representing value estimate
+            xs = [args.tvf_max_horizon-10, args.tvf_max_horizon]
+            y = buffer["model_values"][t] * REWARD_SCALE
+            ys = [y, y]
+            log_fig.plot(xs, ys, 'white')
+            linear_fig.plot(xs, ys, 'white')
 
         if needs_rediscount():
             # plot originally predicted values (without rediscounting)

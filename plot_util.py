@@ -303,6 +303,7 @@ def compare_runs(path,
                  run_filter=None,
                  label_filter=None,
                  color_filter=None,
+                 style_filter=None,
                  smooth_factor=None,
                  reference_run=None,
                  skip_rows=1,
@@ -331,6 +332,8 @@ def compare_runs(path,
 
     if reference_run is not None:
         runs.append(["reference", reference_run, {}])
+
+    run_labels_so_far = set()
 
     for run_name, run_data, run_params in runs:
 
@@ -371,7 +374,10 @@ def compare_runs(path,
         small = (i - 1) % len(cmap.colors)
         big = (i - 1) // len(cmap.colors)
         auto_color = cmap.colors[small]
-        auto_style = ["-", "--"][big % 2]
+        if style_filter is not None:
+            auto_style = style_filter(run_name)
+        else:
+            auto_style = ["-", "--"][big % 2]
 
         ls = "-"
 
@@ -383,7 +389,6 @@ def compare_runs(path,
             else:
                 color = "gray"
                 alpha = 0.33
-
         else:
             color = auto_color
             ls = auto_style
@@ -398,6 +403,11 @@ def compare_runs(path,
 
         if color_filter is not None:
             color = color_filter(run_name, color)
+
+        # make sure we don't duplicate labels
+        if run_label in run_labels_so_far:
+            run_label = None
+        run_labels_so_far.add(run_label)
 
         plt.plot(xs, ys, alpha=0.2 * alpha, c=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,

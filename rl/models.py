@@ -203,7 +203,8 @@ class DualNet(nn.Module):
             tvf_time_transform,
             tvf_max_horizon,
             tvf_n_dedicated_value_heads: int = 0,
-            tvf_average_reward:bool = False,
+            tvf_value_scale_fn="identity",
+            tvf_value_scale_norm="max",
             actions=None,
             policy_head=True,
             value_head=True,
@@ -219,7 +220,8 @@ class DualNet(nn.Module):
         self.policy_head = policy_head
         self.value_head = value_head
         self.tvf_max_horizon = tvf_max_horizon
-        self.tvf_average_reward = tvf_average_reward
+        self.tvf_value_scale_fn = tvf_value_scale_fn
+        self.tvf_value_scale_norm = tvf_value_scale_norm
 
         if self.policy_head:
             assert actions is not None
@@ -265,6 +267,39 @@ class DualNet(nn.Module):
             return F.sigmoid
         else:
             raise Exception("invalid activation")
+
+    def apply_value_scale(self, values, horizons):
+        """ Applies value scaling.
+        values: tensor of dims [B, H, 1] # final dim might be 2 in which case it's just ext_value and int_value, but horizon will be matched.
+        horizons: tensor of dims [B, H]
+        """
+
+        horizons = horizons[:, :, np.newaxis] # match final dim.
+
+        fn_map = {
+            'identity': lambda x: 1,
+            'linear': lambda x: x,
+            'log': lambda x: torch.log(1+x),
+            'sqrt': lambda x: torch.sqrt(x),
+        }
+
+        assert self.tvf_value_scale_fn in fn_map, f"invalid scale fn {self.tvf_value_scale_fn}"
+        fn = fn_map[self.tvf_value_scale_fn]
+
+        values = values * fn(horizons)
+
+        max_horizon = fn(torch.tensor(self.tvf_max_horizon))
+
+        if self.tvf_value_scale_norm == "none":
+            pass
+        elif self.tvf_value_scale_norm == "max":
+            values = values / max_horizon
+        elif self.tvf_value_scale_norm == "half_max":
+            values = values / (max_horizon/2)
+        else:
+            raise ValueError(f"Invalid tvf_value_scale_norm {self.tvf_value_scale_norm}")
+
+        return values
 
     def forward(
             self, x, aux_features=None, policy_temperature=1.0,
@@ -326,12 +361,7 @@ class DualNet(nn.Module):
                     aux_part = self.value_net_hidden_aux(transformed_aux_features)
                     tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
                     values = self.value_net_tvf(tvf_h)
-                    if self.tvf_average_reward:
-                        # with average_reward mode we have the model predict the average reward, but we always output
-                        # the true return. We also scale the output so that the model is predicting values approximately
-                        # the same scale as without average_reward prediction.
-                        values = values * (horizon_in / self.tvf_max_horizon)[:, :, np.newaxis]
-                    return values
+                    return self.apply_value_scale(values, horizon_in)
 
                 if self.tvf_n_dedicated_value_heads == 0:
                     # this is the old solution, just one head that predicts all horizons
@@ -395,8 +425,8 @@ class TVFModel(nn.Module):
             tvf_hidden_units: int = 512,
             tvf_activation:str = "relu",
             tvf_n_dedicated_value_heads:int=0,
-            tvf_average_reward=False,
-
+            tvf_value_scale_fn = "identity",
+            tvf_value_scale_norm = "max",
             network_args:Union[dict, None] = None,
     ):
 
@@ -423,7 +453,8 @@ class TVFModel(nn.Module):
             tvf_time_transform=tvf_time_transform,
             tvf_n_dedicated_value_heads=tvf_n_dedicated_value_heads,
             tvf_max_horizon=tvf_max_horizon,
-            tvf_average_reward=tvf_average_reward,
+            tvf_value_scale_fn=tvf_value_scale_fn,
+            tvf_value_scale_norm=tvf_value_scale_norm,
             actions=actions,
             **(network_args or {})
         )

@@ -66,7 +66,8 @@ class Config:
         self.tvf_value_distribution = str()
         self.tvf_horizon_distribution = str()
         self.tvf_gae = bool()
-        self.tvf_average_reward = bool()
+        self.tvf_value_scale_fn = str()
+        self.tvf_value_scale_norm = str()
         self.tvf_gamma          = float()
         self.tvf_lambda         = float()
         self.tvf_lambda_samples = int()
@@ -254,8 +255,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--hidden_units", type=int, default=512)
 
     parser.add_argument("--tvf_gae", type=str2bool, default=False, help="Uses TVF aware GAE (with support for alternative discounts)")
-    parser.add_argument("--tvf_average_reward", type=str2bool, default=False,
-                        help="Enables average reward mode, where model predicts value / h instead of value.")
+    parser.add_argument("--tvf_value_scale_fn", type=str, default="identity",
+                        help="Model predicts value/f(x) instead of value. For example setting f(x) to h predicts average_reward. [identity|linear|log|sqrt]")
+    parser.add_argument("--tvf_value_scale_norm", type=str, default="max",
+                        help="Return prediction is normed, e.g. when using h model predicts = value/(h/max_h) [none|max|half_max] ")
     parser.add_argument("--tvf_force_ext_value_distill", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
@@ -266,7 +269,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--auto_gamma", type=str, default="off",
                         help="[off|tvf|gamma|both]")
     parser.add_argument("--auto_strategy", type=str, default="episode_length",
-                        help="[episode_length|agent_age_slow]")
+                        help="[episode_length|agent_age_slow|sa_return|sa_reward]")
 
     parser.add_argument("--tvf_value_samples", type=int, default=64, help="Number of values to sample during training.")
     parser.add_argument("--tvf_horizon_samples", type=int, default=64, help="Number of horizons to sample during training. (-1 = all)")

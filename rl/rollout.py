@@ -408,7 +408,46 @@ def _interpolate(horizons, values, target_horizon: int):
     return value_pre * (1 - factor) + value_post * factor
 
 
-class Runner():
+class SimulatedAnnealing:
+    """
+    Handles simulated annealing
+
+    usage
+
+    sa = SimulatedAnnealing
+
+    for i in range(100):
+        eval_score = eval(sa.value)
+        sa.process(eval_score)
+
+    """
+    def __init__(self, initial_value:float=0):
+        self.value = initial_value
+        self.neighbour = initial_value
+        self.prev_score = float('-inf')
+        self._generate_neighbour()
+
+    def _generate_neighbour(self):
+        """
+        Returns new candidate value
+        """
+        if np.random.rand() < 0.5:
+            self.neighbour = self.value * 1.05
+        else:
+            self.neighbour = self.value / 1.05
+
+    def process(self, score):
+        # todo: do this properly with temperature...
+        if (score > self.prev_score) or (np.random.rand() < 0.05):
+            # accept
+            self.value = self.neighbour
+            self.prev_score = score
+        else:
+            # reject
+            pass
+        self._generate_neighbour()
+
+class Runner:
 
     def __init__(self, model: models.TVFModel, log, name="agent"):
         """ Setup our rollout runner. """
@@ -416,6 +455,7 @@ class Runner():
         self.name = name
         self.model = model
         self.step = 0
+        self.horizon_sa = SimulatedAnnealing(1000) # this ends up being one third, so a horizon of ~300
 
         optimizer_params = {
             'eps': args.adam_epsilon
@@ -599,6 +639,9 @@ class Runner():
             'value_optimizer_state_dict': self.value_optimizer.state_dict()
         }
 
+        if args.auto_strategy[:2] == "sa":
+            data['horizon_sa'] = self.horizon_sa
+
         if args.use_rnd:
             data['rnd_optimizer_state_dict'] = self.rnd_optimizer.state_dict()
 
@@ -633,6 +676,9 @@ class Runner():
         self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
         if "rnd_optimizer_state_dict" in checkpoint:
             self.rnd_optimizer = checkpoint['rnd_optimizer_state_dict']
+
+        if args.auto_strategy[:2] == "sa":
+            self.horizon_sa = checkpoint['horizon_sa']
 
         step = checkpoint['step']
         self.log = checkpoint['logs']
@@ -1398,7 +1444,8 @@ class Runner():
         """
         return self.all_obs[:-1]
 
-    def final_obs2(self):
+    @property
+    def final_obs(self):
         """
         Returns final observation
         """
@@ -1437,45 +1484,85 @@ class Runner():
 
         return rewards**2 + 2*gamma*rewards * first_moment_estimates[1:] + (gamma**2)*second_moment_estimates[1:]
 
+    def get_tvf_rediscounted_value_estimates(self):
+
+        N, A, *state_shape = self.prev_obs.shape
+
+        # if gamma's match we only need to generate the final horizon
+        # if they don't we need to generate them all and rediscount
+        if abs(self.tvf_gamma - self.gamma) < 1e-6:
+            return self.get_value_estimates(obs=self.all_obs, time=self.all_time)
+        else:
+            # work out a range and skip to use so that we never use more than around 100 samples and we don't waste
+            # samples on heavily discounted rewards
+            if self.gamma >= 1:
+                effective_horizon = round(self.current_horizon)
+            else:
+                effective_horizon = round(3 / (1 - self.gamma))
+
+            # note: we could down sample the value estimates and adjust the gamma calculations if
+            # this ends up being too slow..
+            step_skip = math.ceil(effective_horizon / 100)
+
+            # going backwards makes sure that final horizon is always included
+            horizons = np.asarray(range(effective_horizon, 0, -step_skip))[::-1]
+
+            value_estimates = self.get_value_estimates(
+                obs=self.all_obs,
+                time=self.all_time,
+                horizons=horizons
+            )
+
+            return get_rediscounted_value_estimate(
+                values=value_estimates.reshape([(N + 1) * A, -1]),
+                old_gamma=self.tvf_gamma,
+                new_gamma=self.gamma,
+                horizons=horizons
+            ).reshape([(N + 1), A])
+
+
     def calculate_returns(self):
 
         N, A, *state_shape = self.prev_obs.shape
 
-        # 1. first we calculate the ext_value estimate
+        # generate a candidate gamma (if needed) that will be used to calculate this rounds advantages...
+        # for score I'm using average reward. Using some return estimate is problematic as it will include gamma
+        # and gamma has changed. This might make the algorithm prefer long horizons over short. Maybe this is ok though?
+        if args.auto_strategy == "sa_reward":
+            score = np.mean(self.ext_rewards)
+            self.horizon_sa.process(score)
+        if args.auto_strategy == "sa_return":
+            # note: we can't use the return estimates below as these require a decision on gamma, which we need
+            # to make before we calculate them. So instead we run through the rewards, discount then, then
+            # add the final value.
 
-        if args.use_tvf:
-            # if gamma's match we only need to generate the final horizon
-            # if they don't we need to generate them all and rediscount
-            if abs(self.tvf_gamma - self.gamma) < 1e-6:
-                ext_value_estimates = self.get_value_estimates(obs=self.all_obs, time=self.all_time)
+            # note2: this might prefer longer horizons due to increased bootstrap value estimate and increased
+            # rewards, but I'm ok with that I think, as it reduces the bias of the value estimates, and so long
+            # as the update doesn't cause problems with the policy its fine.
+
+            if args.use_tvf:
+                batch_value_estimates = self.get_tvf_rediscounted_value_estimates()
             else:
+                # in this case just generate ext value estimates from model
+                batch_value_estimates = self.get_value_estimates(obs=self.all_obs)
 
-                # work out a range and skip to use so that we never use more than around 100 samples and we don't waste
-                # samples on heavily discounted rewards
-                if self.gamma >= 1:
-                    effective_horizon = round(self.current_horizon)
-                else:
-                    effective_horizon = round(3/(1-self.gamma))
+            ext_advantage = calculate_gae(
+                self.ext_rewards,
+                batch_value_estimates[:N],
+                batch_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                args.gae_lambda
+            )
 
-                # note: we could down sample the value estimates and adjust the gamma calculations if
-                # this ends up being too slow..
-                step_skip = math.ceil(effective_horizon / 100)
+            batch_returns = ext_advantage + batch_value_estimates[:N]
 
-                # going backwards makes sure that final horizon is always included
-                horizons = np.asarray(range(effective_horizon, 0, -step_skip))[::-1]
+            score = np.mean(batch_returns)
+            self.horizon_sa.process(score)
 
-                value_estimates = self.get_value_estimates(
-                    obs=self.all_obs,
-                    time=self.all_time,
-                    horizons=horizons
-                )
-
-                ext_value_estimates = get_rediscounted_value_estimate(
-                    values=value_estimates.reshape([(N+1)*A, -1]),
-                    old_gamma=self.tvf_gamma,
-                    new_gamma=self.gamma,
-                    horizons=horizons
-                ).reshape([(N+1), A])
+        # 1. first we calculate the ext_value estimate
+        if args.use_tvf:
+            ext_value_estimates = self.get_tvf_rediscounted_value_estimates()
         else:
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
@@ -2120,24 +2207,24 @@ class Runner():
                 auto_horizon = 0
             else:
                 auto_horizon = self.episode_length_mean + (2 * self.episode_length_std)
-            return int(np.clip(auto_horizon, 0, args.tvf_max_horizon))
+            return auto_horizon
         elif args.auto_strategy == "agent_age_slow":
-            return self.agent_age / 10
+            return (1/1000) * self.step # todo make this a parameter
+        elif args.auto_strategy in ["sa_return", "sa_reward"]:
+            return self.horizon_sa.neighbour
         else:
             raise ValueError(f"Invalid auto_strategy {args.auto_strategy}")
 
     @property
     def _auto_gamma(self):
-        horizon = np.clip(self._auto_horizon, 30, float("inf"))
-        # usually we want horizon to be about 3x the effective horizon (so that error is very small)
-        # we also fix the horizon so gamma will be >= 0.9
-        return 1 - (1 / (horizon / 3))
+        horizon = float(np.clip(self._auto_horizon, 10, float("inf")))
+        return 1 - (1 / horizon)
 
     @property
     def current_horizon(self):
         if args.auto_horizon:
             min_horizon = max(128, args.tvf_horizon_samples, args.tvf_value_samples)
-            return int(np.clip(self._auto_horizon, min_horizon, args.tvf_max_horizon))
+            return int(np.clip(self._auto_horizon*3, min_horizon, args.tvf_max_horizon))
         else:
             return int(args.tvf_max_horizon)
 

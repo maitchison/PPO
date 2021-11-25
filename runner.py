@@ -27,6 +27,10 @@ WORKERS=8
 ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
 ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
 ATARI_2 = ['Krull', 'KungFuMaster']
+
+ATARI_5 = ['Centipede', 'CrazyClimber', 'Krull', 'SpaceInvaders', 'Zaxxon']  # Atari5
+LONG_TERM_CREDIT = ['BeamRider', 'Pong', 'Skiing', 'Surround']  # long term credit assignment from Agent57
+
 DIVERSE_5 = ['BattleZone', 'TimePilot', "Seaquest", "Breakout", "Freeway"] # not the real atari 5..., also not 5.
 
 
@@ -93,6 +97,67 @@ canonical_57 = [
     "YarsRevenge",
     "Zaxxon"
 ]
+
+standard_args = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'architecture': 'dual',
+    'export_video': False,
+    'epochs': 50,  # really want to see where these go...
+    'use_compression': 'auto',
+    'warmup_period': 1000,
+    # helps on some games to make sure they are really out of sync at the beginning of training.
+    'disable_ev': False,
+    'seed': 0,
+
+    # env parameters
+    'time_aware': True,
+    'terminal_on_loss_of_life': False,
+    'reward_clipping': "off",
+    'value_transform': 'identity',
+
+    # parameters found by hyperparameter search...
+    'max_grad_norm': 5.0,
+    'agents': 128,
+    'n_steps': 128,
+    'policy_mini_batch_size': 512,
+    'value_mini_batch_size': 512,
+    'policy_epochs': 3,
+    'value_epochs': 2,
+    'distill_epochs': 1,
+    'distill_beta': 1.0,
+    'target_kl': -1,
+    'ppo_epsilon': 0.1,
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distill_lr': 2.5e-4,
+    'entropy_bonus': 1e-3,
+    'tvf_force_ext_value_distill': False,
+    'hidden_units': 256,
+    'gae_lambda': 0.95,
+
+    # tvf params
+    'use_tvf': True,
+    'tvf_value_distribution': 'fixed_geometric',
+    'tvf_horizon_distribution': 'fixed_geometric',
+    'tvf_horizon_scale': 'log',
+    'tvf_time_scale': 'log',
+    'tvf_hidden_units': 256,
+    'tvf_value_samples': 128,
+    'tvf_horizon_samples': 32,
+    'tvf_mode': 'exponential',
+    'tvf_n_step': 80,  # makes no difference...
+    'tvf_exp_gamma': 2.0,  # 2.0 would be faster, but 1.5 tested slightly better.
+    'tvf_coef': 0.5,
+    'tvf_soft_anchor': 0,
+    'tvf_exp_mode': "transformed",
+
+    # horizon
+    'gamma': 1.0,
+    'tvf_gamma': 1.0,
+    'tvf_max_horizon': 30000,
+}
+
 
 def add_job(
         experiment_name,
@@ -676,255 +741,31 @@ def setup_DNA_Atari57():
         )
 
 
-def setup_TVF_Extra():
+def setup_value_scale():
 
-    default_args = {
-        'checkpoint_every': int(5e6),
-        'workers': WORKERS,
-        'architecture': 'dual',
-        'export_video': False,
-        'epochs': 50,  # really want to see where these go...
-        'use_compression': 'auto',
-        'warmup_period': 1000,  # helps on some games to make sure they are really out of sync at the beginning of training.
-        'disable_ev': False,
-        'seed': 0,
-
-        # env parameters
-        'time_aware': True,
-        'terminal_on_loss_of_life': True,  # to match rainbow
-        'reward_clipping': 1,  # to match rainbow
-
-        # parameters found by hyperparameter search...
-        'max_grad_norm': 5.0,
-        'agents': 128,
-        'n_steps': 128,
-        'policy_mini_batch_size': 512,
-        'value_mini_batch_size': 512,
-        'policy_epochs': 3,
-        'value_epochs': 2,
-        'distill_epochs': 1,
-        'distill_beta': 1.0,
-        'target_kl': -1,
-        'ppo_epsilon': 0.1,
-        'policy_lr': 2.5e-4,
-        'value_lr': 2.5e-4,
-        'distill_lr': 2.5e-4,
-        'entropy_bonus': 1e-3,
-        'tvf_force_ext_value_distill': False,
-        'hidden_units': 256,
-        'value_transform': 'sqrt',
-        'gae_lambda': 0.95, # would be nice to try 0.99...
-
-        # tvf params
-        'use_tvf': True,
-        'tvf_value_distribution': 'fixed_geometric',
-        'tvf_horizon_distribution': 'fixed_geometric',
-        'tvf_horizon_scale': 'log',
-        'tvf_time_scale': 'log',
-        'tvf_hidden_units': 256,
-        'tvf_value_samples': 128,
-        'tvf_horizon_samples': 32,
-        'tvf_mode': 'exponential',
-        'tvf_n_step': 80, # makes no difference...
-        'tvf_exp_gamma': 2.0, # 2.0 would be faster, but 1.5 tested slightly better.
-        'tvf_coef': 0.5,
-        'tvf_soft_anchor': 0,
-        'tvf_exp_mode': "transformed",
-
-        # horizon
-        'gamma': 0.99997,
-        'tvf_gamma': 0.99997,
-        'tvf_max_horizon': 30000,
-    }
-
-    # this tests if there is any improvement if we skip small updates.
-    for threshold in [0, 0.25, 0.5, 0.75, 1.0]:
-        add_job(
-            f"Extra",
-            env_name="Krull",
-            run_name=f"threshold_{threshold}",
-            use_tvf=False, # want to know how this works without TVF as TVF is more noise resistant.
-            default_params=default_args,
-            optimizer = "GBOGH",
-            gbogh_threshold = threshold,
-            priority=0,
-            epochs=30,
-            hostname='desktop',
-        )
-
-    # # this tests impact of gae_lambda
-    # for gae_lambda in [0.9, 0.95, 0.97, 0.99, 1.0]:
-    #     add_job(
-    #         f"Extra",
-    #         env_name="Krull",
-    #         run_name=f"gae_lambda={gae_lambda}",
-    #         default_params=default_args,
-    #         gae_lambda=gae_lambda,
-    #         priority=0,
-    #         hostname='desktop',
-    #     )
-
-    # # this tests how robust algorithm is to reward noise.
-    # for use_tvf in [True, False]:
-    #     for per_step_reward_noise in [0.0, 0.1, 0.5, 1.0, 2.0, 4.0]:
-    #         add_job(
-    #             f"Extra",
-    #             env_name="Krull",
-    #             run_name=f"use_tvf={use_tvf} per_step_reward_noise={per_step_reward_noise}",
-    #             use_tvf=use_tvf,
-    #             per_step_reward_noise=per_step_reward_noise,
-    #             default_params=default_args,
-    #             epochs=30,
-    #             priority=50,
-    #             hostname='desktop',
-    #         )
-
-    # see how we do with deferred rewards
-    for horizon in [1000, 5000, 20000]:
-        for use_tvf in [True, False]:
+    """
+    Experiments to see if learning value * f(h) is better than learning value directly.
+    """
+    for env in ["Krull", "Breakout", "Seaquest", "CrazyClimber"]:
+        for tvf_value_scale_fn in ["identity", "linear", "log", "sqrt"]:
             add_job(
-                f"Deferred",
-                env_name="Krull",
-                run_name=f"use_tvf={use_tvf} horizon={horizon}",
-                use_tvf=use_tvf,
-                timeout=horizon*4,
-                deferred_rewards=-1,  # reward given at end of episode
-                reward_clipping="off",
-                default_params=default_args,
-                epochs=20,
+                f"ValueScale_{env}",
+                env_name=env,
+                run_name=f"fn={tvf_value_scale_fn}",
+                tvf_value_scale_fn=tvf_value_scale_fn,
+                default_params=standard_args,
+                epochs=50,
                 priority=0,
+                seed=2, # check if old krull result was a fluke... ?
                 hostname='',
             )
-        add_job(
-            f"Deferred",
-            env_name="Krull",
-            run_name=f"use_tvf=auto horizon={horizon}",
-            use_tvf=True,
-            timeout=horizon * 4,
-            tvf_max_horizon=horizon,
-            reward_clipping="off",
-            deferred_rewards=-1,  # reward given at end of episode
-            default_params=default_args,
-            epochs=20,
-            priority=0,
-            hostname='',
-        )
 
-    # average rewards
-    # note: i think we should switch to uniform rather than geometric if we are going to weight the MSE?
-    # or maybe not... this is just the same as using average reward loss instead of MSE loss... ok..
-    for tvf_loss_fn in ["h_weighted", "MSE"]:
-        add_job(
-            f"AverageRewards_Krull",
-            env_name="Krull",
-            run_name=f"tvf_loss_fn={tvf_loss_fn}",
-            tvf_loss_fn=tvf_loss_fn,
-            tvf_average_reward=tvf_loss_fn=="h_weighted",
-            default_params=default_args,
-            reward_clipping="off",
-            terminal_on_loss_of_life=False,
-            value_transform="identity",
-            epochs=20,
-            priority=0,
-            hostname='',
-        )
-    add_job(
-        f"AverageRewards_Krull_v2",
-        env_name="Krull",
-        run_name=f"tvf_loss_fn=h_weighted_v2",
-        tvf_loss_fn="h_weighted",
-        tvf_average_reward=True,
-        default_params=default_args,
-        reward_clipping="off",
-        terminal_on_loss_of_life=False,
-        value_transform="identity",
-        epochs=20,
-        priority=0,
-        hostname='',
-    )
-    add_job(
-        f"AverageRewards_Krull",
-        env_name="Krull",
-        run_name=f"tvf_loss_fn=hybrid",
-        tvf_loss_fn="MSE",
-        tvf_average_reward=True,
-        default_params=default_args,
-        reward_clipping="off",
-        terminal_on_loss_of_life=False,
-        value_transform="identity",
-        epochs=20,
-        priority=0,
-        hostname='',
-    )
-
-def setup_Gamma():
+def setup_gamma():
     """
-    Experiments on dynamic discounting adjustment
+    Experiments to see how stable algorithms are with undiscounted rewards.
     """
 
-    # modified to true rewards
-
-    default_args = {
-        'checkpoint_every': int(5e6),
-        'workers': WORKERS,
-        'architecture': 'dual',
-        'export_video': False,
-        'epochs': 50,  # really want to see where these go...
-        'use_compression': 'auto',
-        'warmup_period': 1000,
-        # helps on some games to make sure they are really out of sync at the beginning of training.
-        'disable_ev': False,
-        'seed': 0,
-
-        # env parameters
-        'time_aware': True,
-        'terminal_on_loss_of_life': False,
-        'reward_clipping': "off",
-        'value_transform': 'identity',
-
-        # parameters found by hyperparameter search...
-        'max_grad_norm': 5.0,
-        'agents': 128,
-        'n_steps': 128,
-        'policy_mini_batch_size': 512,
-        'value_mini_batch_size': 512,
-        'policy_epochs': 3,
-        'value_epochs': 2,
-        'distill_epochs': 1,
-        'distill_beta': 1.0,
-        'target_kl': -1,
-        'ppo_epsilon': 0.1,
-        'policy_lr': 2.5e-4,
-        'value_lr': 2.5e-4,
-        'distill_lr': 2.5e-4,
-        'entropy_bonus': 1e-3,
-        'tvf_force_ext_value_distill': False,
-        'hidden_units': 256,
-        'gae_lambda': 0.95,
-
-        # tvf params
-        'use_tvf': True,
-        'tvf_value_distribution': 'fixed_geometric',
-        'tvf_horizon_distribution': 'fixed_geometric',
-        'tvf_horizon_scale': 'log',
-        'tvf_time_scale': 'log',
-        'tvf_hidden_units': 256,
-        'tvf_value_samples': 128,
-        'tvf_horizon_samples': 32,
-        'tvf_mode': 'exponential',
-        'tvf_n_step': 80,  # makes no difference...
-        'tvf_exp_gamma': 2.0,  # 2.0 would be faster, but 1.5 tested slightly better.
-        'tvf_coef': 0.5,
-        'tvf_soft_anchor': 0,
-        'tvf_exp_mode': "transformed",
-
-        # horizon
-        'gamma': 1.0,
-        'tvf_gamma': 1.0,
-        'tvf_max_horizon': 30000,
-    }
-
-    # first just make sure rediscounting is working
+    # check rediscounting on a number of games
     for env in ["Krull", "Breakout", "Freeway", "Hero", "CrazyClimber"]:
         for gamma in [0.99, 1.0]:
             for tvf_gamma in [0.99, 1.0]:
@@ -935,10 +776,9 @@ def setup_Gamma():
                     f"Gamma_{env}",
                     env_name=env,
                     run_name=f"algo=TVF gamma={gamma} tvf_gamma={tvf_gamma}",
-                    use_tvf=True,
                     gamma=gamma,
                     tvf_gamma=tvf_gamma,
-                    default_params=default_args,
+                    default_params=standard_args,
                     epochs=30,
                     priority=0,
                     hostname='',
@@ -950,7 +790,7 @@ def setup_Gamma():
                 run_name=f"algo=DNA gamma={gamma}",
                 use_tvf=False,
                 gamma=gamma,
-                default_params=default_args,
+                default_params=standard_args,
                 epochs=30,
                 priority=50,
                 hostname='',
@@ -963,41 +803,135 @@ def setup_Gamma():
                 use_tvf=False,
                 gamma=gamma,
                 architecture='single',
-                default_params=default_args,
+                default_params=standard_args,
                 epochs=30,
                 priority=0,
                 hostname='',
             )
 
-    # check if increasing gamma over time helps
+
+def E1_1():
+    """
+    E1.1: Show different games require different gamma (variance / bias tradeoff)
+    Should take around 2-3 days to complete.
+    """
+    for gamma in [0.9, 0.99, 0.999, 0.9997, 0.9999, 0.99997, 1.0]:
+        for env in set(ATARI_5 + LONG_TERM_CREDIT + ['Breakout']):
+            for run in [1]: # just one run for the moment...
+                add_job(
+                    f"E1_1_PerGameGamma",
+                    env_name=env,
+                    run_name=f"game={env} gamma={gamma} (seed={run})",
+                    use_tvf=False,
+                    gamma=gamma,
+                    architecture='single',
+                    default_params=standard_args,
+                    epochs=50,
+                    priority=0,
+                    seed=run,
+                    hostname='',
+                )
+
+
+
+def setup_dynamic_gamma():
+    """
+    Experiments to see how well TVF works when horizon is modified during training
+    """
+
+    # for env in ["Breakout", "CrazyClimber", "Hero", "Krull"]:
+    #     add_job(
+    #         f"DynamicGamma_{env}",
+    #         env_name=env,
+    #         run_name=f"reference",
+    #         default_params=standard_args,
+    #         epochs=30,
+    #         priority=0,
+    #         hostname='',
+    #     )
+    #     for auto_gamma in ["gamma", "both"]:
+    #         for strategy in ["agent_age_slow", "episode_length", "sa"]:
+    #             add_job(
+    #                 f"DynamicGamma_{env}",
+    #                 env_name=env,
+    #                 run_name=f"strategy={strategy} auto_gamma={auto_gamma}",
+    #                 auto_gamma=auto_gamma,
+    #                 auto_strategy=strategy,
+    #                 default_params=standard_args,
+    #                 epochs=20,
+    #                 priority=10 if strategy == "sa" else 0,
+    #                 hostname='',
+    #             )
+
+    # v2 fixes the sa reset bug, also included sa_return
+    counter = 0
+    for env in ["Breakout", "CrazyClimber", "Hero", "Krull"]:
+        add_job(
+            f"DynamicGamma_v2_{env}",
+            env_name=env,
+            run_name=f"reference",
+            default_params=standard_args,
+            epochs=30,
+            priority=0,
+            hostname='',
+        )
+        for auto_gamma in ["gamma", "both"]:
+            for strategy in ["agent_age_slow", "episode_length", "sa_return", "sa_reward"]:
+                add_job(
+                    f"DynamicGamma_v2_{env}",
+                    env_name=env,
+                    run_name=f"strategy={strategy} auto_gamma={auto_gamma}",
+                    auto_gamma=auto_gamma,
+                    auto_strategy=strategy,
+                    default_params=standard_args,
+                    epochs=20,
+                    priority=10 if strategy[:2] == "sa" else 0,
+                    seed=counter, # this makes sure sa seeds are different.
+                    hostname='',
+                )
+                counter += 1
+
+    # check if dynamic gamma works with PPO and DNA?
+    counter = 0
     for env in ["Breakout", "CrazyClimber"]:
-        for auto_gamma in ["gamma", "off", "both"]:
-            add_job(
-                f"DynamicGamma_{env}",
-                env_name=env,
-                run_name=f"strategy=agent_age auto_gamma={auto_gamma}",
-                use_tvf=True,
-                auto_gamma=auto_gamma,
-                auto_strategy="agent_age_slow",
-                default_params=default_args,
-                epochs=20,
-                priority=0,
-                hostname='',
-            )
+        for algo in ["PPO", "DNA"]:
+            for strategy in ["agent_age_slow", "episode_length", "sa_return", "sa_reward"]:
+                add_job(
+                    f"DynamicGamma_v3_{env}",
+                    env_name=env,
+                    run_name=f"strategy={strategy} ({algo})",
+                    use_tvf=False,
+                    architecture='single' if algo == "PPO" else "dual",
+                    auto_gamma="both",
+                    auto_strategy=strategy,
+                    default_params=standard_args,
+                    epochs=50,
+                    priority=10,
+                    seed = counter, # this makes sure sa seeds are different.
+                    hostname='',
+                )
+                counter += 1
 
-            add_job(
-                f"DynamicGamma_{env}",
-                env_name=env,
-                run_name=f"strategy=ep_length auto_gamma={auto_gamma}",
-                use_tvf=True,
-                auto_gamma=auto_gamma,
-                auto_strategy="episode_length",
-                default_params=default_args,
-                epochs=20,
-                priority=0,
-                hostname='',
-            )
 
+    # multiple runs to see if sa is consistent at finding a gamma
+    counter = 999
+    for env in ["Breakout", "CrazyClimber", "Hero", "Krull"]:
+        for run in [1, 2, 3]:
+            for auto_gamma in ["gamma", "both"]:
+                for strategy in ["sa_return", "sa_reward"]:
+                    add_job(
+                        f"DynamicGamma_v2_{env}",
+                        env_name=env,
+                        run_name=f"strategy={strategy} auto_gamma={auto_gamma} run={run}",
+                        auto_gamma=auto_gamma,
+                        auto_strategy=strategy,
+                        default_params=standard_args,
+                        epochs=20,
+                        priority=0,
+                        seed=counter,  # this makes sure sa seeds are different.
+                        hostname='',
+                    )
+                    counter += 1
 
 
 def setup_ED():
@@ -1012,8 +946,8 @@ def setup_ED():
         'export_video': True,
         'epochs': 50,  # really want to see where these go...
         'use_compression': 'auto',
-        'warmup_period': 1000,  # helps on some games to make sure they are really out of sync at the beginning of training.
-        'disable_ev': False,
+        'warmup_period': 1000,  # helps on some games to make sure they are really out of sync at the beginning of
+        'disable_ev': False,    # training.
         'seed': 0,
 
         # env parameters
@@ -1113,8 +1047,8 @@ def setup_TVF_Atari57():
         'export_video': True,
         'epochs': 50,  # really want to see where these go...
         'use_compression': 'auto',
-        'warmup_period': 1000,  # helps on some games to make sure they are really out of sync at the beginning of training.
-        'disable_ev': False,
+        'warmup_period': 1000,  # helps on some games to make sure they are really out of sync at the beginning of
+        'disable_ev': False,    # training.
         'seed': 0,
 
         # env parameters
@@ -1178,258 +1112,6 @@ def setup_TVF_Atari57():
             hostname='ML-Rig',
         )
 
-    # check why pong isn't working...
-    for seed in [0, 1, 2]:
-        add_job(
-            f"Pong",
-            env_name="Pong",
-            run_name=f"seed={seed}",
-            default_params=default_args,
-            seed=seed,
-            priority=100,
-            epochs=20,
-            hostname='ML-Rig',
-        )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"value_transform=identity",
-        default_params=default_args,
-        value_transform='identity',
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"use_tvf=False",
-        default_params=default_args,
-        use_tvf=False,
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    # try pong with different hyperparameters...
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=1",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        # these parameters are taken from DNA, I want to see which hyperparameter makes pong not work.
-        max_grad_norm=5.0,
-        agents=128,
-        n_steps=256,
-        policy_mini_batch_size=256,
-        value_mini_batch_size=256,
-        policy_epochs=4,
-        value_epochs=2,
-        distill_epochs=3,
-        distill_beta=0.5,
-        # target_kl=0.03,
-        # ppo_epsilon=0.2,
-        # policy_lr=1e-4,
-        # value_lr=2.5e-4,
-        # distill_lr=1e-4,
-        # entropy_bonus=1e-3,
-        # tvf_force_ext_value_distill=True,
-        # hidden_units=128,
-        # value_transform='sqrt',
-        # gae_lambda=0.95,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=2",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        # these parameters are taken from DNA, I want to see which hyperparameter makes pong not work.
-        # max_grad_norm=5.0,
-        # agents=128,
-        # n_steps=256,
-        # policy_mini_batch_size=256,
-        # value_mini_batch_size=256,
-        # policy_epochs=4,
-        # value_epochs=2,
-        # distill_epochs=3,
-        # distill_beta=0.5,
-
-        # one of the following hyperparameters is needed for pong to train.
-        target_kl=0.03,
-        ppo_epsilon=0.2,
-        policy_lr=1e-4,
-        value_lr=2.5e-4,
-        distill_lr=1e-4,
-        entropy_bonus=1e-3,
-        tvf_force_ext_value_distill=True,
-        hidden_units=128,
-        value_transform='sqrt',
-        gae_lambda=0.95,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=3a",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        # these parameters are taken from DNA, I want to see which hyperparameter makes pong not work.
-        # max_grad_norm=5.0,
-        # agents=128,
-        # n_steps=256,
-        # policy_mini_batch_size=256,
-        # value_mini_batch_size=256,
-        # policy_epochs=4,
-        # value_epochs=2,
-        # distill_epochs=3,
-        # distill_beta=0.5,
-
-        # target_kl=0.03,
-        # ppo_epsilon=0.2,
-        # policy_lr=1e-4,
-        # value_lr=2.5e-4,
-        # distill_lr=1e-4,
-        entropy_bonus=1e-3,
-        tvf_force_ext_value_distill=True,
-        hidden_units=128,
-        value_transform='sqrt',
-        gae_lambda=0.95,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=3b",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        # these parameters are taken from DNA, I want to see which hyperparameter makes pong not work.
-        # max_grad_norm=5.0,
-        # agents=128,
-        # n_steps=256,
-        # policy_mini_batch_size=256,
-        # value_mini_batch_size=256,
-        # policy_epochs=4,
-        # value_epochs=2,
-        # distill_epochs=3,
-        # distill_beta=0.5,
-
-        target_kl=0.03,
-        ppo_epsilon=0.2,
-        policy_lr=1e-4,
-        value_lr=2.5e-4,
-        distill_lr=1e-4,
-        # entropy_bonus=1e-3,
-        # tvf_force_ext_value_distill=True,
-        # hidden_units=128,
-        # value_transform='sqrt',
-        # gae_lambda=0.95,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=4a",
-        default_params=default_args,
-
-        use_tvf=False,
-
-
-
-        # target_kl=0.03,
-        # ppo_epsilon=0.2,
-        policy_lr=1e-4,
-        value_lr=2.5e-4,
-        distill_lr=1e-4,
-
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=4b",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        target_kl=0.03,
-        ppo_epsilon=0.2,
-        # policy_lr=1e-4,
-        # value_lr=2.5e-4,
-        # distill_lr=1e-4,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=5a",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        #target_kl=0.03,
-        ppo_epsilon=0.2,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    add_job(
-        f"Pong",
-        env_name="Pong",
-        run_name=f"split=5b",
-        default_params=default_args,
-
-        use_tvf=False,
-
-        target_kl=0.03,
-        #ppo_epsilon=0.2,
-
-        priority=100,
-        epochs=20,
-        hostname='ML-Rig',
-    )
-
-    # parameters found by hyperparameter search...
-
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1444,9 +1126,13 @@ if __name__ == "__main__":
 
     # setup_DNA_Atari57()
     # setup_TVF_Atari57()
-    setup_TVF_Extra()
-    setup_Gamma()
-    setup_ED()
+    #setup_TVF_Extra()
+    #setup_ED()
+    setup_gamma()
+    setup_dynamic_gamma()
+    setup_value_scale()
+
+    E1_1()
 
     if len(sys.argv) == 1:
         experiment_name = "show"
