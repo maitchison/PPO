@@ -140,7 +140,14 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None, force_
     env = gym.make(env_name, full_action_space=args.full_action_space)
     if env_type == "atari" and args.atari_rom_check and args.environment not in IGNORE_ROMS_LIST:
 
-        path = env.game_path
+        try:
+            # this is the atari-py method
+            path = env.unwrapped.game_path
+        except:
+            # use the ale-py method
+            import ale_py.roms as roms
+            path = str(getattr(roms, args.environment))
+
         rom_file_name = os.path.split(path)[-1].lower()
         file_md5 = hashlib.md5(open(path, 'rb').read()).hexdigest()
         if rom_file_name not in ALE_ROM_MD5:

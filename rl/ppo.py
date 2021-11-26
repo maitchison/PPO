@@ -19,6 +19,9 @@ def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     if verbose:
         print(f"Warming up environments for {min_duration} to {max_duration} steps:", end='', flush=True)
     max_steps = np.random.randint(min_duration, max_duration+1, [args.agents])
+
+    start_time = time.time()
+
     for t in range(max(max_steps)):
         masks = t < max_steps
         with torch.no_grad():
@@ -31,8 +34,11 @@ def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
         runner.time = np.asarray([info["time_frac"] for info in infos])
         if t % 100 == 0 and verbose:
             print(".", end='', flush=True)
+
     if verbose:
-        print()
+        steps = np.sum(max_steps)
+        time_taken = time.time() - start_time
+        print(f" ({utils.comma(steps/time_taken)} steps per second).")
 
 
 def train(model: models.TVFModel, log: Logger):

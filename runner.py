@@ -8,6 +8,10 @@ import math
 
 import socket
 
+ROM_FOLDER = "./roms"
+
+os.environ["ALE_PY_ROM_DIR"] = ROM_FOLDER # set folder for atari roms.
+
 HOST_NAME = socket.gethostname()
 
 class bcolors:
@@ -223,6 +227,7 @@ def copy_source_files(source, destination, force=False):
             return destination_train_script
         # we need to copy across train.py and then all the files under rl...
         os.makedirs(os.path.join(destination, "rl"), exist_ok=True)
+        os.makedirs(os.path.join(destination, "roms"), exist_ok=True)
         if platform.system() == "Windows":
             copy_command = "copy"
         else:
@@ -230,6 +235,7 @@ def copy_source_files(source, destination, force=False):
 
         os.system("{} {} '{}'".format(copy_command, os.path.join(source, "train.py"), os.path.join(destination, "train.py")))
         os.system("{} {} '{}'".format(copy_command, os.path.join(source, "rl", "*.py"), os.path.join(destination, "rl")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "roms", "*.bin"), os.path.join(destination, "roms")))
 
         return destination_train_script
     except Exception as e:
@@ -829,7 +835,7 @@ def E1_1():
                     epochs=50,
                     priority=0,
                     seed=run,
-                    hostname='',
+                    hostname='ML-Rig',
                 )
 
 
@@ -1119,18 +1125,11 @@ def setup_TVF_Atari57():
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
-    os.environ["MKL_THREADING_LAYER"] = "GNU"
+    # (not needed anymore...)
+    # os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     id = 0
     job_list = []
-
-    # setup_DNA_Atari57()
-    # setup_TVF_Atari57()
-    #setup_TVF_Extra()
-    #setup_ED()
-    setup_gamma()
-    setup_dynamic_gamma()
-    setup_value_scale()
 
     E1_1()
 

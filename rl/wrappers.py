@@ -341,7 +341,7 @@ class DeferredRewardWrapper(gym.Wrapper):
 
 class SaveEnvStateWrapper(gym.Wrapper):
     """
-    Enables saveing and restoring of the environment state.
+    Enables saving and restoring of the environment state.
     Only support atari at the moment.
     """
 
@@ -350,12 +350,12 @@ class SaveEnvStateWrapper(gym.Wrapper):
 
     def save_state(self, buffer):
         assert type(self.unwrapped) == AtariEnv, "Only Atari is supported for state saving/loading"
-        buffer["atari"] = self.unwrapped.clone_full_state()
+        buffer["atari"] = self.unwrapped.clone_state(include_rng=True)
 
     def restore_state(self, buffer):
         assert type(self.unwrapped) == AtariEnv, "Only Atari is supported for state saving/loading"
         assert "atari" in buffer, "No state information found for Atari."
-        self.unwrapped.restore_full_state(buffer["atari"])
+        self.unwrapped.restore_state(buffer["atari"])
 
 
 class SqrtRewardWrapper(gym.Wrapper):
