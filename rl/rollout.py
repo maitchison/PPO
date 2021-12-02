@@ -20,6 +20,8 @@ from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
 from .config import args
 
+from copy import deepcopy
+
 import collections
 
 def save_progress(log: Logger):
@@ -45,7 +47,6 @@ def save_progress(log: Logger):
     details["last_modified"] = time.time()
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
-
 
 def calculate_tp_returns(dones: np.ndarray, final_tp_estimate: np.ndarray):
     """
@@ -431,14 +432,25 @@ class SimulatedAnnealing:
         """
         Returns new candidate value
         """
-        if np.random.rand() < 0.5:
-            self.neighbour = self.value * 1.05
-        else:
-            self.neighbour = self.value / 1.05
 
-    def process(self, score):
-        # todo: do this properly with temperature...
-        if (score > self.prev_score) or (np.random.rand() < 0.05):
+        # we do the random walk in log-space.
+        # this makes sure that applying n jumps, where n-> inf has an expected change of 0 (but infinte variance)
+
+        theta = math.log(self.value, 2)
+
+        new_theta = theta + np.random.normal(args.sa_mu, args.sa_sigma)
+
+        self.neighbour = 2**new_theta
+
+    def process(self, score, prev_score=None):
+        """
+        If previous score is given not given it uses the previously stored score.
+        """
+
+        if prev_score is None:
+            prev_score = self.prev_score
+
+        if (score > prev_score) or (np.random.rand() < 0.05):
             # accept
             self.value = self.neighbour
             self.prev_score = score
@@ -457,6 +469,12 @@ class Runner:
         self.step = 0
         self.horizon_sa = SimulatedAnnealing(1000) # this ends up being one third, so a horizon of ~300
 
+        # for delayed distil
+        self._clean_policy = None
+        self._distil_policy = None
+
+        self.previous_rollout = None
+
         optimizer_params = {
             'eps': args.adam_epsilon
         }
@@ -465,11 +483,11 @@ class Runner:
 
         self.policy_optimizer = optimizer(model.policy_net.parameters(), lr=self.policy_lr, **optimizer_params)
         self.value_optimizer = optimizer(model.value_net.parameters(), lr=self.value_lr, **optimizer_params)
-        if args.distill_epochs > 0:
-            self.distill_optimizer = optimizer(model.policy_net.parameters(), lr=self.distill_lr,
-                                                    **optimizer_params)
+        if args.distil_epochs > 0:
+            self.distil_optimizer = optimizer(model.policy_net.parameters(), lr=self.distil_lr,
+                                              **optimizer_params)
         else:
-            self.distill_optimizer = None
+            self.distil_optimizer = None
 
         if args.use_rnd:
             self.rnd_optimizer = optimizer(model.prediction_net.parameters(), lr=self.rnd_lr, **optimizer_params)
@@ -562,8 +580,8 @@ class Runner:
         return self.anneal(args.policy_lr, enable=args.policy_lr_anneal)
 
     @property
-    def distill_lr(self):
-        return self.anneal(args.distill_lr, enable=args.distill_lr_anneal)
+    def distil_lr(self):
+        return self.anneal(args.distil_lr, enable=args.distil_lr_anneal)
 
     @property
     def rnd_lr(self):
@@ -583,10 +601,10 @@ class Runner:
         for g in self.value_optimizer.param_groups:
             g['lr'] = self.value_lr
 
-        if self.distill_optimizer is not None:
-            self.log.watch("lr_distill", self.distill_lr, display_width=0)
-            for g in self.distill_optimizer.param_groups:
-                g['lr'] = self.distill_lr
+        if self.distil_optimizer is not None:
+            self.log.watch("lr_distil", self.distil_lr, display_width=0)
+            for g in self.distil_optimizer.param_groups:
+                g['lr'] = self.distil_lr
 
         if self.rnd_optimizer is not None:
             self.log.watch("lr_rnd", self.rnd_lr, display_width=0)
@@ -1484,41 +1502,45 @@ class Runner:
 
         return rewards**2 + 2*gamma*rewards * first_moment_estimates[1:] + (gamma**2)*second_moment_estimates[1:]
 
-    def get_tvf_rediscounted_value_estimates(self):
+    def get_tvf_rediscounted_value_estimates(self, rollout, new_gamma:float):
+        """
+        Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
+        """
 
-        N, A, *state_shape = self.prev_obs.shape
+        N, A, *state_shape = rollout.all_obs[:-1].shape
 
-        # if gamma's match we only need to generate the final horizon
-        # if they don't we need to generate them all and rediscount
-        if abs(self.tvf_gamma - self.gamma) < 1e-6:
-            return self.get_value_estimates(obs=self.all_obs, time=self.all_time)
+        # these makes sure error is less than 1%
+        c_1 = 7
+        c_2 = 400
+
+        # work out a range and skip to use so that we never use more than around 100 samples and we don't waste
+        # samples on heavily discounted rewards
+        if new_gamma >= 1:
+            effective_horizon = round(rollout.current_horizon)
         else:
-            # work out a range and skip to use so that we never use more than around 100 samples and we don't waste
-            # samples on heavily discounted rewards
-            if self.gamma >= 1:
-                effective_horizon = round(self.current_horizon)
-            else:
-                effective_horizon = round(3 / (1 - self.gamma))
+            effective_horizon = min(round(c_1 / (1 - new_gamma)), rollout.current_horizon)
 
-            # note: we could down sample the value estimates and adjust the gamma calculations if
-            # this ends up being too slow..
-            step_skip = math.ceil(effective_horizon / 100)
+        # note: we could down sample the value estimates and adjust the gamma calculations if
+        # this ends up being too slow..
+        step_skip = math.ceil(effective_horizon / c_2)
 
-            # going backwards makes sure that final horizon is always included
-            horizons = np.asarray(range(effective_horizon, 0, -step_skip))[::-1]
+        # going backwards makes sure that final horizon is always included
+        horizons = np.asarray(range(effective_horizon, 0, -step_skip))[::-1]
 
-            value_estimates = self.get_value_estimates(
-                obs=self.all_obs,
-                time=self.all_time,
-                horizons=horizons
-            )
+        # these are the value estimates at each horizon under current tvf_gamma
+        value_estimates = self.get_value_estimates(
+            obs=rollout.all_obs,
+            time=rollout.all_time,
+            horizons=horizons
+        )
 
-            return get_rediscounted_value_estimate(
-                values=value_estimates.reshape([(N + 1) * A, -1]),
-                old_gamma=self.tvf_gamma,
-                new_gamma=self.gamma,
-                horizons=horizons
-            ).reshape([(N + 1), A])
+        # convert to new gamma
+        return get_rediscounted_value_estimate(
+            values=value_estimates.reshape([(N + 1) * A, -1]),
+            old_gamma=self.tvf_gamma,
+            new_gamma=new_gamma,
+            horizons=horizons
+        ).reshape([(N + 1), A])
 
 
     def calculate_returns(self):
@@ -1529,40 +1551,47 @@ class Runner:
         # for score I'm using average reward. Using some return estimate is problematic as it will include gamma
         # and gamma has changed. This might make the algorithm prefer long horizons over short. Maybe this is ok though?
         if args.auto_strategy == "sa_reward":
+            # estimate of gain (i.e. average reward)
             score = np.mean(self.ext_rewards)
             self.horizon_sa.process(score)
         if args.auto_strategy == "sa_return":
             # note: we can't use the return estimates below as these require a decision on gamma, which we need
             # to make before we calculate them. So instead we run through the rewards, discount then, then
             # add the final value.
+            def get_discounted_score(rollout: RolloutBuffer):
+                if args.use_tvf:
+                    batch_value_estimates = self.get_tvf_rediscounted_value_estimates(rollout, new_gamma=self.gamma)
+                else:
+                    # in this case just generate ext value estimates from model, which will be using self.gamma
+                    batch_value_estimates = self.get_value_estimates(rollout.all_obs)
 
-            # note2: this might prefer longer horizons due to increased bootstrap value estimate and increased
-            # rewards, but I'm ok with that I think, as it reduces the bias of the value estimates, and so long
-            # as the update doesn't cause problems with the policy its fine.
+                ext_advantage = calculate_gae(
+                    rollout.ext_rewards,
+                    batch_value_estimates[:N],
+                    batch_value_estimates[N],
+                    rollout.terminals,
+                    self.gamma,
+                    args.gae_lambda
+                )
 
-            if args.use_tvf:
-                batch_value_estimates = self.get_tvf_rediscounted_value_estimates()
-            else:
-                # in this case just generate ext value estimates from model
-                batch_value_estimates = self.get_value_estimates(obs=self.all_obs)
+                batch_returns = ext_advantage + batch_value_estimates[:N]
+                return np.mean(batch_returns)
 
-            ext_advantage = calculate_gae(
-                self.ext_rewards,
-                batch_value_estimates[:N],
-                batch_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.gae_lambda
-            )
+            this_rollout = RolloutBuffer(self)
+            score = get_discounted_score(this_rollout)
+            if self.previous_rollout is None:
+                self.previous_rollout = this_rollout
+            prev_score = get_discounted_score(self.previous_rollout)
+            self.previous_rollout = this_rollout
 
-            batch_returns = ext_advantage + batch_value_estimates[:N]
-
-            score = np.mean(batch_returns)
-            self.horizon_sa.process(score)
+            self.horizon_sa.process(score, prev_score)
 
         # 1. first we calculate the ext_value estimate
         if args.use_tvf:
-            ext_value_estimates = self.get_tvf_rediscounted_value_estimates()
+            ext_value_estimates = self.get_tvf_rediscounted_value_estimates(
+                RolloutBuffer(self, copy=False),
+                new_gamma=self.gamma
+            )
         else:
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
@@ -1820,11 +1849,11 @@ class Runner:
         else:
             raise ValueError(f"Invalid tvf_loss_fn {args.tvf_loss_fn}")
 
-    def train_distill_minibatch(self, data, loss_scale=1.0):
+    def train_distil_minibatch(self, data, loss_scale=1.0):
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
-        if not args.use_tvf or args.tvf_force_ext_value_distill:
+        if not args.use_tvf or args.tvf_force_ext_value_distil:
             # method 1. just learn the final value
             model_out = self.model.forward(data["prev_state"], output="policy")
             targets = data["value_targets"]
@@ -1846,7 +1875,7 @@ class Runner:
 
         # KL loss
         kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
-        loss = loss + args.distill_beta * kl_true
+        loss = loss + args.distil_beta * kl_true
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -1855,7 +1884,7 @@ class Runner:
         opt_loss = loss * loss_scale
         opt_loss.backward()
 
-        self.log.watch_mean("loss_distill", loss, history_length=64, display_width=8)
+        self.log.watch_mean("loss_distil", loss, history_length=64, display_width=8)
 
     @property
     def value_heads(self):
@@ -2345,12 +2374,12 @@ class Runner:
                 label="value",
             )
 
-    def train_distill(self):
+    def train_distil(self):
 
         # ----------------------------------------------------
-        # distill phase
+        # distil phase
 
-        if args.distill_epochs == 0:
+        if args.distil_epochs == 0:
             return
 
         batch_data = {}
@@ -2359,7 +2388,7 @@ class Runner:
 
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
 
-        if args.use_tvf and not args.tvf_force_ext_value_distill:
+        if args.use_tvf and not args.tvf_force_ext_value_distil:
             horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
                                                     args.tvf_horizon_distribution)
             H = len(horizons)
@@ -2384,18 +2413,17 @@ class Runner:
             model_out = self.forward(
                 obs=self.prev_obs.reshape([B, *state_shape]), output="policy"
             )
-        batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+            batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
-        for distill_epoch in range(args.distill_epochs):
+        for distil_epoch in range(args.distil_epochs):
             # we do this here so it is only run if there is at least one epoch
             # also regenerating targets each epoch is a good idea.
-
             self.train_batch(
                 batch_data=batch_data,
-                mini_batch_func=self.train_distill_minibatch,
+                mini_batch_func=self.train_distil_minibatch,
                 mini_batch_size=args.value_mini_batch_size,
-                optimizer=self.distill_optimizer,
-                label="distill",
+                optimizer=self.distil_optimizer,
+                label="distil",
             )
 
     def train(self, step):
@@ -2404,12 +2432,22 @@ class Runner:
 
         self.update_learning_rates()
 
+        if args.defer_distil and self._distil_policy is not None:
+            self.model.policy_net.load_state_dict(self._distil_policy)
+
         self.train_policy()
 
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
-            self.train_distill()
+
+            if args.defer_distil:
+                self._clean_policy = deepcopy(self.model.policy_net.state_dict())
+                self.train_distil()
+                self._distil_policy = deepcopy(self.model.policy_net.state_dict())
+                self.model.policy_net.load_state_dict(self._clean_policy)
+            else:
+                self.train_distil()
 
         # todo: include rnd ...
 
@@ -2481,7 +2519,11 @@ class Runner:
         return context
 
 
-def get_rediscounted_value_estimate(values: Union[np.ndarray, torch.Tensor], old_gamma: float, new_gamma: float, horizons):
+def get_rediscounted_value_estimate(
+        values: Union[np.ndarray, torch.Tensor],
+        old_gamma: float,
+        new_gamma: float, horizons
+):
     """
     Returns rediscounted return at horizon H
 
@@ -2611,3 +2653,17 @@ class ValueTransform():
             return np.sign(x) * (((np.sqrt(
                 1 + (4 * ValueTransform.TRANSFORM_EPSILON) * (np.abs(x) + 1 + ValueTransform.TRANSFORM_EPSILON)) - 1) / (
                                               2 * ValueTransform.TRANSFORM_EPSILON)) ** 2 - 1)
+
+class RolloutBuffer():
+    """ Saves a rollout """
+    def __init__(self, runner:Runner, copy:bool = True):
+
+        copy_fn = np.copy if copy else lambda x: x
+
+        self.all_obs = copy_fn(runner.all_obs)
+        self.all_time = copy_fn(runner.all_time)
+        self.ext_rewards = copy_fn(runner.ext_rewards)
+        self.terminals = copy_fn(runner.terminals)
+        self.tvf_gamma = runner.tvf_gamma
+        self.gamma = runner.gamma
+        self.current_horizon = runner.current_horizon

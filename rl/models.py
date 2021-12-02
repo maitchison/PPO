@@ -208,7 +208,6 @@ class DualNet(nn.Module):
             actions=None,
             policy_head=True,
             value_head=True,
-
             **kwargs
     ):
         super().__init__()
@@ -424,9 +423,9 @@ class TVFModel(nn.Module):
             hidden_units:int = 512,
             tvf_hidden_units: int = 512,
             tvf_activation:str = "relu",
-            tvf_n_dedicated_value_heads:int=0,
-            tvf_value_scale_fn = "identity",
-            tvf_value_scale_norm = "max",
+            tvf_n_dedicated_value_heads:int = 0,
+            tvf_value_scale_fn: str = "identity",
+            tvf_value_scale_norm: str = "max",
             network_args:Union[dict, None] = None,
     ):
 

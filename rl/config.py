@@ -27,7 +27,8 @@ class Config:
         self.workers            = int()
         self.epochs             = int()
         self.limit_epochs       = int()
-        self.distill_beta       = float()
+        self.distil_beta       = float()
+        self.defer_distil       = bool()
 
         self.observation_normalization = bool()
         self.intrinsic_reward_scale = float()
@@ -81,7 +82,7 @@ class Config:
         self.tvf_n_dedicated_value_heads  = int()
         self.tvf_exp_gamma      = float()
         self.tvf_exp_mode       = str()
-        self.tvf_force_ext_value_distill = bool()
+        self.tvf_force_ext_value_distil = bool()
         self.tvf_hidden_units = int()
         self.use_tvf = bool()
 
@@ -97,14 +98,14 @@ class Config:
         # phasic
         self.policy_epochs = int()                            
         self.value_epochs = int()
-        self.distill_epochs = int()
+        self.distil_epochs = int()
         self.target_kl = float()                            
         self.ppo_epsilon =float()
         self.agents = int()
         self.n_steps = int()
         self.value_lr = float()
         self.policy_lr = float()
-        self.distill_lr = float()
+        self.distil_lr = float()
         self.architecture = str()
 
         self.use_icm            = bool()
@@ -115,7 +116,10 @@ class Config:
         self.noop_duration      = int()
         self.policy_lr_anneal = bool()
         self.value_lr_anneal = bool()
-        self.distill_lr_anneal = bool()
+        self.distil_lr_anneal = bool()
+
+        self.sa_mu = float()
+        self.sa_sigma = float()
 
         self.deferred_rewards   = int()
 
@@ -165,6 +169,7 @@ class Config:
 
     def update(self, **kwargs):
         self.__dict__.update(kwargs)
+
         if type(self.use_compression) is str:
             if self.use_compression == "auto":
                 self.use_compression = self.batch_size >= 128*256
@@ -259,7 +264,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Model predicts value/f(x) instead of value. For example setting f(x) to h predicts average_reward. [identity|linear|log|sqrt]")
     parser.add_argument("--tvf_value_scale_norm", type=str, default="max",
                         help="Return prediction is normed, e.g. when using h model predicts = value/(h/max_h) [none|max|half_max] ")
-    parser.add_argument("--tvf_force_ext_value_distill", type=str2bool, default=False)
+    parser.add_argument("--tvf_force_ext_value_distil", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
     parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda)")
@@ -290,6 +295,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_exp_mode", type=str, default="default", help="[default|masked|transformed]")
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Enabled TVF mode.")
 
+    # simulated annealing
+    parser.add_argument("--sa_mu", type=float, default=0.0)
+    parser.add_argument("--sa_sigma", type=float, default=0.05)
+
     # log-optimal
     parser.add_argument("--use_log_optimal", type=str2bool, default=False, help="Enabled Log-Optimal mode.")
     parser.add_argument("--lo_alpha", type=float, default=1.0, help="Risk factor for log-optimal mode.")
@@ -298,8 +307,10 @@ def parse_args(no_env=False, args_override=None):
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
     parser.add_argument("--value_epochs", type=int, default=2, help="Number of value training epochs per training batch.")
-    parser.add_argument("--distill_epochs", type=int, default=0, help="Number of distilation epochs")
-    parser.add_argument("--distill_beta", type=float, default=1.0)
+    parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distilation epochs")
+    parser.add_argument("--distil_beta", type=float, default=1.0)
+    parser.add_argument("--defer_distil", type=str2bool, default=False,
+                        help="Distil occurs after rollout but before policy update.")
     parser.add_argument("--target_kl", type=float, default=-1, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
     parser.add_argument("--value_mini_batch_size", type=int, default=256)
@@ -310,7 +321,7 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--value_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
-    parser.add_argument("--distill_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
+    parser.add_argument("--distil_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
 
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
@@ -321,7 +332,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Anneals learning rate to 0 (linearly) over training")
     parser.add_argument("--value_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
                         help="Anneals learning rate to 0 (linearly) over training")
-    parser.add_argument("--distill_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
+    parser.add_argument("--distil_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
                         help="Anneals learning rate to 0 (linearly) over training")
     parser.add_argument("--value_transform", type=str, default="identity", help="[identity|sqrt]")
 
@@ -413,6 +424,12 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
 
+    # due to compatability
+    parser.add_argument("--distill_epochs", dest="distil_epochs", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--distill_beta", dest="distil_beta", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--tvf_force_ext_value_distill", dest="tvf_force_ext_value_distil", type=str2bool, help=argparse.SUPPRESS)
+    parser.add_argument("--distill_lr", dest="distil_lr", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--distill_lr_anneal", dest="distil_lr_anneal", type=str2bool, help=argparse.SUPPRESS)
 
     parser.add_argument("--seed", type=int, default=-1)
 
@@ -420,6 +437,7 @@ def parse_args(no_env=False, args_override=None):
         args.update(**parser.parse_args(args_override).__dict__)
     else:
         args.update(**parser.parse_args().__dict__)
+
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

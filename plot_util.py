@@ -52,7 +52,7 @@ def read_log(file_path):
     result["batch_size"] = batch_size
     result["params"] = params
     params["batch_size"] = params["agents"] * params["n_steps"]
-    # for v in ["tvf_max_horizon", "distill_beta", "tvf_n_step", "tvf_horizon_samples", "tvf_value_samples",
+    # for v in ["tvf_max_horizon", "distil_beta", "tvf_n_step", "tvf_horizon_samples", "tvf_value_samples",
     #           "tvf_soft_anchor", "tvf_coef"]:
     #     if v in params:
     #         params["quant_" + v] = 2 ** int(math.log2(params[v]))
@@ -316,7 +316,7 @@ def compare_runs(path,
     if title is None and highlight is not None: title = "".join(highlight) + " by " + y_axis
     if title is None: title = "Training Graph"
 
-    runs = get_runs(path, skip_rows=skip_rows)
+    runs = get_runs(path, skip_rows=skip_rows, run_filter=run_filter)
 
     if len(runs) == 0:
         return
@@ -336,10 +336,6 @@ def compare_runs(path,
     run_labels_so_far = set()
 
     for run_name, run_data, run_params in runs:
-
-        if run_filter is not None and run_data is not reference_run:
-            if not run_filter(run_name):
-                continue
 
         i += 1
 
@@ -1184,8 +1180,8 @@ def marginalize(results, search_params, k: str, secondary: str = None, **kwargs)
 
     if k == "tvf_n_step":
         base_filter = lambda x: x["tvf_mode"] not in ["exponential", "lambda"]
-    if k == "distill_beta":
-        base_filter = lambda x: x["distill_epochs"] > 0
+    if k == "distil_beta":
+        base_filter = lambda x: x["distil_epochs"] > 0
 
     prefix = ""
     x_transform = lambda x: x

@@ -559,7 +559,7 @@ class AtariWrapper(gym.Wrapper):
     Applies Atari frame warping, optional gray-scaling, and frame stacking as per nature paper.
     Note: unlike Nature the initial frame cropping is disabled by default.
 
-    input: 160x210x3 uint8 RGB frames
+    input: 210x160x3 uint8 RGB frames or 210x160 uint8 grayscale frames
     output: 84x84x1 uint8 grayscale frame (by default)
 
     """
@@ -575,9 +575,9 @@ class AtariWrapper(gym.Wrapper):
 
         self._width, self._height = width, height
 
-        assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
-        assert env.observation_space.shape[-1] == 3, "Invalid shape {}".format(env.observation_space.shape)
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
+
+        assert env.observation_space.shape in [(210,160), (210,160,3)], "Invalid shape {}".format(env.observation_space.shape)
 
         self.grayscale = grayscale
         self.n_channels = 1 if self.grayscale else 3
@@ -592,9 +592,17 @@ class AtariWrapper(gym.Wrapper):
 
     def _process_frame(self, obs):
 
-        if self.grayscale:
+        assert len(obs.shape) in [2, 3]
+
+        if len(obs.shape) == 2:
+            obs = np.expand_dims(obs, 2)
+
+        input_is_rgb = obs.shape[-1] == 3
+
+        if self.grayscale and input_is_rgb:
+            # convert to grayscale if needed
             obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-            obs = obs[:, :, np.newaxis]
+            obs = np.expand_dims(obs, 2)
 
         width, height, channels = obs.shape
 

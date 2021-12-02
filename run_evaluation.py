@@ -680,13 +680,11 @@ class QuickPlot():
         h, w, channels = self.buffer.shape
         if x < 0 or x >= w:
             return
+        y1, y2 = min(y1, y2), max(y1, y2)
         if y1 < 0:
             y1 = 0
         if y2 >= h:
             y2 = h
-        if y2 < y1:
-            return
-        y1, y2 = min(y1, y2), max(y1, y2)
         self.buffer[-y2:-y1, x] = c
 
     def plot(self, xs, ys, color):
@@ -764,17 +762,20 @@ def export_movie(
     discount_weights = args.gamma ** np.arange(0, args.tvf_max_horizon+1)
 
     #  work out how big our graph will be (with a coarse estimate)
-    max_true_return = 0
+    max_true_return = 0.0
+    min_true_return = float('inf')
     step_size = max(len(rewards) // 100, 1)
     for t in range(0, len(rewards), step_size):
         true_rewards = rewards[t:t + args.tvf_max_horizon]
         true_returns = true_rewards * discount_weights[:len(true_rewards)]
         final_return = np.sum(true_returns)
         max_true_return = max(max_true_return, final_return)
+        min_true_return = min(min_true_return, final_return)
 
     max_value_estimate = np.max(buffer["values"]) * REWARD_SCALE
+    min_value_estimate = np.min(buffer["values"]) * REWARD_SCALE
     y_max = max(max_true_return, max_value_estimate)
-    y_min = 0
+    y_min = min(min_true_return, min_value_estimate)
 
     # draw background plot
     inv_score = args.environment == "Skiing" # hack to make skiing plot correctly.

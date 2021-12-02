@@ -137,7 +137,14 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None, force_
         if env_name in v:
             env_type = k
 
-    env = gym.make(env_name, full_action_space=args.full_action_space)
+    env = gym.make(
+        env_name,
+        full_action_space=args.full_action_space,
+        # little bit faster to have ALE render in grayscale, bit at the same time I'm not sure if this will change
+        # the results.
+        #obs_type='rgb' if (monitor_video or args.color) else 'grayscale'
+        obs_type='rgb'
+    )
     if env_type == "atari" and args.atari_rom_check and args.environment not in IGNORE_ROMS_LIST:
 
         try:

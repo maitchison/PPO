@@ -36,7 +36,7 @@ ATARI_5 = ['Centipede', 'CrazyClimber', 'Krull', 'SpaceInvaders', 'Zaxxon']  # A
 LONG_TERM_CREDIT = ['BeamRider', 'Pong', 'Skiing', 'Surround']  # long term credit assignment from Agent57
 
 DIVERSE_5 = ['BattleZone', 'TimePilot', "Seaquest", "Breakout", "Freeway"] # not the real atari 5..., also not 5.
-
+DIVERSE_10 = list(set(ATARI_5 + LONG_TERM_CREDIT + ['Breakout']))
 
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
@@ -102,6 +102,7 @@ canonical_57 = [
     "Zaxxon"
 ]
 
+# these are the standard args I use for most experiments.
 standard_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
@@ -162,6 +163,18 @@ standard_args = {
     'tvf_max_horizon': 30000,
 }
 
+# these enhanced args improve performance, but make the algorithm slower.
+enhanced_args = standard_args.copy()
+enhanced_args.update({
+    'tvf_horizon_samples': 128,
+    'tvf_exp_gamma': 1.5,  # 2.0 would be faster, but 1.5 tested slightly better.
+})
+
+# these enhanced args improve performance, but make the algorithm slower.
+simple_args = enhanced_args.copy()
+simple_args.update({
+    'tvf_force_ext_value_distill': False,
+})
 
 def add_job(
         experiment_name,
@@ -408,7 +421,7 @@ class Job:
             self.params["limit_epochs"] = int(next_chunk)
 
 
-        python_part = "python {} {}".format(train_script_path, self.params["env_name"])
+        python_part = "python \"{}\" {}".format(train_script_path, self.params["env_name"])
 
         params_part = " ".join([f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"] and v is not None])
         params_part_lined = "\n".join([f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"] and v is not None])
@@ -555,7 +568,8 @@ def show_experiments(filter_jobs=None, all=False):
             ping = ""
 
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10} {:<15} {:>6}".format(
-            job.priority, job.experiment_name[:19], job.run_name, percent_complete, status, eta_hours, comma(fps), comma(score), host, ping))
+            job.priority, job.experiment_name[:19], job.run_name[:60], percent_complete, status, eta_hours, comma(fps),
+            comma(score), host, ping))
 
 
 def show_fps(filter_jobs=None):
@@ -816,13 +830,13 @@ def setup_gamma():
             )
 
 
-def E1_1():
+def E11():
     """
     E1.1: Show different games require different gamma (variance / bias tradeoff)
     Should take around 2-3 days to complete.
     """
     for gamma in [0.9, 0.99, 0.999, 0.9997, 0.9999, 0.99997, 1.0]:
-        for env in set(ATARI_5 + LONG_TERM_CREDIT + ['Breakout']):
+        for env in DIVERSE_10:
             for run in [1]: # just one run for the moment...
                 add_job(
                     f"E1_1_PerGameGamma",
@@ -835,9 +849,196 @@ def E1_1():
                     epochs=50,
                     priority=0,
                     seed=run,
-                    hostname='ML-Rig',
+                    hostname='',
                 )
 
+    # special case with pong to see if we can get it to work with better curve quality
+    add_job(
+        f"E1_1_PerGameGamma",
+        env_name="Pong",
+        run_name=f"game=Pong tvf_adv (seed=1)",
+        use_tvf=True,
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        default_params=enhanced_args,
+        epochs=20,
+        priority=100,
+        seed=1,
+        hostname='',
+    )
+
+    # special case with pong to see if we can get it to work with better curve quality
+    add_job(
+        f"E1_1_PerGameGamma",
+        env_name="Pong",
+        run_name=f"game=Pong tvf_simple_dist (seed=1)",
+        use_tvf=True,
+        tvf_force_ext_value_distill=True, # important if value function curve very difficult to learn
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        default_params=enhanced_args,
+        epochs=20,
+        priority=200,
+        seed=1,
+        hostname='',
+    )
+
+    # special case with pong to see if we can get it to work with better curve quality
+    add_job(
+        f"E1_1_PerGameGamma",
+        env_name="Pong",
+        run_name=f"game=Pong tvf_tight_dist (seed=1)",
+        use_tvf=True,
+        tvf_force_ext_value_distill=False,
+        distill_beta=10.0,
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        default_params=enhanced_args,
+        epochs=20,
+        priority=200,
+        seed=1,
+        hostname='',
+    )
+
+    # special case with pong to see if we can get it to work with better curve quality
+    add_job(
+        f"E1_1_PerGameGamma",
+        env_name="Pong",
+        run_name=f"game=Pong tvf_no_dist (seed=1)",
+        use_tvf=True,
+        distill_epochs=0,
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        default_params=enhanced_args,
+        epochs=20,
+        priority=200,
+        seed=1,
+        hostname='',
+    )
+
+    # another special case with pong to see if we can get it to work with better curve quality
+    for tvf_mode in ['nstep', 'adaptive']:
+        add_job(
+            f"E1_1_PerGameGamma",
+            env_name="Pong",
+            run_name=f"game=Pong tvf_{tvf_mode} (seed=1)",
+            use_tvf=True,
+            gamma=0.99997,
+            tvf_gamma=0.99997,
+            tvf_mode=tvf_mode,
+            default_params=enhanced_args,
+            epochs=20,
+            priority=200,
+            seed=1,
+            hostname='',
+        )
+    add_job(
+        f"E1_1_PerGameGamma",
+        env_name="Pong",
+        run_name=f"game=Pong tvf_masked (seed=1)",
+        use_tvf=True,
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        tvf_exp_mode="masked",
+        default_params=enhanced_args,
+        epochs=20,
+        priority=200,
+        seed=1,
+        hostname='',
+    )
+
+    # may as well see how TVF goes...
+    for env in DIVERSE_10:
+        for run in [1]: # just one run for the moment...
+            # add_job(
+            #     f"E1_1_PerGameGamma",
+            #     env_name=env,
+            #     run_name=f"game={env} tvf_10k (seed={run})",
+            #     use_tvf=True,
+            #     gamma=0.9999,
+            #     tvf_gamma=0.9999,
+            #     default_params=standard_args,
+            #     epochs=50,
+            #     priority=50,
+            #     seed=run,
+            #     hostname='',
+            # )
+            # add_job(
+            #     f"E1_1_PerGameGamma",
+            #     env_name=env,
+            #     run_name=f"game={env} tvf_1k (seed={run})",
+            #     use_tvf=True,
+            #     gamma=0.999,
+            #     tvf_gamma=0.999,
+            #     default_params=standard_args,
+            #     epochs=50,
+            #     priority=50,
+            #     seed=run,
+            #     hostname='',
+            # )
+            # add_job(
+            #     f"E1_1_PerGameGamma",
+            #     env_name=env,
+            #     run_name=f"game={env} tvf_30k (seed={run})",
+            #     use_tvf=True,
+            #     gamma=0.99997,
+            #     tvf_gamma=0.99997,
+            #     default_params=standard_args,
+            #     epochs=50,
+            #     priority=50,
+            #     seed=run,
+            #     hostname='',
+            # )
+            add_job(
+                f"E1_1_PerGameGamma",
+                env_name=env,
+                run_name=f"game={env} tvf_s30k (seed={run})",
+                use_tvf=True,
+                gamma=0.99997,
+                tvf_gamma=0.99997,
+                default_params=simple_args,
+                epochs=50,
+                priority=50,
+                seed=run,
+                hostname='',
+            )
+            add_job(
+                f"E1_1_PerGameGamma",
+                env_name=env,
+                run_name=f"game={env} tvf_inf (seed={run})",
+                use_tvf=True,
+                gamma=1.0,
+                tvf_gamma=1.0,
+                default_params=standard_args,
+                epochs=50,
+                priority=0,
+                seed=run,
+                hostname='',
+            )
+
+def E31():
+    # Expected horizons are 10, 100-1000, 3000-10000, and 10,000
+    KEY_4 = ["CrazyClimber", "Zaxxon", "Centipede", "BeamRider"]
+    for env in KEY_4:
+        for run in [1]:  # just one run for the moment...
+            sa_sigma = 0.02
+            for sa_mu in [-0.01, 0, 0.01]:
+                for strategy in ["sa_return", "sa_reward"]:
+                    add_job(
+                        f"E31_DynamicGamma (test3)",
+                        env_name=env,
+                        run_name=f"game={env} gamma {strategy} sa_mu={sa_mu} (seed={run})",
+                        auto_gamma="gamma",
+                        auto_strategy=strategy,
+                        default_params=enhanced_args,
+                        tvf_force_ext_value_distil=True,
+                        sa_mu=sa_mu,
+                        sa_sigma=sa_sigma,
+                        epochs=20,
+                        priority=0,
+                        seed=run,  # this makes sure sa seeds are different.
+                        hostname='ML-Rig',
+                    )
 
 
 def setup_dynamic_gamma():
@@ -1119,6 +1320,44 @@ def setup_TVF_Atari57():
         )
 
 
+def test_deferred_distil():
+
+    # special case with pong to see if we can get it to work with better curve quality
+    for deferred_distil in [True, False]:
+        add_job(
+            f"deferred_distil_test",
+            env_name="Pong",
+            run_name=f"game=Pong simple deferred={deferred_distil} (seed=1)",
+            use_tvf=True,
+            tvf_force_ext_value_distill=True,
+            gamma=0.99997,
+            tvf_gamma=0.99997,
+            default_params=enhanced_args,
+            defer_distil=deferred_distil,
+            epochs=20,
+            priority=200,
+            seed=1,
+            hostname='',
+        )
+
+        add_job(
+            f"deferred_distil_test",
+            env_name="Pong",
+            run_name=f"game=Pong complex deferred={deferred_distil} (seed=1)",
+            use_tvf=True,
+            tvf_force_ext_value_distill=False,
+            gamma=0.99997,
+            tvf_gamma=0.99997,
+            default_params=enhanced_args,
+            defer_distil=deferred_distil,
+            epochs=20,
+            priority=200,
+            seed=1,
+            hostname='',
+        )
+
+
+
 
 # ---------------------------------------------------------------------------------------------------------
 
@@ -1131,7 +1370,10 @@ if __name__ == "__main__":
     id = 0
     job_list = []
 
-    E1_1()
+    E11()
+    E31()
+
+    test_deferred_distil()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

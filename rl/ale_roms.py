@@ -122,7 +122,7 @@ def install_roms(force=False):
 
 # additional games to register...
 # not sure why surround is missing, but we need to add it here for it to be registered.
-for game in ['ale_skiing', 'surround']:
+for game in ['surround']:
     for obs_type in ['rgb', 'ram']:
         name = ''.join([g.capitalize() for g in game.split('_')])
         if obs_type == 'ram':
