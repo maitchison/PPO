@@ -19,6 +19,7 @@ import math
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
 from .config import args
+from .replay import ExperienceReplayBuffer
 
 from copy import deepcopy
 
@@ -469,9 +470,13 @@ class Runner:
         self.step = 0
         self.horizon_sa = SimulatedAnnealing(1000) # this ends up being one third, so a horizon of ~300
 
-        # for delayed distil
-        self._clean_policy = None
-        self._distil_policy = None
+        if args.distil_exp_replay:
+            # default to a size of 1 batch.
+            assert not args.use_compression, "Compression and replay buffer are not supported yet."
+            replay_buffer_size = args.n_steps*args.agents
+            self.replay_buffer = ExperienceReplayBuffer(N=replay_buffer_size, obs_shape=model.input_dims, obs_dtype=np.uint8)
+        else:
+            self.replay_buffer = None
 
         self.previous_rollout = None
 
@@ -654,8 +659,12 @@ class Runner:
             'logs': self.log,
             'env_state': utils.save_env_state(self.vec_env),
             'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
-            'value_optimizer_state_dict': self.value_optimizer.state_dict()
+            'value_optimizer_state_dict': self.value_optimizer.state_dict(),
+            'batch_counter': self.batch_counter,
         }
+
+        if self.replay_buffer is not None:
+            data["replay_buffer"] = self.replay_buffer.save_state()
 
         if args.auto_strategy[:2] == "sa":
             data['horizon_sa'] = self.horizon_sa
@@ -703,6 +712,10 @@ class Runner:
         self.step = step
         self.ep_count = checkpoint.get('ep_count', 0)
         self.episode_length_buffer = checkpoint['episode_length_buffer']
+        self.batch_counter = checkpoint.get('batch_counter', 0)
+
+        if "replay_buffer" in checkpoint:
+            self.replay_buffer.load_state(checkpoint["replay_buffer"])
 
         if args.use_intrinsic_rewards:
             self.ems_norm = checkpoint['ems_norm']
@@ -1294,9 +1307,15 @@ class Runner:
         self.all_obs[-1] = last_obs
         self.all_time[-1] = self.time
 
+        # add data to replay buffer if needed
+        if self.replay_buffer is not None:
+            self.replay_buffer.add_experience(
+                self.prev_obs.reshape([args.agents * args.n_steps, *self.prev_obs.shape[2:]]),
+                self.prev_time.reshape([args.agents * args.n_steps])
+            )
+
         if args.debug_terminal_logging:
             for t in range(self.N):
-
                 first_frame = max(t-2, 0)
                 last_frame = t+2
                 for i in range(self.A):
@@ -2382,36 +2401,47 @@ class Runner:
         if args.distil_epochs == 0:
             return
 
+        # work out what ot use to train distil on
+        if self.replay_buffer is not None:
+            # buffer is 1D, need to reshape to 2D
+            # assume we have one rollouts worth of buffer here...
+            N, *state_shape = self.replay_buffer.data.shape
+            distil_obs = self.replay_buffer.data.reshape([args.n_steps, args.agents, *state_shape])
+            distil_time = self.replay_buffer.time.reshape([args.n_steps, args.agents])
+        else:
+            distil_obs = self.prev_obs
+            distil_time = self.prev_time
+
         batch_data = {}
         B = args.batch_size
-        N, A, *state_shape = self.prev_obs.shape
+        N, A, *state_shape = distil_obs.shape
 
-        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
+        batch_data["prev_state"] = distil_obs.reshape([B, *state_shape])
 
         if args.use_tvf and not args.tvf_force_ext_value_distil:
             horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
                                                     args.tvf_horizon_distribution)
             H = len(horizons)
             target_values = self.get_value_estimates(
-                obs=self.prev_obs,
-                time=self.prev_time,
+                obs=distil_obs,
+                time=distil_time,
                 horizons=horizons,
                 return_transformed=True,
             ).reshape([B, H])
 
             batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
-            batch_data["tvf_time"] = self.prev_time.reshape([B])
+            batch_data["tvf_time"] = distil_time.reshape([B])
             batch_data["value_targets"] = target_values.reshape([B, H])
         else:
             target_values = self.get_value_estimates(
-                obs=self.prev_obs, time=self.prev_time,
+                obs=distil_obs, time=distil_time,
                 return_transformed=True,
             ).reshape([B])
             batch_data["value_targets"] = target_values.reshape([B])
 
         with torch.no_grad():
             model_out = self.forward(
-                obs=self.prev_obs.reshape([B, *state_shape]), output="policy"
+                obs=distil_obs.reshape([B, *state_shape]), output="policy"
             )
             batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
@@ -2432,24 +2462,13 @@ class Runner:
 
         self.update_learning_rates()
 
-        if args.defer_distil and self._distil_policy is not None:
-            self.model.policy_net.load_state_dict(self._distil_policy)
-
         self.train_policy()
 
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
-
-            if args.defer_distil:
-                self._clean_policy = deepcopy(self.model.policy_net.state_dict())
+            if self.batch_counter % args.distil_period == 0:
                 self.train_distil()
-                self._distil_policy = deepcopy(self.model.policy_net.state_dict())
-                self.model.policy_net.load_state_dict(self._clean_policy)
-            else:
-                self.train_distil()
-
-        # todo: include rnd ...
 
         self.batch_counter += 1
 
@@ -2490,6 +2509,7 @@ class Runner:
                 batch_start = micro_batch_counter * micro_batch_size
                 batch_end = (micro_batch_counter + 1) * micro_batch_size
                 sample = ordering[batch_start:batch_end]
+                sample.sort() # faster memory access?
                 micro_batch_counter += 1
 
                 minibatch_data = {}

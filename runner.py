@@ -173,7 +173,7 @@ enhanced_args.update({
 # these enhanced args improve performance, but make the algorithm slower.
 simple_args = enhanced_args.copy()
 simple_args.update({
-    'tvf_force_ext_value_distill': False,
+    'tvf_force_ext_value_distill': True,
 })
 
 def add_job(
@@ -1335,7 +1335,7 @@ def test_deferred_distil():
             default_params=enhanced_args,
             defer_distil=deferred_distil,
             epochs=20,
-            priority=200,
+            priority=50,
             seed=1,
             hostname='',
         )
@@ -1351,12 +1351,56 @@ def test_deferred_distil():
             default_params=enhanced_args,
             defer_distil=deferred_distil,
             epochs=20,
-            priority=200,
+            priority=50,
             seed=1,
             hostname='',
         )
 
 
+def test_distil_period():
+    # special case with pong to see if we can get it to work with better curve quality
+    for env in ['Pong', 'CrazyClimber']:
+
+        for period in [1, 2, 4]:
+            # check replay buffer...
+            add_job(
+                f"test_distil_replay",
+                env_name="Pong",
+                run_name=f"game={env} exp_replay period={period} (seed=1)",
+                use_tvf=True,
+                use_compression=False,
+                tvf_force_ext_value_distill=True,
+                distil_exp_replay=True,
+                gamma=0.99997,
+                tvf_gamma=0.99997,
+                default_params=enhanced_args,
+                distil_period=period,
+                distill_epochs=period,
+                epochs=20,
+                priority=50,
+                seed=1,
+                hostname='',
+            )
+
+
+        for period in [1, 2]:
+            for simple in [True, False]:
+                add_job(
+                    f"test_distil_period",
+                    env_name="Pong",
+                    run_name=f"game={env} simple={simple} period={period} (seed=1)",
+                    use_tvf=True,
+                    tvf_force_ext_value_distill=simple,
+                    gamma=0.99997,
+                    tvf_gamma=0.99997,
+                    default_params=enhanced_args,
+                    distil_period=period,
+                    distill_epochs=period,
+                    epochs=20,
+                    priority=50,
+                    seed=1,
+                    hostname='',
+                )
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1374,6 +1418,7 @@ if __name__ == "__main__":
     E31()
 
     test_deferred_distil()
+    test_distil_period()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

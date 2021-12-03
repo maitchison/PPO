@@ -27,8 +27,9 @@ class Config:
         self.workers            = int()
         self.epochs             = int()
         self.limit_epochs       = int()
-        self.distil_beta       = float()
-        self.defer_distil       = bool()
+        self.distil_beta        = float()
+        self.distil_period      = int()
+        self.distil_exp_replay  = bool()
 
         self.observation_normalization = bool()
         self.intrinsic_reward_scale = float()
@@ -309,8 +310,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--value_epochs", type=int, default=2, help="Number of value training epochs per training batch.")
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distilation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
-    parser.add_argument("--defer_distil", type=str2bool, default=False,
-                        help="Distil occurs after rollout but before policy update.")
+    parser.add_argument("--distil_period", type=int, default=1)
+    parser.add_argument("--distil_exp_replay", type=str2bool, default=False, help="Enables experience replay for distillation buffer.")
+
     parser.add_argument("--target_kl", type=float, default=-1, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
     parser.add_argument("--value_mini_batch_size", type=int, default=256)
@@ -381,6 +383,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--atari_rom_check", type=str2bool, default=True,
                         help="Verifies on load, that the MD5 of atari ROM matches the ALE.")
 
+
+    # distillation
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=True)
