@@ -839,7 +839,7 @@ def E11():
         for env in DIVERSE_10:
             for run in [1]: # just one run for the moment...
                 add_job(
-                    f"E1_1_PerGameGamma",
+                    f"E11_PerGameGamma",
                     env_name=env,
                     run_name=f"game={env} gamma={gamma} (seed={run})",
                     use_tvf=False,
@@ -854,7 +854,7 @@ def E11():
 
     # special case with pong to see if we can get it to work with better curve quality
     add_job(
-        f"E1_1_PerGameGamma",
+        f"E11_PerGameGamma",
         env_name="Pong",
         run_name=f"game=Pong tvf_adv (seed=1)",
         use_tvf=True,
@@ -869,7 +869,7 @@ def E11():
 
     # special case with pong to see if we can get it to work with better curve quality
     add_job(
-        f"E1_1_PerGameGamma",
+        f"E11_PerGameGamma",
         env_name="Pong",
         run_name=f"game=Pong tvf_simple_dist (seed=1)",
         use_tvf=True,
@@ -885,7 +885,7 @@ def E11():
 
     # special case with pong to see if we can get it to work with better curve quality
     add_job(
-        f"E1_1_PerGameGamma",
+        f"E11_PerGameGamma",
         env_name="Pong",
         run_name=f"game=Pong tvf_tight_dist (seed=1)",
         use_tvf=True,
@@ -902,7 +902,7 @@ def E11():
 
     # special case with pong to see if we can get it to work with better curve quality
     add_job(
-        f"E1_1_PerGameGamma",
+        f"E11_PerGameGamma",
         env_name="Pong",
         run_name=f"game=Pong tvf_no_dist (seed=1)",
         use_tvf=True,
@@ -919,7 +919,7 @@ def E11():
     # another special case with pong to see if we can get it to work with better curve quality
     for tvf_mode in ['nstep', 'adaptive']:
         add_job(
-            f"E1_1_PerGameGamma",
+            f"E11_PerGameGamma",
             env_name="Pong",
             run_name=f"game=Pong tvf_{tvf_mode} (seed=1)",
             use_tvf=True,
@@ -933,7 +933,7 @@ def E11():
             hostname='',
         )
     add_job(
-        f"E1_1_PerGameGamma",
+        f"E11_PerGameGamma",
         env_name="Pong",
         run_name=f"game=Pong tvf_masked (seed=1)",
         use_tvf=True,
@@ -990,7 +990,7 @@ def E11():
             #     hostname='',
             # )
             add_job(
-                f"E1_1_PerGameGamma",
+                f"E11_PerGameGamma",
                 env_name=env,
                 run_name=f"game={env} tvf_s30k (seed={run})",
                 use_tvf=True,
@@ -1003,7 +1003,7 @@ def E11():
                 hostname='',
             )
             add_job(
-                f"E1_1_PerGameGamma",
+                f"E11_PerGameGamma",
                 env_name=env,
                 run_name=f"game={env} tvf_inf (seed={run})",
                 use_tvf=True,
@@ -1361,11 +1361,11 @@ def test_distil_period():
     # special case with pong to see if we can get it to work with better curve quality
     for env in ['Pong', 'CrazyClimber']:
 
-        for period in [1, 2, 4]:
+        for period in [0, 1, 2, 4]:
             # check replay buffer...
             add_job(
-                f"test_distil_replay",
-                env_name="Pong",
+                f"test_distil_replay_2",
+                env_name=env,
                 run_name=f"game={env} exp_replay period={period} (seed=1)",
                 use_tvf=True,
                 use_compression=False,
@@ -1382,12 +1382,11 @@ def test_distil_period():
                 hostname='',
             )
 
-
         for period in [1, 2]:
             for simple in [True, False]:
                 add_job(
                     f"test_distil_period",
-                    env_name="Pong",
+                    env_name=env,
                     run_name=f"game={env} simple={simple} period={period} (seed=1)",
                     use_tvf=True,
                     tvf_force_ext_value_distill=simple,

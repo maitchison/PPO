@@ -778,7 +778,8 @@ def export_movie(
     y_min = min(min_true_return, min_value_estimate)
 
     # draw background plot
-    inv_score = args.environment == "Skiing" # hack to make skiing plot correctly.
+    #inv_score = args.environment == "Skiing" # hack to make skiing plot correctly.
+    inv_score = False # not needed any more
     log_fig = QuickPlot(y_min, y_max, log_scale=True, invert_score=inv_score)
     linear_fig = QuickPlot(y_min, y_max, log_scale=False, invert_score=inv_score)
     plot_height, plot_width = log_fig.buffer.shape[:2]

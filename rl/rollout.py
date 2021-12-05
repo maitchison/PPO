@@ -2467,7 +2467,7 @@ class Runner:
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
-            if self.batch_counter % args.distil_period == 0:
+            if args.distil_epochs > 0 and self.batch_counter % args.distil_period == 0:
                 self.train_distil()
 
         self.batch_counter += 1
