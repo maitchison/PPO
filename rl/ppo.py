@@ -5,7 +5,7 @@ import time
 import json
 import math
 import sys
-
+import shlex
 
 from .logger import Logger, LogVariable
 from .rollout import Runner, save_progress
@@ -95,8 +95,8 @@ def train(model: models.TVFModel, log: Logger):
         did_restore = False
 
     if not did_restore:
-        log.log("To run experiment again use:")
-        log.log("python train.py "+ " ".join(sys.argv[1:]))
+        log.log("To rerun experiment use:")
+        log.log("python train.py "+ " ".join(shlex.quote(x) for x in sys.argv[1:]))
         if args.normalize_observations:
             # this will get an initial estimate for the normalization constants.
             runner.run_random_agent(20)

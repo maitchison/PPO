@@ -426,6 +426,7 @@ class TVFModel(nn.Module):
             tvf_n_dedicated_value_heads:int = 0,
             tvf_value_scale_fn: str = "identity",
             tvf_value_scale_norm: str = "max",
+            shared_initialization=False,
             network_args:Union[dict, None] = None,
     ):
 
@@ -461,6 +462,9 @@ class TVFModel(nn.Module):
         self.policy_net = make_net()
         if architecture == "dual":
             self.value_net = make_net()
+            if shared_initialization:
+                return_msg = self.value_net.load_state_dict(self.policy_net.state_dict(), strict=True)
+                print(return_msg)
         elif architecture == "single":
             self.value_net = self.policy_net
         else:

@@ -141,6 +141,7 @@ if __name__ == "__main__":
             hidden_units=args.hidden_units,
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
+            shared_initialization=args.dna_shared_initialization,
         )
 
         ppo.train(actor_critic_model, log)

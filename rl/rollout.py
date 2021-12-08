@@ -470,11 +470,15 @@ class Runner:
         self.step = 0
         self.horizon_sa = SimulatedAnnealing(1000) # this ends up being one third, so a horizon of ~300
 
-        if args.distil_exp_replay:
-            # default to a size of 1 batch.
+        if args.replay_size > 0:
             assert not args.use_compression, "Compression and replay buffer are not supported yet."
-            replay_buffer_size = args.n_steps*args.agents
-            self.replay_buffer = ExperienceReplayBuffer(N=replay_buffer_size, obs_shape=model.input_dims, obs_dtype=np.uint8)
+            assert args.replay_size % args.agents == 0, \
+                f"replay_size ({args.replay_size}) must be a multiple if agents ({args.agents})."
+            self.replay_buffer = ExperienceReplayBuffer(
+                N=args.replay_size,
+                obs_shape=model.input_dims,
+                obs_dtype=np.uint8
+            )
         else:
             self.replay_buffer = None
 
@@ -1877,7 +1881,8 @@ class Runner:
             model_out = self.model.forward(data["prev_state"], output="policy")
             targets = data["value_targets"]
             predictions = model_out["ext_value"]
-            loss = loss + 0.5 * self.calculate_value_loss(targets, predictions).mean()
+            loss_value = 0.5 * self.calculate_value_loss(targets, predictions).mean()
+            loss = loss + loss_value
         else:
             # method 2. try to learn the entire curve...
             aux_features = package_aux_features(
@@ -1887,14 +1892,36 @@ class Runner:
             model_out = self.model.forward(data["prev_state"], output="policy", aux_features=aux_features)
             targets = data["value_targets"]
             predictions = model_out["tvf_value"]
-            loss = loss + 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
+            loss_value = 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
+            loss = loss + loss_value
 
         old_policy_logprobs = data["old_log_policy"]
         logps = model_out["log_policy"]
 
         # KL loss
         kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
-        loss = loss + args.distil_beta * kl_true
+        loss_kl = args.distil_beta * kl_true
+        loss = loss + loss_kl
+
+        # some debugging stats
+        with torch.no_grad():
+            self.log.watch_mean("distil_targ_var", torch.var(targets), history_length=64 * args.distil_epochs, display_width=8)
+            self.log.watch_mean("distil_pred_var", torch.var(predictions), history_length=64 * args.distil_epochs,
+                                display_width=8)
+            mse = torch.square(predictions - targets).mean()
+            ev = 1 - torch.var(predictions-targets) / torch.var(targets)
+            self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil_epochs,
+                                display_width=8)
+            self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil_epochs,
+                                display_width=8)
+
+        # log the state for debugging
+        # state = {
+        #     'targets': targets.detach().cpu().numpy(),
+        #     'predictions': predictions.detach().cpu().numpy(),
+        # }
+        # with open(f"log_{time.time()}.dat", "wb") as f:
+        #     pickle.dump(state, f)
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -1903,7 +1930,9 @@ class Runner:
         opt_loss = loss * loss_scale
         opt_loss.backward()
 
-        self.log.watch_mean("loss_distil", loss, history_length=64, display_width=8)
+        self.log.watch_mean("loss_distil_kl", loss_kl, history_length=64 * args.distil_epochs, display_width=8)
+        self.log.watch_mean("loss_distil_value", loss_value, history_length=64 * args.distil_epochs, display_width=8)
+        self.log.watch_mean("loss_distil", loss, history_length=64*args.distil_epochs, display_width=8)
 
     @property
     def value_heads(self):
@@ -1963,7 +1992,7 @@ class Runner:
             tvf_loss = 0.5 * args.tvf_coef * tvf_loss.mean()
             loss = loss + tvf_loss
 
-            self.log.watch_mean("loss_tvf", tvf_loss, history_length=64, display_width=8)
+            self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_width=8)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -2195,6 +2224,16 @@ class Runner:
             loss = loss - self.train_value_heads(model_out, data)
 
         # -------------------------------------------------------------------------
+        # Optional value constraint
+        # -------------------------------------------------------------------------
+        if args.dna_dual_constraint > 0:
+            targets = data["old_value"]
+            predictions = model_out["ext_value"]
+            value_constraint_loss = args.dna_dual_constraint * 0.5 * torch.square(targets-predictions).mean()
+            self.log.watch_mean("loss_policy_vcl", value_constraint_loss, history_length=64 * args.policy_epochs)
+            loss = loss - value_constraint_loss
+
+        # -------------------------------------------------------------------------
         # Calculate loss_entropy
         # -------------------------------------------------------------------------
 
@@ -2214,7 +2253,7 @@ class Runner:
         # Generate log values
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64)
+        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64*args.policy_epochs)
         self.log.watch_mean("kl_approx", kl_approx, display_width=0)
         self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8)
@@ -2330,6 +2369,15 @@ class Runner:
             batch_data["int_returns"] = self.int_returns.reshape(B)
             batch_data["int_value"] = self.int_value.reshape(B)
 
+        # policy constraint
+        if args.architecture == "dual" and args.dna_dual_constraint > 0:
+            with torch.no_grad():
+                assert args.tvf_force_ext_value_distil, "Dual constraint only tested with force_ext_value on."
+                model_out = self.forward(
+                    obs=batch_data["prev_state"], output="policy"
+                )
+                batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
+
         policy_epochs = 0
         for _ in range(args.policy_epochs):
             results = self.train_batch(
@@ -2401,20 +2449,31 @@ class Runner:
         if args.distil_epochs == 0:
             return
 
-        # work out what ot use to train distil on
+        # work out what to use to train distil on
         if self.replay_buffer is not None:
             # buffer is 1D, need to reshape to 2D
-            # assume we have one rollouts worth of buffer here...
-            N, *state_shape = self.replay_buffer.data.shape
-            distil_obs = self.replay_buffer.data.reshape([args.n_steps, args.agents, *state_shape])
-            distil_time = self.replay_buffer.time.reshape([args.n_steps, args.agents])
+            _, *state_shape = self.replay_buffer.data.shape
+
+            if args.replay_mixing:
+                # use mixture of replay buffer and current batch of data
+                distil_obs = np.concatenate([
+                    self.replay_buffer.data.reshape([-1, args.agents, *state_shape]),
+                    self.prev_obs
+                    ], axis=0)
+                distil_time = np.concatenate([
+                    self.replay_buffer.time.reshape([-1, args.agents]),
+                    self.prev_time
+                ], axis=0)
+            else:
+                distil_obs = self.replay_buffer.data.reshape([-1, args.agents, *state_shape])
+                distil_time = self.replay_buffer.time.reshape([-1, args.agents])
         else:
             distil_obs = self.prev_obs
             distil_time = self.prev_time
 
         batch_data = {}
-        B = args.batch_size
         N, A, *state_shape = distil_obs.shape
+        B = N * A
 
         batch_data["prev_state"] = distil_obs.reshape([B, *state_shape])
 
@@ -2445,16 +2504,41 @@ class Runner:
             )
             batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
+        # setup a training hook for debugging
+        kl_losses = []
+        value_losses = []
+        pred_var = []
+        targ_var = []
+
+        def log_specific_losses(context):
+            kl_losses.append(self.log._vars["loss_distil_kl"]._history[-1])
+            value_losses.append(self.log._vars["loss_distil_value"]._history[-1])
+            pred_var.append(self.log._vars["distil_pred_var"]._history[-1])
+            targ_var.append(self.log._vars["distil_targ_var"]._history[-1])
+            return False
+
         for distil_epoch in range(args.distil_epochs):
-            # we do this here so it is only run if there is at least one epoch
-            # also regenerating targets each epoch is a good idea.
+
+            kl_losses.clear()
+            value_losses.clear()
+            pred_var.clear()
+            targ_var.clear()
+
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
                 mini_batch_size=args.value_mini_batch_size,
                 optimizer=self.distil_optimizer,
+                hooks={
+                    'after_mini_batch': log_specific_losses
+                },
                 label="distil",
             )
+
+            # print(f"Epoch {distil_epoch} (kl/value) (targ/pred var)")
+            # for kl, value, targ, pred in zip(kl_losses, value_losses, targ_var, pred_var):
+            #     print(f" -> {kl:<10.6f} {value:<10.6f} {targ:<10.6f} {pred:<10.6f}")
+            # print()
 
     def train(self, step):
 
@@ -2509,7 +2593,6 @@ class Runner:
                 batch_start = micro_batch_counter * micro_batch_size
                 batch_end = (micro_batch_counter + 1) * micro_batch_size
                 sample = ordering[batch_start:batch_end]
-                sample.sort() # faster memory access?
                 micro_batch_counter += 1
 
                 minibatch_data = {}

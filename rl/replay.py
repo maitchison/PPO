@@ -24,7 +24,7 @@ class ExperienceReplayBuffer():
 
     """
 
-    def __init__(self, N:int, obs_shape: tuple, obs_dtype, filter_duplicates:bool = False):
+    def __init__(self, N:int, obs_shape: tuple, obs_dtype, filter_duplicates:bool = False, mode="uniform"):
         """
         @param N Size of replay
         @param state_shape Shape of states
@@ -36,6 +36,7 @@ class ExperienceReplayBuffer():
         self.time = np.zeros([N], dtype=np.float32) # this is annoying, maybe there's a better way?
         self.hashes = np.zeros([N], dtype=np.uint64)
         self.filter_duplicates = filter_duplicates
+        self.mode = mode
 
     def save_state(self):
         return {
@@ -78,18 +79,26 @@ class ExperienceReplayBuffer():
 
         # 2. work out how many new entries we want to use, and resample them
         new_entries = len(ids)
+
         if self.experience_seen == 0:
-            entries_to_add = new_entries
+            # we initialize the buffer with the first sample of data, even if this means adding duplicates.
+            entries_to_add = self.N
         else:
-            entries_to_add = math.ceil((new_entries / (self.experience_seen + new_entries)) * self.N)
+            if self.mode == "uniform":
+                entries_to_add = math.ceil((new_entries / (self.experience_seen + new_entries)) * self.N)
+            elif self.mode == "overwrite":
+                entries_to_add = new_entries
+            else:
+                raise ValueError(f"Invalid mode {self.mode}")
+
         self.experience_seen += new_entries
 
-        ids = np.random.choice(ids, size=[entries_to_add], replace=False)
-        ids = np.sort(ids) # faster?
+        ids = np.random.choice(ids, size=[entries_to_add], replace=entries_to_add > len(ids))
 
         # 3. add the new entries
-        new_spots = np.random.choice(range(self.N), size=[entries_to_add], replace=False)
-        new_spots = np.sort(new_spots) # faster?
+        # note: sometimes we need to add more entries than we have (e.g. when initializing the buffer) in which case
+        # I just use sampling with replacement
+        new_spots = np.random.choice(range(self.N), size=[entries_to_add], replace=entries_to_add > self.N)
 
         for i, destination in enumerate(new_spots):
             # remove its hash

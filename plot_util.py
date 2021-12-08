@@ -11,6 +11,9 @@ import pickle
 from os import listdir
 from os.path import isfile, join
 
+LOG_CAP = 1e-8 # when computing logs values <= 0 will be replaced with this
+
+
 def safe_float(x):
     try:
         return float(x)
@@ -70,7 +73,7 @@ def read_log(file_path):
 
             if v is not None and len(v) > 0 and all(x is not None for x in v):
                 if min(v) > 0:
-                    result["log_" + k] = np.log2(v)
+                    result["log_" + k] = np.log2(np.clip(v, LOG_CAP, float('inf')))
                 if min(v) > -1e-6:
                     result["elog10_" + k] = np.log10(np.asarray(v) + 1e-6)
                 if max(v) < 0:
@@ -214,7 +217,7 @@ class RunLog():
     def __init__(self, filename, skip_rows=0):
 
         self._patterns = {
-            'log_': lambda x: np.log10(x),
+            'log_': lambda x: np.log10(np.clip(x, LOG_CAP, float('inf'))),
             'neg_': lambda x: -x,
             'exp_': lambda x: np.exp(x),
             '1m_': lambda x: 1 - x,

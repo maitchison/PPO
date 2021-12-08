@@ -29,7 +29,9 @@ class Config:
         self.limit_epochs       = int()
         self.distil_beta        = float()
         self.distil_period      = int()
-        self.distil_exp_replay  = bool()
+        self.replay_size        = int()
+        self.replay_mode        = str()
+        self.replay_mixing      = bool()
 
         self.observation_normalization = bool()
         self.intrinsic_reward_scale = float()
@@ -108,6 +110,8 @@ class Config:
         self.policy_lr = float()
         self.distil_lr = float()
         self.architecture = str()
+        self.dna_shared_initialization = bool()
+        self.dna_dual_constraint = float()
 
         self.use_icm            = bool()
         self.icm_eta            = str()
@@ -311,7 +315,16 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distilation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--distil_exp_replay", type=str2bool, default=False, help="Enables experience replay for distillation buffer.")
+    parser.add_argument("--replay_size", type=int, default=0,
+                        help="Size of replay buffer, 0=off.")
+    parser.add_argument("--replay_mode", type=str, default="overwrite",
+                        help="[overwrite|uniform]")
+    parser.add_argument("--replay_mixing", type=str2bool, default=False)
+
+    parser.add_argument("--dna_shared_initialization", type=str2bool, default=False,
+                        help="Policy and value network start with same weight initialization")
+    parser.add_argument("--dna_dual_constraint", type=float, default=0,
+                        help="Policy updates are constrained by value prediction.")
 
     parser.add_argument("--target_kl", type=float, default=-1, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
