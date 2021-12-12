@@ -193,6 +193,8 @@ def add_job(
                 chunk_size = v
             elif k == "priority":
                 priority = v
+            elif k == "hostname":
+                hostname = v
             else:
                 if k not in kwargs:
                     kwargs[k] = v
@@ -257,7 +259,6 @@ def copy_source_files(source, destination, force=False):
 
 
 class Job:
-
     """
     Note: we don't cache any of the properties here as other worker may modify the filesystem, so we need to always
     use the up-to-date version.
@@ -447,6 +448,8 @@ def nice_format(x):
 
     return f'"{x}"'
 
+
+
 # ---------------------------------------------------------------------------------------------------------
 
 class Categorical():
@@ -528,6 +531,15 @@ def comma(x):
         return str(x)
 
 def show_experiments(filter_jobs=None, all=False):
+
+    epochs, hours, ips = get_eta_stats()
+    if hours < 24:
+        nice_eta_time = f"{hours:.0f} hours"
+    else:
+        nice_eta_time = f"{hours/24:.1f} days"
+
+    print(f"Epochs: {round(epochs):,} IPS:{round(ips):,} ETA:{nice_eta_time}")
+
     job_list.sort()
     print("-" * 169)
     print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10} {:<15} {:>6}".format("priority", "experiment_name", "run_name", "complete", "status", "eta", "fps", "score", "host", "ping"))
@@ -595,6 +607,30 @@ def show_fps(filter_jobs=None):
 
     for k,v in fps.items():
         print(f"{k:<20} {v:,.0f} FPS")
+
+def get_eta_stats():
+
+    total_epochs_to_go = 0
+
+    total_ips = 0
+
+    for job in job_list:
+        details = job.get_details()
+        if details is None:
+            total_epochs_to_go += job.params["epochs"]
+        else:
+            total_epochs_to_go += job.params["epochs"] - details["completed_epochs"]
+        if job.get_status() == "running" and details is not None:
+            total_ips += details["fps"]
+
+    if total_ips > 0:
+        hours_remaining = total_epochs_to_go * 1e6 / total_ips / (60*60)
+    else:
+        hours_remaining = 0
+
+    return total_epochs_to_go, hours_remaining, total_ips
+
+
 
 def random_search(
         run:str,
@@ -1012,9 +1048,9 @@ def E11():
                 tvf_gamma=0.9999,
                 default_params=simple_args,
                 epochs=50,
-                priority=20,
+                priority=50,
                 seed=run,
-                hostname='',
+                hostname='ML-Rig',
             )
             add_job(
                 f"E11_PerGameGamma",
@@ -1031,6 +1067,7 @@ def E11():
             )
 
 def E31():
+
     # Expected horizons are 10, 100-1000, 3000-10000, and 10,000
     KEY_4 = ["CrazyClimber", "Zaxxon", "Centipede", "BeamRider"]
     for env in KEY_4:
@@ -1052,6 +1089,28 @@ def E31():
                         priority=0,
                         seed=run,  # this makes sure sa seeds are different.
                         hostname='ML-Rig',
+                    )
+
+    # # Changes are: less bias, more seeds
+    KEY_4 = ["CrazyClimber", "Zaxxon", "Centipede", "BeamRider"]
+    for env in KEY_4:
+        for run in [1, 2, 3]:  # just one run for the moment...
+            sa_sigma = 0.02
+            for sa_mu in [0]:
+                for strategy in ["sa_return", "sa_reward"]:
+                    add_job(
+                        f"E31_DynamicGamma (test4)",
+                        env_name=env,
+                        run_name=f"game={env} gamma {strategy} sa_mu={sa_mu} (seed={run})",
+                        auto_gamma="gamma",
+                        auto_strategy=strategy,
+                        default_params=simple_args,
+                        sa_mu=sa_mu,
+                        sa_sigma=sa_sigma,
+                        epochs=50,
+                        priority=0,
+                        seed=run,  # this makes sure sa seeds are different.
+                        hostname='',
                     )
 
 
@@ -1333,215 +1392,46 @@ def setup_TVF_Atari57():
             hostname='ML-Rig',
         )
 
-
-def test_deferred_distil():
-    # special case with pong to see if we can get it to work with better curve quality
-    for deferred_distil in [True, False]:
-        add_job(
-            f"deferred_distil_test",
-            env_name="Pong",
-            run_name=f"game=Pong simple deferred={deferred_distil} (seed=1)",
-            use_tvf=True,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            defer_distil=deferred_distil,
-            epochs=20,
-            priority=50,
-            seed=1,
-            hostname='',
-        )
-
-        add_job(
-            f"deferred_distil_test",
-            env_name="Pong",
-            run_name=f"game=Pong complex deferred={deferred_distil} (seed=1)",
-            use_tvf=True,
-            tvf_force_ext_value_distill=False,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            defer_distil=deferred_distil,
-            epochs=20,
-            priority=50,
-            seed=1,
-            hostname='',
-        )
-
 def test_distil():
-    # mostly so that I can get a feel for the new logged stats on 'good' runs.
-    for env in ['Pong']:
-        add_job(
-            f"test_distil",
-            env_name=env,
-            run_name=f"game={env} reference",
-            architecture='single',
-            use_tvf=True,
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            epochs=10,
-            priority=50,
-            seed=1,
-            hostname='',
-        )
-        for replay_size in [0, 128*128]:
-            for period in [1, 2]:
-                epochs = period
-                add_job(
-                    f"test_distil",
-                    env_name=env,
-                    run_name=f"game={env} replay_size={replay_size} distil_epochs={epochs} period={period} (seed=1)",
-                    replay_size=replay_size,
-                    use_tvf=True,
-                    use_compression=False,
-                    tvf_force_ext_value_distill=True,
-                    gamma=0.99997,
-                    tvf_gamma=0.99997,
-                    default_params=enhanced_args,
-                    distil_period=period,
-                    distill_epochs=epochs,
-                    epochs=10,
-                    priority=50,
-                    seed=1,
-                    hostname='',
-                )
-        add_job(
-            f"test_distil",
-            env_name=env,
-            run_name=f"game={env} replay_size={0} distil_epochs={1} period={1} [SI] (seed=1)",
-            dna_shared_initialization=True,
-            replay_size=0,
-            use_tvf=True,
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            distil_period=1,
-            distill_epochs=1,
-            epochs=10,
-            priority=50,
-            seed=1,
-            hostname='',
-        )
-        add_job(
-            f"test_distil",
-            env_name=env,
-            run_name=f"game={env} replay_size={0} distil_epochs={1} period={1} [DC] (seed=1)",
-            dna_dual_constraint=True,
-            replay_size=0,
-            use_tvf=True,
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            distil_period=1,
-            distill_epochs=1,
-            epochs=10,
-            priority=50,
-            seed=1,
-            hostname='',
-        )
-        # see if we can get this to work better by just going a little faster?
-        add_job(
-            f"test_distil",
-            env_name=env,
-            run_name=f"game={env} replay_size={0} distil_epochs={2} period={1} (seed=1)",
-            replay_size=0,
-            use_tvf=True,
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            distil_period=1,
-            distill_epochs=2,
-            epochs=10,
-            priority=50,
-            seed=1,
-            hostname='',
-        )
 
-        # dc + rp
-        add_job(
-            f"test_distil",
-            env_name=env,
-            run_name=f"game={env} replay_size={16384} distil_epochs={1} period={1} [DC] (seed=1)",
-            replay_size=16384,
-            use_tvf=True,
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            dna_dual_constraint=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            distil_period=1,
-            distill_epochs=1,
-            epochs=20,
-            priority=20,
-            seed=1,
-            hostname='',
-        )
+    default_distil_args = enhanced_args.copy()
+    default_distil_args["use_tvf"] = True
+    default_distil_args["gamma"] = 0.99997
+    default_distil_args["tvf_gamma"] = 0.99997
+    default_distil_args["use_compression"] = False
+    default_distil_args["tvf_force_ext_value_distill"] = True
+    default_distil_args["epochs"] = 20
+    default_distil_args["seed"] = 1
+    default_distil_args["hostname"] = ''
+    default_distil_args["use_mutex"] = True
 
     # let's just do all combinations and see what happens
     for env in ['Pong', 'Breakout', 'CrazyClimber']:
-
         add_job(
-            f"test_distil_3",
+            f"test_distil_rp",
             env_name=env,
             run_name=f"game={env} reference (single)",
-            use_tvf=True,
             architecture='single',
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            epochs=20,
-            priority=10 + 5 if env == "Pong" else 0,
-            seed=1,
-            hostname='',
+            default_params=default_distil_args,
+            priority=40 + 5 if env == "Pong" else 0,
         )
-
         add_job(
-            f"test_distil_3",
+            f"test_distil_rp",
             env_name=env,
             run_name=f"game={env} reference (dual)",
-            use_tvf=True,
             architecture='dual',
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            epochs=20,
-            priority=10 + 5 if env == "Pong" else 0,
-            seed=1,
-            hostname='',
+            default_params=default_distil_args,
+            priority=40 + 5 if env == "Pong" else 0,
         )
-
         add_job(
-            f"test_distil_3",
+            f"test_distil_rp",
             env_name=env,
             run_name=f"game={env} reference (ppo)",
             use_tvf=False,
             architecture='single',
-            use_compression=False,
-            tvf_force_ext_value_distill=True,
-            gamma=0.99997,
-            tvf_gamma=0.99997,
-            default_params=enhanced_args,
-            epochs=20,
-            priority=10 + 5 if env == "Pong" else 0,
-            seed=1,
-            hostname='',
+            default_params=default_distil_args,
+            priority=40 + 5 if env == "Pong" else 0,
         )
-
         for replay_size in [0, 128 * 128, 128 * 128 * 2]:
             for replay_mode in ['overwrite', 'uniform', 'mixed']:
                 if replay_size == 0 and replay_mode != 'overwrite':
@@ -1555,25 +1445,17 @@ def test_distil():
                                 rp_tag = f" RP{replay_size//(128*128)} ({replay_mode})"
 
                             add_job(
-                                f"test_distil_3",
+                                f"test_distil_rp",
                                 env_name=env,
                                 run_name=f"game={env} {epochs}{period}{rp_tag}{' DC' if dc else ''}",
                                 replay_size=replay_size,
                                 replay_mode="uniform" if replay_mode is "mixed" else replay_mode,
                                 replay_mixing=replay_mode == "mixed",
-                                use_tvf=True,
-                                use_compression=False,
-                                tvf_force_ext_value_distill=True,
-                                dna_dual_constraint=dc,
-                                gamma=0.99997,
-                                tvf_gamma=0.99997,
-                                default_params=enhanced_args,
+                                dna_dual_constraint=1.0 if dc else 0.0,
                                 distil_period=period,
                                 distill_epochs=epochs,
-                                epochs=20,
+                                default_params=default_distil_args,
                                 priority=0 + 5 if env == "Pong" else 0,
-                                seed=1,
-                                hostname='',
                             )
 
 
@@ -1588,7 +1470,6 @@ def test_distil():
                             rp_tag = ' RP0'
                         else:
                             rp_tag = f" RP{replay_size//(128*128)} ({replay_mode})"
-
                         add_job(
                             f"test_distil_dc",
                             env_name=env,
@@ -1596,65 +1477,12 @@ def test_distil():
                             replay_size=replay_size,
                             replay_mode="uniform" if replay_mode is "mixed" else replay_mode,
                             replay_mixing=replay_mode == "mixed",
-                            use_tvf=True,
-                            use_compression=False,
-                            tvf_force_ext_value_distill=True,
                             dna_dual_constraint=dc,
-                            gamma=0.99997,
-                            tvf_gamma=0.99997,
-                            default_params=enhanced_args,
                             distil_period=period,
                             distill_epochs=epochs,
-                            epochs=20,
+                            default_params=default_distil_args,
                             priority=0 + 5 if env == "Pong" else 0,
-                            seed=1,
-                            hostname='',
                         )
-
-
-def test_distil_period():
-    # special case with pong to see if we can get it to work with better curve quality
-    for env in ['Pong', 'CrazyClimber']:
-
-        for period in [0, 1, 2, 4]:
-            # check replay buffer...
-            add_job(
-                f"test_distil_replay_2",
-                env_name=env,
-                run_name=f"game={env} exp_replay period={period} (seed=1)",
-                use_tvf=True,
-                use_compression=False,
-                tvf_force_ext_value_distill=True,
-                distil_exp_replay=True,
-                gamma=0.99997,
-                tvf_gamma=0.99997,
-                default_params=enhanced_args,
-                distil_period=period,
-                distill_epochs=period,
-                epochs=20,
-                priority=50,
-                seed=1,
-                hostname='',
-            )
-
-        for period in [1, 2]:
-            for simple in [True, False]:
-                add_job(
-                    f"test_distil_period",
-                    env_name=env,
-                    run_name=f"game={env} simple={simple} period={period} (seed=1)",
-                    use_tvf=True,
-                    tvf_force_ext_value_distill=simple,
-                    gamma=0.99997,
-                    tvf_gamma=0.99997,
-                    default_params=enhanced_args,
-                    distil_period=period,
-                    distill_epochs=period,
-                    epochs=20,
-                    priority=50,
-                    seed=1,
-                    hostname='',
-                )
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1671,8 +1499,6 @@ if __name__ == "__main__":
     E11()
     E31()
 
-    # test_deferred_distil()
-    # test_distil_period()
     test_distil()
 
     if len(sys.argv) == 1:

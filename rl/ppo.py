@@ -9,6 +9,7 @@ import shlex
 
 from .logger import Logger, LogVariable
 from .rollout import Runner, save_progress
+from .mutex import Mutex
 
 import torch.multiprocessing
 
@@ -155,9 +156,11 @@ def train(model: models.TVFModel, log: Logger):
         save_progress(log)
 
         # generate the rollout
-        rollout_start_time = time.time()
-        runner.generate_rollout()
-        rollout_time = (time.time() - rollout_start_time) / batch_size
+        with Mutex(args.hostname + "_" + args.device, enabled=args.use_mutex) as mx:
+            log.watch_mean("mutex_wait", mx.wait_time, display_postfix="ms", display_precision=3)
+            rollout_start_time = time.time()
+            runner.generate_rollout()
+            rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
         returns_start_time = time.time()

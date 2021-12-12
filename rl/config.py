@@ -133,6 +133,7 @@ class Config:
         self.timeout = int()
 
         self.normalize_advantages = bool()
+        self.checkpoint_compression = bool()
 
         self.use_clipped_value_loss = bool()
         self.reward_clipping    = str()
@@ -169,6 +170,7 @@ class Config:
         self.use_tanh_clipping = bool()
 
         self.use_compression = bool()
+        self.use_mutex = bool()
 
         self.__dict__.update(kwargs)
 
@@ -285,6 +287,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_horizon_samples", type=int, default=64, help="Number of horizons to sample during training. (-1 = all)")
     parser.add_argument("--tvf_value_distribution", type=str, default="fixed_linear", help="Sampling distribution to use when generating value samples.")
     parser.add_argument("--tvf_horizon_distribution", type=str, default="fixed_linear", help="Sampling distribution to use when generating horizon samples.")
+
+    parser.add_argument("--checkpoint_compression", type=str2bool, default=True, help="Enables checkpoint compression.")
 
     parser.add_argument("--tvf_n_dedicated_value_heads", type=int, default=0)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
@@ -447,6 +451,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_force_ext_value_distill", dest="tvf_force_ext_value_distil", type=str2bool, help=argparse.SUPPRESS)
     parser.add_argument("--distill_lr", dest="distil_lr", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--distill_lr_anneal", dest="distil_lr_anneal", type=str2bool, help=argparse.SUPPRESS)
+
+    # other
+    parser.add_argument("--use_mutex", type=str2bool, default=False,
+                        help="uses mutex locking so that only one GPU can be working on a rollout at a time."
+                        )
 
     parser.add_argument("--seed", type=int, default=-1)
 

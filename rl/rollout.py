@@ -428,6 +428,8 @@ class SimulatedAnnealing:
         self.neighbour = initial_value
         self.prev_score = float('-inf')
         self._generate_neighbour()
+        self.accepts = 0
+        self.rejects = 0
 
     def _generate_neighbour(self):
         """
@@ -443,6 +445,14 @@ class SimulatedAnnealing:
 
         self.neighbour = 2**new_theta
 
+    @property
+    def acceptance_rate(self):
+        iterations = self.accepts + self.rejects
+        if iterations > 0:
+            return self.accepts / (iterations)
+        else:
+            return 0
+
     def process(self, score, prev_score=None):
         """
         If previous score is given not given it uses the previously stored score.
@@ -455,9 +465,10 @@ class SimulatedAnnealing:
             # accept
             self.value = self.neighbour
             self.prev_score = score
+            self.accepts += 1
         else:
             # reject
-            pass
+            self.rejects += 1
         self._generate_neighbour()
 
 class Runner:
@@ -477,7 +488,8 @@ class Runner:
             self.replay_buffer = ExperienceReplayBuffer(
                 N=args.replay_size,
                 obs_shape=model.input_dims,
-                obs_dtype=np.uint8
+                obs_dtype=np.uint8,
+                mode=args.replay_mode,
             )
         else:
             self.replay_buffer = None
@@ -683,7 +695,12 @@ class Runner:
         if args.normalize_observations:
             data["observation_norm_state"] = self.model.obs_rms.save_state()
 
-        torch.save(data, filename)
+        with self.open_fn(filename, "wb") as f:
+            torch.save(data, f)
+
+    @property
+    def open_fn(self):
+        return gzip.open if args.checkpoint_compression else open
 
     def get_checkpoints(self, path):
         """ Returns list of (epoch, filename) for each checkpoint in given folder. """
@@ -699,7 +716,9 @@ class Runner:
 
     def load_checkpoint(self, checkpoint_path):
         """ Restores model from checkpoint. Returns current env_step"""
-        checkpoint = torch.load(checkpoint_path, map_location=args.device)
+
+        with self.open_fn(checkpoint_path, "rb") as f:
+            checkpoint = torch.load(f, map_location=args.device)
 
         self.model.load_state_dict(checkpoint['model_state_dict'])
 
@@ -1468,6 +1487,7 @@ class Runner:
                 f"ev_average",
                 0 if (total_var == 0) else np.clip(1 - total_not_explained_var / total_var, -1, 1),
                 display_width=8,
+                display_name="ev_avg",
                 history_length=1
             )
 
@@ -1573,41 +1593,47 @@ class Runner:
         # generate a candidate gamma (if needed) that will be used to calculate this rounds advantages...
         # for score I'm using average reward. Using some return estimate is problematic as it will include gamma
         # and gamma has changed. This might make the algorithm prefer long horizons over short. Maybe this is ok though?
-        if args.auto_strategy == "sa_reward":
-            # estimate of gain (i.e. average reward)
-            score = np.mean(self.ext_rewards)
-            self.horizon_sa.process(score)
-        if args.auto_strategy == "sa_return":
-            # note: we can't use the return estimates below as these require a decision on gamma, which we need
-            # to make before we calculate them. So instead we run through the rewards, discount then, then
-            # add the final value.
-            def get_discounted_score(rollout: RolloutBuffer):
-                if args.use_tvf:
-                    batch_value_estimates = self.get_tvf_rediscounted_value_estimates(rollout, new_gamma=self.gamma)
-                else:
-                    # in this case just generate ext value estimates from model, which will be using self.gamma
-                    batch_value_estimates = self.get_value_estimates(rollout.all_obs)
+        if args.auto_strategy[:3] == "sa_":
+            if args.auto_strategy == "sa_reward":
+                # estimate of gain (i.e. average reward)
+                score = np.mean(self.ext_rewards)
+                prev_score = self.horizon_sa.prev_score
+            elif args.auto_strategy == "sa_return":
+                # note: we can't use the return estimates below as these require a decision on gamma, which we need
+                # to make before we calculate them. So instead we run through the rewards, discount then, then
+                # add the final value.
+                def get_discounted_score(rollout: RolloutBuffer):
+                    if args.use_tvf:
+                        batch_value_estimates = self.get_tvf_rediscounted_value_estimates(rollout, new_gamma=self.gamma)
+                    else:
+                        # in this case just generate ext value estimates from model, which will be using self.gamma
+                        batch_value_estimates = self.get_value_estimates(rollout.all_obs)
 
-                ext_advantage = calculate_gae(
-                    rollout.ext_rewards,
-                    batch_value_estimates[:N],
-                    batch_value_estimates[N],
-                    rollout.terminals,
-                    self.gamma,
-                    args.gae_lambda
-                )
+                    ext_advantage = calculate_gae(
+                        rollout.ext_rewards,
+                        batch_value_estimates[:N],
+                        batch_value_estimates[N],
+                        rollout.terminals,
+                        self.gamma,
+                        args.gae_lambda
+                    )
 
-                batch_returns = ext_advantage + batch_value_estimates[:N]
-                return np.mean(batch_returns)
+                    batch_returns = ext_advantage + batch_value_estimates[:N]
+                    return np.mean(batch_returns)
 
-            this_rollout = RolloutBuffer(self)
-            score = get_discounted_score(this_rollout)
-            if self.previous_rollout is None:
+                this_rollout = RolloutBuffer(self)
+                score = get_discounted_score(this_rollout)
+                if self.previous_rollout is None:
+                    self.previous_rollout = this_rollout
+                prev_score = get_discounted_score(self.previous_rollout)
                 self.previous_rollout = this_rollout
-            prev_score = get_discounted_score(self.previous_rollout)
-            self.previous_rollout = this_rollout
+            else:
+                raise ValueError(f"Invalid SA strategy {args.auto_strategy}")
 
             self.horizon_sa.process(score, prev_score)
+            self.log.watch_mean("sa_acceptance", self.horizon_sa.acceptance_rate, history_length=10, display_width=8)
+            self.log.watch_mean("sa_score", score, history_length=10, display_width=0)
+            self.log.watch_mean("sa_score_delta", score-prev_score, history_length=10, display_width=0)
 
         # 1. first we calculate the ext_value estimate
         if args.use_tvf:
@@ -1819,7 +1845,7 @@ class Runner:
                 grad_norm += param_norm.item() ** 2
             grad_norm = grad_norm ** 0.5
 
-        self.log.watch_mean(f"grad_{label}", grad_norm)
+        self.log.watch_mean(f"grad_{label}", grad_norm, display_name=f"gd_{label}", display_width=10)
 
         optimizer.step()
 
@@ -1905,15 +1931,15 @@ class Runner:
 
         # some debugging stats
         with torch.no_grad():
-            self.log.watch_mean("distil_targ_var", torch.var(targets), history_length=64 * args.distil_epochs, display_width=8)
+            self.log.watch_mean("distil_targ_var", torch.var(targets), history_length=64 * args.distil_epochs, display_width=0)
             self.log.watch_mean("distil_pred_var", torch.var(predictions), history_length=64 * args.distil_epochs,
-                                display_width=8)
+                                display_width=0)
             mse = torch.square(predictions - targets).mean()
             ev = 1 - torch.var(predictions-targets) / torch.var(targets)
             self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil_epochs,
-                                display_width=8)
+                                display_width=0)
             self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil_epochs,
-                                display_width=8)
+                                display_width=0)
 
         # log the state for debugging
         # state = {
@@ -1930,9 +1956,9 @@ class Runner:
         opt_loss = loss * loss_scale
         opt_loss.backward()
 
-        self.log.watch_mean("loss_distil_kl", loss_kl, history_length=64 * args.distil_epochs, display_width=8)
-        self.log.watch_mean("loss_distil_value", loss_value, history_length=64 * args.distil_epochs, display_width=8)
-        self.log.watch_mean("loss_distil", loss, history_length=64*args.distil_epochs, display_width=8)
+        self.log.watch_mean("loss_distil_kl", loss_kl, history_length=64 * args.distil_epochs, display_width=0)
+        self.log.watch_mean("loss_distil_value", loss_value, history_length=64 * args.distil_epochs, display_width=0)
+        self.log.watch_mean("loss_distil", loss, history_length=64*args.distil_epochs, display_name="ls_distil", display_width=8)
 
     @property
     def value_heads(self):
@@ -1992,7 +2018,7 @@ class Runner:
             tvf_loss = 0.5 * args.tvf_coef * tvf_loss.mean()
             loss = loss + tvf_loss
 
-            self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_width=8)
+            self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_name="ls_tvf", display_width=8)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -2011,7 +2037,7 @@ class Runner:
         # Logging
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("loss_value", loss)
+        self.log.watch_mean("loss_value", loss, display_name=f"ls_value")
 
         return {}
 
@@ -2160,7 +2186,7 @@ class Runner:
                 vf_losses1 = (value_prediction - returns).pow(2)
                 loss_value = torch.mean(vf_losses1)
             loss_value = loss_value * args.vf_coef
-            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64)
+            self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64, display_name="ls_v_" + value_head)
             loss = loss + loss_value
         return loss
 
@@ -2230,7 +2256,13 @@ class Runner:
             targets = data["old_value"]
             predictions = model_out["ext_value"]
             value_constraint_loss = args.dna_dual_constraint * 0.5 * torch.square(targets-predictions).mean()
-            self.log.watch_mean("loss_policy_vcl", value_constraint_loss, history_length=64 * args.policy_epochs)
+            self.log.watch_mean(
+                "loss_policy_vcl",
+                value_constraint_loss,
+                display_width=8,
+                display_name="ls_vcl",
+                history_length=64 * args.policy_epochs
+            )
             loss = loss - value_constraint_loss
 
         # -------------------------------------------------------------------------
@@ -2253,13 +2285,13 @@ class Runner:
         # Generate log values
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64*args.policy_epochs)
+        self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64*args.policy_epochs, display_name=f"ls_pg", display_width=8)
         self.log.watch_mean("kl_approx", kl_approx, display_width=0)
         self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8)
         self.log.watch_mean("entropy", entropy)
-        self.log.watch_mean("loss_ent", loss_entropy)
-        self.log.watch_mean("loss_policy", loss)
+        self.log.watch_mean("loss_ent", loss_entropy, display_name=f"ls_ent", display_width=8)
+        self.log.watch_mean("loss_policy", loss, display_name=f"ls_policy")
 
         return {
             'kl_approx': float(kl_approx.detach()),  # make sure we don't pass the graph through.
@@ -2394,7 +2426,7 @@ class Runner:
             policy_epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
-        self.log.watch_full("policy_epochs", policy_epochs, display_width=8)
+        self.log.watch_full("policy_epochs", policy_epochs, display_width=9, display_name="epochs_p")
 
     def train_value(self):
 
