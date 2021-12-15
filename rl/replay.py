@@ -93,19 +93,36 @@ class ExperienceReplayBuffer():
 
         self.experience_seen += new_entries
 
-        ids = np.random.choice(ids, size=[entries_to_add], replace=entries_to_add > len(ids))
+        ids = smart_sample(ids, entries_to_add)
+        ids = sorted(ids) # faster to in sequential order.
 
         # 3. add the new entries
         # note: sometimes we need to add more entries than we have (e.g. when initializing the buffer) in which case
         # I just use sampling with replacement
-        new_spots = np.random.choice(range(self.N), size=[entries_to_add], replace=entries_to_add > self.N)
+        new_spots = smart_sample(range(self.N), entries_to_add)
 
-        for i, destination in enumerate(new_spots):
+        for source, destination in zip(ids, new_spots):
             # remove its hash
             # add new entry
-            source = ids[i]
             self.data[destination] = new_experience[source]
             if new_hashes is not None:
                 self.hashes[destination] = new_hashes[source]
             if new_time is not None:
                 self.time[destination] = new_time[source]
+
+
+def smart_sample(x, n):
+    """
+    Samples n samples from x.
+    If x <= len(x) samples ones without replacement
+    If x > len(x) samples len(x)//n times without replacement
+
+    This makes sure if n >= len(x) then every x is choosen at least once, and bounds the delta in duplicates to 1.
+
+    """
+    if n <= len(x):
+        return np.random.choice(x, size=[n], replace=False)
+    else:
+        return np.concatenate([smart_sample(x, len(x)), smart_sample(x, n-len(x))], axis=0)
+
+

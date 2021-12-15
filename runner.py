@@ -176,6 +176,26 @@ simple_args.update({
     'tvf_force_ext_value_distill': True,
 })
 
+replay_simple_args = enhanced_args.copy()
+replay_simple_args.update({
+    'replay_mixing':False,
+    'distill_epochs': 1,
+    'distil_period':2,
+    'replay_size': 1 * 128 * 128,
+    'replay_mode': "uniform",
+    'dna_dual_constraint': 0.3,
+    'use_compression': False, # required for replay buffer (for the moment.)
+    'use_mutex': True, # faster...
+    'tvf_force_ext_value_distill': True,
+})
+
+replay_full_args = replay_simple_args.copy()
+replay_full_args.update({
+    'tvf_force_ext_value_distill': True,
+})
+
+
+
 def add_job(
         experiment_name,
         run_name,
@@ -1040,6 +1060,20 @@ def E11():
             )
 
             add_job(
+                # the idea here is that a small dc will allow pong to train
+                # the replay probably needed, and I can remove it if we want, but it might also help distillation
+                # training
+                f"E11_PerGameGamma (additional)",
+                env_name=env,
+                run_name=f"game={env} replay_simple (seed={run})",
+                default_params=replay_simple_args,
+                epochs=50,
+                priority=-50,
+                seed=run,
+                hostname='',
+            )
+
+            add_job(
                 f"E11_PerGameGamma",
                 env_name=env,
                 run_name=f"game={env} tvf_s10k (seed={run})",
@@ -1108,7 +1142,7 @@ def E31():
                         sa_mu=sa_mu,
                         sa_sigma=sa_sigma,
                         epochs=50,
-                        priority=0,
+                        priority=50,
                         seed=run,  # this makes sure sa seeds are different.
                         hostname='',
                     )
@@ -1457,10 +1491,34 @@ def test_distil():
                                 default_params=default_distil_args,
                                 priority=0 + 5 if env == "Pong" else 0,
                             )
+        for replay_size in [0, 1, 2, 4, 8]:
+            add_job(
+                f"test_distil_rp_long",
+                env_name=env,
+                run_name=f"game={env} replay_simple rs={replay_size}",
+                replay_size=replay_size * 128 * 128,
+                default_params=replay_simple_args,
+                priority=200 if replay_size==8 else -20, # just want to start some of these big ones early...
+            )
 
-
-    # find a good dual constraint
     for env in ['Pong', 'Breakout', 'CrazyClimber']:
+
+        # see if we can get full curve learning working on pong
+        add_job(
+            # the idea here is that a small dc will allow pong to train
+            # the replay probably needed, and I can remove it if we want, but it might also help distillation
+            # training
+            f"E11_PerGameGamma (additional)",
+            env_name=env,
+            run_name=f"game={env} replay_full (seed={1})",
+            default_params=replay_full_args,
+            epochs=50,
+            priority=-50,
+            seed=1,
+            hostname='',
+        )
+
+        # find a good dual constraint
         replay_mode = "uniform"
         for replay_size in [0]:
             for period in [1]:
@@ -1481,7 +1539,7 @@ def test_distil():
                             distil_period=period,
                             distill_epochs=epochs,
                             default_params=default_distil_args,
-                            priority=0 + 5 if env == "Pong" else 0,
+                            priority=20 + (5 if env == "Pong" else 0),
                         )
 
 

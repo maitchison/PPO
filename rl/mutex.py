@@ -67,7 +67,7 @@ def aquire_lock(key, timeout=60.0):
 
         # otherwise, wait until the lock is available
         while lock_file.exists() and (time.time() - start_time) < timeout:
-            time.sleep(0.1)
+            time.sleep(0.01)
 
         wait_time = time.time() - start_time
 

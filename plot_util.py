@@ -113,7 +113,7 @@ def compute_score(result, x_lim=None):
     if x_lim is None:
         data = result["ep_score_mean"]
     else:
-        data = [score for step, score in zip(result["iteration"], result["ep_score_mean"]) if
+        data = [score for step, score in zip(result["env_step"], result["ep_score_mean"]) if
                 step / 1000 / 1000 < x_lim]
     return np.percentile(data, 95)
 
@@ -431,11 +431,11 @@ def standard_grid():
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
 
-def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, max_step=50, **kwargs):
+def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, table_epochs=None, **kwargs):
     title_args = {}
 
     if include_table:
-        table_runs(path, run_filter=kwargs.get("run_filter", None), max_step=max_step)
+        table_runs(path, run_filter=kwargs.get("run_filter", None), epochs=table_epochs)
 
     for y_axis in y_axes:
         if 'title' not in kwargs:
@@ -444,12 +444,17 @@ def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=Fa
 
 
 
-def table_runs(path, run_filter=None, max_step=50):
+def table_runs(path, run_filter=None, epochs=None):
+
     runs = get_runs(path)
 
-    print("|{:<50}|{:>16}|{:>16}|{:>16}|".format(
-        " run", "score ", "steps ", "id "))
-    print("|" + '-' * 50 + "|" + '-' * 16 + "|" + '-' * 16 + "|" + '-' * 16 + "|")
+    if epochs is None:
+        epochs = [50]
+
+
+    print(("|{:<50}|{:>16}|"+"{:>16}|"*len(epochs)+"{:>16}|").format(
+            " run", *["score @"+str(epoch)+"M " for epoch in epochs], "steps ", "id "))
+    print("|"+'-'*50+("|"+'-'*16)*len(epochs)+"|"+'-'*16+"|"+'-'*16+"|")
 
     runs = sorted(runs, key=lambda x: compute_score(x[1]), reverse=True)
 
@@ -462,8 +467,11 @@ def table_runs(path, run_filter=None, max_step=50):
             if not run_filter(run_name):
                 continue
 
-        score = compute_score(run_data, max_step)
-        steps = min(run_data["env_step"][-1] / 1000 / 1000, max_step)
+        scores = {}
+        for epoch in epochs:
+            scores[epoch] = compute_score(run_data, epoch)
+
+        steps = min(run_data["env_step"][-1] / 1000 / 1000, max(epochs))
 
         run_params["color"] = bool(run_params.get("color", False))
         if "ent_bouns" in run_params:
@@ -473,10 +481,10 @@ def table_runs(path, run_filter=None, max_step=50):
         if "model" not in run_params:
             run_params["model"] = "cnn"
 
-        run_id = run_name[-17:-1]
+        run_id = run_name[-9:-1]+" "
 
-        print("| {:<49}|{:>15} |{:>15} |{:>16}|".format(
-            run_name[:-(8 + 3)], comma(score), "{:.0f}M".format(steps), run_id))
+        print(("| {:<49}" + "|{:>15} " * len(epochs) + "|{:>15} |{:>16}|").format(
+            run_name[:-10], *[round(x,2) for x in scores.values()], "{:.0f}M".format(steps), run_id))
 
 def get_eval_filename(epoch, temperature=None, seed=None):
     postfix = f"_t={float(temperature)}" if temperature is not None else ""
@@ -1859,3 +1867,4 @@ cache = {}
 #                 result["exp_" + k] = np.exp(v)
 #
 #     return result
+

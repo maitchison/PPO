@@ -157,7 +157,7 @@ def train(model: models.TVFModel, log: Logger):
 
         # generate the rollout
         with Mutex(args.hostname + "_" + args.device, enabled=args.use_mutex) as mx:
-            log.watch_mean("mutex_wait", mx.wait_time, display_postfix="ms", display_precision=3)
+            log.watch_mean("mutex_wait", mx.wait_time, display_precision=3, display_name="mutex")
             rollout_start_time = time.time()
             runner.generate_rollout()
             rollout_time = (time.time() - rollout_start_time) / batch_size
@@ -180,7 +180,7 @@ def train(model: models.TVFModel, log: Logger):
         # record some training stats
         log.watch_mean("fps", int(fps))
         log.watch_mean("time_train", train_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_step", step_time * 1000, display_postfix="ms", display_precision=2, display_width=10)
+        log.watch_mean("time_step", step_time * 1000, display_precision=2, display_width=10, display_name="step_ms")
         log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         log.watch_mean("time_log", log_time * 1000, type="float", display_postfix="ms", display_precision=2,

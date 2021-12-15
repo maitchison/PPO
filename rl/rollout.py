@@ -1477,6 +1477,18 @@ class Runner:
                     display_width=8 if h < 100 or h == args.tvf_max_horizon else 0,
                     history_length=1
                 )
+                self.log.watch_mean(
+                    f"tv_{h:04d}",
+                    this_var,
+                    display_wifth=0,
+                    history_length=1
+                )
+                self.log.watch_mean(
+                    f"nev_{h:04d}",
+                    this_not_explained_var,
+                    display_wifth=0,
+                    history_length=1
+                )
                 # raw is RMS on unscaled error
                 self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5),
                                     display_width=0, history_length=1)
@@ -2426,7 +2438,10 @@ class Runner:
             policy_epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
-        self.log.watch_full("policy_epochs", policy_epochs, display_width=9, display_name="epochs_p")
+        self.log.watch_full("policy_epochs", policy_epochs,
+                            display_width=9 if args.target_kl >= 0 else 0,
+                            display_name="epochs_p"
+                            )
 
     def train_value(self):
 
