@@ -15,6 +15,7 @@ import pickle
 import time
 import sys
 import socket
+import gzip
 
 from typing import Union, List, Dict
 
@@ -88,8 +89,35 @@ class CompressedStack():
         dtype, shape, data = self.buffer[index]
         return np.frombuffer(lib.decompress(data), dtype=dtype).reshape(shape)
 
+
+def backup_open_checkpoint(checkpoint_path: str, **tf_args):
+    # todo: remove this and use rollout._open_checkpoint
+    try:
+        with gzip.open(os.path.join(checkpoint_path, ".gz"), 'rb') as f:
+            return torch.load(f, **tf_args)
+    except:
+        pass
+
+    try:
+        # unfortunately some checkpoints were saved without the .gz so just try and fail to load them...
+        with gzip.open(checkpoint_path, 'rb') as f:
+            return torch.load(f, **tf_args)
+    except:
+        pass
+
+    try:
+        # unfortunately some checkpoints were saved without the .gz so just try and fail to load them...
+        with open(checkpoint_path, 'rb') as f:
+            return torch.load(f, **tf_args)
+    except:
+        pass
+
+    raise Exception(f"Could not open checkpoint {checkpoint_path}")
+
+
 def needs_rediscount():
     return args.tvf_gamma != args.gamma and args.use_tvf
+
 
 def load_args(checkpoint_path):
     """
@@ -124,7 +152,14 @@ def load_checkpoint(checkpoint_path, device=None):
     env = atari.make(monitor_video=True)
 
     model = make_model(env)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # some older versions might not have the open_checkpoint function... :(
+    try:
+        oc = rollout._open_checkpoint
+    except:
+        oc = backup_open_checkpoint
+    checkpoint = oc(checkpoint_path, map_location=device)
+
     model.load_state_dict(checkpoint['model_state_dict'])
     step = checkpoint['step']
     env_state = checkpoint["env_state"]

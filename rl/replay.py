@@ -38,13 +38,13 @@ class ExperienceReplayBuffer():
         self.filter_duplicates = filter_duplicates
         self.mode = mode
 
-    def save_state(self):
+    def save_state(self, force_copy=True):
         return {
             'N': self.N,
             'experience_seen': self.experience_seen,
-            'data': self.data.copy(),
-            'time': self.time.copy(),
-            'hashes': self.hashes.copy(),
+            'data': self.data.copy() if force_copy else self.data,
+            'time': self.time.copy() if force_copy else self.time,
+            'hashes': self.hashes.copy() if force_copy else self.hashes,
         }
 
     def load_state(self, state_dict: dict):

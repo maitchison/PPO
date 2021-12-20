@@ -31,10 +31,13 @@ def slugify(value, allow_unicode=False):
 
 class Mutex:
 
-    def __init__(self, key, timeout=60.0, enabled=True):
-        self.key = slugify(key)
+    def __init__(self, key, timeout=60.0):
+        """
+        only enabled if mutex is not None
+        """
+        self.enabled = key is not None
+        self.key = slugify(key) if key is not None else ""
         self.timeout = timeout
-        self.enabled = enabled
         self.wait_time = 0.0
 
     def __enter__(self):

@@ -1,4 +1,6 @@
 import os
+import types
+
 import numpy as np
 import gym
 
@@ -680,7 +682,7 @@ class Runner:
         }
 
         if self.replay_buffer is not None:
-            data["replay_buffer"] = self.replay_buffer.save_state()
+            data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
 
         if args.auto_strategy[:2] == "sa":
             data['horizon_sa'] = self.horizon_sa
@@ -695,8 +697,16 @@ class Runner:
         if args.normalize_observations:
             data["observation_norm_state"] = self.model.obs_rms.save_state()
 
-        with self.open_fn(filename, "wb") as f:
-            torch.save(data, f)
+        def torch_save(f):
+            # protocol 4 allows for >4gb files
+            torch.save(data, f, pickle_protocol=4)
+
+        if args.checkpoint_compression:
+            with self.open_fn(filename+".gz", "wb") as f:
+                torch_save(f)
+        else:
+            with self.open_fn(filename, "wb") as f:
+                torch_save(f)
 
     @property
     def open_fn(self):
@@ -717,8 +727,7 @@ class Runner:
     def load_checkpoint(self, checkpoint_path):
         """ Restores model from checkpoint. Returns current env_step"""
 
-        with self.open_fn(checkpoint_path, "rb") as f:
-            checkpoint = torch.load(f, map_location=args.device)
+        checkpoint = _open_checkpoint(checkpoint_path, map_location=args.device)
 
         self.model.load_state_dict(checkpoint['model_state_dict'])
 
@@ -1480,13 +1489,13 @@ class Runner:
                 self.log.watch_mean(
                     f"tv_{h:04d}",
                     this_var,
-                    display_wifth=0,
+                    display_width=0,
                     history_length=1
                 )
                 self.log.watch_mean(
                     f"nev_{h:04d}",
                     this_not_explained_var,
-                    display_wifth=0,
+                    display_width=0,
                     history_length=1
                 )
                 # raw is RMS on unscaled error
@@ -2488,13 +2497,18 @@ class Runner:
                 label="value",
             )
 
-    def train_distil(self):
+    def _sample_replay_batch(self, n:int = None):
+        """
+        Creates a batch of data to train on during distil phase.
+        If n is None then the entire replay buffer is used
+        if n < len(replay_buffer) a sampling without replacement is used
+        Otherwise an error is raised.
 
-        # ----------------------------------------------------
-        # distil phase
+        Also generates any required targets.
 
-        if args.distil_epochs == 0:
-            return
+        If no replay buffer is being used then uses the rollout data instead.
+
+        """
 
         # work out what to use to train distil on
         if self.replay_buffer is not None:
@@ -2506,7 +2520,7 @@ class Runner:
                 distil_obs = np.concatenate([
                     self.replay_buffer.data.reshape([-1, args.agents, *state_shape]),
                     self.prev_obs
-                    ], axis=0)
+                ], axis=0)
                 distil_time = np.concatenate([
                     self.replay_buffer.time.reshape([-1, args.agents]),
                     self.prev_time
@@ -2517,6 +2531,24 @@ class Runner:
         else:
             distil_obs = self.prev_obs
             distil_time = self.prev_time
+
+        # filter down to n samples (if needed)
+        if n is not None:
+            N, A, *state_shape = distil_obs.shape
+            B = N * A
+            if n > B:
+                raise ValueError(f"Can not produce {n} samples from a replay buffer of size {N}.")
+            elif n < B:
+                assert n % A == 0, f"Distil sample size {n} must divide number of agents {A}."
+                sample = np.random.choice(B, n, replace=False)
+
+                def resample(x, sample_ids):
+                    N, A, *state_shape = x.shape
+                    new_N = len(sample_ids) // A
+                    return x.reshape([N*A, *state_shape])[sample_ids].reshape([new_N, A, *state_shape])
+
+                distil_obs = resample(distil_obs, sample)
+                distil_time = resample(distil_time, sample)
 
         batch_data = {}
         N, A, *state_shape = distil_obs.shape
@@ -2551,6 +2583,18 @@ class Runner:
             )
             batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
+        return batch_data
+
+
+
+    def train_distil(self):
+
+        # ----------------------------------------------------
+        # distil phase
+
+        if args.distil_epochs == 0:
+            return
+
         # setup a training hook for debugging
         kl_losses = []
         value_losses = []
@@ -2564,7 +2608,24 @@ class Runner:
             targ_var.append(self.log._vars["distil_targ_var"]._history[-1])
             return False
 
+        def get_replay_sample():
+            if args.distil_batch_mode == "full":
+                # sample entire replay every update
+                return self._sample_replay_batch()
+            elif args.distil_batch_mode in ["sample", "resample"]:
+                # sample one rollout worth of data every update
+                # or sample one rollout worth of data every epoch
+                return self._sample_replay_batch(args.agents*args.n_steps)
+            else:
+                raise ValueError(f"Invalid distil_batch_mode {args.distil_batch_mode}")
+
+        batch_data = get_replay_sample()
+
         for distil_epoch in range(args.distil_epochs):
+
+            if args.distil_batch_mode == "resample" and distil_epoch != 0:
+                # update sample
+                batch_data = get_replay_sample()
 
             kl_losses.clear()
             value_losses.clear()
@@ -2817,3 +2878,32 @@ class RolloutBuffer():
         self.tvf_gamma = runner.tvf_gamma
         self.gamma = runner.gamma
         self.current_horizon = runner.current_horizon
+
+def _open_checkpoint(checkpoint_path: str, **pt_args):
+    """
+    Load checkpoint. Supports zip format.
+    """
+    # gzip support
+
+    try:
+        with gzip.open(os.path.join(checkpoint_path, ".gz"), 'rb') as f:
+            return torch.load(f, **pt_args)
+    except:
+        pass
+
+    try:
+        # unfortunately some checkpoints were saved without the .gz so just try and fail to load them...
+        with gzip.open(checkpoint_path, 'rb') as f:
+            return torch.load(f, **pt_args)
+    except:
+        pass
+
+    try:
+        # unfortunately some checkpoints were saved without the .gz so just try and fail to load them...
+        with open(checkpoint_path, 'rb') as f:
+            return torch.load(f, **pt_args)
+    except:
+        pass
+
+    raise Exception(f"Could not open checkpoint {checkpoint_path}")
+

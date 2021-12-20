@@ -142,6 +142,8 @@ class Config:
         self.checkpoint_every   = int()
         self.disable_ev         = bool()
 
+        self.distil_batch_mode = str()
+
         self.use_rnd            = bool()
         self.warmup_period      = int()
 
@@ -170,7 +172,7 @@ class Config:
         self.use_tanh_clipping = bool()
 
         self.use_compression = bool()
-        self.use_mutex = bool()
+        self.mutex_key = bool()
 
         self.__dict__.update(kwargs)
 
@@ -194,6 +196,10 @@ class Config:
     @property
     def use_intrinsic_rewards(self):
         return self.use_rnd
+
+    @property
+    def needs_dual_constraint(self):
+        return args.dna_dual_constraint != 0 and args.architecture == "dual" and args.distil_epochs > 0
 
     @property
     def normalize_intrinsic_rewards(self):
@@ -342,6 +348,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--distil_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
 
+    parser.add_argument("--distil_batch_mode", type=str, default="full", help="[full|sample|resample]")
+
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
     parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
@@ -446,6 +454,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Number of environment steps between checkpoints.")
 
     # due to compatability
+    parser.add_argument("--use_mutex", type=str2bool, default=False, help=argparse.SUPPRESS)
     parser.add_argument("--distill_epochs", dest="distil_epochs", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--distill_beta", dest="distil_beta", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--tvf_force_ext_value_distill", dest="tvf_force_ext_value_distil", type=str2bool, help=argparse.SUPPRESS)
@@ -453,7 +462,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distill_lr_anneal", dest="distil_lr_anneal", type=str2bool, help=argparse.SUPPRESS)
 
     # other
-    parser.add_argument("--use_mutex", type=str2bool, default=False,
+    parser.add_argument("--mutex_key", type=str, default=None,
                         help="uses mutex locking so that only one GPU can be working on a rollout at a time."
                         )
 
@@ -464,12 +473,14 @@ def parse_args(no_env=False, args_override=None):
     else:
         args.update(**parser.parse_args().__dict__)
 
-
     # set defaults
     if args.intrinsic_reward_propagation is None:
         args.intrinsic_reward_propagation = args.use_rnd
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
+    if args.use_mutex:
+        print("warning, use_mutex is deprecated, use mutex_key instead.")
+        args.mutex_key = args.device
 
     try:
         args.tvf_lambda = float(args.tvf_lambda)

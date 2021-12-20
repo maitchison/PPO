@@ -178,6 +178,8 @@ simple_args.update({
 
 replay_simple_args = enhanced_args.copy()
 replay_simple_args.update({
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
     'replay_mixing':False,
     'distill_epochs': 1,
     'distil_period':2,
@@ -221,6 +223,10 @@ def add_job(
 
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
+
+    if kwargs.get("epochs", -1) == 0:
+        # ignore runs with 0 epochs, but only if epcohs is not specified.
+        return
 
     job = Job(experiment_name, run_name, priority, chunk_size, kwargs, hostname=hostname)
 
@@ -1006,6 +1012,22 @@ def E11():
     # may as well see how TVF goes...
     for env in DIVERSE_10:
         for run in [1]: # just one run for the moment...
+
+            # see if we can get full curve learning working on pong
+            add_job(
+                # the idea here is that a small dc will allow pong to train
+                # the replay probably needed, and I can remove it if we want, but it might also help distillation
+                # training
+                f"E11_PerGameGamma (additional)",
+                env_name=env,
+                run_name=f"game={env} replay_full (seed={run})",
+                default_params=replay_full_args,
+                epochs=50,
+                priority=100,
+                seed=run,
+                hostname='',
+            )
+
             # add_job(
             #     f"E1_1_PerGameGamma",
             #     env_name=env,
@@ -1059,16 +1081,26 @@ def E11():
                 hostname='',
             )
 
+            # add_job(
+            #     f"E11_PerGameGamma (additional)",
+            #     env_name=env,
+            #     run_name=f"game={env} rs_30k (seed={run})",
+            #     default_params=replay_simple_args,
+            #     epochs=50,
+            #     priority=50,
+            #     seed=run,
+            #     hostname='',
+            # )
+
             add_job(
-                # the idea here is that a small dc will allow pong to train
-                # the replay probably needed, and I can remove it if we want, but it might also help distillation
-                # training
-                f"E11_PerGameGamma (additional)",
+                f"E11_PerGameGamma (additional2)",
                 env_name=env,
-                run_name=f"game={env} replay_simple (seed={run})",
+                run_name=f"game={env} rs_10k (seed={run})",
                 default_params=replay_simple_args,
+                tvf_gamma=0.9999,
+                gamma=0.9999,
                 epochs=50,
-                priority=-50,
+                priority=50,
                 seed=run,
                 hostname='',
             )
@@ -1143,6 +1175,26 @@ def E31():
                         sa_sigma=sa_sigma,
                         epochs=50,
                         priority=50,
+                        seed=run,  # this makes sure sa seeds are different.
+                        hostname='',
+                    )
+    # Changes are: better model, and more variance
+    for env in KEY_4:
+        for run in [1, 2, 3]:  # just one run for the moment...
+            sa_sigma = 0.1
+            for sa_mu in [0]:
+                for strategy in ["sa_return", "sa_reward"]:
+                    add_job(
+                        f"E31_DynamicGamma (test5)",
+                        env_name=env,
+                        run_name=f"game={env} gamma {strategy} sa_mu={sa_mu} (seed={run})",
+                        auto_gamma="gamma",
+                        auto_strategy=strategy,
+                        default_params=replay_simple_args,
+                        sa_mu=sa_mu,
+                        sa_sigma=sa_sigma,
+                        epochs=50,
+                        priority=-50,
                         seed=run,  # this makes sure sa seeds are different.
                         hostname='',
                     )
@@ -1439,6 +1491,8 @@ def test_distil():
     default_distil_args["hostname"] = ''
     default_distil_args["use_mutex"] = True
 
+    ROLLOUT_SIZE = 128 * 128
+
     # let's just do all combinations and see what happens
     for env in ['Pong', 'Breakout', 'CrazyClimber']:
         add_job(
@@ -1466,7 +1520,7 @@ def test_distil():
             default_params=default_distil_args,
             priority=40 + 5 if env == "Pong" else 0,
         )
-        for replay_size in [0, 128 * 128, 128 * 128 * 2]:
+        for replay_size in [0, ROLLOUT_SIZE, ROLLOUT_SIZE * 2]:
             for replay_mode in ['overwrite', 'uniform', 'mixed']:
                 if replay_size == 0 and replay_mode != 'overwrite':
                     continue
@@ -1476,7 +1530,7 @@ def test_distil():
                             if replay_size == 0:
                                 rp_tag = ' RP0'
                             else:
-                                rp_tag = f" RP{replay_size//(128*128)} ({replay_mode})"
+                                rp_tag = f" RP{replay_size//(ROLLOUT_SIZE)} ({replay_mode})"
 
                             add_job(
                                 f"test_distil_rp",
@@ -1491,32 +1545,110 @@ def test_distil():
                                 default_params=default_distil_args,
                                 priority=0 + 5 if env == "Pong" else 0,
                             )
-        for replay_size in [0, 1, 2, 4, 8]:
+
+        add_job(
+            f"test_distil_rp_long",
+            env_name=env,
+            run_name=f"game={env} replay_simple mode=off rs={0}",
+            replay_size=0,
+            distil_batch_mode="full",
+            distil_period=1,
+            default_params=replay_simple_args,
+            priority=40,
+            hostname="ML-Rig",
+        )
+
+        add_job(
+            # this is a really helpful reference run
+            f"test_distil_rp_long",
+            env_name=env,
+            run_name=f"game={env} rp_121 rs={0}",
+
+            replay_size=1 * ROLLOUT_SIZE,
+            distil_period=2,
+            distil_epochs=1,
+
+            distil_batch_mode="full",
+            default_params=replay_simple_args,
+            priority=40,
+            epochs=20 if env == "pong" else 0,
+            hostname="ML-Rig",
+        )
+
+        add_job(
+            # just testing a new idea
+            f"test_distil_rp_long",
+            env_name=env,
+            run_name=f"game={env} rp_h11 rs={0}",
+
+            replay_size=ROLLOUT_SIZE // 2,
+            distil_period=1,
+            distil_epochs=1,
+
+            distil_batch_mode="sample",
+            default_params=replay_simple_args,
+            priority=40,
+            epochs=20 if env == "pong" else 0,
+            hostname="ML-Rig",
+        )
+
+        add_job(
+            # just testing a new idea
+            f"test_distil_rp_long",
+            env_name=env,
+            run_name=f"game={env} rp_s11 rs={0}",
+
+            replay_size=ROLLOUT_SIZE,
+            distil_period=1,
+            distil_epochs=1,
+
+            distil_lr=1e-4,
+
+            distil_batch_mode="sample",
+            default_params=replay_simple_args,
+            priority=40,
+            epochs=20 if env == "pong" else 0,
+            hostname="ML-Rig",
+        )
+
+        def get_rp_epochs(env, mode, replay_size):
+            if mode == "sample" and replay_size in [0, 1]:
+                # sample 1 and full 1 are the same so ignore sample 1
+                return 0
+            if env == "pong":
+                return 20
+            return 50
+
+        for replay_size in [1, 2, 4, 8]:
+            # this has insane memory requirements (because we haven't implemented compression yet)
+            # so I need to make sure they go on the ML rig, and happen one at a time.
             add_job(
                 f"test_distil_rp_long",
                 env_name=env,
-                run_name=f"game={env} replay_simple rs={replay_size}",
-                replay_size=replay_size * 128 * 128,
+                run_name=f"game={env} replay_simple mode=full rs={replay_size}",
+                replay_size=replay_size * ROLLOUT_SIZE,
+                distil_batch_mode="full",
+                distil_period=replay_size,
                 default_params=replay_simple_args,
-                priority=200 if replay_size==8 else -20, # just want to start some of these big ones early...
+                epochs=get_rp_epochs(env, "full", replay_size),
+                priority=40,
+                hostname="ML-Rig",
             )
+            # this is the alternative method where we just sample
+            add_job(
+                f"test_distil_rp_long",
+                env_name=env,
+                run_name=f"game={env} replay_simple mode=sample rs={replay_size}",
+                replay_size=replay_size * ROLLOUT_SIZE,
+                distil_batch_mode="sample",
+                distil_period=1,
+                default_params=replay_simple_args,
+                epochs=get_rp_epochs(env, "sample", replay_size),
+                priority=40,  # just want to start some of these big ones early...
+                hostname="ML-Rig",
+          )
 
     for env in ['Pong', 'Breakout', 'CrazyClimber']:
-
-        # see if we can get full curve learning working on pong
-        add_job(
-            # the idea here is that a small dc will allow pong to train
-            # the replay probably needed, and I can remove it if we want, but it might also help distillation
-            # training
-            f"E11_PerGameGamma (additional)",
-            env_name=env,
-            run_name=f"game={env} replay_full (seed={1})",
-            default_params=replay_full_args,
-            epochs=50,
-            priority=-50,
-            seed=1,
-            hostname='',
-        )
 
         # find a good dual constraint
         replay_mode = "uniform"
@@ -1527,7 +1659,7 @@ def test_distil():
                         if replay_size == 0:
                             rp_tag = ' RP0'
                         else:
-                            rp_tag = f" RP{replay_size//(128*128)} ({replay_mode})"
+                            rp_tag = f" RP{replay_size//(ROLLOUT_SIZE)} ({replay_mode})"
                         add_job(
                             f"test_distil_dc",
                             env_name=env,
@@ -1554,10 +1686,10 @@ if __name__ == "__main__":
     id = 0
     job_list = []
 
-    E11()
-    E31()
+    # E11()
+    # E31()
 
-    test_distil()
+    # test_distil()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

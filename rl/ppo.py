@@ -156,7 +156,7 @@ def train(model: models.TVFModel, log: Logger):
         save_progress(log)
 
         # generate the rollout
-        with Mutex(args.hostname + "_" + args.device, enabled=args.use_mutex) as mx:
+        with Mutex(args.mutex_key) as mx:
             log.watch_mean("mutex_wait", mx.wait_time, display_precision=3, display_name="mutex")
             rollout_start_time = time.time()
             runner.generate_rollout()
