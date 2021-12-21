@@ -16,7 +16,7 @@ from .config import args
 
 import gym
 
-from typing import List
+from typing import List, Union
 
 NATS_TO_BITS = 1.0/math.log(2)
 
@@ -794,3 +794,15 @@ def save_env_state(env):
         env = env.env
 
     return save_data
+
+# -------------------------------------------------------------
+# Numpy / torch tools
+# -------------------------------------------------------------
+
+def merge_first_two_dims(x:Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+    """
+    Takes [a,b,*] and returns [a*b,*]
+    """
+    assert len(x.shape) >= 2, f"Can not merge down array of dims {x.shape}, as it needs atleast two dims."
+    a, b, *remainder = x.shape
+    return x.reshape([a * b, *remainder])

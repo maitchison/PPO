@@ -30,7 +30,8 @@ class Config:
         self.distil_beta        = float()
         self.distil_period      = int()
         self.replay_size        = int()
-        self.replay_mode        = str()
+        self.distil_resampling  = bool()
+        self.distil_batch_size  = int()
         self.replay_mixing      = bool()
 
         self.observation_normalization = bool()
@@ -141,8 +142,6 @@ class Config:
         self.log_folder         = str()
         self.checkpoint_every   = int()
         self.disable_ev         = bool()
-
-        self.distil_batch_mode = str()
 
         self.use_rnd            = bool()
         self.warmup_period      = int()
@@ -322,13 +321,15 @@ def parse_args(no_env=False, args_override=None):
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
     parser.add_argument("--value_epochs", type=int, default=2, help="Number of value training epochs per training batch.")
-    parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distilation epochs")
+
+    # distil / replay
+    parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--replay_size", type=int, default=0,
-                        help="Size of replay buffer, 0=off.")
-    parser.add_argument("--replay_mode", type=str, default="overwrite",
-                        help="[overwrite|uniform]")
+    parser.add_argument("--distil_resampling", type=str2bool, default=False, help="Gathers a new distil sample every epoch.")
+    parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to replay_size (or rollout batch size if replay is disabled).")
+    parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
+    parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
 
     parser.add_argument("--dna_shared_initialization", type=str2bool, default=False,
@@ -347,8 +348,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--value_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--distil_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
-
-    parser.add_argument("--distil_batch_mode", type=str, default="full", help="[full|sample|resample]")
 
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
@@ -407,9 +406,6 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--atari_rom_check", type=str2bool, default=True,
                         help="Verifies on load, that the MD5 of atari ROM matches the ALE.")
-
-
-    # distillation
 
     # episodic discounting
     parser.add_argument("--time_aware", type=str2bool, default=True)
@@ -481,6 +477,8 @@ def parse_args(no_env=False, args_override=None):
     if args.use_mutex:
         print("warning, use_mutex is deprecated, use mutex_key instead.")
         args.mutex_key = args.device
+    if args.distil_batch_size is None:
+        args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
 
     try:
         args.tvf_lambda = float(args.tvf_lambda)

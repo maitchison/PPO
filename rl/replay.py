@@ -61,8 +61,10 @@ class ExperienceReplayBuffer():
         @param new_experience: ndarray of dims [N, *state_shape]
         """
 
-        assert new_experience.shape[1:] == self.data.shape[1:]
-        assert new_experience.dtype == self.data.dtype
+        assert new_experience.shape[1:] == self.data.shape[1:], \
+            f"Invalid shape for new experience, expecting {new_experience.shape[1:]} but found {self.data.shape[1:]}."
+        assert new_experience.dtype == self.data.dtype, \
+            f"Invalid dtype for new experience, expecting {self.data.dtype} but found {self.data.dtype}."
 
         # 1. filter our examples that have already been seen
         hash_fn = lambda x: int(hashlib.sha256(x.data.tobytes()).hexdigest(), 16) % (2**64)
@@ -86,12 +88,10 @@ class ExperienceReplayBuffer():
         else:
             if self.mode == "uniform":
                 entries_to_add = math.ceil((new_entries / (self.experience_seen + new_entries)) * self.N)
-            elif self.mode == "overwrite":
+            elif self.mode in ["overwrite", "sequential"]:
                 entries_to_add = new_entries
             else:
                 raise ValueError(f"Invalid mode {self.mode}")
-
-        self.experience_seen += new_entries
 
         ids = smart_sample(ids, entries_to_add)
         ids = sorted(ids) # faster to in sequential order.
@@ -99,7 +99,11 @@ class ExperienceReplayBuffer():
         # 3. add the new entries
         # note: sometimes we need to add more entries than we have (e.g. when initializing the buffer) in which case
         # I just use sampling with replacement
-        new_spots = smart_sample(range(self.N), entries_to_add)
+        if self.mode == "sequential":
+            new_spots = np.asarray(range(self.experience_seen, self.experience_seen + entries_to_add))
+            new_spots = np.mod(new_spots, self.N)
+        else:
+            new_spots = smart_sample(range(self.N), entries_to_add)
 
         for source, destination in zip(ids, new_spots):
             # remove its hash
@@ -109,6 +113,8 @@ class ExperienceReplayBuffer():
                 self.hashes[destination] = new_hashes[source]
             if new_time is not None:
                 self.time[destination] = new_time[source]
+
+        self.experience_seen += new_entries
 
 
 def smart_sample(x, n):

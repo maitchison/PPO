@@ -10,7 +10,7 @@ import unicodedata
 import re
 
 LOCK_PATH = os.path.expanduser("~/.cache/")
-LOCK_AGE_LIMIT = 60
+LOCK_AGE_LIMIT = 120 # in seconds
 
 
 def slugify(value, allow_unicode=False):
@@ -70,7 +70,7 @@ def aquire_lock(key, timeout=60.0):
 
         # otherwise, wait until the lock is available
         while lock_file.exists() and (time.time() - start_time) < timeout:
-            time.sleep(0.01)
+            time.sleep(0.1)
 
         wait_time = time.time() - start_time
 

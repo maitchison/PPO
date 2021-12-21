@@ -483,19 +483,6 @@ class Runner:
         self.step = 0
         self.horizon_sa = SimulatedAnnealing(1000) # this ends up being one third, so a horizon of ~300
 
-        if args.replay_size > 0:
-            assert not args.use_compression, "Compression and replay buffer are not supported yet."
-            assert args.replay_size % args.agents == 0, \
-                f"replay_size ({args.replay_size}) must be a multiple if agents ({args.agents})."
-            self.replay_buffer = ExperienceReplayBuffer(
-                N=args.replay_size,
-                obs_shape=model.input_dims,
-                obs_dtype=np.uint8,
-                mode=args.replay_mode,
-            )
-        else:
-            self.replay_buffer = None
-
         self.previous_rollout = None
 
         optimizer_params = {
@@ -578,6 +565,19 @@ class Runner:
         self.reward_clips = 0
         self.ep_count = 0
         self.episode_length_buffer = collections.deque(maxlen=1000)
+
+        # create the replay buffer is needed
+        if args.replay_size > 0:
+            assert args.replay_size % args.agents == 0, \
+                f"replay_size ({args.replay_size}) must be a multiple if agents ({args.agents})."
+            self.replay_buffer = ExperienceReplayBuffer(
+                N=args.replay_size,
+                obs_shape=self.prev_obs.shape[2:],
+                obs_dtype=self.prev_obs.dtype,
+                mode=args.replay_mode,
+            )
+        else:
+            self.replay_buffer = None
 
         #  these horizons will always be generated and their scores logged.
         self.tvf_debug_horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
@@ -1342,8 +1342,8 @@ class Runner:
         # add data to replay buffer if needed
         if self.replay_buffer is not None:
             self.replay_buffer.add_experience(
-                self.prev_obs.reshape([args.agents * args.n_steps, *self.prev_obs.shape[2:]]),
-                self.prev_time.reshape([args.agents * args.n_steps])
+                utils.merge_first_two_dims(self.prev_obs),
+                utils.merge_first_two_dims(self.prev_time),
             )
 
         if args.debug_terminal_logging:
@@ -2608,24 +2608,13 @@ class Runner:
             targ_var.append(self.log._vars["distil_targ_var"]._history[-1])
             return False
 
-        def get_replay_sample():
-            if args.distil_batch_mode == "full":
-                # sample entire replay every update
-                return self._sample_replay_batch()
-            elif args.distil_batch_mode in ["sample", "resample"]:
-                # sample one rollout worth of data every update
-                # or sample one rollout worth of data every epoch
-                return self._sample_replay_batch(args.agents*args.n_steps)
-            else:
-                raise ValueError(f"Invalid distil_batch_mode {args.distil_batch_mode}")
-
-        batch_data = get_replay_sample()
+        batch_data = self._sample_replay_batch(args.distil_batch_size)
 
         for distil_epoch in range(args.distil_epochs):
 
-            if args.distil_batch_mode == "resample" and distil_epoch != 0:
+            if args.distil_resampling and distil_epoch != 0:
                 # update sample
-                batch_data = get_replay_sample()
+                batch_data = self._sample_replay_batch(args.distil_batch_size)
 
             kl_losses.clear()
             value_losses.clear()
@@ -2673,18 +2662,21 @@ class Runner:
             label,
             hooks: Union[dict, None] = None) -> dict:
         """
-        Trains agent policy on current batch of experience
+        Trains agent on current batch of experience
         Returns context with
             'mini_batches' number of mini_batches completed
             'outputs' output from each mini_batch update
             'did_break'=True (only if training terminated early)
         """
 
-        mini_batches = args.batch_size // mini_batch_size
+        assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"
+        batch_size, *state_shape = batch_data["prev_state"].shape
+
+        mini_batches = batch_size // mini_batch_size
         micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
         micro_batches = mini_batch_size // micro_batch_size
 
-        ordering = list(range(args.batch_size))
+        ordering = list(range(batch_size))
         np.random.shuffle(ordering)
 
         micro_batch_counter = 0

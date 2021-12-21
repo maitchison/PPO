@@ -7,6 +7,7 @@ from typing import List
 Handles compressed data for rollout.
 """
 
+# lz4 is by far the quickest...
 COMPRESSION_LIBRARY = lz4.frame
 COMPRESSION_PARAMS = {
     'compression_level': 0
