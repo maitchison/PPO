@@ -201,6 +201,10 @@ class Config:
         return args.dna_dual_constraint != 0 and args.architecture == "dual" and args.distil_epochs > 0
 
     @property
+    def full_curve_distil(self):
+        return args.use_tvf and not args.tvf_force_ext_value_distil
+
+    @property
     def normalize_intrinsic_rewards(self):
         return self.use_rnd
 

@@ -259,6 +259,7 @@ def E01():
                 # the idea here is that a small dc will allow pong to train
                 # the replay probably needed, and I can remove it if we want, but it might also help distillation
                 # training
+                # note: this had a bug in the settings where it was actually the simplified curve learning...
                 f"E11_PerGameGamma (additional)",
                 env_name=env,
                 run_name=f"game={env} replay_full (seed={run})",
@@ -278,7 +279,7 @@ def E01():
                 tvf_gamma=0.9999,
                 default_params=standard_args,
                 epochs=50,
-                priority=-100,
+                priority=100,
                 seed=run,
                 hostname='',
             )
@@ -435,7 +436,7 @@ def E03():
                         sa_mu=sa_mu,
                         sa_sigma=sa_sigma,
                         epochs=50,
-                        priority=-50,
+                        priority=50,
                         seed=run,  # this makes sure sa seeds are different.
                         hostname='',
                     )
@@ -615,7 +616,7 @@ def setup_ED():
             env_name=env,
             run_name="reference (inf)",
             default_params=default_args,
-            priority=-100,
+            priority=100,
             hostname='ML-Rig',
         )
 
@@ -627,7 +628,7 @@ def setup_ED():
             default_params=default_args,
             gamma=0.99997,
             tvf_gamma=0.99997,
-            priority=-100,
+            priority=100,
             hostname='ML-Rig',
         )
 
@@ -640,7 +641,7 @@ def setup_ED():
                 default_params=default_args,
                 ed_type = ed_type,
                 ed_gamma = ed_gamma,
-                priority=-100,
+                priority=100,
                 hostname='ML-Rig',
             )
 

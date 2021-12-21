@@ -2,7 +2,7 @@ from runner_tools import WORKERS, MYSTIC_FIVE, add_job
 
 ROLLOUT_SIZE = 128*128
 
-E02_args = {
+E2_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
     'architecture': 'dual',
@@ -12,6 +12,7 @@ E02_args = {
     'warmup_period': 1000,
     'disable_ev': False,
     'seed': 0,
+    'use_mutex': True,
 
     # env parameters
     'time_aware': True,
@@ -30,7 +31,7 @@ E02_args = {
     'policy_lr': 2.5e-4,
     'value_lr': 2.5e-4,
     'entropy_bonus': 1e-3,
-    'tvf_force_ext_value_distil': True,
+    'tvf_force_ext_value_distil': False,
     'hidden_units': 256,
     'gae_lambda': 0.95,
 
@@ -49,7 +50,7 @@ E02_args = {
     'tvf_soft_anchor': 0,
     'tvf_exp_mode': "transformed",
 
-    # distil / replay buffer (This would have been called 11h before
+    # distil / replay buffer (This would have been called h11 before
     'distil_epochs': 1,
     'distil_period': 1,
     'replay_size':   1*ROLLOUT_SIZE,
@@ -59,6 +60,7 @@ E02_args = {
     'distil_lr': 2.5e-4,
     'replay_mode': "uniform",
     'replay_mixing': False,
+    'dna_dual_constraint': 0.3,
 
     # horizon
     'gamma': 0.99997,
@@ -75,7 +77,7 @@ for env in MYSTIC_FIVE:
             env_name=env,
             run_name=f"game={env} rs={replay_size}",
             replay_size=replay_size*ROLLOUT_SIZE,
-            default_params=E02_args,
+            default_params=E2_args,
             use_compression=True,
-            priority=0,
+            priority=200,
         )

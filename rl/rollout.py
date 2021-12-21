@@ -1399,7 +1399,6 @@ class Runner:
             else:
                 scalar_output = False
 
-            horizons = np.repeat(horizons[None, :], N * A, axis=0)
             time = time.reshape(N*A)
 
             model_out = self.forward(
@@ -1483,7 +1482,7 @@ class Runner:
                 self.log.watch_mean(
                     f"ev_{h:04d}",
                     ev,
-                    display_width=8 if h < 100 or h == args.tvf_max_horizon else 0,
+                    display_width=8 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
                     history_length=1
                 )
                 self.log.watch_mean(
@@ -1958,7 +1957,7 @@ class Runner:
             mse = torch.square(predictions - targets).mean()
             ev = 1 - torch.var(predictions-targets) / torch.var(targets)
             self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil_epochs,
-                                display_width=0)
+                                display_width=6)
             self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil_epochs,
                                 display_width=0)
 
@@ -2222,7 +2221,12 @@ class Runner:
         old_policy_logprobs = data["log_policy"]
         advantages = data["advantages"]
 
-        model_out = self.model.forward(prev_states, output="policy")
+        if args.needs_dual_constraint and args.full_curve_distil:
+            aux_features = package_aux_features(data["horizons"], data["time"])
+        else:
+            aux_features = None
+
+        model_out = self.model.forward(prev_states, output="policy", aux_features=aux_features)
 
         # -------------------------------------------------------------------------
         # Calculate loss_pg
@@ -2273,9 +2277,17 @@ class Runner:
         # -------------------------------------------------------------------------
         # Optional value constraint
         # -------------------------------------------------------------------------
-        if args.dna_dual_constraint > 0:
-            targets = data["old_value"]
-            predictions = model_out["ext_value"]
+        if args.needs_dual_constraint:
+
+            if args.use_tvf and not args.tvf_force_ext_value_distil:
+                # constrain a sample of the entire value curve
+                targets = data["old_value"]
+                predictions = model_out["tvf_value"]
+            else:
+                # just train on ext_value head (much simpler)
+                targets = data["old_value"]
+                predictions = model_out["ext_value"]
+
             value_constraint_loss = args.dna_dual_constraint * 0.5 * torch.square(targets-predictions).mean()
             self.log.watch_mean(
                 "loss_policy_vcl",
@@ -2423,13 +2435,26 @@ class Runner:
             batch_data["int_value"] = self.int_value.reshape(B)
 
         # policy constraint
-        if args.architecture == "dual" and args.dna_dual_constraint > 0:
+        if args.needs_dual_constraint:
             with torch.no_grad():
-                assert args.tvf_force_ext_value_distil, "Dual constraint only tested with force_ext_value on."
-                model_out = self.forward(
-                    obs=batch_data["prev_state"], output="policy"
-                )
-                batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
+                if args.full_curve_distil:
+                    horizons = self.generate_horizon_sample(
+                        self.current_horizon,
+                        args.tvf_horizon_samples,
+                        args.tvf_horizon_distribution
+                    )
+                    horizons = np.repeat(horizons[None, :], B, axis=0)
+                    batch_data["horizons"] = horizons
+                    batch_data["time"] = self.prev_time.reshape([B])
+                    model_out = self.forward(
+                        obs=batch_data["prev_state"],
+                        output="policy",
+                        aux_features=package_aux_features(batch_data["horizons"], batch_data["time"])
+                    )
+                    batch_data["old_value"] = model_out["tvf_value"].detach().cpu().numpy()
+                else:
+                    model_out = self.forward(obs=batch_data["prev_state"], output="policy")
+                    batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
 
         policy_epochs = 0
         for _ in range(args.policy_epochs):
@@ -2672,6 +2697,9 @@ class Runner:
         assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"
         batch_size, *state_shape = batch_data["prev_state"].shape
 
+        for k, v in batch_data.items():
+            assert len(v) == batch_size, f"Batch input must all match in entry count. Expecting {batch_size} but found {len(v)} on {k}"
+
         mini_batches = batch_size // mini_batch_size
         micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
         micro_batches = mini_batch_size // micro_batch_size
@@ -2759,10 +2787,15 @@ def package_aux_features(horizons: Union[np.ndarray, torch.Tensor], time: Union[
     """
     Return aux features for given horizons and time fraction.
 
-    horizons: [B, H]
+    horizons: [B, H] or [H]
     time: [B]
 
     """
+
+    if len(horizons.shape) == 1:
+        # duplicate out horizon list for each batch entry
+        assert type(horizons) is np.ndarray, "Horizon duplication only implemented with numpy arrays for the moment sorry."
+        horizons = np.repeat(horizons[None, :], len(time), axis=0)
 
     B, H = horizons.shape
     assert time.shape == (B,)

@@ -5,9 +5,8 @@ from runner_tools import *
 if __name__ == "__main__":
 
     # load in the jobs...
-    import importlib
-    #importlib.import_module("E02")
-    importlib.import_module("E_LEGACY")
+    import E2_ReplayBuffer
+    import E_LEGACY
 
     if len(sys.argv) == 1:
         experiment_name = "show"
