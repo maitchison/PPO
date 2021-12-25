@@ -635,12 +635,13 @@ class Runner:
                 g['lr'] = self.rnd_lr
 
 
-    def create_envs(self):
-        """ Creates environments for runner"""
+    def create_envs(self, N=None, verbose=True, monitor_video=False):
+        """ Creates (vectorized) environments for runner"""
+        N = N or args.agents
         base_seed = args.seed
         if base_seed is None or base_seed < 0:
             base_seed = np.random.randint(0, 9999)
-        env_fns = [lambda i=i: atari.make(args=args, seed=base_seed+(i*997)) for i in range(args.agents)]
+        env_fns = [lambda i=i: atari.make(args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
@@ -662,7 +663,11 @@ class Runner:
                 returns_transform=lambda x: ValueTransform.H(x)
             )
 
-        self.log.important("Generated {} agents ({}) using {} ({}) model.".
+        if args.observation_normalization:
+            self.vec_env = wrappers.VecNormalizeObservationsWrapper(self.vec_env, scale_mode="scaled", stacked=True)
+
+        if verbose:
+            self.log.important("Generated {} agents ({}) using {} ({}) model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
                                   self.model.dtype))
 
@@ -754,9 +759,6 @@ class Runner:
             self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
 
         utils.restore_env_state(self.vec_env, checkpoint['env_state'])
-
-        if args.normalize_observations:
-            self.model.obs_rms.restore_state(checkpoint["observation_norm_state"])
 
         return step
 
@@ -1130,6 +1132,10 @@ class Runner:
         """
 
         scale = 2
+
+        # I should be calling create_envs to get the vector level wrappers, and then initializing the wrapper
+        # to have the correct normalization constants.
+        assert not args.normalize_observations, "Video export not supported with observation normalization yet."
 
         env = atari.make(monitor_video=True)
         _ = env.reset()
@@ -1606,6 +1612,23 @@ class Runner:
         ).reshape([(N + 1), A])
 
 
+    def estimate_replay_diversity(self, max_samples=64):
+        """
+        Returns an estimate of the diversity within the replay buffer using L2 distance in pixel space.
+        """
+        sample = np.random.choice(self.replay_buffer.N, size=min(max_samples, self.N), replace=False)
+        data = self.replay_buffer.data[sample]
+        if args.use_compression:
+            data = np.asarray([data[i].decompress() for i in range(len(data))])
+        N = len(data)
+        distances = []
+        for i in range(N):
+            for j in range(N):
+                distances.append(np.sum((data[i]/256 - data[j]/256) ** 2) ** 0.5)
+        return np.mean(distances)
+
+
+
     def calculate_returns(self):
 
         N, A, *state_shape = self.prev_obs.shape
@@ -1789,6 +1812,14 @@ class Runner:
             self.log.watch("tvf_horizon", self.current_horizon)
             self.log.watch("tvf_gamma", self.tvf_gamma)
 
+        if args.replay_size > 0:
+            self.log.watch_mean(
+                "replay_diversity",
+                self.estimate_replay_diversity(64),
+                display_width=8,
+                display_name="rp_div"
+            )
+
         self.log.watch("gamma", self.gamma, display_width=0)
 
         if not args.disable_ev:
@@ -1928,7 +1959,6 @@ class Runner:
             targets = data["value_targets"]
             predictions = model_out["ext_value"]
             loss_value = 0.5 * self.calculate_value_loss(targets, predictions).mean()
-            loss = loss + loss_value
         else:
             # method 2. try to learn the entire curve...
             aux_features = package_aux_features(
@@ -1939,7 +1969,8 @@ class Runner:
             targets = data["value_targets"]
             predictions = model_out["tvf_value"]
             loss_value = 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
-            loss = loss + loss_value
+
+        loss = loss + loss_value
 
         old_policy_logprobs = data["old_log_policy"]
         logps = model_out["log_policy"]
@@ -1949,15 +1980,23 @@ class Runner:
         loss_kl = args.distil_beta * kl_true
         loss = loss + loss_kl
 
+        pred_var = torch.var(predictions)
+        targ_var = torch.var(targets)
+
+        # variance boost
+        if args.distil_var_boost != 0.0:
+            loss = loss - args.distil_var_boost * pred_var
+
         # some debugging stats
         with torch.no_grad():
-            self.log.watch_mean("distil_targ_var", torch.var(targets), history_length=64 * args.distil_epochs, display_width=0)
-            self.log.watch_mean("distil_pred_var", torch.var(predictions), history_length=64 * args.distil_epochs,
+            self.log.watch_mean("distil_targ_var", targ_var, history_length=64 * args.distil_epochs, display_width=0)
+            self.log.watch_mean("distil_pred_var", pred_var, history_length=64 * args.distil_epochs,
                                 display_width=0)
             mse = torch.square(predictions - targets).mean()
             ev = 1 - torch.var(predictions-targets) / torch.var(targets)
             self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil_epochs,
-                                display_width=6)
+                                display_name="ev_dist",
+                                display_width=8)
             self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil_epochs,
                                 display_width=0)
 
@@ -2057,6 +2096,10 @@ class Runner:
         # Logging
         # -------------------------------------------------------------------------
 
+        feature_sparsity = torch.count_nonzero(model_out["features"]) / len(model_out["features"].numel)
+
+        self.log.watch_full("value_features", model_out["features"], display_width=0)
+        self.log.watch_mean("value_features_sparcity", feature_sparsity, display_width=0)
         self.log.watch_mean("loss_value", loss, display_name=f"ls_value")
 
         return {}
@@ -2294,6 +2337,7 @@ class Runner:
                 value_constraint_loss,
                 display_width=8,
                 display_name="ls_vcl",
+                display_precision=5,
                 history_length=64 * args.policy_epochs
             )
             loss = loss - value_constraint_loss
@@ -2321,7 +2365,7 @@ class Runner:
         self.log.watch_mean("loss_pg", loss_clip_mean, history_length=64*args.policy_epochs, display_name=f"ls_pg", display_width=8)
         self.log.watch_mean("kl_approx", kl_approx, display_width=0)
         self.log.watch_mean("kl_true", kl_true, display_width=8)
-        self.log.watch_mean("clip_frac", clip_frac, display_width=8)
+        self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("entropy", entropy)
         self.log.watch_mean("loss_ent", loss_entropy, display_name=f"ls_ent", display_width=8)
         self.log.watch_mean("loss_policy", loss, display_name=f"ls_policy")
@@ -2522,7 +2566,7 @@ class Runner:
                 label="value",
             )
 
-    def _sample_replay_batch(self, n:int = None):
+    def get_replay_batch(self, n:int = None):
         """
         Creates a batch of data to train on during distil phase.
         If n is None then the entire replay buffer is used
@@ -2633,13 +2677,11 @@ class Runner:
             targ_var.append(self.log._vars["distil_targ_var"]._history[-1])
             return False
 
-        batch_data = self._sample_replay_batch(args.distil_batch_size)
+        batch_data = self.get_replay_batch(args.distil_batch_size)
+        if np.var(batch_data["value_targets"]) < args.distil_min_var:
+            return
 
         for distil_epoch in range(args.distil_epochs):
-
-            if args.distil_resampling and distil_epoch != 0:
-                # update sample
-                batch_data = self._sample_replay_batch(args.distil_batch_size)
 
             kl_losses.clear()
             value_losses.clear()
@@ -2649,7 +2691,7 @@ class Runner:
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
-                mini_batch_size=args.value_mini_batch_size,
+                mini_batch_size=args.distil_mini_batch_size,
                 optimizer=self.distil_optimizer,
                 hooks={
                     'after_mini_batch': log_specific_losses
@@ -2673,7 +2715,8 @@ class Runner:
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
-            if args.distil_epochs > 0 and self.batch_counter % args.distil_period == 0:
+            if args.distil_epochs > 0 and self.batch_counter % args.distil_period == 0 and \
+                    self.step > args.distil_delay:
                 self.train_distil()
 
         self.batch_counter += 1

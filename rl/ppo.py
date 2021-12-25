@@ -97,7 +97,7 @@ def train(model: models.TVFModel, log: Logger):
 
     if not did_restore:
         log.log("To rerun experiment use:")
-        log.log("python train.py "+ " ".join(shlex.quote(x) for x in sys.argv[1:]))
+        log.log("python train.py " + " ".join(shlex.quote(x) for x in sys.argv[1:] if not x.startswith("description")))
         if args.normalize_observations:
             # this will get an initial estimate for the normalization constants.
             runner.run_random_agent(20)
@@ -156,8 +156,12 @@ def train(model: models.TVFModel, log: Logger):
         save_progress(log)
 
         # generate the rollout
-        with Mutex(args.mutex_key) as mx:
-            log.watch_mean("mutex_wait", mx.wait_time, display_precision=3, display_name="mutex")
+        with Mutex(args.get_mutex_key) as mx:
+            log.watch_mean(
+                "mutex_wait", round(1000 * mx.wait_time), display_name="mutex",
+                type="int",
+                display_width=8,
+            )
             rollout_start_time = time.time()
             runner.generate_rollout()
             rollout_time = (time.time() - rollout_start_time) / batch_size
@@ -180,7 +184,7 @@ def train(model: models.TVFModel, log: Logger):
         # record some training stats
         log.watch_mean("fps", int(fps))
         log.watch_mean("time_train", train_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
-        log.watch_mean("time_step", step_time * 1000, display_precision=2, display_width=10, display_name="step_ms")
+        log.watch_mean("time_step", step_time * 1000, display_precision=2, display_width=0, display_name="step_ms")
         log.watch_mean("time_rollout", rollout_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         log.watch_mean("time_returns", returns_time * 1000, display_postfix="ms", display_precision=2, display_width=0)
         log.watch_mean("time_log", log_time * 1000, type="float", display_postfix="ms", display_precision=2,

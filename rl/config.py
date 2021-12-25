@@ -30,11 +30,11 @@ class Config:
         self.distil_beta        = float()
         self.distil_period      = int()
         self.replay_size        = int()
-        self.distil_resampling  = bool()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
 
         self.observation_normalization = bool()
+        self.observation_scaling = float()
         self.intrinsic_reward_scale = float()
         self.extrinsic_reward_scale = float()
 
@@ -58,6 +58,7 @@ class Config:
         self.max_micro_batch_size = float()
         self.policy_mini_batch_size = int()
         self.value_mini_batch_size = int()
+        self.distil_mini_batch_size = int()
         self.network = str()
 
 
@@ -89,6 +90,9 @@ class Config:
         self.tvf_force_ext_value_distil = bool()
         self.tvf_hidden_units = int()
         self.use_tvf = bool()
+        self.distil_delay = int()
+        self.distil_min_var = float()
+        self.distil_var_boost = float()
 
         # entropy bonus constants
         self.eb_alpha           = float()
@@ -110,6 +114,7 @@ class Config:
         self.value_lr = float()
         self.policy_lr = float()
         self.distil_lr = float()
+        self.distil_delay = int()
         self.architecture = str()
         self.dna_shared_initialization = bool()
         self.dna_dual_constraint = float()
@@ -172,6 +177,7 @@ class Config:
 
         self.use_compression = bool()
         self.mutex_key = bool()
+        self.description = str()
 
         self.__dict__.update(kwargs)
 
@@ -199,6 +205,13 @@ class Config:
     @property
     def needs_dual_constraint(self):
         return args.dna_dual_constraint != 0 and args.architecture == "dual" and args.distil_epochs > 0
+
+    @property
+    def get_mutex_key(self):
+        if self.mutex_key == 'DEVICE':
+            return args.device
+        else:
+            return self.mutex_key
 
     @property
     def full_curve_distil(self):
@@ -330,11 +343,15 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--distil_resampling", type=str2bool, default=False, help="Gathers a new distil sample every epoch.")
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to replay_size (or rollout batch size if replay is disabled).")
     parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
+    parser.add_argument("--distil_delay", type=int, default=0, help="Number of steps to wait before starting distillation")
+    parser.add_argument("--distil_min_var", type=float, default=0.0,
+                        help="If the variance of the value networks value estimates are less than this distil will not run.")
+    parser.add_argument("--distil_var_boost", type=float, default=0.0,
+                        help="Variance based bonus for distillation.")
 
     parser.add_argument("--dna_shared_initialization", type=str2bool, default=False,
                         help="Policy and value network start with same weight initialization")
@@ -344,6 +361,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--target_kl", type=float, default=-1, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
     parser.add_argument("--value_mini_batch_size", type=int, default=256)
+    parser.add_argument("--distil_mini_batch_size", type=int, default=256)
     parser.add_argument("--ppo_epsilon", type=float, default=0.2, help="PPO epsilon parameter.")
     parser.add_argument("--n_steps", type=int, default=256, help="Number of environment steps per training step.")
     parser.add_argument("--agents", type=int, default=256)
@@ -371,6 +389,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
+    parser.add_argument("--observation_scaling", type=str, default="unit", help="[unit|centered]")
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
@@ -415,15 +434,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--time_aware", type=str2bool, default=True)
     parser.add_argument("--ed_type", type=str, default="none", help="[none|finite|geometric|quadratic|power|harmonic]")
     parser.add_argument("--ed_gamma", type=float, default=0.99)
-
     parser.add_argument("--full_action_space", type=str2bool, default=False)
     parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)
-
     parser.add_argument("--frame_stack", type=int, default=4)
     parser.add_argument("--frame_skip", type=int, default=4)
-
     parser.add_argument("--log_folder", type=str, default=None)
-
     parser.add_argument("--use_clipped_value_loss", type=str2bool, default=False, help="Use the improved clipped value loss.")
 
     # icm stuff
@@ -443,7 +458,7 @@ def parse_args(no_env=False, args_override=None):
                         help="disables explained variance calculations (faster)."
                         )
 
-    # debuging
+    # debugging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
     parser.add_argument("--debug_terminal_logging", type=str2bool, default=False,
@@ -453,34 +468,37 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
 
+    # other
+    parser.add_argument("--mutex_key", type=str, default=None,
+                        help="uses mutex locking so that only one GPU can be working on a rollout at a time. " +
+                             "(use DEVICE) to set automatically to current device."
+                        )
+    parser.add_argument("--seed", type=int, default=-1)
+    parser.add_argument("--description", type=str, default=None, help="Can be used as needed. (logged in params.txt)")
+
     # due to compatability
     parser.add_argument("--use_mutex", type=str2bool, default=False, help=argparse.SUPPRESS)
     parser.add_argument("--distill_epochs", dest="distil_epochs", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--distill_beta", dest="distil_beta", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--tvf_force_ext_value_distill", dest="tvf_force_ext_value_distil", type=str2bool, help=argparse.SUPPRESS)
+    parser.add_argument("--tvf_force_ext_value_distill", dest="tvf_force_ext_value_distil", type=str2bool,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--distil_resampling", type=str2bool, help=argparse.SUPPRESS) # ignored
     parser.add_argument("--distill_lr", dest="distil_lr", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--distill_lr_anneal", dest="distil_lr_anneal", type=str2bool, help=argparse.SUPPRESS)
 
-    # other
-    parser.add_argument("--mutex_key", type=str, default=None,
-                        help="uses mutex locking so that only one GPU can be working on a rollout at a time."
-                        )
+    cmd_args = parser.parse_args(args_override).__dict__
+    args.update(**cmd_args)
 
-    parser.add_argument("--seed", type=int, default=-1)
-
-    if args_override is not None:
-        args.update(**parser.parse_args(args_override).__dict__)
-    else:
-        args.update(**parser.parse_args().__dict__)
+    assert args.observation_scaling in ['unit', 'centered']
 
     # set defaults
     if args.intrinsic_reward_propagation is None:
         args.intrinsic_reward_propagation = args.use_rnd
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
-    if args.use_mutex:
+    if cmd_args.get("use_mutex", False):
         print("warning, use_mutex is deprecated, use mutex_key instead.")
-        args.mutex_key = args.device
+        args.mutex_key = "DEVICE"
     if args.distil_batch_size is None:
         args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
 

@@ -8,6 +8,16 @@ import math
 
 import socket
 
+
+"""
+
+Notes on parameters
+
+standard_args: These are the default args for a lot of the older experiments. Should work fine for PPO, and DNA.
+    for TVF use replay args.
+
+"""
+
 job_list = []
 id = 0
 
@@ -245,7 +255,7 @@ def add_job(
         kwargs["device"] = DEVICE
 
     if kwargs.get("epochs", -1) == 0:
-        # ignore runs with 0 epochs, but only if epcohs is not specified.
+        # ignore runs with 0 epochs, but only if epochs is not specified.
         return
 
     job = Job(experiment_name, run_name, priority, chunk_size, kwargs, hostname=hostname)
@@ -579,7 +589,11 @@ def comma(x):
 def show_experiments(filter_jobs=None, all=False):
 
     epochs, hours, ips = get_eta_stats()
-    if hours < 24:
+    if hours < 0.75:
+        nice_eta_time = f"{hours*60:.0f} minutes"
+    elif round(hours) == 1:
+        nice_eta_time = f"{hours:.0f} hour"
+    elif hours < 24:
         nice_eta_time = f"{hours:.0f} hours"
     else:
         nice_eta_time = f"{hours/24:.1f} days"
@@ -665,7 +679,7 @@ def get_eta_stats():
         if details is None:
             total_epochs_to_go += job.params["epochs"]
         else:
-            total_epochs_to_go += job.params["epochs"] - details["completed_epochs"]
+            total_epochs_to_go += max(0, job.params["epochs"] - details["completed_epochs"])
         if job.get_status() == "running" and details is not None:
             total_ips += details["fps"]
 
@@ -682,13 +696,12 @@ def random_search(
         main_params: dict,
         search_params:dict,
         envs: list,
-        score_thresholds: list,
+        score_thresholds: list=None,
         count: int = 64,
         process_up_to=None,
         base_seed=0,
         hook=None,
-        priority_offset=0,
-
+        priority=0,
 ):
     """
     Improved random search:
@@ -696,7 +709,7 @@ def random_search(
     values are evenly distributed over range then shuffled
     """
 
-    assert len(envs) == len(score_thresholds)
+    assert score_thresholds is None or (len(envs) == len(score_thresholds))
 
     # note: for categorical we could do better creating a list with the correct proportions then shuffeling it
     # the last run had just 4 wide out of 32 when 10 or 11 were expected...
@@ -731,53 +744,59 @@ def random_search(
         even_dist_samples[k] = samples[:count]
 
     for i in range(process_up_to or count):
-        params = {}
+        sample_params = {}
         for k, v in search_params.items():
-            params[k] = even_dist_samples[k][i]
+            sample_params[k] = even_dist_samples[k][i]
             if type(v) in [Uniform, LogUniform] and v._force_int:
-                params[k] = int(params[k])
-            if type(params[k]) in [float, np.float64]:
-                params[k] = smart_round_sig(params[k])
+                sample_params[k] = int(sample_params[k])
+            if type(sample_params[k]) in [float, np.float64]:
+                sample_params[k] = smart_round_sig(sample_params[k])
 
-        # agents must divide workers (which we assume divides 8)
-        params['agents'] = (params['agents'] // 8) * 8
+        def get_setting(x):
+            if x in sample_params:
+                return sample_params[x]
+            else:
+                return main_params[x]
 
-        batch_size = params["agents"] * params["n_steps"]
+        # agents must divide workers
+        if "agents" in sample_params:
+            sample_params["agents"] = (sample_params["agents"] // WORKERS) * WORKERS
 
         # convert negative learning rates to annealing
         for key in ["policy_lr", "value_lr", "distill_lr"]:
-            if key in params and params[key] < 0:
-                params[key] = -params[key]
-                params[key+"_anneal"] = True
+            if key in sample_params and sample_params[key] < 0:
+                sample_params[key] = -sample_params[key]
+                sample_params[key+"_anneal"] = True
+
+        batch_size = get_setting("agents") * get_setting("n_steps")
 
         # convert negative max_horizon to auto
-        if params.get("tvf_max_horizon", 0) < 0:
-            params["tvf_max_horizon"] = 30000
-            params["auto_horizon"] = True
+        if sample_params.get("tvf_max_horizon", 0) < 0:
+            sample_params["tvf_max_horizon"] = 30000
+            sample_params["auto_horizon"] = True
 
         # make sure mini_batch_size is not larger than batch_size
-        if "policy_mini_batch_size" in params:
-            params["policy_mini_batch_size"] = min(batch_size, params["policy_mini_batch_size"])
-        if "value_mini_batch_size" in params:
-            params["value_mini_batch_size"] = min(batch_size, params["value_mini_batch_size"])
+        if "policy_mini_batch_size" in sample_params:
+            sample_params["policy_mini_batch_size"] = min(batch_size, sample_params["policy_mini_batch_size"])
+        if "value_mini_batch_size" in sample_params:
+            sample_params["value_mini_batch_size"] = min(batch_size, sample_params["value_mini_batch_size"])
 
-        # post processing hook
+        # post-processing hook
         if hook is not None:
-            hook(params)
+            hook(sample_params)
 
-        for env_name, score_threshold in zip(envs, score_thresholds):
+        description = str(sample_params)
 
-            hostname = "ML" #if env_name == "Krull" else "desktop"
-            priority = 50 if env_name == "Krull" else 0
-
-            main_params['priority'] = priority + priority_offset
-
+        for j in range(len(envs)):
+            env_name = envs[j]
             main_params['env_name'] = env_name
             add_job(
                 run,
                 run_name=f"{i:04d}_{env_name}",
                 chunk_size=10,
-                score_threshold=score_threshold,
-                hostname=hostname,
-                seed=-1, # no need to make these deterministic
-                **main_params, **params)
+                score_threshold=score_thresholds[j] if score_thresholds is not None else None,
+                default_params=main_params,
+                priority=priority,
+                #description=description,
+                **sample_params,
+            )

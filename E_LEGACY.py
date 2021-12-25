@@ -799,7 +799,7 @@ def test_distil():
             distil_period=1,
             default_params=replay_simple_args,
             priority=40,
-            hostname="ML-Rig",
+            hostname="",
         )
 
         add_job(
@@ -816,43 +816,43 @@ def test_distil():
             default_params=replay_simple_args,
             priority=40,
             epochs=20 if env == "Pong" else 50,
-            hostname="ML-Rig",
+            hostname="",
         )
 
-        add_job(
-            # just testing a new idea
-            f"test_distil_rp_long (v2)",
-            env_name=env,
-            run_name=f"game={env} rp_h11 rs={0}",
-
-            distil_batch_size=ROLLOUT_SIZE // 2,
-            distil_period=1,
-            distil_epochs=1,
-
-            default_params=replay_simple_args,
-            priority=600,
-            epochs=20 if env == "Pong" else 50,
-            hostname="ML-Rig",
-        )
-
-        add_job(
-            # just testing a new idea
-            f"test_distil_rp_long",
-            env_name=env,
-            run_name=f"game={env} rp_s11 rs={0}",
-
-            replay_size=ROLLOUT_SIZE,
-            distil_period=1,
-            distil_epochs=1,
-
-            distil_lr=1e-4,
-
-            distil_batch_mode="sample",
-            default_params=replay_simple_args,
-            priority=250,
-            epochs=20 if env == "Pong" else 50,
-            hostname="ML-Rig",
-        )
+        # add_job(
+        #     # just testing a new idea
+        #     f"test_distil_rp_long (v2)",
+        #     env_name=env,
+        #     run_name=f"game={env} rp_h11 rs={0}",
+        #
+        #     distil_batch_size=ROLLOUT_SIZE // 2,
+        #     distil_period=1,
+        #     distil_epochs=1,
+        #
+        #     default_params=replay_simple_args,
+        #     priority=600,
+        #     epochs=20 if env == "Pong" else 50,
+        #     hostname="ML-Rig",
+        # )
+        #
+        # add_job(
+        #     # just testing a new idea
+        #     f"test_distil_rp_long",
+        #     env_name=env,
+        #     run_name=f"game={env} rp_s11 rs={0}",
+        #
+        #     replay_size=ROLLOUT_SIZE,
+        #     distil_period=1,
+        #     distil_epochs=1,
+        #
+        #     distil_lr=1e-4,
+        #
+        #     distil_batch_mode="sample",
+        #     default_params=replay_simple_args,
+        #     priority=250,
+        #     epochs=20 if env == "Pong" else 50,
+        #     hostname="ML-Rig",
+        # )
 
         def get_rp_epochs(env, mode, replay_size):
             if mode == "sample" and replay_size in [0, 1]:
@@ -875,7 +875,7 @@ def test_distil():
                 default_params=replay_simple_args,
                 epochs=get_rp_epochs(env, "full", replay_size),
                 priority=40,
-                hostname="ML-Rig",
+                hostname="",
             )
             # this is the alternative method where we just sample
             add_job(
@@ -888,7 +888,7 @@ def test_distil():
                 default_params=replay_simple_args,
                 epochs=get_rp_epochs(env, "sample", replay_size),
                 priority=40,  # just want to start some of these big ones early...
-                hostname="ML-Rig",
+                hostname="",
           )
 
     for env in ['Pong', 'Breakout', 'CrazyClimber']:
@@ -917,6 +917,8 @@ def test_distil():
                             priority=20 + (5 if env == "Pong" else 0),
                         )
 
-E01()
-E03()
-test_distil()
+
+def setup():
+    E01()
+    E03()
+    test_distil()

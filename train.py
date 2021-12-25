@@ -110,10 +110,10 @@ if __name__ == "__main__":
 
     os.makedirs(args.log_folder, exist_ok=True)
 
-    """ Runs experient specifed by config.args """
-    env = atari.make()
-    n_actions = env.action_space.n
-    obs_space = env.observation_space.shape
+    """ Runs experiment specified by config.args """
+    fake_env = atari.make()
+    n_actions = fake_env.action_space.n
+    obs_space = fake_env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
     model_args = {}
@@ -142,6 +142,7 @@ if __name__ == "__main__":
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
             shared_initialization=args.dna_shared_initialization,
+            centered=args.observation_scaling == "centered",
         )
 
         ppo.train(actor_critic_model, log)

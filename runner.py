@@ -4,9 +4,13 @@ from runner_tools import *
 
 if __name__ == "__main__":
 
+    # see https://github.com/pytorch/pytorch/issues/37377 :(
+    os.environ["MKL_THREADING_LAYER"] = "GNU"
+
     # load in the jobs...
-    import E2_ReplayBuffer
-    import E_LEGACY
+    import eRP_ReplayBuffer
+
+    eRP_ReplayBuffer.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

@@ -57,6 +57,7 @@ def file_age_in_seconds(pathname):
 def aquire_lock(key, timeout=60.0):
     """
     Get lock, timeout is in seconds.
+    Returns number of seconds waited
     """
 
     start_time = time.time()

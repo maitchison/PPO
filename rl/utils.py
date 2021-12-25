@@ -367,6 +367,12 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
             observations as a list np arrays of dims [c,w,h] in uint8 format.
     """
 
+    # todo: I think this function should be removed? we are still using it?
+
+    # I should be calling create_envs to get the vector level wrappers, and then initializing the wrapper
+    # to have the correct normalization constants.
+    assert not args.normalize_observations, "Rollout generation not supported with observation normalization yet."
+
     # todo get non_determinism working again...
     #env_fns = [lambda : atari.make(env_name, non_determinism="none" if deterministic else "noop") for _ in range(num_rollouts)]
     env = hybridVecEnv.HybridAsyncVectorEnv([atari.make for _ in range(num_rollouts)])
@@ -686,7 +692,6 @@ def dtw(obs1, obs2):
 
     return DTW[n, m]
 
-# stub: show memory usage
 def print_memory_usage(scope):
     data = []
     np_arrays = {k: v for k, v in scope.items() if isinstance(v, np.ndarray)}

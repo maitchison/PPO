@@ -136,7 +136,7 @@ class RNDTarget_Net(Base_Net):
         x = F.leaky_relu(self.conv1(x), 0.2)
         x = F.leaky_relu(self.conv2(x), 0.2)
         x = F.leaky_relu(self.conv3(x), 0.2)
-        x = torch.reshape(x, [N,D])
+        x = torch.reshape(x, [N, D])
         x = self.out(x)
         return x
 
@@ -166,7 +166,7 @@ class RNDPredictor_Net(Base_Net):
         self.fc2 = nn.Linear(512, 512)
         self.out = nn.Linear(512, hidden_units)
 
-        # we scale the weights so the output varience is about right. The sqrt2 is because of the relu,
+        # we scale the weights so the output variance is about right. The sqrt2 is because of the relu,
         # bias is disabled as per OpenAI implementation.
         scale_weights(self, weight_scale=np.sqrt(2)*1.3, bias_scale=0.0)
 
@@ -187,7 +187,7 @@ class RNDPredictor_Net(Base_Net):
 # Models
 # ----------------------------------------------------------------------------------------------------------------
 
-class DualNet(nn.Module):
+class DualHeadNet(nn.Module):
     """
     Network has both policy and value heads, but can (optionally) use only one of these.
     """
@@ -206,8 +206,8 @@ class DualNet(nn.Module):
             tvf_value_scale_fn="identity",
             tvf_value_scale_norm="max",
             actions=None,
-            policy_head=True,
-            value_head=True,
+            use_policy_head=True,
+            use_value_head=True,
             **kwargs
     ):
         super().__init__()
@@ -216,42 +216,37 @@ class DualNet(nn.Module):
 
         assert self.encoder.hidden_units == hidden_units
 
-        self.policy_head = policy_head
-        self.value_head = value_head
+        self.use_policy_head = use_policy_head
+        self.use_value_head = use_value_head
         self.tvf_max_horizon = tvf_max_horizon
         self.tvf_value_scale_fn = tvf_value_scale_fn
         self.tvf_value_scale_norm = tvf_value_scale_norm
 
-        if self.policy_head:
+        if self.use_policy_head:
             assert actions is not None
-            # policy outputs policy, but also value so that we can train it to predict value as an aux task
-            # value outputs extrinsic and intrinsic value
-            self.policy_net_policy = nn.Linear(self.encoder.hidden_units, actions)
-            self.policy_net_value = nn.Linear(self.encoder.hidden_units, 4)
+            self.policy_head = nn.Linear(self.encoder.hidden_units, actions)
 
-        if self.value_head:
-
+        if self.use_value_head:
             self.tvf_n_dedicated_value_heads = tvf_n_dedicated_value_heads
-
             self.tvf_activation = tvf_activation
             self.horizon_transform = tvf_horizon_transform
             self.time_transform = tvf_time_transform
 
-            # value net outputs a basic value estimate as well as the truncated value estimates (for extrinsic only)
-            self.value_net_value = nn.Linear(self.encoder.hidden_units, 4)
-            self.value_net_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
-            self.value_net_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
-            self.value_net_tvf = nn.Linear(tvf_hidden_units, self.tvf_n_dedicated_value_heads+1)
+            # value net outputs a basic value estimate as well as the truncated value estimates
+            self.value_head = nn.Linear(self.encoder.hidden_units, 4)
+            self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
+            self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
+            self.tvf_head = nn.Linear(tvf_hidden_units, self.tvf_n_dedicated_value_heads + 1)
 
             # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
             torch.nn.init.uniform_(
-                self.value_net_hidden_aux.weight,
+                self.tvf_hidden_aux.weight,
                 -1/(self.encoder.hidden_units ** 0.5),
                  1/(self.encoder.hidden_units ** 0.5)
             )
-            if self.value_net_hidden_aux.bias is not None:
+            if self.tvf_hidden_aux.bias is not None:
                 torch.nn.init.uniform_(
-                    self.value_net_hidden_aux.bias,
+                    self.tvf_hidden_aux.bias,
                     -1 / (self.encoder.hidden_units ** 0.5),
                     1 / (self.encoder.hidden_units ** 0.5)
                 )
@@ -312,8 +307,10 @@ class DualNet(nn.Module):
         result = {}
         features = F.relu(self.encoder(x))
 
-        if self.policy_head and not exclude_policy:
-            unscaled_policy = self.policy_net_policy(features)
+        result['features'] = features # used for debugging sometimes
+
+        if self.use_policy_head and not exclude_policy:
+            unscaled_policy = self.policy_head(features)
             result['raw_policy'] = unscaled_policy
 
             assert len(unscaled_policy.shape) == 2
@@ -333,9 +330,9 @@ class DualNet(nn.Module):
                 # standard temperature scaling
                 result['log_policy'] = F.log_softmax(unscaled_policy / policy_temperature, dim=1)
 
-        if self.value_head and not exclude_value:
+        if self.use_value_head and not exclude_value:
 
-            value_values = self.value_net_value(features)
+            value_values = self.value_head(features)
             result['ext_value'] = value_values[:, 0]
             result['int_value'] = value_values[:, 1]
             result['sqr_value'] = value_values[:, 2]
@@ -356,10 +353,10 @@ class DualNet(nn.Module):
                     time_in = aux_features[:, :, 1]
                     transformed_aux_features[:, :, 0] = self.horizon_transform(horizon_in)
                     transformed_aux_features[:, :, 1] = self.time_transform(time_in)
-                    features_part = self.value_net_hidden(features)
-                    aux_part = self.value_net_hidden_aux(transformed_aux_features)
+                    features_part = self.tvf_hidden(features)
+                    aux_part = self.tvf_hidden_aux(transformed_aux_features)
                     tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
-                    values = self.value_net_tvf(tvf_h)
+                    values = self.tvf_head(tvf_h)
                     return self.apply_value_scale(values, horizon_in)
 
                 if self.tvf_n_dedicated_value_heads == 0:
@@ -427,6 +424,7 @@ class TVFModel(nn.Module):
             tvf_value_scale_fn: str = "identity",
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
+            centered: bool=False,
             network_args:Union[dict, None] = None,
     ):
 
@@ -438,12 +436,13 @@ class TVFModel(nn.Module):
         self.actions = actions
         self.device = device
         self.dtype = dtype
+        self.centered = centered
 
         self.name = "PPG-" + network
         single_channel_input_dims = (1, *input_dims[1:])
         self.use_rnd = use_rnd
 
-        make_net = lambda : DualNet(
+        make_net = lambda : DualHeadNet(
             network=network,
             input_dims=input_dims,
             tvf_activation=tvf_activation,
@@ -577,6 +576,8 @@ class TVFModel(nn.Module):
 
         result = {}
         x = self.prep_for_model(x)
+        if self.centered:
+            x = x * 2 - 1.0 # make input [-1..1 instead of 0..1]
 
         # special case for single model version (faster)
         if self.architecture == "single":

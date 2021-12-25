@@ -125,7 +125,7 @@ for env in gym.envs.registry.all():
 def make(non_determinism=None, monitor_video=False, seed=None, args=None, force_noop=None):
     """ Construct environment of given name, including any required wrappers."""
 
-    # this global reference wont work on windows when we spawn instead of fork,
+    # this global reference will not work on windows when we spawn instead of fork,
     # so make sure to pass args in as an argument.
     args = args or config.args
 
@@ -140,10 +140,7 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None, force_
     env = gym.make(
         env_name,
         full_action_space=args.full_action_space,
-        # little bit faster to have ALE render in grayscale, bit at the same time I'm not sure if this will change
-        # the results.
-        #obs_type='rgb' if (monitor_video or args.color) else 'grayscale'
-        obs_type='rgb'
+        obs_type='rgb' if (monitor_video or args.color) else 'grayscale'
     )
     if env_type == "atari" and args.atari_rom_check and args.environment not in IGNORE_ROMS_LIST:
 

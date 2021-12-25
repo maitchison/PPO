@@ -11,7 +11,7 @@ import pickle
 from os import listdir
 from os.path import isfile, join
 
-LOG_CAP = 1e-8 # when computing logs values <= 0 will be replaced with this
+LOG_CAP = 1e-12 # when computing logs values <= 0 will be replaced with this
 
 
 def safe_float(x):
@@ -163,20 +163,25 @@ def short_run_name(s):
     return " ".join(result)
 
 
-def get_sort_key(x):
+def get_sort_key(s):
     """ Returns smart sorting key"""
-    if type(x) is str:
-        if "=" in x:
-            first_part = x.split("=")[0]
-            second_part = x.split("=")[1]
-            second_part = second_part.split(" ")[0]
-            try:
-                value = f"{float(second_part):012.6f}"
-            except:
-                value = second_part
 
-            return first_part + "=" + value
-    return x
+    def convert_part(x):
+        if "=" not in x:
+            return x
+        first_part = x.split("=")[0]
+        second_part = x.split("=")[1]
+        second_part = second_part.split(" ")[0]
+        try:
+            value = f"{float(second_part):012.6f}"
+        except:
+            value = second_part
+        return first_part + "=" + value
+
+    if type(s) is str:
+        return " ".join(convert_part(part) for part in s.split(" "))
+    else:
+        return s
 
 def get_runs(path, run_filter=None, skip_rows=1):
     if type(path) is list:
@@ -202,7 +207,7 @@ def get_runs(path, run_filter=None, skip_rows=1):
                 params = read_params(os.path.join(subdir, "params.txt"))
                 params.update({"path": subdir})
                 runs.append([name, data, params])
-    runs.sort(key=lambda x: get_sort_key(x[0]), reverse=True)
+    runs.sort(key=lambda x: get_sort_key(x[0]), reverse=False)
     return runs
 
 def comma(x):
@@ -309,7 +314,12 @@ def compare_runs(path,
                  style_filter=None,
                  smooth_factor=None,
                  reference_run=None,
+                 x_axis_name=None,
+                 y_axis_name=None,
+                 hold=False,
+                 jitter=0.0,
                  skip_rows=1,
+                 figsize=(16,4),
                  ):
     """ Compare runs stored in given path. """
 
@@ -324,7 +334,7 @@ def compare_runs(path,
     if len(runs) == 0:
         return
 
-    plt.figure(figsize=(16, 4))
+    plt.figure(figsize=figsize)
     plt.grid()
 
     plt.title(title)
@@ -384,14 +394,18 @@ def compare_runs(path,
             if any([x in run_name for x in highlight]):
                 color = cmap.colors[counter]
                 counter += 1
+                zorder = counter + 100
                 alpha = 1.0
             else:
                 color = "gray"
                 alpha = 0.33
+                zorder = 0
         else:
             color = auto_color
             ls = auto_style
             alpha = 1.0
+            zorder = None
+
 
         if run_data is reference_run:
             color = "gray"
@@ -408,11 +422,14 @@ def compare_runs(path,
             run_label = None
         run_labels_so_far.add(run_label)
 
+        if jitter != 0:
+            ys = ys * (1 + np.random.randn(len(ys)) * jitter)
+
         plt.plot(xs, ys, alpha=0.2 * alpha, c=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
-                 linestyle=ls)
-        plt.xlabel(x_axis)
-        plt.ylabel(y_axis)
+                 linestyle=ls, zorder=zorder)
+        plt.xlabel(x_axis_name or x_axis)
+        plt.ylabel(y_axis_name or y_axis)
 
     standard_grid()
 
@@ -422,7 +439,9 @@ def compare_runs(path,
         else:
             loc = show_legend
         plt.legend(loc=loc)
-    plt.show()
+
+    if not hold:
+        plt.show()
 
 
 def standard_grid():
@@ -693,7 +712,11 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
 
     subset = subset.lower()
 
-    if subset == 'default':
+    if subset in asn.games:
+        game_list = [subset]
+        game_weights = [1.0]
+        c = 0.0
+    elif subset == 'default':
         # this was the old validation set from before
         game_list = ['Amidar', 'BattleZone', 'DemonAttack']
         game_weights = [0.35144866, 0.55116459, 0.01343885]
@@ -728,10 +751,10 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
         game_list = ['KungFuMaster']
         game_weights = [0.61623311*6/5] # real rough estimate here, but should be fine...
         c = 0
-
     else:
         raise Exception("invalid subset")
 
+    subset = [x.lower() for x in subset]
     epoch_scores = defaultdict(lambda: {game: [] for game in game_list})
 
     folders = [x for x in os.listdir(path) if key in x and os.path.isdir(os.path.join(path, x))]
@@ -745,9 +768,9 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
         if game_log is None:
             print(f"no log for {path} {folder}")
             return None
-        game = game_log["params"]["environment"]
+        game = game_log["params"]["environment"].lower()
         if game not in game_list:
-            print(f"Skipping {game}")
+            print(f"Skipping {game} as not in {game_list}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[env_step // 1e6][game].append(ep_score)
@@ -774,7 +797,7 @@ def read_combined_log(path: str, key: str, subset='atari-3'):
         for game, weight in zip(game_list, game_weights):
             norm_score = np.mean(es[game])
             #result[f"{game.lower()}_score"].append(score)
-            result[f"{game.lower()}_norm"].append(norm_score)
+            result[f"{game}_norm"].append(norm_score)
             weighted_score += weight * norm_score
         result["score"].append(weighted_score)
         result["env_step"].append(epoch * 1e6)

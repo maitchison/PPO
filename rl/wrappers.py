@@ -491,6 +491,74 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.ret_rms.restore_state(buffer["ret_rms"])
         self.current_returns = buffer["current_returns"]
 
+
+class VecNormalizeObservationsWrapper(gym.Wrapper):
+    """
+    Normalizes observations.
+    Vectorized Version
+    Preserves type
+    """
+    def __init__(self, env: VectorEnv, clip=3.0, initial_state=None, scale_mode="normal", stacked=False):
+        """
+        shadow_mode: Record mean and std of obs, but do not apply normalization.
+        scale_mode:
+            unit_normal: Observations will be float32 unit normal,
+            scaled: Observations will be 0..1 scaled to uint8 where 0 = -clip, 127=0, and 255 = +clip.
+            shadow: No normalization, used to monitor mu and std.
+        stacked:
+            if true causes normalization to be per frame rather than per stack
+        """
+        super().__init__(env)
+
+        assert scale_mode in ["unit_normal", "scaled", "shadow"]
+
+        self.env = env
+        self.epsilon = 1e-4
+        self.clip = clip
+        self.obs_rms = utils.RunningMeanStd()
+        self.scale_mode = scale_mode
+        self.stacked = stacked
+        if initial_state is not None:
+            self.obs_rms.restore_state(initial_state)
+
+    def step(self, action):
+        """
+        Input should be [B, *obs_shape] of not stacked, otherwise [B, [stack_size], *obs_shape]
+        """
+
+        obs: np.ndarray
+        reward: np.ndarray
+
+        obs, reward, done, info = self.env.step(action)
+        if self.stacked:
+            B, stack_size, *obs_shape = obs.shape
+            self.obs_rms.update(obs.reshape(B*stack_size, *obs_shape))
+        else:
+            self.obs_rms.update(obs)
+        self.mean = self.obs_rms.mean.astype(np.float32)
+        self.std = np.sqrt(self.obs_rms.var).astype(np.float32)
+
+        if self.scale_mode == "shadow":
+            return obs, reward, done, info
+        elif self.scale_mode == "unit_normal":
+            scaled_obs = (obs.astype(np.float32) - self.mean) / (self.std + self.epsilon)
+            scaled_obs = np.clip(scaled_obs, -self.clip, +self.clip)
+            return scaled_obs, reward, done, info
+        elif self.scale_mode == "scaled":
+            scaled_obs = (obs.astype(np.float32) - self.mean) / (self.std + self.epsilon)
+            scaled_obs = (np.clip(scaled_obs, -self.clip, +self.clip) / (self.clip*2) + 0.5) * 255
+            scaled_obs = scaled_obs.astype(np.uint8)
+            return scaled_obs, reward, done, info
+        else:
+            raise ValueError(f"Invalid scale_mode {self.scale_mode}")
+
+    def save_state(self, buffer):
+        buffer["obs_rms"] = self.obs_rms.save_state()
+
+    def restore_state(self, buffer):
+        self.obs_rms.restore_state(buffer["obs_rms"])
+
+
 class MonitorWrapper(gym.Wrapper):
     """
     Records a copy of the current observation and reward into info.

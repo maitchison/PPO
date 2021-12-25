@@ -16,11 +16,12 @@ class LogVariable():
     def __init__(self, name, history_length=1, type="float", display_width=None, display_precision=None,
                  display_priority=0, export_precision=None, display_postfix="", display_scale=1, display_name=None):
 
-        assert type in ["int", "float", "stats", "str"]
+        assert type in ["int", "float", "stats", "str", "max"]
 
         default_display_width = {
             "int": 10,
             "float": 10,
+            "max": 10,
             "stats": 26,
             "str": 20
         }[type]
@@ -28,6 +29,7 @@ class LogVariable():
         default_display_precision = {
             "int": 0,
             "float": 3,
+            "max": 3,
             "stats": 0,
             "str": None
         }[type]
@@ -35,6 +37,7 @@ class LogVariable():
         default_export_precision = {
             "int": 1,
             "float": 6,
+            "max": 6,
             "stats": 6,
             "str": None
         }[type]
@@ -53,13 +56,10 @@ class LogVariable():
         self._type = type
 
     def add_sample(self, value):
-
         # cast input into the correct type.
         if self._type == "int":
             value = int(value)
-        elif self._type == "float":
-            value = float(value)
-        elif self._type == "stats":
+        elif self._type in ["float", "max", "stats"]:
             value = float(value)
         elif self._type == "str":
             value = str(value)
@@ -95,7 +95,7 @@ class LogVariable():
         value = self.value
         if self._type == "int":
             result = ("{:,."+str(self.display_precision)+"f}").format(value*self.display_scale)
-        elif self._type == "float":
+        elif self._type in ["float", "max"]:
             result = str(nice_round(value*self.display_scale, self.display_precision))
         elif self._type == "stats":
             if self.display_width > 20:
@@ -113,6 +113,8 @@ class LogVariable():
     def value(self):
         if self._type == "stats":
             return tuple(nice_round(func(self._history), self.export_precision) if len(self._history) > 0 else 0 for func in [np.mean, np.std, np.min, np.max])
+        if self._type == "max":
+            return tuple(nice_round(np.max(self._history), self.export_precision))
         elif self._type == "str":
             return self._history[-1] if len(self._history) > 0 else ""
         elif self._type == "float":
@@ -175,6 +177,10 @@ class Logger():
     def watch_mean(self, key, value, history_length=10, **kwargs):
         """ Logs a value, creates mean log variable if needed. """
         self.watch(key, value, history_length=history_length, **kwargs)
+
+    def watch_max(self, key, value, history_length=10, **kwargs):
+        """ Logs a value, creates mean log variable if needed. """
+        self.watch(key, value, history_length=history_length, type="max", **kwargs)
 
     def watch_full(self, key, value, history_length=100, **kwargs):
         """ Logs a value, creates full variable if needed. """
