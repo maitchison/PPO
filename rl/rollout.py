@@ -2096,10 +2096,7 @@ class Runner:
         # Logging
         # -------------------------------------------------------------------------
 
-        feature_sparsity = torch.count_nonzero(model_out["features"]) / len(model_out["features"].numel)
-
-        self.log.watch_full("value_features", model_out["features"], display_width=0)
-        self.log.watch_mean("value_features_sparcity", feature_sparsity, display_width=0)
+        self.log.watch_stats("value_features", model_out["features"], display_width=0)
         self.log.watch_mean("loss_value", loss, display_name=f"ls_value")
 
         return {}

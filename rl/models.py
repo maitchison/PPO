@@ -65,7 +65,7 @@ class NatureCNN_Net(Base_Net):
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
     """
 
-    def __init__(self, input_dims, hidden_units=512):
+    def __init__(self, input_dims, hidden_units=512, layer_norm=False):
 
         super().__init__(input_dims, hidden_units)
 
@@ -84,14 +84,35 @@ class NatureCNN_Net(Base_Net):
         if self.hidden_units > 0:
             self.fc = nn.Linear(self.d, hidden_units)
 
+        self.layer_norm = layer_norm
+        if layer_norm:
+            # just on the convolutions... less parameters... less over fitting...
+            x = self.conv1(fake_input)
+            _, c, w, h = x.shape
+            self.ln1 = nn.LayerNorm([c, h, w])
+            x = self.conv2(x)
+            _, c, w, h = x.shape
+            self.ln2 = nn.LayerNorm([c, h, w])
+            x = self.conv3(x)
+            _, c, w, h = x.shape
+            self.ln3 = nn.LayerNorm([c, h, w])
+
+
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
         N = len(x)
         D = self.d
+
         x1 = F.relu(self.conv1(x))
+        if self.layer_norm:
+            x1 = self.ln1(x1)
         x2 = F.relu(self.conv2(x1))
+        if self.layer_norm:
+            x2 = self.ln1(x2)
         x3 = F.relu(self.conv3(x2))
-        x4 = torch.reshape(x3, [N,D])
+        if self.layer_norm:
+            x3 = self.ln3(x1)
+        x4 = torch.reshape(x3, [N, D])
         if self.hidden_units > 0:
             x5 = self.fc(x4)
             return x5
@@ -425,6 +446,7 @@ class TVFModel(nn.Module):
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
             centered: bool=False,
+            layer_norm: bool=False,
             network_args:Union[dict, None] = None,
     ):
 
@@ -454,6 +476,7 @@ class TVFModel(nn.Module):
             tvf_max_horizon=tvf_max_horizon,
             tvf_value_scale_fn=tvf_value_scale_fn,
             tvf_value_scale_norm=tvf_value_scale_norm,
+            layer_norm=layer_norm,
             actions=actions,
             **(network_args or {})
         )
@@ -577,7 +600,7 @@ class TVFModel(nn.Module):
         result = {}
         x = self.prep_for_model(x)
         if self.centered:
-            x = x * 2 - 1.0 # make input [-1..1 instead of 0..1]
+            x = (x * 2) - 1.0 # make input [-1..1 instead of 0..1]
 
         # special case for single model version (faster)
         if self.architecture == "single":

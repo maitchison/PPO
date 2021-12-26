@@ -186,6 +186,25 @@ class Logger():
         """ Logs a value, creates full variable if needed. """
         self.watch(key, value, history_length=history_length, type="stats", **kwargs)
 
+    def watch_stats(self, key, value, history_length=100, **kwargs):
+        """ Logs a value, creates full variable if needed. """
+
+        if type(value) is torch.Tensor:
+            value = value.detach().cpu().numpy()
+        if type(value) is not np.ndarray:
+            value = np.asarray(value)
+
+        mapping = {
+            'min': np.min,
+            'max': np.max,
+            'mean': np.mean,
+            'std': np.std,
+            'sparsity': lambda x: 1-(np.count_nonzero(x) / x.size),
+        }
+
+        for k, v in mapping.items():
+            self.watch(key + "_"+k, v(value), history_length=history_length, **kwargs)
+
     def print_variables(self, include_header=False):
         """ Prints current value of all logged variables."""
 

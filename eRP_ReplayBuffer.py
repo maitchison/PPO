@@ -192,7 +192,8 @@ def regression_tests():
                         tvf_force_ext_value_distil=True,
                         default_params=E2_args,
                         epochs=10,
-                        priority=25
+                        seed=seed,
+                        priority=25 if seed == 0 else 0,
                     )
 
     for seed in range(3):

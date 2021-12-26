@@ -60,6 +60,7 @@ class Config:
         self.value_mini_batch_size = int()
         self.distil_mini_batch_size = int()
         self.network = str()
+        self.layer_norm = bool()
 
 
         self.tvf_coef           = float()
@@ -475,6 +476,7 @@ def parse_args(no_env=False, args_override=None):
                         )
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--description", type=str, default=None, help="Can be used as needed. (logged in params.txt)")
+    parser.add_argument("--layer_norm", type=str2bool, default=False)
 
     # due to compatability
     parser.add_argument("--use_mutex", type=str2bool, default=False, help=argparse.SUPPRESS)

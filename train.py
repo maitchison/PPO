@@ -143,6 +143,7 @@ if __name__ == "__main__":
             tvf_activation=args.tvf_activation,
             shared_initialization=args.dna_shared_initialization,
             centered=args.observation_scaling == "centered",
+            layer_norm=args.layer_norm,
         )
 
         ppo.train(actor_critic_model, log)
