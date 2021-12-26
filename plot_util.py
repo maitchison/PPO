@@ -10,6 +10,7 @@ from collections import defaultdict
 import pickle
 from os import listdir
 from os.path import isfile, join
+from typing import Union
 
 LOG_CAP = 1e-12 # when computing logs values <= 0 will be replaced with this
 
@@ -183,7 +184,7 @@ def get_sort_key(s):
     else:
         return s
 
-def get_runs(path, run_filter=None, skip_rows=1):
+def get_runs(path: Union[str, list], run_filter=None, skip_rows=1):
     if type(path) is list:
         runs = []
         for p in path:

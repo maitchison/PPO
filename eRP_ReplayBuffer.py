@@ -193,6 +193,46 @@ def regression_tests():
                         default_params=E2_args,
                         epochs=10,
                         seed=seed,
+                        priority=25 if seed == 0 else seed,
+                    )
+                add_job(
+                    "RP_Seed_full",
+                    env_name=env,
+                    run_name=f"game={env} norm={norming} scale={scaling} seed={seed}",
+                    replay_size=0,
+                    dna_dual_constraint=0.0,
+
+                    observation_normalization=norming,
+                    observation_scaling="centered" if scaling else "unit",
+
+                    distil_batch_size=ROLLOUT_SIZE,
+                    tvf_force_ext_value_distil=False,
+                    default_params=E2_args,
+                    epochs=10,
+                    seed=seed,
+                    priority=25 if seed == 0 else seed,
+                )
+
+    for seed in range(3):
+        for env in ["Pong", "Breakout"]:
+            for norming in [True, False]:
+                for scaling in [True, False]:
+                    add_job(
+                        "RP_Seed_layernorm",
+                        env_name=env,
+                        run_name=f"game={env} norm={norming} scale={scaling} [layer_norm] seed={seed}",
+                        replay_size=0,
+                        dna_dual_constraint=0.0,
+
+                        observation_normalization=norming,
+                        observation_scaling="centered" if scaling else "unit",
+                        layer_norm=True,
+
+                        distil_batch_size=ROLLOUT_SIZE,
+                        tvf_force_ext_value_distil=True,
+                        default_params=E2_args,
+                        epochs=10,
+                        seed=seed,
                         priority=25 if seed == 0 else 0,
                     )
 

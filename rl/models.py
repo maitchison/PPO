@@ -72,8 +72,8 @@ class NatureCNN_Net(Base_Net):
         input_channels = input_dims[0]
 
         self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=(8,8), stride=(4, 4))
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=(4,4), stride=(2, 2))
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3,3), stride=(1, 1))
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=(4, 4), stride=(2, 2))
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1))
 
         fake_input = torch.zeros((1, *input_dims))
         _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
@@ -108,10 +108,11 @@ class NatureCNN_Net(Base_Net):
             x1 = self.ln1(x1)
         x2 = F.relu(self.conv2(x1))
         if self.layer_norm:
-            x2 = self.ln1(x2)
+            x2 = self.ln2(x2)
         x3 = F.relu(self.conv3(x2))
         if self.layer_norm:
-            x3 = self.ln3(x1)
+            x3 = self.ln3(x3)
+
         x4 = torch.reshape(x3, [N, D])
         if self.hidden_units > 0:
             x5 = self.fc(x4)
