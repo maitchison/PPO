@@ -1,39 +1,38 @@
 """
-Benchmarking for PPO.
+Regression test for training.
+
+A number of seeded experiments are run and the results are compared against.
+
+Running the experiment requires 20M epochs, which at 4x1000 IPS should take around 1-hour.
+
 """
 import os
-import numpy as np
-import torch.cuda
-import socket
-import sys
 
 import runner_tools
 import plot_util as pu
-
-# todo:
-# check how few epochs we can get away with...
-
-#
+import torch
+import socket
+import shutil
 
 ROLLOUT_SIZE = 128*128
 WORKERS = 8
 GPUS = torch.cuda.device_count()
 DEVICE = socket.gethostname()
-EXPERIMENT_FOLDER = f"__benchmark_{DEVICE}"
+EXPERIMENT_FOLDER = f"__regression_{DEVICE}"
 EPOCHS = 4 * ROLLOUT_SIZE / 1e6 # (4 would probably also be ok...)
 
-benchmark_args = {
+DEBUG = False
+
+regression_args = {
     'checkpoint_every': 0,
     'workers': WORKERS,
     'architecture': 'dual',
     'export_video': False,
-    'epochs': EPOCHS,
-    'use_compression': True,
-    'warmup_period': 0,
+    'epochs': 5,  # just enough to make sure it's working.
+    'use_compression': 'auto',
+    'warmup_period': 1000,
     'seed': 0,
     'mutex_key': "DEVICE",
-    'verbose': True, # stub
-    'benchmark_mode': True,
 
     # env parameters
     'time_aware': True,
@@ -93,42 +92,45 @@ benchmark_args = {
 
 
 def execute_job(run_name: str, verbose=False, **params):
-    job_params = benchmark_args.copy()
+    job_params = regression_args.copy()
     job_params.update(params)
     job = runner_tools.Job(EXPERIMENT_FOLDER, run_name, params=job_params)
     p = job.run(run_async=True, force_no_restore=True, verbose=verbose)
     return p
 
 
-def generate_benchmark_result(parallel_jobs=1, verbose=False, **params):
+def run_regressions():
     """
     Runs pong for 10M three times and checks the results.
     """
     job_results = []
 
-    for seed in range(parallel_jobs):
-        job_name = f"pong_{seed}"
-        p = execute_job(job_name, seed=seed, env_name="Pong", device=f'cuda:{seed % GPUS}', verbose=verbose, **params)
-        job_results.append((job_name, p))
+    print("Running regression.")
 
-    results = []
+    for seed in [0, 1, 2]:
+        job_name = f"pong_{seed}"
+        p = execute_job(job_name, seed=seed, env_name="Pong", device=f'cuda:{seed % GPUS}', verbose=DEBUG)
+        job_results.append((job_name, p))
 
     for job_name, job_result in job_results:
         # wait for job to finish... will take some time...
         outs, errs = job_result.communicate()
-        output = outs.decode("utf-8")
-        for line in output.split("\n"):
-            if line.startswith("IPS: "):
-                ips_part = line.split(" ")[1]
-                ips_part = ips_part.replace(',', '')
-                results.append(int(ips_part))
-                break
-        else:
-            results.append(None)
-        # for line in errs.decode("utf-8").split("\n"):
-        #     print(line)
+        if DEBUG:
+            print(outs)
+            print(errs)
 
-    return results
+    print("Done.")
+
+def check_results():
+    for seed in [0, 1, 2, 3]:
+        job_name = f"pong_{seed}"
+        log = pu.get_runs(f"./Run/{EXPERIMENT_FOLDER}", run_filter=lambda x: job_name)
+        assert len(log) == 1
+        log = log[0]
+
+        # check score
+        # check ev?
+        # check losses / grads ?
 
 
 def main():
@@ -137,35 +139,12 @@ def main():
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     # clean start
-    os.system(f'rm -r ./Run/{EXPERIMENT_FOLDER}')
+    shutil.rmtree(f'./Run/{EXPERIMENT_FOLDER}')
+    run_regressions()
+    #check_results()
 
-    ips_results = []
-
-    print(f"Running benchmark on {DEVICE} with {GPUS} GPUS...")
-
-    for i in range(3):
-        ips_results.append(sum(generate_benchmark_result(parallel_jobs=1)))
-        if i == 0:
-            # print quick result
-            print(f"Quick result (single-job): {ips_results[-1]:,}")
-
-    baseline_ips = np.mean(ips_results)
-    std = np.std(ips_results)
-    print(f"Accurate result (single-job): {round(float(baseline_ips)):,} +/- {std:.1f}")
-
-    job_counts = [1 * GPUS, 2 * GPUS]
-
-    for jobs in job_counts:
-        ips = sum(generate_benchmark_result(parallel_jobs=jobs))
-        ratio = ips / baseline_ips
-        print(f"{jobs}-job: {round(ips):,} {ratio:.1f}x")
-
-    print("done.")
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        # not sure why I have to manually reset this back?
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
+    main()
+
+

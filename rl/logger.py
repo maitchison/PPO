@@ -265,7 +265,7 @@ class Logger():
         self._history.append(row)
 
     def log(self, s="", level=INFO):
-        s =  str(s)
+        s = str(s)
         if level >= self.print_level:
             if level == self.IMPORTANT:
                 s = "<white>{}<end>".format(s)
@@ -273,7 +273,7 @@ class Logger():
                 s = "<yellow>{}<end>".format(s)
             elif level == self.ERROR:
                 s = "<red>{}<end>".format(s)
-        print(color_format_string(s))
+            print(color_format_string(s))
         self.output_log.append((level, time.time(), color_format_string(s, strip_colors=True)))
 
     def debug(self, s=""):

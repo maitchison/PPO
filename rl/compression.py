@@ -1,18 +1,43 @@
 import lz4.frame
+import blosc
 import time
 import numpy as np
 from typing import List
 
 """
 Handles compressed data for rollout.
+
+On my computer LZ4 drops IPS from 1,733 down to 1,499 (-13.5%)
+
+for benchmarks see:
+http://alimanfoo.github.io/2016/09/21/genotype-compression-benchmark.html
+ 
 """
 
-# lz4 is by far the quickest...
-COMPRESSION_LIBRARY = lz4.frame
-COMPRESSION_PARAMS = {
-    'compression_level': 0
-}
 
+def lz4_compress(x: np.ndarray):
+    return lz4.frame.compress(x.tobytes(), compression_level=0)
+
+
+def lz4_decompress(x, dtype, shape) -> np.ndarray:
+    return np.frombuffer(lz4.frame.decompress(x), dtype=dtype).reshape(shape)
+
+
+def blosc_compress(x: np.ndarray):
+    return blosc.compress(
+        x.tobytes(),
+        typesize=8,
+        clevel=1,
+        shuffle=0,
+        cname='lz4',
+    )
+
+
+def blosc_decompress(x, dtype, shape) -> np.ndarray:
+    return np.frombuffer(blosc.decompress(x), dtype=dtype).reshape(shape)
+
+COMPRESS = lz4_compress
+DECOMPRESS = lz4_decompress
 
 class BufferSlot():
 
@@ -22,7 +47,6 @@ class BufferSlot():
         self._decompression_time: float = None
         self._dtype: np.dtype
         self._shape: tuple
-        self._thread_job = None
 
         if initial_data is not None:
             self.compress(initial_data)
@@ -39,23 +63,15 @@ class BufferSlot():
 
     def compress(self, x: np.ndarray):
         start_time = time.time()
-        self._compressed_data = COMPRESSION_LIBRARY.compress(x.tobytes(), **COMPRESSION_PARAMS)
+        self._compressed_data = COMPRESS(x)
         self._shape = x.shape
         self._dtype = x.dtype
         self._compression_time = (time.time() - start_time)
 
     def decompress(self) -> np.ndarray:
 
-        # if we have not finished compression wait for it to finish...
-        if self._thread_job is not None:
-            if not self._thread_job.done():
-                print('join')
-                _ = self._thread_job.result(10.0)
-            self._thread_job = None
-
         start_time = time.time()
-        result = np.frombuffer(COMPRESSION_LIBRARY.decompress(self._compressed_data), dtype=self._dtype).reshape(
-            self._shape)
+        result = DECOMPRESS(self._compressed_data, self._dtype, self._shape)
         self._decompression_time = (time.time() - start_time)
 
         return result

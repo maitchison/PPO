@@ -26,7 +26,7 @@ def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     for t in range(max(max_steps)):
         masks = t < max_steps
         with torch.no_grad():
-            model_out = runner.forward(runner.obs, output="policy")
+            model_out = runner.batch_forward(runner.obs, output="policy")
             log_policy = model_out["log_policy"].cpu().numpy()
         actions = np.asarray([
             utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
@@ -130,17 +130,22 @@ def train(model: models.TVFModel, log: Logger):
     last_log_time = -1
 
     # add a few checkpoints early on
-    checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, args.checkpoint_every)]
-    checkpoints += [x // batch_size for x in [1e6]]  # add a checkpoint early on (1m steps)
-    checkpoints.append(n_iterations)
-    checkpoints = sorted(set(checkpoints))
+    if args.checkpoint_every != 0:
+        checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, args.checkpoint_every)]
+        checkpoints += [x // batch_size for x in [1e6]]  # add a checkpoint early on (1m steps)
+        checkpoints.append(n_iterations)
+        checkpoints = sorted(set(checkpoints))
+    else:
+        checkpoints = []
 
     log_time = 0
 
     log.info(f"Training started. (init took {time.time()-start_time:.1f} seconds)")
     log.info()
 
-    for iteration in range(start_iteration, n_iterations + 1):
+    start_train_time = time.time()
+
+    for iteration in range(start_iteration, n_iterations):
 
         step_start_time = time.time()
 
@@ -261,6 +266,14 @@ def train(model: models.TVFModel, log: Logger):
             utils.release_lock()
             return
 
+    # -------------------------------------
+    # benchmark information
+    if args.benchmark_mode:
+        # this is a bit more accurate than the IPS counter during training
+        time_to_complete = time.time() - start_train_time
+        steps = n_iterations * batch_size
+        print(f"Completed {steps:,} steps in {time_to_complete:.1f}s")
+        print(f"IPS: {round(steps/time_to_complete):,}")
 
     # -------------------------------------
     # save final information

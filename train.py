@@ -35,6 +35,11 @@ if __name__ == "__main__":
 
     config.parse_args()
 
+    if args.verbose:
+        log.print_level = log.INFO
+    else:
+        log.print_level = log.WARN
+
     # work out device to use
     if args.device.lower() == "auto":
         args.device = utils.get_auto_device(utils.get_disallowed_devices())

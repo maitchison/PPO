@@ -1,5 +1,4 @@
 import os
-import types
 
 import numpy as np
 import gym
@@ -22,8 +21,6 @@ from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
 from .config import args
 from .replay import ExperienceReplayBuffer
-
-from copy import deepcopy
 
 import collections
 
@@ -787,10 +784,14 @@ class Runner:
         for iteration in range(iterations):
             self.generate_rollout(is_warmup=True)
 
-    def forward(self, obs:np.ndarray, aux_features=None, max_batch_size=None, **kwargs):
+    @torch.no_grad()
+    def batch_forward(self, obs:np.ndarray, aux_features=None, max_batch_size=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
             obs: np array of dims [B, *state_shape]
+
+            Large inputs will be batched.
+            Never computes gradients
         """
         max_batch_size = max_batch_size or args.max_micro_batch_size
 
@@ -803,28 +804,47 @@ class Runner:
         # small one than to subdivide)
         if B > max_batch_size:
 
-            mid_point = B // 2
-
-            if aux_features is not None:
-                a = self.forward(
-                    obs[:mid_point],
-                    aux_features=aux_features[:mid_point],
+            batches = math.ceil(B / max_batch_size)
+            batch_results = []
+            for batch_idx in range(batches):
+                batch_start = batch_idx * max_batch_size
+                batch_end = min((batch_idx + 1) * max_batch_size, B)
+                batch_result = self.batch_forward(
+                    obs[batch_start:batch_end],
+                    aux_features=aux_features[batch_start:batch_end] if aux_features is not None else None,
                     max_batch_size=max_batch_size,
                     **kwargs
                 )
-                b = self.forward(
-                    obs[mid_point:],
-                    aux_features=aux_features[mid_point:],
-                    max_batch_size=max_batch_size,
-                    **kwargs
-                )
-            else:
-                a = self.forward(obs[:mid_point], max_batch_size=max_batch_size, **kwargs)
-                b = self.forward(obs[mid_point:], max_batch_size=max_batch_size, **kwargs)
+                batch_results.append(batch_result)
+            keys = batch_results[0].keys()
             result = {}
-            for k in a.keys():
-                result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
+            for k in keys:
+                result[k] = torch.cat(tensors=[batch_result[k] for batch_result in batch_results], dim=0)
             return result
+
+            # mid_point = B // 2
+            #
+            # if aux_features is not None:
+            #     a = self.forward(
+            #         obs[:mid_point],
+            #         aux_features=aux_features[:mid_point],
+            #         max_batch_size=max_batch_size,
+            #         **kwargs
+            #     )
+            #     b = self.forward(
+            #         obs[mid_point:],
+            #         aux_features=aux_features[mid_point:],
+            #         max_batch_size=max_batch_size,
+            #         **kwargs
+            #     )
+            # else:
+            #     a = self.forward(obs[:mid_point], max_batch_size=max_batch_size, **kwargs)
+            #     b = self.forward(obs[mid_point:], max_batch_size=max_batch_size, **kwargs)
+            # result = {}
+            # for k in a.keys():
+            #     result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
+            # return result
+
         else:
             if obs.dtype == np.object:
                 obs = np.asarray([obs[i].decompress() for i in range(len(obs))])
@@ -1252,7 +1272,7 @@ class Runner:
             prev_time = self.time.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            model_out = self.forward(self.obs, output="policy")
+            model_out = self.batch_forward(self.obs, output="policy")
 
             log_policy = model_out["log_policy"].cpu().numpy()
 
@@ -1407,7 +1427,7 @@ class Runner:
 
             time = time.reshape(N*A)
 
-            model_out = self.forward(
+            model_out = self.batch_forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 aux_features=package_aux_features(horizons, time),
                 output="value",
@@ -1421,7 +1441,7 @@ class Runner:
                 result = values.reshape([N, A, horizons.shape[-1]]).cpu().numpy()
         else:
             assert horizons is None, "PPO only supports max horizon value estimates"
-            model_out = self.forward(
+            model_out = self.batch_forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 output="value",
             )
@@ -1442,7 +1462,7 @@ class Runner:
         if args.use_tvf:
 
             # first we generate the value estimates, then we calculate the returns required for each debug horizon
-            # because we use sampling it is not guaranteed that these horizons will be included so we need to
+            # because we use sampling it is not guaranteed that these horizons will be included, so we need to
             # recalculate everything
 
             agent_sample_count = np.clip(samples, 1, args.agents)
@@ -1611,7 +1631,6 @@ class Runner:
             horizons=horizons
         ).reshape([(N + 1), A])
 
-
     def estimate_replay_diversity(self, max_samples=64):
         """
         Returns an estimate of the diversity within the replay buffer using L2 distance in pixel space.
@@ -1626,8 +1645,6 @@ class Runner:
             for j in range(N):
                 distances.append(np.sum((data[i]/256 - data[j]/256) ** 2) ** 0.5)
         return np.mean(distances)
-
-
 
     def calculate_returns(self):
 
@@ -1726,7 +1743,6 @@ class Runner:
                 args.gae_lambda
             )
 
-
         # calculate ext_returns for PPO targets
         self.ext_returns = ValueTransform.H(self.ext_advantage + ext_value_estimates[:N])
 
@@ -1823,6 +1839,7 @@ class Runner:
         self.log.watch("gamma", self.gamma, display_width=0)
 
         if not args.disable_ev:
+            # only about 3% slower with this on.
             self.log_value_quality(samples=64)
 
         if args.use_intrinsic_rewards:
@@ -2186,7 +2203,6 @@ class Runner:
             horizon_samples: ndarray of dims [N,A,K] containing the horizons used
         """
 
-
         # max horizon to train on
         H = self.current_horizon
         N, A, *state_shape = self.prev_obs.shape
@@ -2302,6 +2318,7 @@ class Runner:
         # this means the spinning up version is right.
 
         with torch.no_grad():
+
             clip_frac = torch.gt(torch.abs(ratio - 1.0), args.ppo_epsilon).float().mean()
             kl_approx = (old_logpac - logpac).mean()
             kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
@@ -2477,25 +2494,24 @@ class Runner:
 
         # policy constraint
         if args.needs_dual_constraint:
-            with torch.no_grad():
-                if args.full_curve_distil:
-                    horizons = self.generate_horizon_sample(
-                        self.current_horizon,
-                        args.tvf_horizon_samples,
-                        args.tvf_horizon_distribution
-                    )
-                    horizons = np.repeat(horizons[None, :], B, axis=0)
-                    batch_data["horizons"] = horizons
-                    batch_data["time"] = self.prev_time.reshape([B])
-                    model_out = self.forward(
-                        obs=batch_data["prev_state"],
-                        output="policy",
-                        aux_features=package_aux_features(batch_data["horizons"], batch_data["time"])
-                    )
-                    batch_data["old_value"] = model_out["tvf_value"].detach().cpu().numpy()
-                else:
-                    model_out = self.forward(obs=batch_data["prev_state"], output="policy")
-                    batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
+            if args.full_curve_distil:
+                horizons = self.generate_horizon_sample(
+                    self.current_horizon,
+                    args.tvf_horizon_samples,
+                    args.tvf_horizon_distribution
+                )
+                horizons = np.repeat(horizons[None, :], B, axis=0)
+                batch_data["horizons"] = horizons
+                batch_data["time"] = self.prev_time.reshape([B])
+                model_out = self.batch_forward(
+                    obs=batch_data["prev_state"],
+                    output="policy",
+                    aux_features=package_aux_features(batch_data["horizons"], batch_data["time"])
+                )
+                batch_data["old_value"] = model_out["tvf_value"].detach().cpu().numpy()
+            else:
+                model_out = self.batch_forward(obs=batch_data["prev_state"], output="policy")
+                batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
 
         policy_epochs = 0
         for _ in range(args.policy_epochs):
@@ -2643,11 +2659,11 @@ class Runner:
             ).reshape([B])
             batch_data["value_targets"] = target_values.reshape([B])
 
-        with torch.no_grad():
-            model_out = self.forward(
-                obs=distil_obs.reshape([B, *state_shape]), output="policy"
-            )
-            batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+
+        model_out = self.batch_forward(
+            obs=distil_obs.reshape([B, *state_shape]), output="policy"
+        )
+        batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
         return batch_data
 
@@ -2763,16 +2779,16 @@ class Runner:
                 sample = ordering[batch_start:batch_end]
                 micro_batch_counter += 1
 
-                minibatch_data = {}
+                microbatch_data = {}
                 for var_name, var_value in batch_data.items():
                     data = var_value[sample]
                     if data.dtype == np.object:
                         # handle decompression
                         data = np.asarray([data[i].decompress() for i in range(len(data))])
-                    minibatch_data[var_name] = torch.from_numpy(data).to(self.model.device)
+                    microbatch_data[var_name] = torch.from_numpy(data).to(self.model.device)
 
                 outputs.append(mini_batch_func(
-                    minibatch_data, loss_scale=1 / micro_batches
+                    microbatch_data, loss_scale=1 / micro_batches
                 ))
 
             context = {

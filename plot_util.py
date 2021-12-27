@@ -313,6 +313,7 @@ def compare_runs(path,
                  label_filter=None,
                  color_filter=None,
                  style_filter=None,
+                 group_filter=None,
                  smooth_factor=None,
                  reference_run=None,
                  x_axis_name=None,
@@ -322,13 +323,18 @@ def compare_runs(path,
                  skip_rows=1,
                  figsize=(16,4),
                  ):
-    """ Compare runs stored in given path. """
+    """
+        Compare runs stored in given path.
+        group_filter: If defined, all runs with same group will be plotted together.
+    """
 
     if highlight is not None and isinstance(highlight, str):
         highlight = [highlight]
 
-    if title is None and highlight is not None: title = "".join(highlight) + " by " + y_axis
-    if title is None: title = "Training Graph"
+    if title is None and highlight is not None:
+        title = "".join(highlight) + " by " + y_axis
+    if title is None:
+        title = "Training Graph"
 
     runs = get_runs(path, skip_rows=skip_rows, run_filter=run_filter)
 
@@ -348,6 +354,8 @@ def compare_runs(path,
         runs.append(["reference", reference_run, {}])
 
     run_labels_so_far = set()
+
+    group_data = {}
 
     for run_name, run_data, run_params in runs:
 
@@ -426,11 +434,50 @@ def compare_runs(path,
         if jitter != 0:
             ys = ys * (1 + np.random.randn(len(ys)) * jitter)
 
+        if group_filter is not None:
+            group = group_filter(run_name, run_data)
+            if group != None:
+                if group not in group_data:
+                    group_data[group] = ([xs], [ys], run_label, alpha, color, zorder, ls)
+                else:
+                    group_data[group][0].append(xs)
+                    group_data[group][1].append(ys)
+                continue
+
         plt.plot(xs, ys, alpha=0.2 * alpha, c=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
-        plt.xlabel(x_axis_name or x_axis)
-        plt.ylabel(y_axis_name or y_axis)
+
+    plt.xlabel(x_axis_name or x_axis)
+    plt.ylabel(y_axis_name or y_axis)
+
+    # show groups
+    for k, (group_xs, group_ys, run_label, alpha, color, zorder, ls) in group_data.items():
+
+        def get_y(index):
+            return [this_ys[index] for this_ys in group_ys if index < len(this_ys)]
+
+        xs = group_xs[0]
+        all_ys = [get_y(i) for i in range(len(xs))]
+
+        ys = np.asarray([np.mean(y_sample) for y_sample in all_ys])
+        ys_std = np.asarray([np.std(y_sample) for y_sample in all_ys])
+        ys_low = [np.max(y_sample) for y_sample in all_ys]
+        ys_high = [np.min(y_sample) for y_sample in all_ys]
+        #ys_low = ys - ys_std
+        #ys_high = ys + ys_std
+
+        for x_raw, y_raw in zip(group_xs, group_ys):
+            # raw curves
+            plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
+            pass
+
+        smooth_factor = 0.9
+
+        plt.fill_between(xs, smooth(ys_low, smooth_factor), smooth(ys_high, smooth_factor), alpha=0.15 * alpha, color=color)
+        plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
+                 linestyle="-", zorder=zorder)
+
 
     standard_grid()
 

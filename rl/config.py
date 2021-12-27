@@ -25,13 +25,14 @@ class Config:
         self.input_crop         = bool()
         self.adam_epsilon       = float()
         self.workers            = int()
-        self.epochs             = int()
+        self.epochs             = float()
         self.limit_epochs       = int()
         self.distil_beta        = float()
         self.distil_period      = int()
         self.replay_size        = int()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
+        self.verbose            = bool()
 
         self.observation_normalization = bool()
         self.observation_scaling = float()
@@ -179,6 +180,7 @@ class Config:
         self.use_compression = bool()
         self.mutex_key = bool()
         self.description = str()
+        self.benchmark_mode = bool()
 
         self.__dict__.update(kwargs)
 
@@ -282,7 +284,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--input_crop", type=str2bool, default=False, help="Enables atari input cropping.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
-    parser.add_argument("--epochs", type=int, default=50,
+    parser.add_argument("--epochs", type=float, default=50.0,
                         help="Each epoch represents 1 million environment interactions.")
     parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
     parser.add_argument("--vf_coef", type=float, default=0.5, help="Loss multiplier for default value loss.")
@@ -417,7 +419,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--reward_scale", type=float, default=1.0)
     parser.add_argument("--deferred_rewards", type=int, default=0,
                         help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
-    parser.add_argument("--use_compression", type=str, default=False,
+    parser.add_argument("--use_compression", type=str, default='auto',
                         help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
     parser.add_argument("--override_reward_normalization_gamma", type=float, default=-1)
 
@@ -468,6 +470,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Log information around terminals.")
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
+    parser.add_argument("--verbose", type=str2bool, default=False)
 
     # other
     parser.add_argument("--mutex_key", type=str, default=None,
@@ -477,6 +480,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--description", type=str, default=None, help="Can be used as needed. (logged in params.txt)")
     parser.add_argument("--layer_norm", type=str2bool, default=False)
+    parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
 
     # due to compatability
     parser.add_argument("--use_mutex", type=str2bool, default=False, help=argparse.SUPPRESS)

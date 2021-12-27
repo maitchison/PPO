@@ -13,10 +13,17 @@ from . import utils, impala
 # ----------------------------------------------------------------------------------------------------------------
 
 class Base_Net(nn.Module):
+
     def __init__(self, input_dims, hidden_units):
         super().__init__()
         self.input_dims = input_dims
         self.hidden_units = hidden_units
+        self.trace_module = None
+
+    def jit(self):
+        assert self.trace_module is None, "Multiple calls to jit."
+        fake_input = torch.zeros([256, *self.input_dims])
+        self.trace_module = torch.jit.trace(self, example_inputs=fake_input)
 
 class ImpalaCNN_Net(Base_Net):
     """
@@ -57,9 +64,6 @@ class ImpalaCNN_Net(Base_Net):
         x = self.dense(x)
         return x
 
-
-
-
 class NatureCNN_Net(Base_Net):
     """ Takes stacked frames as input, and outputs features.
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
@@ -71,7 +75,7 @@ class NatureCNN_Net(Base_Net):
 
         input_channels = input_dims[0]
 
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=(8,8), stride=(4, 4))
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=(8, 8), stride=(4, 4))
         self.conv2 = nn.Conv2d(32, 64, kernel_size=(4, 4), stride=(2, 2))
         self.conv3 = nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1))
 
@@ -100,7 +104,7 @@ class NatureCNN_Net(Base_Net):
 
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
-        N = len(x)
+
         D = self.d
 
         x1 = F.relu(self.conv1(x))
@@ -113,7 +117,7 @@ class NatureCNN_Net(Base_Net):
         if self.layer_norm:
             x3 = self.ln3(x3)
 
-        x4 = torch.reshape(x3, [N, D])
+        x4 = torch.reshape(x3, [-1, D])
         if self.hidden_units > 0:
             x5 = self.fc(x4)
             return x5
@@ -144,9 +148,9 @@ class RNDTarget_Net(Base_Net):
         self.d = utils.prod(self.out_shape)
         self.out = nn.Linear(self.d, hidden_units)
 
-        # we scale the weights so the output varience is about right. The sqrt2 is because of the relu,
+        # we scale the weights so the output variance is about right. The sqrt2 is because of the relu,
         # bias is disabled as per OpenAI implementation.
-        # I found I need to bump this up a little to get the varience required (0.4)
+        # I found I need to bump this up a little to get the variance required (0.4)
         # maybe this is due to weight initialization differences between TF and Torch?
         scale_weights(self, weight_scale=np.sqrt(2)*1.3, bias_scale=0.0)
 
@@ -235,6 +239,8 @@ class DualHeadNet(nn.Module):
         super().__init__()
 
         self.encoder = construct_network(network, input_dims, hidden_units=hidden_units, **kwargs)
+        if not kwargs.get("layer_norm", False):
+            self.encoder.jit() # faster...
 
         assert self.encoder.hidden_units == hidden_units
 
@@ -327,9 +333,14 @@ class DualHeadNet(nn.Module):
         """
 
         result = {}
-        features = F.relu(self.encoder(x))
+        if self.encoder.trace_module is not None:
+            # faster path, precompiled
+            features = self.encoder.trace_module(x)
+        else:
+            features = self.encoder(x)
+        features = F.relu(features)
 
-        result['features'] = features # used for debugging sometimes
+        result['features'] = features  # used for debugging sometimes
 
         if self.use_policy_head and not exclude_policy:
             unscaled_policy = self.policy_head(features)
@@ -656,11 +667,11 @@ class TVFModel(nn.Module):
             x = torch.from_numpy(x)
 
         # move it to the correct device
-        x = x.to(self.device, non_blocking=True)
+        x = x.to(self.device)
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if x.dtype == torch.uint8:
-            x = x.to(dtype=self.dtype, non_blocking=True)
+            x = x.to(dtype=self.dtype)
             if scale_int:
                 x = x / 255
         elif x.dtype == self.dtype:

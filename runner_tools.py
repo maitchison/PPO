@@ -7,7 +7,7 @@ import platform
 import math
 
 import socket
-
+import subprocess
 
 """
 
@@ -258,7 +258,7 @@ def add_job(
         # ignore runs with 0 epochs, but only if epochs is not specified.
         return
 
-    job = Job(experiment_name, run_name, priority, chunk_size, kwargs, hostname=hostname)
+    job = Job(experiment_name, run_name, params=kwargs, priority=priority, chunk_size=chunk_size, hostname=hostname)
 
     if score_threshold is not None and chunk_size > 0:
         job_details = job.get_details()
@@ -267,7 +267,7 @@ def add_job(
             chunks_completed = job_details['completed_epochs'] / chunk_size
             if job_details['score'] < score_threshold * chunks_completed and chunks_completed > 0.75:
                 modified_kwargs["epochs"] = chunk_size
-            job = Job(experiment_name, run_name, priority, chunk_size, modified_kwargs, hostname=hostname)
+            job = Job(experiment_name, run_name, params=modified_kwargs, priority=priority, chunk_size=chunk_size, hostname=hostname)
 
     job_list.append(job)
     return job
@@ -323,7 +323,7 @@ class Job:
     # class variable to keep track of insertion order.
     id = 0
 
-    def __init__(self, experiment_name, run_name, priority, chunk_size:int, params, hostname=None):
+    def __init__(self, experiment_name, run_name, params, priority=0, chunk_size: int = 10, hostname=None):
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.priority = priority
@@ -334,7 +334,7 @@ class Job:
         Job.id += 1
 
     def __lt__(self, other):
-         return self._sort_key < other._sort_key
+        return self._sort_key < other._sort_key
 
     @property
     def _sort_key(self):
@@ -443,7 +443,11 @@ class Job:
         else:
             return 0
 
-    def run(self, chunk_size:int):
+    def run(self, chunk_size: int = 10, run_async=False, force_no_restore: bool = False, verbose=True):
+        """
+        Executes this job
+        run_async: if true command is run in background.
+        """
 
         self.params["output_folder"] = OUTPUT_FOLDER
 
@@ -451,7 +455,8 @@ class Job:
 
         # make the destination folder...
         if not os.path.exists(experiment_folder):
-            print("Making new experiment folder {experiment_folder}")
+            if verbose:
+                print(f"Making new experiment folder {experiment_folder}")
             os.makedirs(experiment_folder, exist_ok=True)
 
         # copy script across if needed.
@@ -462,12 +467,13 @@ class Job:
 
         details = self.get_details()
 
-        if details is not None and details["completed_epochs"] > 0:
+        if details is not None and details["completed_epochs"] > 0 and not force_no_restore:
             # restore if some work has already been done.
             self.params["restore"] = True
-            print(f"Found restore point {self.get_path()} at epoch {details['completed_epochs']}")
+            if verbose:
+                print(f"Found restore point {self.get_path()} at epoch {details['completed_epochs']}")
         else:
-            print(f"No restore point found for path {self.get_path()}")
+            pass
 
         if chunk_size > 0:
             # work out the next block to do
@@ -477,21 +483,37 @@ class Job:
                 next_chunk = (round(details["completed_epochs"] / chunk_size) * chunk_size) + chunk_size
             self.params["limit_epochs"] = int(next_chunk)
 
+        nice_params = [
+            f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"] and v is not None
+        ]
 
-        python_part = "python \"{}\" {}".format(train_script_path, self.params["env_name"])
+        if run_async:
+            process_params = []
+            for k, v in self.params.items():
+                if k == "env_name":
+                    continue
+                process_params.append("--"+str(k))
+                process_params.append(str(v))
+            process = subprocess.Popen(
+                ["python", train_script_path, self.params["env_name"], *process_params],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            return process
+        else:
+            python_part = "python \"{}\" {}".format(train_script_path, self.params["env_name"])
+            params_part = " ".join(nice_params)
+            params_part_lined = "\n".join(nice_params)
+            if verbose:
+                print()
+                print("=" * 120)
+                print(bcolors.OKGREEN + self.experiment_name + " " + self.run_name + bcolors.ENDC)
+                print("Running " + python_part + "\n" + params_part_lined)
+                print("=" * 120)
+                print()
 
-        params_part = " ".join([f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"] and v is not None])
-        params_part_lined = "\n".join([f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"] and v is not None])
-
-        print()
-        print("=" * 120)
-        print(bcolors.OKGREEN+self.experiment_name+" "+self.run_name+bcolors.ENDC)
-        print("Running " + python_part + "\n" + params_part_lined)
-        print("=" * 120)
-        print()
-        return_code = os.system(python_part + " " + params_part)
-        if return_code != 0:
-            raise Exception("Error {}.".format(return_code))
+            return_code = os.system(python_part + " " + params_part)
+            if return_code != 0:
+                raise Exception("Error {}.".format(return_code))
 
 
 def nice_format(x):
@@ -785,8 +807,6 @@ def random_search(
         if hook is not None:
             hook(sample_params)
 
-        description = str(sample_params)
-
         for j in range(len(envs)):
             env_name = envs[j]
             main_params['env_name'] = env_name
@@ -797,6 +817,5 @@ def random_search(
                 score_threshold=score_thresholds[j] if score_thresholds is not None else None,
                 default_params=main_params,
                 priority=priority,
-                #description=description,
                 **sample_params,
             )

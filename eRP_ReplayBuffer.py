@@ -6,8 +6,9 @@ from runner_tools import WORKERS, MYSTIC_FIVE, add_job, random_search, Categoric
 # simple only (to get it working...)
 
 ROLLOUT_SIZE = 128*128
+ATARI_5 = ['Centipede', 'CrazyClimber', 'Krull', 'SpaceInvaders', 'Zaxxon']  # Atari5
 
-E2_args = {
+RP_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
     'architecture': 'dual',
@@ -76,6 +77,9 @@ E2_args = {
     'hostname': '',
 }
 
+# stub
+E2_args = RP_args
+
 
 def initial_random_search(priority=0):
 
@@ -87,31 +91,23 @@ def initial_random_search(priority=0):
         # ppo params
         'distil_lr':         Categorical(1e-4, 2.5e-4, 5.0e-4),
         'distil_lr_anneal':  Categorical(True, False),
-        'distil_epochs':     Categorical(1, 2, 4),
-        'distil_period':     Categorical(1, 2, 4),
+        'distil_epochs':     Categorical(1, 2, 4, 8),
+        'distil_period':     Categorical(1, 2, 4, 8),
         'replay_size':       Categorical(*[x * ROLLOUT_SIZE for x in [0, 1, 2, 4, 8, 16]]),
         'distil_batch_size': Categorical(*[round(x * ROLLOUT_SIZE) for x in [0.25, 0.5, 1, 2, 4]]),
-        'dna_dual_constraint': Categorical(0.1, 0.3, 1.0, 3.0, 10.0, 30.0),
+        'dna_dual_constraint': Categorical(0, 0, 0, 0, 0.1, 0.3, 1.0, 3.0),
         'replay_mode':       Categorical("overwrite", "sequential", "uniform"), # req replay
         'replay_mixing':     Categorical(True, False), # req replay
         'distil_resampling': Categorical(True, False),
+        # other stuff
+        'observation_normalization': Categorical(True, False),
+        'observation_scaling': Categorical("centered", "unit"),
+        'layer_norm': Categorical(True, False),
+        # tvf
+        'use_tvf': Categorical(True, False),
     }
 
-    search_params2 = {
-        # ppo params
-        'distil_lr': Categorical(1e-4, 2.5e-4, 5.0e-4),
-        'distil_lr_anneal': Categorical(True, False),
-        'distil_epochs': Categorical(1, 2, 4),
-        'distil_period': Categorical(1, 2, 4),
-        'replay_size': Categorical(*[x * ROLLOUT_SIZE for x in [0, 1, 2, 4, 8, 16]]),
-        'distil_batch_size': Categorical(*[round(x * ROLLOUT_SIZE) for x in [0.25, 0.5, 1, 2, 4]]),
-        'dna_dual_constraint': Categorical(0, 0, 0, 0, 0.1, 0.3, 1.0, 3.0),
-        'replay_mode': Categorical("overwrite", "sequential", "uniform"),  # req replay
-        'replay_mixing': Categorical(True, False),  # req replay
-        'tvf_force_ext_value_distil': Categorical(True),
-    }
-
-    main_params = E2_args.copy()
+    main_params = RP_args.copy()
     # 10 is enough for pong, but I want to check if we eventually learn. (also verify loading and saving works)
     # 20 also lets me know if the algorithm can get to a 21 score or not (DC can sometimes cause issues).
     main_params["epochs"] = 10
@@ -132,16 +128,10 @@ def initial_random_search(priority=0):
         # 2. make sure we don't process the distillation too much
         def get_total_compute():
             batch_size = params["distil_batch_size"]
-            if params["replay_mixing"]:
-                batch_size += ROLLOUT_SIZE
             return batch_size * params["distil_epochs"] / params["distil_period"] / ROLLOUT_SIZE
 
         while get_total_compute() > 4:
-            #print(f"Too much compute on job ({total_compute}): {params}")
-            if params["replay_mixing"]:
-                params["replay_mixing"] = False
-            else:
-                params["distil_batch_size"] //= 2
+            params["distil_batch_size"] //= 2
 
         # 3. add a description
         code = str(params["distil_epochs"]) + str(params["distil_period"]) + str(params["replay_size"]//ROLLOUT_SIZE)
@@ -149,26 +139,15 @@ def initial_random_search(priority=0):
             code += str(params["replay_mode"][0])
         params["description"] = code + " params:" + str(params)
 
-    # random_search(
-    #     "E2_SEARCH",
-    #     main_params,
-    #     search_params,
-    #     count=64,
-    #     envs=['Pong'],
-    #     hook=fixup_params,
-    #     priority=priority,
-    # )
-    #
-    # random_search(
-    #     "RP_SEARCH2",
-    #     main_params,
-    #     search_params2,
-    #     count=64,
-    #     envs=['Pong'],
-    #     hook=fixup_params,
-    #     priority=priority,
-    # )
-
+    random_search(
+        "RP_SEARCH",
+        main_params,
+        search_params,
+        count=64,
+        envs=['Breakout', 'CrazyClimber', 'SpaceInvaders'],
+        hook=fixup_params,
+        priority=priority,
+    )
 
 def regression_tests():
     # for a while pong was terriable, need to go back and see what happened.
@@ -195,23 +174,23 @@ def regression_tests():
                         seed=seed,
                         priority=25 if seed == 0 else seed,
                     )
-                add_job(
-                    "RP_Seed_full",
-                    env_name=env,
-                    run_name=f"game={env} norm={norming} scale={scaling} seed={seed}",
-                    replay_size=0,
-                    dna_dual_constraint=0.0,
+                    add_job(
+                        "RP_Seed_full",
+                        env_name=env,
+                        run_name=f"game={env} norm={norming} scale={scaling} seed={seed}",
+                        replay_size=0,
+                        dna_dual_constraint=0.0,
 
-                    observation_normalization=norming,
-                    observation_scaling="centered" if scaling else "unit",
+                        observation_normalization=norming,
+                        observation_scaling="centered" if scaling else "unit",
 
-                    distil_batch_size=ROLLOUT_SIZE,
-                    tvf_force_ext_value_distil=False,
-                    default_params=E2_args,
-                    epochs=10,
-                    seed=seed,
-                    priority=25 if seed == 0 else seed,
-                )
+                        distil_batch_size=ROLLOUT_SIZE,
+                        tvf_force_ext_value_distil=False,
+                        default_params=E2_args,
+                        epochs=10,
+                        seed=seed,
+                        priority=25 if seed == 0 else seed,
+                    )
 
     for seed in range(3):
         for env in ["Pong", "Breakout"]:
@@ -623,7 +602,7 @@ def regression_tests():
 def setup(priority_modifier=0):
 
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
-    initial_random_search(priority=priority_modifier)
+    initial_random_search(priority=priority_modifier-5)
 
     regression_tests()
 
