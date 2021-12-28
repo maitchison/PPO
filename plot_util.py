@@ -211,6 +211,7 @@ def get_runs(path: Union[str, list], run_filter=None, skip_rows=1):
     runs.sort(key=lambda x: get_sort_key(x[0]), reverse=False)
     return runs
 
+
 def comma(x):
     return "{:,.1f}".format(x) if x < 100 else "{:,.0f}".format(x)
 

@@ -8,9 +8,9 @@ if __name__ == "__main__":
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     # load in the jobs...
-    import eRP_ReplayBuffer
+    import ERP
 
-    eRP_ReplayBuffer.setup()
+    ERP.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

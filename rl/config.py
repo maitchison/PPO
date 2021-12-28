@@ -188,8 +188,11 @@ class Config:
         self.__dict__.update(kwargs)
 
         if type(self.use_compression) is str:
-            if self.use_compression == "auto":
-                self.use_compression = self.batch_size >= 128*256
+
+            THRESHOLD = 2*128*128
+
+            if str(self.use_compression).lower() == "auto":
+                self.use_compression = self.batch_size >= THRESHOLD or self.replay_size >= THRESHOLD
             else:
                 self.use_compression = str2bool(str(self.use_compression))
 
