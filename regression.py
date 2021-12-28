@@ -61,7 +61,6 @@ regression_args = {
 
     # new params
     'observation_normalization': True,
-    'observation_scaling': "centered",
     'layer_norm': False,
 
     # distil params
@@ -99,47 +98,13 @@ def execute_job(run_name: str, verbose=False, **params):
     return p
 
 
-def run_regressions():
-    """
-    Runs pong for 10M three times and checks the results.
-    """
-    job_results = []
-
-    print("Running regression.")
-
-    for seed in [0, 1, 2]:
-        job_name = f"pong_{seed}"
-        p = execute_job(job_name, seed=seed, env_name="Pong", device=f'cuda:{seed % GPUS}', verbose=DEBUG)
-        job_results.append((job_name, p))
-
-    for job_name, job_result in job_results:
-        # wait for job to finish... will take some time...
-        outs, errs = job_result.communicate()
-        if DEBUG:
-            print(outs)
-            print(errs)
-
-    print("Done.")
-
-def check_results():
-    for seed in [0, 1, 2, 3]:
-        job_name = f"pong_{seed}"
-        log = pu.get_runs(f"./Run/{EXPERIMENT_FOLDER}", run_filter=lambda x: job_name)
-        assert len(log) == 1
-        log = log[0]
-
-        # check score
-        # check ev?
-        # check losses / grads ?
-
-
 def main():
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     # clean start
-    shutil.rmtree(f'./Run/{EXPERIMENT_FOLDER}')
+    #shutil.rmtree(f'./Run/{EXPERIMENT_FOLDER}')
     run_regressions()
     #check_results()
 

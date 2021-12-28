@@ -484,10 +484,6 @@ def generate_rollouts(
 
     seed_base = seed_base or eval_args.seed
 
-    # I should be calling create_envs to get the vector level wrappers, and then initializing the wrapper
-    # to have the correct normalization constants.
-    assert not args.normalize_observations, "Rollout generation not supported with observation normalization yet."
-
     env_fns = [lambda i=i: atari.make(monitor_video=include_video, seed=(i*997)+seed_base) for i in range(num_rollouts)]
     if num_rollouts > 16:
         env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
@@ -782,10 +778,6 @@ def export_movie(
     """
 
     scale = 4
-
-    # I should be calling create_envs to get the vector level wrappers, and then initializing the wrapper
-    # to have the correct normalization constants.
-    assert not args.normalize_observations, "Video generation not supported with observation normalization yet."
 
     env = atari.make(monitor_video=True, seed=1)
     _ = env.reset()

@@ -3,12 +3,14 @@ Benchmarking for PPO.
 """
 import os
 import numpy as np
+import ast
 import torch.cuda
 import socket
 import sys
 import argparse
 from rl.config import str2bool
 from rl.utils import Color
+from rl import utils
 
 import runner_tools
 import plot_util as pu
@@ -21,15 +23,17 @@ ROLLOUT_SIZE = 128*128
 WORKERS = 8
 GPUS = torch.cuda.device_count()
 DEVICE = socket.gethostname()
-EXPERIMENT_FOLDER = f"__benchmark_{DEVICE}"
-EPOCHS = 4 * ROLLOUT_SIZE / 1e6 # (4 would probably also be ok...)
+BENCHMARK_FOLDER = f"__benchmark_{DEVICE}"
+REGRESSION_FOLDER = f"__regression_{DEVICE}"
+NUMA_GROUPS = utils.detect_numa_groups()
+BENCHMARK_EPOCHS = 4 * ROLLOUT_SIZE / 1e6 # (4 would probably also be ok...)
 
-benchmark_args = {
+regression_args = {
     'checkpoint_every': 0,
     'workers': WORKERS,
     'architecture': 'dual',
     'export_video': False,
-    'epochs': EPOCHS,
+    'epochs': 10,
     'use_compression': True,
     'warmup_period': 0,
     'seed': 0,
@@ -64,7 +68,6 @@ benchmark_args = {
 
     # new params
     'observation_normalization': True,
-    'observation_scaling': "centered",
     'layer_norm': False,
 
     # distil params
@@ -94,12 +97,43 @@ benchmark_args = {
 }
 
 
-def execute_job(run_name: str, verbose=False, **params):
-    job_params = benchmark_args.copy()
+def execute_job(folder:str, run_name: str, numa_id: int = None, **params):
+    job_params = regression_args.copy()
     job_params.update(params)
-    job = runner_tools.Job(EXPERIMENT_FOLDER, run_name, params=job_params)
-    p = job.run(run_async=True, force_no_restore=True, verbose=verbose)
+    job = runner_tools.Job(folder, run_name, params=job_params)
+
+    if numa_id is not None:
+        # our machine has broken numa where the nodes are 0,2 instead of 0,1,2,3
+        # I get around this by manually mapping numa nodes and memory nodes
+        # ideally I would juse use
+        # preamble = f"numactl --cpunodebind={numa_id} --preferred={numa_id}"
+        cpu_mapping = {
+            0: '0-5,24-29',
+            1: '12-17,36-41',
+            2: '6-11,30-35',
+            3: '18-23,42-47',
+        }
+        memory_mapping = {
+            0: 0,
+            1: 0,
+            2: 2,
+            3: 2,
+        }
+        preamble = f"numactl --physcpubind=\"{cpu_mapping[numa_id]}\" --preferred={memory_mapping[numa_id]}"
+    else:
+        preamble = ""
+
+    p = job.run(run_async=True, force_no_restore=True, preamble=preamble)
     return p
+
+def print_outputs(outs, errs):
+    """
+    Prints to screen the output from a popen call.
+    """
+    for line in outs.decode("utf-8").split("\n"):
+        print(Color.OKGREEN + line + Color.ENDC)
+    for line in errs.decode("utf-8").split("\n"):
+        print(Color.FAIL + line + Color.ENDC)
 
 
 def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, **params):
@@ -120,12 +154,15 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, *
     for seed in range(parallel_jobs):
         job_name = f"pong_{seed}"
         p = execute_job(
+            BENCHMARK_FOLDER,
             job_name,
             seed=seed,
             env_name="Pong",
             device=f'cuda:{seed % GPUS}',
+            numa_id=args.numa[seed % len(args.numa)] if args.numa is not None else None,
             use_compression=args.use_compression,
             observation_normalization=args.observation_normalization,
+            epochs=BENCHMARK_EPOCHS,
             quiet_mode=not args.verbose,
             **params
         )
@@ -152,48 +189,90 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, *
             had_error = True
             results.append(None)
         if args.verbose or had_error:
-            for line in outs.decode("utf-8").split("\n"):
-                print(Color.OKGREEN+line+Color.ENDC)
-            for line in errs.decode("utf-8").split("\n"):
-                print(Color.FAIL+line+Color.ENDC)
+            print_outputs(outs, errs)
 
     return results[0] if is_scalar else results
 
-def benchmark_quick():
+
+def run_benchmark(description: str, job_counts: list):
 
     # clean start
-    os.system(f'rm -r ./Run/{EXPERIMENT_FOLDER}')
+    os.system(f'rm -r ./Run/{BENCHMARK_FOLDER}')
 
-    ips_results = []
+    print(f"Running {description} benchmark on {DEVICE} with {GPUS} GPUS...")
 
-    print(f"Running quick benchmark on {DEVICE} with {GPUS} GPUS...")
-
-    ips = generate_benchmark_result(show_compression_stats=True)
-    print(f"Quick result (single-job): {ips:,}")
-
-
-def benchmark_full():
-
-    # clean start
-    os.system(f'rm -r ./Run/{EXPERIMENT_FOLDER}')
-
-    print(f"Running full benchmark on {DEVICE} with {GPUS} GPUS...")
-
-    job_counts = [1, 1 * GPUS, 2 * GPUS]
     baseline_ips = None
 
     for jobs in job_counts:
-        ips = sum(generate_benchmark_result(parallel_jobs=jobs))
+        ips = sum(generate_benchmark_result(parallel_jobs=jobs, show_compression_stats=jobs == job_counts[0]))
         if baseline_ips is None:
             baseline_ips = ips
         ratio = ips / baseline_ips
         print(f"{jobs}-job: {round(ips):,} {ratio:.1f}x")
 
 
+def run_regressions():
+    """
+    Runs pong for 10M three times and checks the results.
+    """
+    job_results = []
+
+    print("Running regression.")
+
+    for seed in [0, 1, 2, 4]:
+        job_name = f"pong_{seed}"
+        p = execute_job(
+            REGRESSION_FOLDER,
+            job_name,
+            seed=seed,
+            device=f'cuda:{seed % GPUS}',
+            quiet_mode=not args.verbose
+        )
+        job_results.append((job_name, p))
+
+    for job_name, job_result in job_results:
+        # wait for job to finish... will take some time...
+        outs, errs = job_result.communicate()
+        if args.verbose:
+            print_outputs(outs, errs)
+
+    show_regression_results()
+
+def show_regression_results():
+    """ Loads latest regression result and prints outout. """
+    mean_scores = []
+    aoc_scores = []
+    for seed in [0, 1, 2, 3]:
+        job_name = f"pong_{seed}"
+        logs = pu.get_runs("./Run/"+REGRESSION_FOLDER, run_filter=lambda x : job_name in x)
+        assert len(logs) == 1, f"Expected one log with name '{job_name}' " \
+                               f"in folder {REGRESSION_FOLDER} but found {len(logs)}."
+        log = logs[0]
+        scores = log[1]["ep_score_mean"]
+        mean_scores.append(np.mean(scores[-50:]))  # from last sixth
+        aoc_scores.append(np.mean(scores))  # over entire curve
+
+    min_score = np.min(mean_scores)
+    max_score = np.max(mean_scores)
+    avg_score = np.mean(mean_scores)
+    aoc_score = np.mean(aoc_scores)
+    print(f"Result: {Color.WARNING}{avg_score:.1f}{Color.ENDC} ({min_score:.1f}-{max_score:.1f})"
+          f" [aoc={aoc_score:.1f}]")
+    did_pass = min_score > 15.0 and avg_score > 20.0
+    if did_pass:
+        print(f"{Color.OKGREEN}[PASS]{Color.ENDC}")
+    else:
+        print(f"{Color.FAIL}[FAIL]{Color.ENDC}")
+
+
 if __name__ == "__main__":
     orig_stdout = sys.stdout
     orig_stdin = sys.stdin
     try:
+
+        # numa doesn't help...
+        # if NUMA_GROUPS is not None:
+        #     print(f"Detected {NUMA_GROUPS} NUMA nodes.")
 
         # see https://github.com/pytorch/pytorch/issues/37377 :(
         os.environ["MKL_THREADING_LAYER"] = "GNU"
@@ -203,14 +282,28 @@ if __name__ == "__main__":
         parser.add_argument("--verbose", type=str2bool, default=False)
         parser.add_argument("--use_compression", type=str2bool, default=True)
         parser.add_argument("--observation_normalization", type=str2bool, default=True)
+        parser.add_argument("--numa", type=str, default=None, help='e.g. [0,1]')
+        parser.add_argument("--jobs", type=str, default=None)
 
         args = parser.parse_args()
 
+        if args.numa is not None:
+            args.numa = ast.literal_eval(args.numa)
+            print(f"Using numa: {args.numa})")
+
         mode = args.mode.lower()
         if mode == "full":
-            benchmark_full()
+            if args.jobs is not None:
+                job_override = ast.literal_eval(args.jobs)
+                run_benchmark("custom", job_override)
+            else:
+                run_benchmark("full", [1, 1 * GPUS, 2 * GPUS])
         elif mode == "quick":
-            benchmark_quick()
+            run_benchmark("quick", [1])
+        elif mode == "regression":
+            run_regressions()
+        elif mode == "show":
+            show_regression_results()
         else:
             raise Exception(f"Invalid mode {args.mode}")
 

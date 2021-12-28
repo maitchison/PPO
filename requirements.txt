@@ -1,4 +1,4 @@
-torch==1.8.2+cu111
+torch==1.10.1+cu113
 opencv-python
 gym[atari]==0.21.0
 lz4

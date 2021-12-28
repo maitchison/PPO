@@ -1,3 +1,4 @@
+import logging
 import uuid
 import socket
 import argparse
@@ -35,7 +36,6 @@ class Config:
         self.quite_mode         = bool()
 
         self.observation_normalization = bool()
-        self.observation_scaling = float()
         self.intrinsic_reward_scale = float()
         self.extrinsic_reward_scale = float()
 
@@ -178,7 +178,7 @@ class Config:
         self.use_tanh_clipping = bool()
 
         self.use_compression = bool()
-        self.mutex_key = bool()
+        self.mutex_key = str()
         self.description = str()
         self.benchmark_mode = bool()
 
@@ -211,7 +211,7 @@ class Config:
 
     @property
     def get_mutex_key(self):
-        if self.mutex_key == 'DEVICE':
+        if self.mutex_key.lower() == 'device':
             return args.device
         else:
             return self.mutex_key
@@ -222,10 +222,6 @@ class Config:
 
     @property
     def normalize_intrinsic_rewards(self):
-        return self.use_rnd
-
-    @property
-    def normalize_observations(self):
         return self.use_rnd
 
     @property
@@ -389,7 +385,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
-    parser.add_argument("--observation_scaling", type=str, default="unit", help="[unit|centered]")
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
@@ -492,7 +487,11 @@ def parse_args(no_env=False, args_override=None):
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
 
-    assert args.observation_scaling in ['unit', 'centered']
+    # checks
+    assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
+    assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
+                                                               "best to not use it with color at the moment."
+
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

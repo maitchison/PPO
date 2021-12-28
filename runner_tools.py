@@ -5,6 +5,7 @@ import time
 import random
 import platform
 import math
+import shlex
 
 import socket
 import subprocess
@@ -443,10 +444,17 @@ class Job:
         else:
             return 0
 
-    def run(self, chunk_size: int = 10, run_async=False, force_no_restore: bool = False, verbose=True):
+    def run(self,
+            chunk_size: int = 10,
+            run_async=False,
+            force_no_restore: bool = False,
+            verbose=True,
+            preamble: str = "",
+            ):
         """
         Executes this job
         run_async: if true command is run in background.
+        numa_ia: forces a numa group, must have numactl installed.
         """
 
         self.params["output_folder"] = OUTPUT_FOLDER
@@ -495,12 +503,12 @@ class Job:
                 process_params.append("--"+str(k))
                 process_params.append(str(v))
             process = subprocess.Popen(
-                ["python", train_script_path, self.params["env_name"], *process_params],
+                [*shlex.split(preamble), "python", train_script_path, self.params["env_name"], *process_params],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             return process
         else:
-            python_part = "python \"{}\" {}".format(train_script_path, self.params["env_name"])
+            python_part = preamble+" "+"python \"{}\" {}".format(train_script_path, self.params["env_name"])
             params_part = " ".join(nice_params)
             params_part_lined = "\n".join(nice_params)
             if verbose:

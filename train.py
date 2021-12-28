@@ -96,9 +96,9 @@ if __name__ == "__main__":
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
         torch.use_deterministic_algorithms(True)
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.run_benchmark = False
     else:
-        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.run_benchmark = True
 
 
     # work out the logging folder...
@@ -145,7 +145,7 @@ if __name__ == "__main__":
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
             shared_initialization=args.dna_shared_initialization,
-            centered=args.observation_scaling == "centered",
+            observation_normalization=args.observation_normalization,
             layer_norm=args.layer_norm,
         )
 

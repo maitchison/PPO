@@ -517,6 +517,10 @@ class Runner:
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
         self.time = np.zeros([A], dtype=np.float32)
+
+        if args.mutex_key:
+            log.info(f"Using mutex key <yellow>{args.get_mutex_key}<end>")
+
         # includes final state as well, which is needed for final value estimate
         if args.use_compression:
             # states must be decompressed with .decompress before use.
@@ -667,9 +671,6 @@ class Runner:
                 returns_transform=lambda x: ValueTransform.H(x)
             )
 
-        if args.observation_normalization:
-            self.vec_env = wrappers.VecNormalizeObservationsWrapper(self.vec_env, scale_mode="scaled", stacked=True)
-
         if verbose:
             self.log.important("Generated {} agents ({}) using {} ({}) model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
@@ -703,14 +704,17 @@ class Runner:
             data['ems_norm'] = self.ems_norm
             data['intrinsic_returns_rms'] = self.intrinsic_returns_rms
 
-        if args.normalize_observations:
-            data["observation_norm_state"] = self.model.obs_rms.save_state()
+        if args.observation_normalization:
+            data['obs_rms'] = self.model.obs_rms
 
         def torch_save(f):
-            # protocol 4 allows for >4gb files
+            # protocol >= 4 allows for >4gb files
             torch.save(data, f, pickle_protocol=4)
 
         if args.checkpoint_compression:
+            # torch will compress the weights, but not the additional data.
+            # checkpoint compression makes a substantial difference to the filesize, especially if an uncompressed
+            # replay buffer is being used.
             with self.open_fn(filename+".gz", "wb") as f:
                 torch_save(f)
         else:
@@ -719,7 +723,8 @@ class Runner:
 
     @property
     def open_fn(self):
-        return gzip.open if args.checkpoint_compression else open
+        # level 5 compression is good enough.
+        return lambda fn, mode: (gzip.open(fn, mode, compresslevel=5) if args.checkpoint_compression else open(fn, mode))
 
     def get_checkpoints(self, path):
         """ Returns list of (epoch, filename) for each checkpoint in given folder. """
@@ -761,6 +766,10 @@ class Runner:
         if args.use_intrinsic_rewards:
             self.ems_norm = checkpoint['ems_norm']
             self.intrinsic_returns_rms = checkpoint['intrinsic_returns_rms']
+
+        if args.observation_normalization:
+            self.model.obs_rms = checkpoint['obs_rms']
+
 
         utils.restore_env_state(self.vec_env, checkpoint['env_state'])
 
@@ -1135,10 +1144,6 @@ class Runner:
         """
 
         scale = 2
-
-        # I should be calling create_envs to get the vector level wrappers, and then initializing the wrapper
-        # to have the correct normalization constants.
-        assert not args.normalize_observations, "Video export not supported with observation normalization yet."
 
         env = atari.make(monitor_video=True)
         _ = env.reset()
@@ -1786,7 +1791,7 @@ class Runner:
         if args.use_intrinsic_rewards:
             self.advantage += args.intrinsic_reward_scale * self.int_advantage
 
-        if args.normalize_observations:
+        if args.observation_normalization:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 

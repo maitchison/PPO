@@ -99,10 +99,6 @@ def train(model: models.TVFModel, log: Logger):
     if not did_restore:
         log.log("To rerun experiment use:")
         log.log("python train.py " + " ".join(shlex.quote(x) for x in sys.argv[1:] if not x.startswith("description")))
-        if args.normalize_observations:
-            # this will get an initial estimate for the normalization constants.
-            runner.run_random_agent(20)
-
         desync_envs(runner, 0, args.warmup_period)
     else:
         # this is really just the throw a few new frames through the wrappers

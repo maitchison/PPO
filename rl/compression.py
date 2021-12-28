@@ -27,18 +27,22 @@ def lz4_decompress(x, dtype, shape) -> np.ndarray:
 def blosc_compress(x: np.ndarray):
     return blosc.compress(
         x.tobytes(),
-        typesize=8,
-        clevel=1,
-        shuffle=0,
+        typesize=1,
+        clevel=5,
+        shuffle=1,
         cname='lz4',
     )
-
 
 def blosc_decompress(x, dtype, shape) -> np.ndarray:
     return np.frombuffer(blosc.decompress(x), dtype=dtype).reshape(shape)
 
+# pure LZ4 is hard to beat...
 COMPRESS = lz4_compress
 DECOMPRESS = lz4_decompress
+
+# COMPRESS = blosc_compress
+# DECOMPRESS = blosc_decompress
+
 
 HISTORY_LENGTH = 100
 _compression_times = deque(maxlen=HISTORY_LENGTH)

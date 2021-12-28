@@ -457,7 +457,7 @@ class TVFModel(nn.Module):
             tvf_value_scale_fn: str = "identity",
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
-            centered: bool=False,
+            observation_normalization=False,
             layer_norm: bool=False,
             network_args:Union[dict, None] = None,
     ):
@@ -470,7 +470,7 @@ class TVFModel(nn.Module):
         self.actions = actions
         self.device = device
         self.dtype = dtype
-        self.centered = centered
+        self.observation_normalization = observation_normalization
 
         self.name = "PPG-" + network
         single_channel_input_dims = (1, *input_dims[1:])
@@ -506,10 +506,14 @@ class TVFModel(nn.Module):
 
         self.architecture = architecture
 
+        if self.observation_normalization:
+            # we track each channel separately. Helps if one channel is watermarked, or if we are using color.
+            self.obs_rms = utils.RunningMeanStd(shape=input_dims)
+
         if self.use_rnd:
+            assert self.observation_normalization, "rnd requires observation normalization."
             self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
             self.target_net = RNDTarget_Net(single_channel_input_dims)
-            self.obs_rms = utils.RunningMeanStd(shape=single_channel_input_dims)
             self.features_mean = 0
             self.features_std = 0
 
@@ -519,29 +523,37 @@ class TVFModel(nn.Module):
         """ Returns detached log_policy for given input. """
         return self.forward(x, state, output="policy")["log_policy"].detach().cpu().numpy()
 
-    def perform_normalization(self, x):
+    @torch.no_grad()
+    def perform_normalization(self, x: torch.tensor, ignore_update: bool = False):
         """
+        x: input as [B, C, H, W]
         Applies normalization transform, and updates running mean / std.
+        x should be processed (i.e. via prep_for_model)
+        if ignore_update is true then no stats will be updated.
         """
 
         # update normalization constants
-        if type(x) is torch.Tensor:
-            x = x.cpu().numpy()
+        assert type(x) is torch.Tensor
+        assert x.dtype == torch.float32
 
-        assert x.dtype == np.uint8
+        B, C, H, W = x.shape
+        assert (C, H, W) == self.input_dims
 
-        x = np.asarray(x[:, 0:1], np.float32)
-        self.obs_rms.update(x)
+        if not ignore_update:
+            batch_mean = torch.mean(x, dim=0).detach().cpu().numpy()
+            batch_var = torch.var(x, dim=0).detach().cpu().numpy()
+            batch_count = x.shape[0]
+            self.obs_rms.update_from_moments(batch_mean, batch_var, batch_count)
+
         mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device)
-        sigma = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device)
+        std = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device)
 
         # normalize x
-        x = torch.tensor(x).to(self.device)
-        x = torch.clamp((x - mu) / (sigma + 1e-5), -5, 5)
+        x = torch.clamp((x - mu) / (std + 1e-5), -5, 5)
 
-        # note: clipping reduces the std down to 0.3 so we multiply the output so that it is roughly
+        # note: clipping reduces the std down to 0.3, therefore we multiply the output so that it is roughly
         # unit normal.
-        x *= 3.0
+        x = x * 3.0
 
         return x
 
@@ -611,8 +623,8 @@ class TVFModel(nn.Module):
 
         result = {}
         x = self.prep_for_model(x)
-        if self.centered:
-            x = (x * 2) - 1.0 # make input [-1..1 instead of 0..1]
+        if self.observation_normalization:
+            x = self.perform_normalization(x)
 
         # special case for single model version (faster)
         if self.architecture == "single":
@@ -652,10 +664,11 @@ class TVFModel(nn.Module):
 
         return result
 
+    @torch.no_grad()
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
             Can accept tensor or ndarray.
-            scale_int scales uint8 to [0..1]
+            scale_int scales uint8 to [-1..1]
          """
 
         assert self.device is not None, "Must call set_device_and_dtype."
@@ -673,7 +686,7 @@ class TVFModel(nn.Module):
         if x.dtype == torch.uint8:
             x = x.to(dtype=self.dtype, non_blocking=True)
             if scale_int:
-                x = x / 255
+                x = (x / 127.5)-1.0
         elif x.dtype == self.dtype:
             pass
         else:

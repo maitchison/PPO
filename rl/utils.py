@@ -369,10 +369,6 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
 
     # todo: I think this function should be removed? we are still using it?
 
-    # I should be calling create_envs to get the vector level wrappers, and then initializing the wrapper
-    # to have the correct normalization constants.
-    assert not args.normalize_observations, "Rollout generation not supported with observation normalization yet."
-
     # todo get non_determinism working again...
     #env_fns = [lambda : atari.make(env_name, non_determinism="none" if deterministic else "noop") for _ in range(num_rollouts)]
     env = hybridVecEnv.HybridAsyncVectorEnv([atari.make for _ in range(num_rollouts)])
@@ -735,6 +731,20 @@ def get_auto_device(ignore_devices: List[int]):
         except:
             print("Warning: No devices usable.")
             return None
+
+
+def detect_numa_groups():
+    """
+    Returns list  of numa groups, or 0 if numactl is not installed
+    """
+    import subprocess
+    p = subprocess.Popen(["numactl", "--show"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    outs, errs = p.communicate(timeout=30)
+    for line in outs.decode("utf-8").split("\n"):
+        if line.startswith("cpubind: "):
+            line = line[len("cpubind: "):]
+            return [int(x) for x in line.split(" ") if x != '']
+    return 0
 
 
 def restore_env_state(env, save_state:dict):
