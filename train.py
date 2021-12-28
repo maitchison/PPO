@@ -35,9 +35,7 @@ if __name__ == "__main__":
 
     config.parse_args()
 
-    if args.verbose:
-        log.print_level = log.INFO
-    else:
+    if args.quite_mode:
         log.print_level = log.WARN
 
     # work out device to use
@@ -48,7 +46,7 @@ if __name__ == "__main__":
         log.important("Training preempted, no device available.")
         exit()
 
-    log.info("Using device: <white>{}<end>".format(args.device))
+    log.info(f"Using device: <white>{args.device}<end>")
 
     # check to see if the device we are using has been disallowed
     if args.device in utils.get_disallowed_devices():

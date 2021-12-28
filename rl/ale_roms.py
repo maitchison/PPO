@@ -1,7 +1,6 @@
 # support for additional roms that match MD5s from ALE
 
 import gym
-import atari_py
 
 BELLEMARE_MD5s = """
 # from https://github.com/mgbellemare/Arcade-Learning-Environment/blob/master/md5.txt

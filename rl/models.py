@@ -667,11 +667,11 @@ class TVFModel(nn.Module):
             x = torch.from_numpy(x)
 
         # move it to the correct device
-        x = x.to(self.device)
+        x = x.to(self.device, non_blocking=True)
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if x.dtype == torch.uint8:
-            x = x.to(dtype=self.dtype)
+            x = x.to(dtype=self.dtype, non_blocking=True)
             if scale_int:
                 x = x / 255
         elif x.dtype == self.dtype:

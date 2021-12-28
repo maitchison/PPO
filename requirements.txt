@@ -1,0 +1,7 @@
+torch==1.8.2+cu111
+opencv-python
+gym[atari]==0.21.0
+lz4
+blosc
+matplotlib
+pandas

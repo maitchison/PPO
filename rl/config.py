@@ -32,7 +32,7 @@ class Config:
         self.replay_size        = int()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
-        self.verbose            = bool()
+        self.quite_mode         = bool()
 
         self.observation_normalization = bool()
         self.observation_scaling = float()
@@ -56,7 +56,7 @@ class Config:
         self.hostname           = str()
         self.sticky_actions     = bool()
         self.guid               = str()
-        self.max_micro_batch_size = float()
+        self.max_micro_batch_size = int()
         self.policy_mini_batch_size = int()
         self.value_mini_batch_size = int()
         self.distil_mini_batch_size = int()
@@ -236,13 +236,10 @@ class Config:
     def batch_size(self):
         return self.n_steps * self.agents
 
+
 LOCK_KEY = str(uuid.uuid4().hex)
-
-# debugging variables.
-PROFILE_INFO = False
-VERBOSE = True
-
 args = Config()
+
 
 def str2bool(v):
     """
@@ -396,7 +393,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
     parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
 
-    parser.add_argument("--max_micro_batch_size", type=int, default=1024)
+    parser.add_argument("--max_micro_batch_size", type=int, default=512)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")
     parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
@@ -470,7 +467,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Log information around terminals.")
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
-    parser.add_argument("--verbose", type=str2bool, default=False)
+    parser.add_argument("--quiet_mode", type=str2bool, default=False)
 
     # other
     parser.add_argument("--mutex_key", type=str, default=None,

@@ -7,6 +7,7 @@ import math
 import sys
 import shlex
 
+from . import compression
 from .logger import Logger, LogVariable
 from .rollout import Runner, save_progress
 from .mutex import Mutex
@@ -273,6 +274,12 @@ def train(model: models.TVFModel, log: Logger):
         time_to_complete = time.time() - start_train_time
         steps = n_iterations * batch_size
         print(f"Completed {steps:,} steps in {time_to_complete:.1f}s")
+        if args.use_compression:
+            print(f"Compression stats: "
+                  f"{1000*compression.av_compression_time():.4f}ms / "
+                  f"{1000*compression.av_decompression_time():.4f}ms, "
+                  f"{compression.ratio():.1f}x ratio"
+                  )
         print(f"IPS: {round(steps/time_to_complete):,}")
 
     # -------------------------------------

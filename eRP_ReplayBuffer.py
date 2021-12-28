@@ -111,7 +111,7 @@ def initial_random_search(priority=0):
     # 10 is enough for pong, but I want to check if we eventually learn. (also verify loading and saving works)
     # 20 also lets me know if the algorithm can get to a 21 score or not (DC can sometimes cause issues).
     main_params["epochs"] = 10
-    main_params["hostname"] = None # any machine is fine
+    main_params["hostname"] = 'ML'
 
     def fixup_params(params):
 

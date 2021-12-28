@@ -520,11 +520,18 @@ class Runner:
         # includes final state as well, which is needed for final value estimate
         if args.use_compression:
             # states must be decompressed with .decompress before use.
-            print(f"Compression [{utils.Color.OKGREEN}enabled{utils.Color.ENDC}]")
+            log.info(f"Compression <green>enabled<end>")
             self.all_obs = np.zeros([N + 1, A], dtype=np.object)
         else:
-            print(f"Compression [disabled]")
-            self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
+            FORCE_PINNED = True
+            if FORCE_PINNED:
+                # make the memory pinned...
+                all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8)
+                all_obs = all_obs.pin_memory()
+                self.all_obs = all_obs.numpy()
+            else:
+                self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
+
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         self.actions = np.zeros([N, A], dtype=np.int64)
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
@@ -821,30 +828,6 @@ class Runner:
             for k in keys:
                 result[k] = torch.cat(tensors=[batch_result[k] for batch_result in batch_results], dim=0)
             return result
-
-            # mid_point = B // 2
-            #
-            # if aux_features is not None:
-            #     a = self.forward(
-            #         obs[:mid_point],
-            #         aux_features=aux_features[:mid_point],
-            #         max_batch_size=max_batch_size,
-            #         **kwargs
-            #     )
-            #     b = self.forward(
-            #         obs[mid_point:],
-            #         aux_features=aux_features[mid_point:],
-            #         max_batch_size=max_batch_size,
-            #         **kwargs
-            #     )
-            # else:
-            #     a = self.forward(obs[:mid_point], max_batch_size=max_batch_size, **kwargs)
-            #     b = self.forward(obs[mid_point:], max_batch_size=max_batch_size, **kwargs)
-            # result = {}
-            # for k in a.keys():
-            #     result[k] = torch.cat(tensors=[a[k], b[k]], dim=0)
-            # return result
-
         else:
             if obs.dtype == np.object:
                 obs = np.asarray([obs[i].decompress() for i in range(len(obs))])
@@ -2777,18 +2760,35 @@ class Runner:
                 batch_start = micro_batch_counter * micro_batch_size
                 batch_end = (micro_batch_counter + 1) * micro_batch_size
                 sample = ordering[batch_start:batch_end]
+                sample.sort()
                 micro_batch_counter += 1
 
-                microbatch_data = {}
+                micro_batch_data = {}
                 for var_name, var_value in batch_data.items():
                     data = var_value[sample]
                     if data.dtype == np.object:
                         # handle decompression
                         data = np.asarray([data[i].decompress() for i in range(len(data))])
-                    microbatch_data[var_name] = torch.from_numpy(data).to(self.model.device)
+                    micro_batch_data[var_name] = torch.from_numpy(data).to(self.model.device, non_blocking=True)
+
+                # for var_name, var_value in batch_data.items():
+                #     data = var_value[sample]
+                #     if data.dtype == np.object:
+                #         # handle decompression
+                #         # microbatch_data[var_name] = torch.tensor(
+                #         #     [data[i].decompress() for i in range(len(data))],
+                #         #     device=self.model.device,
+                #         # )
+                #         # alternative method...
+                #         data = np.asarray([data[i].decompress() for i in range(len(data))])
+                #         data = torch.from_numpy(data)
+                #         data = data.pin_memory()
+                #         microbatch_data[var_name] = data.to(self.model.device, non_blocking=True)
+                #     else:
+                #         microbatch_data[var_name] = torch.from_numpy(data).to(self.model.device, non_blocking=True)
 
                 outputs.append(mini_batch_func(
-                    microbatch_data, loss_scale=1 / micro_batches
+                    micro_batch_data, loss_scale=1 / micro_batches
                 ))
 
             context = {
@@ -2987,4 +2987,3 @@ def _open_checkpoint(checkpoint_path: str, **pt_args):
         pass
 
     raise Exception(f"Could not open checkpoint {checkpoint_path}")
-
