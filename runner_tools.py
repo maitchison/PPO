@@ -478,7 +478,8 @@ class Job:
             status = "running"
 
         details = self.get_details()
-        if details is not None and details["fraction_complete"] >= 1.0:
+        # stub: should be 1.0, but due to a bug in one version we consider 99.9 complete.
+        if details is not None and details["fraction_complete"] >= 0.999:
             status = "done"
 
         if status in ["running"] and self.minutes_since_modified() > 30:

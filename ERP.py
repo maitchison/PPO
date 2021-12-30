@@ -61,6 +61,7 @@ ERP1_args = {
     'distil_beta': 1.0,
     'distil_lr': 2.5e-4,
     'replay_mode': "uniform",
+    'replay_hashing': True,
     'dna_dual_constraint': 0,
 
     # horizon
@@ -83,63 +84,53 @@ ERP16_args.update({
 })
 
 
+def replay_shadow(priority=0, hostname=''):
+    """
+    Run lots of replay buffers at the same time :)
+    """
+    # This is just to see how bad the duplication is if we train for a while...
+    for env in ["Pong", "Breakout", "Alien", "CrazyClimber"][:2]: # just two for the moment (due to memory...)
+        add_job(
+            "RP_Shadow",
+            env_name=env,
+            run_name=f"{env}",
+            epochs=50,
+            default_params=ERP1_args,
+            debug_replay_shadow_buffers=True,
+            priority=priority,
+            hostname=hostname,
+        )
+
+
 def replay_hashing(priority=0, hostname=''):
     """
     See if hashing increase the diversity of the replay.
     """
     # my guess is pong will not be very diverse, and hashing will help.
-    for env in ["Pong", "Breakout"]:
-        for hashing in [True, False]:
-            for mode in ["uniform", "overwrite", "sequential"]:
-                add_job(
-                    "RP_Hashing",
-                    env_name=env,
-                    run_name=f"{env} hashing={hashing} (16{mode[0]})",
-                    replay_hashing=hashing,
-                    replay_mode=mode,
-                    chunk_size=10,
-                    default_params=ERP16_args,
-                    priority=priority,
-                    hostname=hostname,
-                )
-                add_job(
-                    "RP_Hashing",
-                    env_name=env,
-                    run_name=f"{env} hashing={hashing} (1{mode[0]})",
-                    replay_hashing=hashing,
-                    replay_mode=mode,
-                    chunk_size=10,
-                    default_params=ERP1_args,
-                    priority=priority,
-                    hostname=hostname,
-                )
-    # second attempt, just want to see how bad the duplication is...
-    for env in ["Pong", "Breakout"]:
-        for hashing in [True, False]:
-            for mode in ["uniform"]:
-                add_job(
-                    "RP_Duplicate",
-                    env_name=env,
-                    run_name=f"{env} hashing={hashing} (16{mode[0]})",
-                    replay_hashing=hashing,
-                    replay_mode=mode,
-                    epochs=10,
-                    default_params=ERP16_args,
-                    priority=priority,
-                    hostname=hostname,
-                )
-                add_job(
-                    "RP_Duplicate",
-                    env_name=env,
-                    run_name=f"{env} hashing={hashing} (1{mode[0]})",
-                    replay_hashing=hashing,
-                    replay_mode=mode,
-                    epochs=10,
-                    default_params=ERP1_args,
-                    priority=priority,
-                    hostname=hostname,
-                )
-
+    for env in ["Pong", "Breakout", "Alien", "CrazyClimber"]:
+        for mode in ["uniform", "sequential"]:
+            add_job(
+                "RP_Hashing",
+                env_name=env,
+                run_name=f"{env} (16{mode[0]})",
+                replay_hashing=mode == "uniform",
+                replay_mode=mode,
+                epochs=10,
+                default_params=ERP16_args,
+                priority=priority,
+                hostname=hostname,
+            )
+            add_job(
+                "RP_Hashing",
+                env_name=env,
+                run_name=f"{env} (1{mode[0]})",
+                replay_hashing=mode == "uniform",
+                replay_mode=mode,
+                epochs=10,
+                default_params=ERP1_args,
+                priority=priority,
+                hostname=hostname,
+            )
 
 def reference_runs():
     """
@@ -200,6 +191,7 @@ def initial_random_search(priority=0):
     main_params["epochs"] = 10
     main_params["tvf_exp_gamma"] = 1.5 # just to make things a bit faster.
     main_params["hostname"] = ''
+    del main_params["replay_hashing"] # first search did not support hashing
 
     def fixup_params(params):
 
@@ -230,6 +222,7 @@ def initial_random_search(priority=0):
             code += str(params["replay_mode"][0])
         params["description"] = code + " params:" + str(params)
 
+
     random_search(
         "RP_SEARCH",
         main_params,
@@ -246,3 +239,4 @@ def setup(priority_modifier=0):
     initial_random_search(priority=priority_modifier-5)
     replay_hashing(priority=priority_modifier+5, hostname="ML")
     reference_runs()
+    replay_shadow(priority=priority_modifier+10, hostname="ML")

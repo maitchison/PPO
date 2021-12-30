@@ -74,7 +74,7 @@ def train(model: models.TVFModel, log: Logger):
     # calculate some variables
     batch_size = (args.n_steps * args.agents)
     final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
-    n_iterations = math.ceil((final_epoch * 1e6) / batch_size)
+    end_iteration = math.ceil((final_epoch * 1e6) / batch_size)
 
     runner = Runner(model, log)
     runner.create_envs()
@@ -115,11 +115,11 @@ def train(model: models.TVFModel, log: Logger):
     print_counter = 0
 
     if start_iteration == 0 and (args.limit_epochs is None):
-        log.info("Training for <yellow>{:.1f}M<end> steps".format(n_iterations * batch_size / 1000 / 1000))
+        log.info("Training for <yellow>{:.1f}M<end> steps".format(end_iteration * batch_size / 1000 / 1000))
     else:
         log.info("Training block from <yellow>{}M<end> to (<yellow>{}M<end> / <white>{}M<end>) steps".format(
             str(round(start_iteration * batch_size / 1000 / 1000)),
-            str(round(n_iterations * batch_size / 1000 / 1000)),
+            str(round(end_iteration * batch_size / 1000 / 1000)),
             str(round(args.epochs))
         ))
 
@@ -128,34 +128,37 @@ def train(model: models.TVFModel, log: Logger):
 
     # add a few checkpoints early on
     if args.checkpoint_every != 0:
-        checkpoints = [x // batch_size for x in range(0, n_iterations * batch_size + 1, args.checkpoint_every)]
+        checkpoints = [x // batch_size for x in range(0, end_iteration * batch_size + 1, args.checkpoint_every)]
         checkpoints += [x // batch_size for x in [1e6]]  # add a checkpoint early on (1m steps)
-        checkpoints.append(n_iterations)
+        checkpoints.append(end_iteration)
         checkpoints = sorted(set(checkpoints))
     else:
         checkpoints = []
 
     log_time = 0
+    pause_at_end = False
 
     log.info(f"Training started. (init took {time.time()-start_time:.1f} seconds)")
     log.info()
 
     start_train_time = time.time()
 
-    for iteration in range(start_iteration, n_iterations):
-
-        step_start_time = time.time()
-
-        env_step = iteration * batch_size
-
+    def log_iteration():
         log.watch("iteration", iteration, display_priority=5)
         log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
                   display_precision=2)
         log.watch("walltime", walltime,
                   display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
 
-        # save early progress
-        save_progress(log)
+    # save early progress
+    iteration = start_iteration
+    env_step = start_iteration * batch_size
+    log_iteration()
+    save_progress(log)
+
+    for _ in range(start_iteration, end_iteration):
+
+        step_start_time = time.time()
 
         # generate the rollout
         with Mutex(args.get_mutex_key) as mx:
@@ -174,14 +177,14 @@ def train(model: models.TVFModel, log: Logger):
         returns_time = (time.time() - returns_start_time) / batch_size
 
         train_start_time = time.time()
-        runner.train(env_step)
+        runner.train(iteration*batch_size)
         train_time = (time.time() - train_start_time) / batch_size
 
         step_time = (time.time() - step_start_time) / batch_size
 
         log_start_time = time.time()
 
-        fps = 1.0 / (step_time)
+        fps = 1.0 / step_time
 
         # record some training stats
         log.watch_mean("fps", int(fps))
@@ -193,6 +196,15 @@ def train(model: models.TVFModel, log: Logger):
                        display_width=0)
 
         log.record_step()
+
+        # move to next iteration
+        iteration += 1
+        env_step += batch_size
+        # update walltime
+        # this is not technically wall time, as I pause time when the job is not processing, and do not include
+        # any of the logging time.
+        walltime += step_time * batch_size
+        log_iteration()
 
         # make sure we still have lock
         if not utils.have_lock():
@@ -221,6 +233,9 @@ def train(model: models.TVFModel, log: Logger):
                 video_name = utils.get_checkpoint_path(env_step, args.environment)
                 runner.export_movie(video_name)
                 log.info("  -video exported")
+            if c == "q":
+                pause_at_end = not pause_at_end
+                log.log(f"Pausing at end of chunk [<bold>{pause_at_end}<end>]")
 
         # periodically save checkpoints
         if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
@@ -249,11 +264,6 @@ def train(model: models.TVFModel, log: Logger):
 
         log_time = (time.time() - log_start_time) / batch_size
 
-        # update walltime
-        # this is not technically wall time, as I pause time when the job is not processing, and do not include
-        # any of the logging time.
-        walltime += (step_time * batch_size)
-
         # check to see if the device we are using has been disallowed
         if args.device in utils.get_disallowed_devices():
             # notify user, release lock and hard exit
@@ -268,7 +278,7 @@ def train(model: models.TVFModel, log: Logger):
     if args.benchmark_mode:
         # this is a bit more accurate than the IPS counter during training
         time_to_complete = time.time() - start_train_time
-        steps = n_iterations * batch_size
+        steps = end_iteration * batch_size
         print(f"Completed {steps:,} steps in {time_to_complete:.1f}s")
         if args.use_compression:
             print(f"Compression stats: "
@@ -288,3 +298,7 @@ def train(model: models.TVFModel, log: Logger):
     log.info()
     log.important("Training Complete.")
     log.info()
+
+    if pause_at_end:
+        while True:
+            time.sleep(1)

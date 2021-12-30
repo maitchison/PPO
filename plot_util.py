@@ -132,7 +132,7 @@ def compute_score_alt(result, x_lim=None):
 
 
 # def get_score_alt(results, team, n_episodes=100):
-#    # get the score, which is a combination of the time taken to win and the score acheived
+#    # get the score, which is a combination of the time taken to win and the score achieved
 #    return np.mean((results[f"score_{team}"] * 0.99 ** np.asarray(results["game_length"]))[-n_episodes:])
 
 
@@ -306,27 +306,27 @@ class RunLog():
         self._fields = result
 
 
-def compare_runs(path,
-                 x_lim=None,
-                 x_axis="env_step",
-                 y_axis="ep_score-mean",
-                 show_legend=True,
-                 title=None,
-                 highlight=None,
-                 run_filter=None,
-                 label_filter=None,
-                 color_filter=None,
-                 style_filter=None,
-                 group_filter=None,
-                 smooth_factor=None,
-                 reference_run=None,
-                 x_axis_name=None,
-                 y_axis_name=None,
-                 hold=False,
-                 jitter=0.0,
-                 skip_rows=1,
-                 figsize=(16,4),
-                 ):
+def compare_runs(
+        runs: list,
+        x_lim=None,
+        x_axis="env_step",
+        y_axis="ep_score-mean",
+        show_legend=True,
+        title=None,
+        highlight=None,
+        run_filter=None,
+        label_filter=None,
+        color_filter=None,
+        style_filter=None,
+        group_filter=None,
+        smooth_factor=None,
+        reference_run=None,
+        x_axis_name=None,
+        y_axis_name=None,
+        hold=False,
+        jitter=0.0,
+        figsize=(16,4),
+):
     """
         Compare runs stored in given path.
         group_filter: If defined, all runs with same group will be plotted together.
@@ -340,12 +340,11 @@ def compare_runs(path,
     if title is None:
         title = "Training Graph"
 
-    runs = get_runs(path, skip_rows=skip_rows, run_filter=run_filter)
-
     if len(runs) == 0:
         return
 
-    plt.figure(figsize=figsize)
+    if figsize is not None:
+        plt.figure(figsize=figsize)
     plt.grid()
 
     plt.title(title)
@@ -502,22 +501,20 @@ def standard_grid():
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
 
-def eval_runs(path, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, table_epochs=None, **kwargs):
+
+def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, table_epochs=None, **kwargs):
+
     title_args = {}
 
     if include_table:
-        table_runs(path, run_filter=kwargs.get("run_filter", None), epochs=table_epochs)
+        table_runs(runs, run_filter=kwargs.get("run_filter", None), epochs=table_epochs)
 
     for y_axis in y_axes:
         if 'title' not in kwargs:
             title_args["title"] = y_axis
-        compare_runs(path, y_axis=y_axis, **{**kwargs, **title_args})
+        compare_runs(runs, y_axis=y_axis, **{**kwargs, **title_args})
 
-
-
-def table_runs(path, run_filter=None, epochs=None):
-
-    runs = get_runs(path)
+def table_runs(runs, run_filter=None, epochs=None):
 
     if epochs is None:
         epochs = [50]
@@ -575,6 +572,7 @@ def load_eval_epoch(path, epoch, temperature=None, seed=None):
     else:
         return None
 
+
 def load_eval_results(path, temperature=None, seed=None):
     """
     Load evaluation results for each epoch.
@@ -582,8 +580,8 @@ def load_eval_results(path, temperature=None, seed=None):
 
     key = (path, temperature)
 
-    if key in cache:
-        return cache[key]
+    if key in eval_cache:
+        return eval_cache[key]
 
     results = {
         'epoch': [],
@@ -599,7 +597,7 @@ def load_eval_results(path, temperature=None, seed=None):
         results['lengths'].append(data["episode_lengths"])
         results['scores'].append(data["episode_scores"])
 
-    cache[key] = results
+    eval_cache[key] = results
 
     return results
 
@@ -695,18 +693,19 @@ def plot_eval_error(run_path, error_code='h'):
 
 
 def plot_experiment(
-        path,
+        runs:list,
         y_axes=("ep_score_mean", "err_trunc", "ev_ext", "opt_grad"),
         run_filter=None,
         smooth_factor=0.95,
         include_table=False,
         **kwargs
 ):
-    global cache
-    cache = {}
+    # support old style path as input
+    if type(runs) is str or (type(runs) is list and len(runs) > 0 and type(runs[0]) is str):
+        runs = get_runs(runs, skip_rows=1, run_filter=run_filter)
 
     eval_runs(
-        path,
+        runs=runs,
         y_axes=y_axes,
         include_table=include_table,
         smooth_factor=smooth_factor,
@@ -1458,4 +1457,4 @@ def marginalize_(
 
 asn = AtariScoreNormalizer()
 cmap = plt.cm.get_cmap('tab10')
-cache = {}
+eval_cache = {}

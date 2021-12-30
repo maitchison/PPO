@@ -3,12 +3,13 @@ Experience Replay used for distillation
 """
 
 import numpy as np
-import hashlib
 import math
-
-import torch
+import time
+import hashlib
+import typing
 
 import rl.compression
+from rl.compression import BufferSlot
 
 
 class ExperienceReplayBuffer:
@@ -29,7 +30,14 @@ class ExperienceReplayBuffer:
 
     """
 
-    def __init__(self, max_size:int, obs_shape: tuple, obs_dtype, filter_duplicates: bool = False, mode="uniform"):
+    def __init__(self,
+                 max_size:int,
+                 obs_shape: tuple,
+                 obs_dtype,
+                 filter_duplicates: bool = False,
+                 mode="uniform",
+                 name="replay"
+                 ):
         """
         @param max_size Size of replay
         @param state_shape Shape of states
@@ -44,7 +52,12 @@ class ExperienceReplayBuffer:
         self.filter_duplicates = filter_duplicates
         self.mode = mode
         self.stats_total_duplicates_removed: int = 0
+        # how many (submitted) entries where removed as duplicates last update.
         self.stats_last_duplicates_removed: int = 0
+        # how many entries where added to replay buffer last update.
+        self.stats_last_entries_added: int = 0
+        self.stats_last_entries_submitted: int = 0
+        self.name = name
 
     def save_state(self, force_copy=True):
         return {
@@ -66,6 +79,41 @@ class ExperienceReplayBuffer:
         self.hashes = state_dict["hashes"].copy()
         self.stats_total_duplicates_removed = self.stats_total_duplicates_removed
 
+    def estimate_diversity(self, max_samples=32):
+        """
+        Returns an estimate of the diversity within the replay buffer using L2 distance in pixel space.
+        max_samples: maximum number of samples to use. All pairs will be tested, so number of pairs is this number
+            squared.
+        """
+        sample = np.random.choice(
+            self.current_size,
+            size=min(max_samples, self.current_size),
+            replace=False
+        )
+        data = self.data[sample]
+        if data.dtype == np.object:
+            data = np.asarray([data[i].decompress() for i in range(len(data))], dtype=np.float32) / 255
+        distances = []
+        for i in range(len(data)):
+            for j in range(len(data)):
+                distances.append(np.sum((data[i] - data[j]) ** 2) ** 0.5)
+        return np.mean(distances)
+
+    def log_stats(self, log):
+
+        # takes around 1.7s for a 16x(128*128) replay.
+        start_time = time.time()
+        log.watch_mean(f"{self.name}_diversity", self.estimate_diversity(32), display_width=0)
+        log.watch_mean(f"{self.name}_duplicates", self.count_duplicates(), display_width=0)
+        log.watch_mean(f"{self.name}_current_duplicates_frac", self.count_duplicates() / len(self.data), display_width=0)
+        log.watch_mean(f"{self.name}_total_duplicates_removed", self.stats_total_duplicates_removed, display_width=0)
+        log.watch_mean(f"{self.name}_last_duplicates_removed", self.stats_last_duplicates_removed, display_width=0)
+        log.watch_mean(f"{self.name}_last_entries_added", self.stats_last_entries_added, display_width=0)
+        log.watch_mean(f"{self.name}_last_duplicates_removed_frac", self.stats_last_duplicate_frac, display_width=0)
+        log.watch_mean(f"{self.name}_size", len(self.data), display_width=0)
+        replay_log_time = time.time() - start_time
+        log.watch_mean(f"{self.name}_log_time", replay_log_time, display_width=0)
+
     def count_duplicates(self):
         """
         Counts the number of duplicates in the replay buffer (a bit slow).
@@ -80,27 +128,26 @@ class ExperienceReplayBuffer:
     def current_size(self):
         return len(self.data)
 
+    @property
+    def stats_last_duplicate_frac(self):
+        if self.stats_last_entries_submitted > 0:
+            return self.stats_last_duplicates_removed / self.stats_last_entries_submitted
+        else:
+            return 0
+
     @staticmethod
-    def get_observation_hash(x: np.ndarray) -> np.uint64:
+    def get_observation_hash(x: typing.Union[np.ndarray, BufferSlot]) -> np.uint64:
         """
         Return has for given observation.
         If compressed will hash the compressed data.
         """
-        # 1. filter our examples that have already been seen
-        def get_data(x):
-            if type(x) is np.ndarray:
-                return x.data.tobytes()
-            elif type(x) is torch.Tensor:
-                # not sure if this works, haven't tested it...
-                return x.data
-            elif type(x) is rl.compression.BufferSlot:
-                # hashing the compressed bytes directly is much quicker.
-                return x._compressed_data
-            else:
-                # hope for the best...
-                return x
-
-        return int(hashlib.sha256(get_data(x)).hexdigest(), 16) % (2 ** 64)
+        if type(x) is np.ndarray:
+            return int(hashlib.sha256(x.tobytes()).hexdigest(), 16) % (2 ** 64)
+        elif type(x) is BufferSlot:
+            # using the hash of the compressed bytes is much quicker.
+            return x.compressed_hash
+        else:
+            raise ValueError("Invalid type for hashing {type(x)}")
 
     def _remove_duplicates(self, data, time, hashes):
         """
@@ -126,6 +173,7 @@ class ExperienceReplayBuffer:
 
         self.stats_last_duplicates_removed = len(mask) - sum(mask)
         self.stats_total_duplicates_removed += self.stats_last_duplicates_removed
+        self.stats_last_entries_added = sum(mask)
 
         return data, time, hashes
 
@@ -142,6 +190,8 @@ class ExperienceReplayBuffer:
             f"Invalid shape for new experience, expecting {new_experience.shape[1:]} but found {self.data.shape[1:]}."
         assert new_experience.dtype == self.data.dtype, \
             f"Invalid dtype for new experience, expecting {self.data.dtype} but found {self.data.dtype}."
+
+        self.stats_last_entries_submitted = len(new_experience)
 
         new_hashes = np.asarray(
             [ExperienceReplayBuffer.get_observation_hash(x) for x in new_experience],
@@ -172,6 +222,8 @@ class ExperienceReplayBuffer:
         ids = np.random.choice(len(new_experience), size=[number_of_entries_to_add], replace=False)
         ids = sorted(ids)  # faster to insert if source is in sequential order.
 
+        self.stats_last_entries_added = 0
+
         # if we can, just increase the size of the buffer and add as many samples as we can
         new_buffer_size = min(self.max_size, len(self.data) + len(ids))
         if len(self.data) != new_buffer_size:
@@ -186,6 +238,7 @@ class ExperienceReplayBuffer:
                 self.hashes[old_n:] = new_hashes[ids[:new_slots]]
             ids = ids[new_slots:]
             self.ring_buffer_location += new_slots
+            self.stats_last_entries_added += new_slots
 
         if len(ids) > 0:
             # the remaining samples get written according to the replay strategy method.
@@ -204,6 +257,7 @@ class ExperienceReplayBuffer:
                     self.time[destination] = new_time[source]
 
             self.ring_buffer_location += len(ids)
+            self.stats_last_entries_added += len(ids)
 
         # keep track of how many (non-duplicate) frames we've seen.
         self.experience_seen += new_entry_count

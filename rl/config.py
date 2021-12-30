@@ -159,6 +159,7 @@ class Config:
         self.debug_value_logging = bool()
         self.seed = int()
         self.atari_rom_check = bool()
+        self.debug_replay_shadow_buffers = bool()
 
         self.full_action_space = bool()
         self.terminal_on_loss_of_life = bool()
@@ -194,7 +195,10 @@ class Config:
 
             if str(self.use_compression).lower() == "auto":
                 # always enable when using replay buffer (makes hashing faster, and reduces copy time).
-                self.use_compression = self.batch_size >= THRESHOLD or self.replay_size >= 0
+                self.use_compression =\
+                    self.batch_size >= THRESHOLD or \
+                    self.replay_size >= 0 or \
+                    self.debug_replay_shadow_buffers
             else:
                 self.use_compression = str2bool(str(self.use_compression))
 
@@ -466,6 +470,8 @@ def parse_args(no_env=False, args_override=None):
                         help="Log information around terminals.")
     parser.add_argument("--debug_value_logging", type=str2bool, default=False,
                         help="Log information around terminals.")
+    parser.add_argument("--debug_replay_shadow_buffers", type=str2bool, default=False,
+                        help="Creates shadow buffers, used only for testing, and which take a lot of memory.")
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
     parser.add_argument("--quiet_mode", type=str2bool, default=False)

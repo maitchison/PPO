@@ -13,7 +13,7 @@ import cv2
 import pickle
 import gzip
 from collections import defaultdict
-from typing import Union
+from typing import Union, Optional
 import bisect
 import math
 
@@ -574,8 +574,8 @@ class Runner:
         self.ep_count = 0
         self.episode_length_buffer = collections.deque(maxlen=1000)
 
-        # create the replay buffer is needed
-        self.replay_buffer: ExperienceReplayBuffer = None
+        # create the replay buffer if needed
+        self.replay_buffer: Optional[ExperienceReplayBuffer] = None
         if args.replay_size > 0:
             self.replay_buffer = ExperienceReplayBuffer(
                 max_size=args.replay_size,
@@ -584,6 +584,24 @@ class Runner:
                 mode=args.replay_mode,
                 filter_duplicates=args.replay_hashing,
             )
+
+        self.debug_replay_buffers = []
+        if args.debug_replay_shadow_buffers:
+            # create a selection of replay buffers...
+            for replay_size in [1, 2, 4, 8, 16]:
+                for hashing in [True, False]:
+                    for mode in ["sequential", "uniform", "overwrite"]:
+                        code = f"{replay_size}{mode[0]}{'h' if hashing else ''}"
+                        self.debug_replay_buffers.append(
+                            ExperienceReplayBuffer(
+                                name=code,
+                                max_size=replay_size * args.batch_size,
+                                obs_shape=self.prev_obs.shape[2:],
+                                obs_dtype=self.prev_obs.dtype,
+                                mode=mode,
+                                filter_duplicates=hashing,
+                            )
+                        )
 
         #  these horizons will always be generated and their scores logged.
         self.tvf_debug_horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
@@ -691,6 +709,8 @@ class Runner:
 
         if self.replay_buffer is not None:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
+        if len(self.debug_replay_buffers) > 0:
+            data["debug_replay_buffers"] = [replay.save_state(force_copy=False) for replay in self.debug_replay_buffers]
 
         if args.auto_strategy[:2] == "sa":
             data['horizon_sa'] = self.horizon_sa
@@ -758,8 +778,11 @@ class Runner:
         self.episode_length_buffer = checkpoint['episode_length_buffer']
         self.batch_counter = checkpoint.get('batch_counter', 0)
 
-        if "replay_buffer" in checkpoint:
+        if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
+
+        for replay, data in zip(self.debug_replay_buffers, checkpoint["debug_replay_buffers"]):
+            replay.load_state(data)
 
         if args.use_intrinsic_rewards:
             self.ems_norm = checkpoint['ems_norm']
@@ -767,7 +790,6 @@ class Runner:
 
         if args.observation_normalization:
             self.model.obs_rms = checkpoint['obs_rms']
-
 
         utils.restore_env_state(self.vec_env, checkpoint['env_state'])
 
@@ -1357,6 +1379,11 @@ class Runner:
                 utils.merge_first_two_dims(self.prev_obs),
                 utils.merge_first_two_dims(self.prev_time),
             )
+        for replay in self.debug_replay_buffers:
+            replay.add_experience(
+                utils.merge_first_two_dims(self.prev_obs),
+                utils.merge_first_two_dims(self.prev_time),
+            )
 
         if args.debug_terminal_logging:
             for t in range(self.N):
@@ -1617,27 +1644,6 @@ class Runner:
             horizons=horizons
         ).reshape([(N + 1), A])
 
-    def estimate_replay_diversity(self, max_samples=32):
-        """
-        Returns an estimate of the diversity within the replay buffer using L2 distance in pixel space.
-        max_samples: maximum number of samples to use. All pairs will be tested, so number of pairs is this number
-            squared.
-        """
-        sample = np.random.choice(
-            self.replay_buffer.current_size,
-            size=min(max_samples, self.replay_buffer.current_size),
-            replace=False
-        )
-        data = self.replay_buffer.data[sample]
-        if args.use_compression:
-            data = np.asarray([data[i].decompress() for i in range(len(data))], dtype=np.float32) / 255
-        N = len(data)
-        distances = []
-        for i in range(N):
-            for j in range(N):
-                distances.append(np.sum((data[i] - data[j]) ** 2) ** 0.5)
-        return np.mean(distances)
-
     def calculate_returns(self):
 
         N, A, *state_shape = self.prev_obs.shape
@@ -1820,23 +1826,13 @@ class Runner:
             self.log.watch("tvf_horizon", self.current_horizon)
             self.log.watch("tvf_gamma", self.tvf_gamma)
 
-        if args.replay_size > 0:
-            self.log.watch_mean("replay_diversity", self.estimate_replay_diversity(32), display_width=0,
-
-            )
-            if self.batch_counter % 10 == 0:
-                # this one can be a bit slow, especially for larger replays...
-                # having compression on helps a lot though
-                self.log.watch_mean("replay_duplicates", self.replay_buffer.count_duplicates(), display_width=0)
-            self.log.watch_mean(
-                "replay_duplicates_frac",
-                self.replay_buffer.count_duplicates() / len(self.replay_buffer.data), display_width=0
-            )
-            self.log.watch_mean("replay_total_duplicates_removed", self.replay_buffer.stats_total_duplicates_removed,
-                                display_width=0)
-            self.log.watch_mean("replay_last_duplicates_removed", self.replay_buffer.stats_last_duplicates_removed,
-                                display_width=0)
-            self.log.watch_mean("replay_size", len(self.replay_buffer.data), display_width=0)
+        if self.batch_counter % 4 == 0:
+            # this can be a little slow, ~2 seconds, compared to ~40 seconds for the rollout generation.
+            # so under normal conditions we do it every other update.
+            if args.replay_size > 0:
+                self.replay_buffer.log_stats(self.log)
+            for replay in self.debug_replay_buffers:
+                replay.log_stats(self.log)
 
         self.log.watch("gamma", self.gamma, display_width=0)
 

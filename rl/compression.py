@@ -2,7 +2,7 @@ import lz4.frame
 import blosc
 import time
 import numpy as np
-from typing import List
+import hashlib
 from collections import deque
 
 """
@@ -33,6 +33,7 @@ def blosc_compress(x: np.ndarray):
         cname='lz4',
     )
 
+
 def blosc_decompress(x, dtype, shape) -> np.ndarray:
     return np.frombuffer(blosc.decompress(x), dtype=dtype).reshape(shape)
 
@@ -56,7 +57,7 @@ class BufferSlot():
         self._compressed_data: bytes
         self._dtype: np.dtype
         self._shape: tuple
-
+        self._hash = None
         if initial_data is not None:
             self.compress(initial_data)
 
@@ -75,9 +76,20 @@ class BufferSlot():
         self._compressed_data = COMPRESS(x)
         self._shape = x.shape
         self._dtype = x.dtype
+        self._hash = None
         _compression_times.append(time.time() - start_time)
         _compressed_sizes.append(self._compressed_size)
         _uncompressed_sizes.append(self._uncompressed_size)
+
+
+    @property
+    def compressed_hash(self):
+        """
+        Returns hash of (compressed) data.
+        """
+        if self._hash is None:
+            self._hash = int(hashlib.sha256(self._compressed_data).hexdigest(), 16) % (2 ** 64)
+        return self._hash
 
     def decompress(self) -> np.ndarray:
         start_time = time.time()
