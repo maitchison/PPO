@@ -33,6 +33,7 @@ class Config:
         self.replay_size        = int()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
+        self.replay_hashing     = bool()
         self.quite_mode         = bool()
 
         self.observation_normalization = bool()
@@ -192,7 +193,8 @@ class Config:
             THRESHOLD = 2*128*128
 
             if str(self.use_compression).lower() == "auto":
-                self.use_compression = self.batch_size >= THRESHOLD or self.replay_size >= THRESHOLD
+                # always enable when using replay buffer (makes hashing faster, and reduces copy time).
+                self.use_compression = self.batch_size >= THRESHOLD or self.replay_size >= 0
             else:
                 self.use_compression = str2bool(str(self.use_compression))
 
@@ -214,7 +216,7 @@ class Config:
 
     @property
     def get_mutex_key(self):
-        if self.mutex_key.lower() == 'device':
+        if self.mutex_key is not None and self.mutex_key.lower() == 'device':
             return args.device
         else:
             return self.mutex_key
@@ -346,6 +348,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
+    parser.add_argument("--replay_hashing", type=str2bool, default=False)
     parser.add_argument("--distil_delay", type=int, default=0, help="Number of steps to wait before starting distillation")
     parser.add_argument("--distil_min_var", type=float, default=0.0,
                         help="If the variance of the value networks value estimates are less than this distil will not run.")
@@ -504,7 +507,7 @@ def parse_args(no_env=False, args_override=None):
     if cmd_args.get("use_mutex", False):
         print("warning, use_mutex is deprecated, use mutex_key instead.")
         args.mutex_key = "DEVICE"
-    if args.distil_batch_size is None:
+    if args.distil_batch_size is None or args.distil_batch_size < 0:
         args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
 
     try:

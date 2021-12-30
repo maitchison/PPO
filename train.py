@@ -19,19 +19,17 @@ def get_previous_experiment_guid(experiment_path, run_name):
             return guid
     return None
 
-if __name__ == "__main__":
+def main():
 
     # see http://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
     # import here to make workers load faster / use less memory
     import torch
-    from rl import utils, models, atari, config, logger, rollout
+    from rl import utils, models, atari, config, rollout
     from rl import ppo
     from rl.config import args
     import numpy as np
-
-    log = logger.Logger()
 
     config.parse_args()
 
@@ -119,40 +117,42 @@ if __name__ == "__main__":
     obs_space = fake_env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
 
-    model_args = {}
+    utils.lock_job()
 
+    actor_critic_model = models.TVFModel(
+        network=args.network,
+        input_dims=obs_space,
+        actions=n_actions,
+        device=args.device,
+        dtype=torch.float32,
+
+        use_rnd=args.use_rnd,
+        use_rnn=False,
+        tvf_horizon_transform=rollout.horizon_scale_function,
+        tvf_time_transform=rollout.time_scale_function,
+        tvf_n_dedicated_value_heads=args.tvf_n_dedicated_value_heads,
+        tvf_max_horizon=args.tvf_max_horizon,
+        tvf_value_scale_fn=args.tvf_value_scale_fn,
+        tvf_value_scale_norm=args.tvf_value_scale_norm,
+        architecture=args.architecture,
+
+        hidden_units=args.hidden_units,
+        tvf_hidden_units=args.tvf_hidden_units,
+        tvf_activation=args.tvf_activation,
+        shared_initialization=args.dna_shared_initialization,
+        observation_normalization=args.observation_normalization,
+        layer_norm=args.layer_norm,
+    )
+
+    ppo.train(actor_critic_model, log)
+
+    utils.release_lock()
+
+if __name__ == "__main__":
+    from rl import logger
+    log = logger.Logger()
     try:
-        utils.lock_job()
-
-        actor_critic_model = models.TVFModel(
-            network=args.network,
-            input_dims=obs_space,
-            actions=n_actions,
-            device=args.device,
-            dtype=torch.float32,
-
-            use_rnd=args.use_rnd,
-            use_rnn=False,
-            tvf_horizon_transform=rollout.horizon_scale_function,
-            tvf_time_transform=rollout.time_scale_function,
-            tvf_n_dedicated_value_heads=args.tvf_n_dedicated_value_heads,
-            tvf_max_horizon=args.tvf_max_horizon,
-            tvf_value_scale_fn=args.tvf_value_scale_fn,
-            tvf_value_scale_norm=args.tvf_value_scale_norm,
-            architecture=args.architecture,
-
-            hidden_units=args.hidden_units,
-            tvf_hidden_units=args.tvf_hidden_units,
-            tvf_activation=args.tvf_activation,
-            shared_initialization=args.dna_shared_initialization,
-            observation_normalization=args.observation_normalization,
-            layer_norm=args.layer_norm,
-        )
-
-        ppo.train(actor_critic_model, log)
-
-        utils.release_lock()
-
+        main()
     except Exception as e:
         print("!" * 60)
         print(e)

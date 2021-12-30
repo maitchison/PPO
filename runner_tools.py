@@ -116,7 +116,85 @@ canonical_57 = [
     "Zaxxon"
 ]
 
+
+# these are the reference settings, they should not be changed
+TVF_reference_args = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'architecture': 'dual',
+    'export_video': False,
+    'epochs': 50,
+    'use_compression': 'auto',
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+
+    # env parameters
+    'time_aware': True,
+    'terminal_on_loss_of_life': False,
+    'reward_clipping': "off",
+    'value_transform': 'identity',
+
+    # parameters found by hyperparameter search...
+    'max_grad_norm': 5.0,
+    'agents': 128,
+    'n_steps': 128,
+    'policy_mini_batch_size': 512,
+    'value_mini_batch_size': 512,
+    'policy_epochs': 3,
+    'value_epochs': 2,
+    'distill_epochs': 1,
+    'distill_beta': 1.0,
+    'target_kl': -1,
+    'ppo_epsilon': 0.1,
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distill_lr': 2.5e-4,
+    'entropy_bonus': 1e-3,
+    'tvf_force_ext_value_distill': True,
+    'hidden_units': 256,
+    'gae_lambda': 0.95,
+
+    # tvf params
+    'use_tvf': True,
+    'tvf_value_distribution': 'fixed_geometric',
+    'tvf_horizon_distribution': 'fixed_geometric',
+    'tvf_horizon_scale': 'log',
+    'tvf_time_scale': 'log',
+    'tvf_hidden_units': 256,
+    'tvf_value_samples': 128,
+    'tvf_horizon_samples': 32,
+    'tvf_mode': 'exponential',
+    'tvf_n_step': 80,  # makes no difference...
+    'tvf_exp_gamma': 2.0,  # 2.0 would be faster, but 1.5 tested slightly better.
+    'tvf_coef': 0.5,
+    'tvf_soft_anchor': 0,
+    'tvf_exp_mode': "transformed",
+
+    'observation_normalization': True,  # very important for DNA
+
+    # horizon
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+    'tvf_max_horizon': 30000,
+}
+
+# at 30k horizon
+DNA_reference_args = TVF_reference_args.copy()
+DNA_reference_args.update({
+    'use_tvf': False,
+})
+
+# at 30k horizon
+PPO_reference_args = DNA_reference_args.copy()
+PPO_reference_args.update({
+    'use_tvf': False,
+    'architecture': 'single',
+})
+
+
 # these are the standard args I use for most experiments.
+# maybe remove this, and make it per experiment. The issue is that I can never change these settings...
 standard_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
@@ -254,6 +332,9 @@ def add_job(
 
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
+
+    if "mutex_key" not in kwargs:
+        kwargs["mutex_key"] = "DEVICE"
 
     if kwargs.get("epochs", -1) == 0:
         # ignore runs with 0 epochs, but only if epochs is not specified.
@@ -595,9 +676,7 @@ def run_next_experiment(filter_jobs=None):
         status = job.get_status()
 
         if status in ["", "pending"]:
-
             job.get_params()
-
             job.run(chunk_size=job.chunk_size)
             return
 

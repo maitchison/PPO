@@ -1,9 +1,10 @@
-from runner_tools import WORKERS, MYSTIC_FIVE, add_job, random_search, Categorical
+from runner_tools import WORKERS, add_job, random_search, Categorical
+from runner_tools import PPO_reference_args, DNA_reference_args, TVF_reference_args
 
 ROLLOUT_SIZE = 128*128
 ATARI_5 = ['Centipede', 'CrazyClimber', 'Krull', 'SpaceInvaders', 'Zaxxon']  # Atari5
 
-ERP_args = {
+ERP1_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
     'architecture': 'dual',
@@ -47,7 +48,7 @@ ERP_args = {
     'tvf_value_samples': 128,
     'tvf_horizon_samples': 32,
     'tvf_mode': 'exponential',
-    'tvf_exp_gamma': 1.5, # was 2.0, but 1.5 is a bit faster, and should work just fine...
+    'tvf_exp_gamma': 2.0,
     'tvf_coef': 0.5,
     'tvf_soft_anchor': 0,
     'tvf_exp_mode': "transformed",
@@ -56,12 +57,11 @@ ERP_args = {
     'distil_epochs': 1,
     'distil_period': 1,
     'replay_size':   1*ROLLOUT_SIZE,
-    'distil_batch_size': ROLLOUT_SIZE//2,
+    'distil_batch_size': 1*ROLLOUT_SIZE,
     'distil_beta': 1.0,
     'distil_lr': 2.5e-4,
     'replay_mode': "uniform",
-    'replay_mixing': False,
-    'dna_dual_constraint': 0.3, # big question over if this is needed...
+    'dna_dual_constraint': 0,
 
     # horizon
     'gamma': 0.99997,
@@ -73,6 +73,106 @@ ERP_args = {
 
     'hostname': '',
 }
+
+# with 16x replay (needs compression though... so a little slower)
+ERP16_args = ERP1_args.copy()
+ERP16_args.update({
+    'distil_period': 16,
+    'replay_size':   16*ROLLOUT_SIZE,
+    'distil_batch_size': 16*ROLLOUT_SIZE,
+})
+
+
+def replay_hashing(priority=0, hostname=''):
+    """
+    See if hashing increase the diversity of the replay.
+    """
+    # my guess is pong will not be very diverse, and hashing will help.
+    for env in ["Pong", "Breakout"]:
+        for hashing in [True, False]:
+            for mode in ["uniform", "overwrite", "sequential"]:
+                add_job(
+                    "RP_Hashing",
+                    env_name=env,
+                    run_name=f"{env} hashing={hashing} (16{mode[0]})",
+                    replay_hashing=hashing,
+                    replay_mode=mode,
+                    chunk_size=10,
+                    default_params=ERP16_args,
+                    priority=priority,
+                    hostname=hostname,
+                )
+                add_job(
+                    "RP_Hashing",
+                    env_name=env,
+                    run_name=f"{env} hashing={hashing} (1{mode[0]})",
+                    replay_hashing=hashing,
+                    replay_mode=mode,
+                    chunk_size=10,
+                    default_params=ERP1_args,
+                    priority=priority,
+                    hostname=hostname,
+                )
+    # second attempt, just want to see how bad the duplication is...
+    for env in ["Pong", "Breakout"]:
+        for hashing in [True, False]:
+            for mode in ["uniform"]:
+                add_job(
+                    "RP_Duplicate",
+                    env_name=env,
+                    run_name=f"{env} hashing={hashing} (16{mode[0]})",
+                    replay_hashing=hashing,
+                    replay_mode=mode,
+                    epochs=10,
+                    default_params=ERP16_args,
+                    priority=priority,
+                    hostname=hostname,
+                )
+                add_job(
+                    "RP_Duplicate",
+                    env_name=env,
+                    run_name=f"{env} hashing={hashing} (1{mode[0]})",
+                    replay_hashing=hashing,
+                    replay_mode=mode,
+                    epochs=10,
+                    default_params=ERP1_args,
+                    priority=priority,
+                    hostname=hostname,
+                )
+
+
+def reference_runs():
+    """
+    Reference runs for PPO, DNA, and TVF
+    """
+    for env in ['Breakout', 'CrazyClimber', 'SpaceInvaders']:
+        add_job(
+            "RP_Reference",
+            env_name=env,
+            run_name=f"{env} PPO",
+            default_params=PPO_reference_args,
+            priority=10,
+            epochs=10, # enough for now...
+            hostname='ML',
+        )
+        add_job(
+            "RP_Reference",
+            env_name=env,
+            run_name=f"{env} DNA",
+            default_params=DNA_reference_args,
+            priority=10,
+            epochs=10,  # enough for now...
+            hostname='ML',
+        )
+        add_job(
+            "RP_Reference",
+            env_name=env,
+            run_name=f"{env} TVF",
+            default_params=TVF_reference_args,
+            priority=10,
+            epochs=10,  # enough for now...
+            hostname='ML',
+        )
 
 
 def initial_random_search(priority=0):
@@ -94,10 +194,11 @@ def initial_random_search(priority=0):
         'replay_mixing':     Categorical(True, False), # req replay
     }
 
-    main_params = ERP_args.copy()
+    main_params = ERP1_args.copy()
     # 10 is enough for pong, but I want to check if we eventually learn. (also verify loading and saving works)
     # 20 also lets me know if the algorithm can get to a 21 score or not (DC can sometimes cause issues).
     main_params["epochs"] = 10
+    main_params["tvf_exp_gamma"] = 1.5 # just to make things a bit faster.
     main_params["hostname"] = ''
 
     def fixup_params(params):
@@ -143,3 +244,5 @@ def initial_random_search(priority=0):
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
     initial_random_search(priority=priority_modifier-5)
+    replay_hashing(priority=priority_modifier+5, hostname="ML")
+    reference_runs()

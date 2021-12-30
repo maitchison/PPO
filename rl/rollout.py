@@ -575,17 +575,15 @@ class Runner:
         self.episode_length_buffer = collections.deque(maxlen=1000)
 
         # create the replay buffer is needed
+        self.replay_buffer: ExperienceReplayBuffer = None
         if args.replay_size > 0:
-            assert args.replay_size % args.agents == 0, \
-                f"replay_size ({args.replay_size}) must be a multiple if agents ({args.agents})."
             self.replay_buffer = ExperienceReplayBuffer(
-                N=args.replay_size,
+                max_size=args.replay_size,
                 obs_shape=self.prev_obs.shape[2:],
                 obs_dtype=self.prev_obs.dtype,
                 mode=args.replay_mode,
+                filter_duplicates=args.replay_hashing,
             )
-        else:
-            self.replay_buffer = None
 
         #  these horizons will always be generated and their scores logged.
         self.tvf_debug_horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
@@ -1619,19 +1617,25 @@ class Runner:
             horizons=horizons
         ).reshape([(N + 1), A])
 
-    def estimate_replay_diversity(self, max_samples=64):
+    def estimate_replay_diversity(self, max_samples=32):
         """
         Returns an estimate of the diversity within the replay buffer using L2 distance in pixel space.
+        max_samples: maximum number of samples to use. All pairs will be tested, so number of pairs is this number
+            squared.
         """
-        sample = np.random.choice(self.replay_buffer.N, size=min(max_samples, self.N), replace=False)
+        sample = np.random.choice(
+            self.replay_buffer.current_size,
+            size=min(max_samples, self.replay_buffer.current_size),
+            replace=False
+        )
         data = self.replay_buffer.data[sample]
         if args.use_compression:
-            data = np.asarray([data[i].decompress() for i in range(len(data))])
+            data = np.asarray([data[i].decompress() for i in range(len(data))], dtype=np.float32) / 255
         N = len(data)
         distances = []
         for i in range(N):
             for j in range(N):
-                distances.append(np.sum((data[i]/256 - data[j]/256) ** 2) ** 0.5)
+                distances.append(np.sum((data[i] - data[j]) ** 2) ** 0.5)
         return np.mean(distances)
 
     def calculate_returns(self):
@@ -1817,12 +1821,22 @@ class Runner:
             self.log.watch("tvf_gamma", self.tvf_gamma)
 
         if args.replay_size > 0:
-            self.log.watch_mean(
-                "replay_diversity",
-                self.estimate_replay_diversity(64),
-                display_width=8,
-                display_name="rp_div"
+            self.log.watch_mean("replay_diversity", self.estimate_replay_diversity(32), display_width=0,
+
             )
+            if self.batch_counter % 10 == 0:
+                # this one can be a bit slow, especially for larger replays...
+                # having compression on helps a lot though
+                self.log.watch_mean("replay_duplicates", self.replay_buffer.count_duplicates(), display_width=0)
+            self.log.watch_mean(
+                "replay_duplicates_frac",
+                self.replay_buffer.count_duplicates() / len(self.replay_buffer.data), display_width=0
+            )
+            self.log.watch_mean("replay_total_duplicates_removed", self.replay_buffer.stats_total_duplicates_removed,
+                                display_width=0)
+            self.log.watch_mean("replay_last_duplicates_removed", self.replay_buffer.stats_last_duplicates_removed,
+                                display_width=0)
+            self.log.watch_mean("replay_size", len(self.replay_buffer.data), display_width=0)
 
         self.log.watch("gamma", self.gamma, display_width=0)
 
@@ -2567,90 +2581,73 @@ class Runner:
                 label="value",
             )
 
-    def get_replay_batch(self, n:int = None):
+    def get_distil_batch(self, samples_wanted:int):
         """
         Creates a batch of data to train on during distil phase.
-        If n is None then the entire replay buffer is used
-        if n < len(replay_buffer) a sampling without replacement is used
-        Otherwise an error is raised.
-
         Also generates any required targets.
 
         If no replay buffer is being used then uses the rollout data instead.
 
+        @samples_wanted: The number of samples requested. Might be smaller if the replay buffer is too small, or
+            has not seen enough data yet.
+
         """
 
         # work out what to use to train distil on
-        if self.replay_buffer is not None:
+        if self.replay_buffer is not None and len(self.replay_buffer.data) > 0:
             # buffer is 1D, need to reshape to 2D
             _, *state_shape = self.replay_buffer.data.shape
 
             if args.replay_mixing:
                 # use mixture of replay buffer and current batch of data
                 distil_obs = np.concatenate([
-                    self.replay_buffer.data.reshape([-1, args.agents, *state_shape]),
+                    self.replay_buffer.data,
                     self.prev_obs
                 ], axis=0)
                 distil_time = np.concatenate([
-                    self.replay_buffer.time.reshape([-1, args.agents]),
+                    self.replay_buffer.time,
                     self.prev_time
                 ], axis=0)
             else:
-                distil_obs = self.replay_buffer.data.reshape([-1, args.agents, *state_shape])
-                distil_time = self.replay_buffer.time.reshape([-1, args.agents])
+                distil_obs = self.replay_buffer.data
+                distil_time = self.replay_buffer.time
         else:
-            distil_obs = self.prev_obs
-            distil_time = self.prev_time
+            distil_obs = utils.merge_first_two_dims(self.prev_obs)
+            distil_time = utils.merge_first_two_dims(self.prev_time)
 
         # filter down to n samples (if needed)
-        if n is not None:
-            N, A, *state_shape = distil_obs.shape
-            B = N * A
-            if n > B:
-                raise ValueError(f"Can not produce {n} samples from a replay buffer of size {N}.")
-            elif n < B:
-                assert n % A == 0, f"Distil sample size {n} must divide number of agents {A}."
-                sample = np.random.choice(B, n, replace=False)
-
-                def resample(x, sample_ids):
-                    N, A, *state_shape = x.shape
-                    new_N = len(sample_ids) // A
-                    return x.reshape([N*A, *state_shape])[sample_ids].reshape([new_N, A, *state_shape])
-
-                distil_obs = resample(distil_obs, sample)
-                distil_time = resample(distil_time, sample)
+        if samples_wanted < len(distil_obs):
+            sample = np.random.choice(len(distil_obs), samples_wanted, replace=False)
+            distil_obs = distil_obs[sample]
+            distil_time = distil_time[sample]
 
         batch_data = {}
-        N, A, *state_shape = distil_obs.shape
-        B = N * A
+        B, *state_shape = distil_obs.shape
 
-        batch_data["prev_state"] = distil_obs.reshape([B, *state_shape])
+        batch_data["prev_state"] = distil_obs
 
         if args.use_tvf and not args.tvf_force_ext_value_distil:
             horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
                                                     args.tvf_horizon_distribution)
             H = len(horizons)
             target_values = self.get_value_estimates(
-                obs=distil_obs,
-                time=distil_time,
+                obs=distil_obs[np.newaxis], # change from [B,*obs_shape] to [1,B,*obs_shape]
+                time=distil_time[np.newaxis],
                 horizons=horizons,
                 return_transformed=True,
             ).reshape([B, H])
 
-            batch_data["tvf_horizons"] = expand_to_na(N, A, horizons).reshape([B, H])
+            batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
             batch_data["tvf_time"] = distil_time.reshape([B])
             batch_data["value_targets"] = target_values.reshape([B, H])
         else:
             target_values = self.get_value_estimates(
-                obs=distil_obs, time=distil_time,
+                obs=distil_obs[np.newaxis], time=distil_time[np.newaxis],
                 return_transformed=True,
             ).reshape([B])
             batch_data["value_targets"] = target_values.reshape([B])
 
-
-        model_out = self.batch_forward(
-            obs=distil_obs.reshape([B, *state_shape]), output="policy"
-        )
+        model_out = self.batch_forward(obs=distil_obs, output="policy")
         batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
         return batch_data
@@ -2678,8 +2675,8 @@ class Runner:
             targ_var.append(self.log._vars["distil_targ_var"]._history[-1])
             return False
 
-        batch_data = self.get_replay_batch(args.distil_batch_size)
-        if np.var(batch_data["value_targets"]) < args.distil_min_var:
+        batch_data = self.get_distil_batch(args.distil_batch_size)
+        if args.distil_min_var > 0 and np.var(batch_data["value_targets"]) < args.distil_min_var:
             return
 
         for distil_epoch in range(args.distil_epochs):
@@ -2775,22 +2772,6 @@ class Runner:
                         # handle decompression
                         data = np.asarray([data[i].decompress() for i in range(len(data))])
                     micro_batch_data[var_name] = torch.from_numpy(data).to(self.model.device, non_blocking=True)
-
-                # for var_name, var_value in batch_data.items():
-                #     data = var_value[sample]
-                #     if data.dtype == np.object:
-                #         # handle decompression
-                #         # microbatch_data[var_name] = torch.tensor(
-                #         #     [data[i].decompress() for i in range(len(data))],
-                #         #     device=self.model.device,
-                #         # )
-                #         # alternative method...
-                #         data = np.asarray([data[i].decompress() for i in range(len(data))])
-                #         data = torch.from_numpy(data)
-                #         data = data.pin_memory()
-                #         microbatch_data[var_name] = data.to(self.model.device, non_blocking=True)
-                #     else:
-                #         microbatch_data[var_name] = torch.from_numpy(data).to(self.model.device, non_blocking=True)
 
                 outputs.append(mini_batch_func(
                     micro_batch_data, loss_scale=1 / micro_batches
