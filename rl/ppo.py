@@ -83,6 +83,10 @@ def train(model: models.TVFModel, log: Logger):
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
     if len(checkpoints) > 0:
+
+        if not args.restore:
+            raise Exception(f"Error: restore point found but --restore not specified.")
+
         log.info("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step = runner.load_checkpoint(checkpoint_path)
@@ -92,6 +96,9 @@ def train(model: models.TVFModel, log: Logger):
         walltime = log["walltime"]
         did_restore = True
     else:
+        if args.restore:
+            raise Exception(f"Error: no restore point at {args.log_folder} found.")
+
         start_iteration = 0
         walltime = 0
         did_restore = False

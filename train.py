@@ -51,7 +51,6 @@ def main():
         log.important("Training preempted, device is not allowed.")
         exit()
 
-
     # set threading
     torch.set_num_threads(int(args.threads))
 
@@ -84,6 +83,7 @@ def main():
         guid = get_previous_experiment_guid(os.path.join(args.output_folder, args.experiment_name), args.run_name)
         if guid is None:
             log.error("Could not restore experiment {}:{}. Previous run not found.".format(args.experiment_name, args.run_name))
+            return
         else:
             args.guid = guid
     else:
@@ -97,7 +97,6 @@ def main():
         torch.backends.cudnn.run_benchmark = False
     else:
         torch.backends.cudnn.run_benchmark = True
-
 
     # work out the logging folder...
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
@@ -154,13 +153,15 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print("!" * 60)
-        print(e)
-        print("!" * 60)
         try:
-            log.ERROR(str(e))
+            print("!" * 60)
+            print(e)
+            print("!" * 60)
+            log.error("ERROR:"+str(e))
+            import traceback
+            log.error(traceback.format_exc())
             log.save_log()
-        except:
+        except Exception as logging_error:
             # just ignore any errors while trying to log result
-            pass
+            print(f"An error occurred while logging this error, {logging_error}")
         raise e

@@ -95,7 +95,8 @@ def read_log(file_path):
     result["score"] = compute_score(result)
     result["score_alt"] = compute_score_alt(result)
     result["epoch"] = np.asarray(result["env_step"], dtype=np.float32) / 1e6
-    result["final_epoch"] = round(result["epoch"][-1], 1)
+    epochs_done = (result["batch_size"]/1e6) + result["epoch"][-1] # include the last batch
+    result["final_epoch"] = round(epochs_done, 1)
 
     game = params["environment"]
 
@@ -509,6 +510,10 @@ def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=Fa
     if include_table:
         table_runs(runs, run_filter=kwargs.get("run_filter", None), epochs=table_epochs)
 
+    if type(y_axes) is str:
+        y_axes = (y_axes,)
+
+
     for y_axis in y_axes:
         if 'title' not in kwargs:
             title_args["title"] = y_axis
@@ -881,7 +886,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'at
     result["score_min"] = round(min(score_list))
     result["score_list"] = tuple(round(x) for x in score_list)
 
-    result["final_epoch"] = result["epoch"][-1]
+    result["final_epoch"] = result["epoch"][-1] + 1 # if we processed epoch 2.x then say we went up to epoch 3.
     result["run_name"] = key
 
     keys = list(result.keys())
@@ -1454,6 +1459,77 @@ def marginalize_(
 
     if not hold:
         plt.show()
+
+
+def load_hyper_parameter_search(path, table_cols: list = None, max_col_width: int = 20):
+
+    results = []
+    error_runs = []
+
+    for key in range(300):
+        try:
+            # use rough weights to get game scores on a similar scale.
+            result = read_combined_log(
+                path,
+                f"{key:04d}",
+                subset=["Breakout", "SpaceInvaders", "CrazyClimber"],
+                subset_weights=[0.1, 2.0, 0.5]
+            )
+            if result is None:
+                continue
+            results.append(result)
+            print('.', end='', flush=True)
+        except Exception as e:
+            print('x', end='', flush=True)
+            error_runs.append((None, e))
+            pass
+
+    print()
+
+    if len(error_runs) > 0:
+        print()
+        print("Had issues loading the following runs:")
+        for path, error in error_runs:
+            print(" - ", path, error)
+        print()
+
+    print(f"Loaded {len(results)} results.")
+
+    results.sort(key=lambda x: -x['score_alt'])
+
+    def pad(s, width=max_col_width):
+        s = s[:(width-1)]
+        return " " * (width - len(s)) + s
+
+    if table_cols is not None:
+
+        col_widths = [min(len(col), max_col_width) for col in table_cols]
+
+        print()
+        print("-" * ((1 + max_col_width) * len(table_cols)))
+        for col_name, col_width in zip(table_cols, col_widths):
+            print(f"{pad(col_name, col_width)}", end='')
+        print()
+        print("-" * ((1 + max_col_width) * len(table_cols)))
+
+        for row in results:
+            for col_name, col_width in zip(table_cols, col_widths):
+                value = row[col_name]
+                if type(value) in [float, np.float64, np.float32]:
+                    if col_name in ['score_alt', "final_epoch"]:
+                        rounding = 0
+                    else:
+                        rounding = 6
+                    value = f"{round(float(str(row[col_name])), rounding)}"
+                else:
+                    value = str(value)
+                print(f"{pad(value, col_width)}", end='')
+            print(" "+str(row["score_list"]), end='')
+            print()
+
+    print(f"Found {len(results)} results.")
+    return results
+
 
 asn = AtariScoreNormalizer()
 cmap = plt.cm.get_cmap('tab10')

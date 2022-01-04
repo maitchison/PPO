@@ -439,6 +439,32 @@ class Job:
 
         return (-priority, self.get_completed_epochs(), self.experiment_name, self.id)
 
+    @property
+    def _alt_sort_key(self):
+        """
+        Alternative sort key that randomizes the order of jobs with the same priority.
+        """
+
+        status = self.get_status()
+
+        priority = self.priority
+
+        # make running tasks appear at top...
+        if status == "running":
+            priority += 1000
+
+        # if "search" in self.experiment_name.lower():
+        #     # with search we want to make sure we complete partial runs first
+        #     priority = priority + self.get_completed_epochs()
+        # else:
+        #     priority = priority - self.get_completed_epochs()
+
+        rnd = random.random()
+
+        priority = priority - self.get_completed_epochs() + rnd*0.001
+
+        return -priority
+
     def get_path(self):
         # returns path to this job. or none if not found
         paths = self.get_paths()
@@ -664,7 +690,7 @@ class LogUniform():
 
 def run_next_experiment(filter_jobs=None):
 
-    job_list.sort()
+    job_list.sort(key=lambda x: x._alt_sort_key)
 
     for job in job_list:
 

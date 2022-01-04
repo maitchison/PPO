@@ -89,7 +89,7 @@ def replay_shadow(priority=0, hostname=''):
     Run lots of replay buffers at the same time :)
     """
     # This is just to see how bad the duplication is if we train for a while...
-    for env in ["Pong", "Breakout", "Alien", "CrazyClimber"][:2]: # just two for the moment (due to memory...)
+    for env in ["Pong", "Breakout", "Alien", "CrazyClimber"]:  # one at a time due to ram (after loading)
         add_job(
             "RP_Shadow",
             env_name=env,
@@ -101,36 +101,6 @@ def replay_shadow(priority=0, hostname=''):
             hostname=hostname,
         )
 
-
-def replay_hashing(priority=0, hostname=''):
-    """
-    See if hashing increase the diversity of the replay.
-    """
-    # my guess is pong will not be very diverse, and hashing will help.
-    for env in ["Pong", "Breakout", "Alien", "CrazyClimber"]:
-        for mode in ["uniform", "sequential"]:
-            add_job(
-                "RP_Hashing",
-                env_name=env,
-                run_name=f"{env} (16{mode[0]})",
-                replay_hashing=mode == "uniform",
-                replay_mode=mode,
-                epochs=10,
-                default_params=ERP16_args,
-                priority=priority,
-                hostname=hostname,
-            )
-            add_job(
-                "RP_Hashing",
-                env_name=env,
-                run_name=f"{env} (1{mode[0]})",
-                replay_hashing=mode == "uniform",
-                replay_mode=mode,
-                epochs=10,
-                default_params=ERP1_args,
-                priority=priority,
-                hostname=hostname,
-            )
 
 def reference_runs():
     """
@@ -234,9 +204,56 @@ def initial_random_search(priority=0):
     )
 
 
+def extended_hyperparameter_search(priority=0):
+
+    # would have been nice to do...
+    # include gae 0.9, 0.95, 0.97
+    # include sqrt...
+
+    search_params = {
+        # ppo params
+        'distil_lr':         Categorical(1e-4, 2.5e-4, 5.0e-4),
+        'distil_lr_anneal':  Categorical(True, False),
+        'distil_epochs':     Categorical(1),
+        'distil_freq_ratio': Categorical(0.5, 1.0, 2.0),
+        'distil_batch_size_ratio': Categorical(0.5, 1.0, 2.0),
+        'replay_size':       Categorical(*[x * ROLLOUT_SIZE for x in [0, 1, 2, 4, 8, 16]]),
+        'dna_dual_constraint': Categorical(0, 0.1, 0.3, 1.0, 3.0, 10.0),
+        'replay_mode':       Categorical("sequential", "uniform"),
+        'replay_mixing':     Categorical(True, False),
+        'replay_hashing':    Categorical(True, False),  # I don't expect this to make much difference
+    }
+
+    main_params = ERP1_args.copy()
+    # 10 is enough for pong, but I want to check if we eventually learn. (also verify loading and saving works)
+    # 20 also lets me know if the algorithm can get to a 21 score or not (DC can sometimes cause issues).
+    main_params["epochs"] = 20
+    main_params["tvf_exp_gamma"] = 1.5 # just to make things a bit faster.
+    main_params["hostname"] = ''
+
+    def fixup_params(params):
+        # add a description
+        if params["replay_size"] > 0:
+            code = str(params["replay_size"]//ROLLOUT_SIZE)+params["replay_mode"][0]
+        else:
+            code = "std"
+        params["description"] = code + " params:" + str(params)
+
+    random_search(
+        "RP_HPS",
+        main_params,
+        search_params,
+        count=64,
+        # breakout is high variance... :( but maybe 20M will help?
+        envs=['Breakout', 'CrazyClimber', 'SpaceInvaders'],
+        hook=fixup_params,
+        priority=priority,
+    )
+
+
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
     initial_random_search(priority=priority_modifier-5)
-    replay_hashing(priority=priority_modifier+5, hostname="ML")
+    extended_hyperparameter_search(priority=-100)
     reference_runs()
     replay_shadow(priority=priority_modifier+10, hostname="ML")

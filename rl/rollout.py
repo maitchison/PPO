@@ -750,7 +750,7 @@ class Runner:
         if not os.path.exists(path):
             return []
         for f in os.listdir(path):
-            if f.startswith("checkpoint") and f.endswith(".pt"):
+            if f.startswith("checkpoint") and (f.endswith(".pt") or f.endswith(".pt.gz")):
                 epoch = int(f[11:14])
                 results.append((epoch, f))
         results.sort(reverse=True)
@@ -781,7 +781,7 @@ class Runner:
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
 
-        for replay, data in zip(self.debug_replay_buffers, checkpoint["debug_replay_buffers"]):
+        for replay, data in zip(self.debug_replay_buffers, checkpoint.get("debug_replay_buffers", [])):
             replay.load_state(data)
 
         if args.use_intrinsic_rewards:
@@ -2598,11 +2598,11 @@ class Runner:
                 # use mixture of replay buffer and current batch of data
                 distil_obs = np.concatenate([
                     self.replay_buffer.data,
-                    self.prev_obs
+                    utils.merge_first_two_dims(self.prev_obs),
                 ], axis=0)
                 distil_time = np.concatenate([
                     self.replay_buffer.time,
-                    self.prev_time
+                    utils.merge_first_two_dims(self.prev_time),
                 ], axis=0)
             else:
                 distil_obs = self.replay_buffer.data

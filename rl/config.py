@@ -30,6 +30,8 @@ class Config:
         self.limit_epochs       = int()
         self.distil_beta        = float()
         self.distil_period      = int()
+        self.distil_freq_ratio  = float()
+        self.distil_batch_size_ratio = float()
         self.replay_size        = int()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
@@ -164,6 +166,7 @@ class Config:
         self.full_action_space = bool()
         self.terminal_on_loss_of_life = bool()
         self.value_transform = str()
+        self.force_restore = bool()
 
         # log optimal
         self.use_log_optimal = bool()
@@ -274,7 +277,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Add filter to agent observation ['none', 'hash']")
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
     parser.add_argument("--restore", type=str2bool, default=False,
-                        help="Restores previous model if it exists. If set to false and new run will be started.")
+                        help="Restores previous model or raises error. If set to false and new run will be started.")
 
     parser.add_argument("--network", type=str, default="nature", help="Encoder used, [nature|impala]")
     parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
@@ -349,6 +352,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to replay_size (or rollout batch size if replay is disabled).")
+
+    parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
+    parser.add_argument("--distil_batch_size_ratio", type=float, default=None,
+                        help="Sets distil_batch_size to replay_size * distil_batch_size_ratio")
+
     parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
@@ -504,7 +512,6 @@ def parse_args(no_env=False, args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-
     # set defaults
     if args.intrinsic_reward_propagation is None:
         args.intrinsic_reward_propagation = args.use_rnd
@@ -515,6 +522,22 @@ def parse_args(no_env=False, args_override=None):
         args.mutex_key = "DEVICE"
     if args.distil_batch_size is None or args.distil_batch_size < 0:
         args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
+
+    # smart config
+    buffer_size = args.replay_size if args.replay_size > 0 else args.batch_size
+    if args.distil_batch_size_ratio is not None:
+        args.distil_batch_size = round(buffer_size * args.distil_batch_size_ratio)
+        while args.distil_batch_size > buffer_size:
+            args.distil_batch_size //= 2
+            args.distil_epochs *= 2
+
+    if args.distil_freq_ratio is not None:
+        # for period faster than 1 per epoch just up the epochs.
+        args.distil_period = buffer_size / args.batch_size / args.distil_freq_ratio
+        while args.distil_period < 1:
+            args.distil_period *= 2
+            args.distil_epochs *= 2
+        args.distil_period = round(args.distil_period)
 
     try:
         args.tvf_lambda = float(args.tvf_lambda)

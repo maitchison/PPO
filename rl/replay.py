@@ -67,7 +67,8 @@ class ExperienceReplayBuffer:
             'data': self.data.copy() if force_copy else self.data,
             'time': self.time.copy() if force_copy else self.time,
             'hashes': self.hashes.copy() if force_copy else self.hashes,
-            'stats_total_duplicates_removed': self.stats_total_duplicates_removed
+            'stats_total_duplicates_removed': self.stats_total_duplicates_removed,
+            'name': self.name,
         }
 
     def load_state(self, state_dict: dict):
@@ -95,7 +96,7 @@ class ExperienceReplayBuffer:
             data = np.asarray([data[i].decompress() for i in range(len(data))], dtype=np.float32) / 255
         distances = []
         for i in range(len(data)):
-            for j in range(len(data)):
+            for j in range(i, len(data)):
                 distances.append(np.sum((data[i] - data[j]) ** 2) ** 0.5)
         return np.mean(distances)
 
