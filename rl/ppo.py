@@ -167,16 +167,9 @@ def train(model: models.TVFModel, log: Logger):
 
         step_start_time = time.time()
 
-        # generate the rollout
-        with Mutex(args.get_mutex_key) as mx:
-            log.watch_mean(
-                "mutex_wait", round(1000 * mx.wait_time), display_name="mutex",
-                type="int",
-                display_width=8,
-            )
-            rollout_start_time = time.time()
-            runner.generate_rollout()
-            rollout_time = (time.time() - rollout_start_time) / batch_size
+        rollout_start_time = time.time()
+        runner.generate_rollout()
+        rollout_time = (time.time() - rollout_start_time) / batch_size
 
         # calculate returns
         returns_start_time = time.time()

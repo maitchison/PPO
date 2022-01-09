@@ -26,7 +26,15 @@ def update_file(source, destination):
         copyfile(source, destination)
         print(f"<updated {destination}>")
 
-def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperature=None, samples=None, seed=None):
+def run_evaluation_script(
+        checkpoint: str,
+        output_file:str,
+        mode:str,
+        temperature=None,
+        samples=None,
+        seed=None,
+        **kwargs,
+    ):
     """
     Runs "run_evaluation.py" on given checkpoint to produce evaluation / video results.
     """
@@ -54,6 +62,10 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
         args.append('--seed')
         args.append(str(seed))
 
+    for k, v in kwargs.items():
+        args.append(f'--{k}')
+        args.append(str(v))
+
     # set device
     args.append('--device')
     args.append('cuda:'+str(random.randint(0, 1)))
@@ -71,7 +83,7 @@ def run_evaluation_script(checkpoint: str, output_file:str, mode:str, temperatur
         os.chdir(old_path)
 
 
-def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epoch=None):
+def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epoch=None, **kwargs):
     """
     Evaluate all runs in run_path, will skip already done evaluations
     """
@@ -93,7 +105,7 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epo
         if seed is not None:
             postfix = postfix + f"_{seed}"
 
-        checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt")
+        checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt.gz")
         checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{postfix}"
         checkpoint_eval_file = os.path.join(os.path.split(run_path)[-1], f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
         checkpoint_full_path_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
@@ -126,7 +138,8 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epo
                         mode='video_nt' if ZERO_TIME else 'video',
                         checkpoint=checkpoint_name,
                         output_file=output_file,
-                        temperature=temperature
+                        temperature=temperature,
+                        **kwargs,
                     )
 
             if GENERATE_EVAL and not os.path.exists(checkpoint_full_path_eval_file):
@@ -137,10 +150,11 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epo
                     temperature=temperature,
                     seed=seed,
                     samples=eval_args.samples
+                    **kwargs,
                 )
 
 
-def monitor(path, experiment_filter=None, max_epoch=200, seed=None, eval_epoch=None):
+def monitor(path, experiment_filter=None, max_epoch=200, seed=None, eval_epoch=None, **kwargs):
     folders = [x[0] for x in os.walk(path)]
     # random order so we can have multiple workers working on this
     random.shuffle(folders)
@@ -151,7 +165,14 @@ def monitor(path, experiment_filter=None, max_epoch=200, seed=None, eval_epoch=N
             continue
         try:
             for temperature in temperatures:
-                evaluate_run(folder, temperature=temperature, max_epoch=max_epoch, seed=seed, eval_epoch=eval_epoch)
+                evaluate_run(
+                    folder,
+                    temperature=temperature,
+                    max_epoch=max_epoch,
+                    seed=seed,
+                    eval_epoch=eval_epoch,
+                    **kwargs
+                )
         except Exception as e:
             print("Error:"+str(e))
 
@@ -163,10 +184,15 @@ if __name__ == "__main__":
     parser.add_argument("--experiment_filter", type=str, default="", help="Filter for experiments.")
     parser.add_argument("--epoch", type=int, default=None, help="Epoch to evaluate (None evaluates all).")
     parser.add_argument("--every_epoch", type=int, default=1,
-                        help="Only epochs where epoch % every_epoch==0 will be processed.")
+                        help="Only epochs where epoch mod every_epoch==0 will be processed.")
     parser.add_argument("--temperatures", type=str, default="[None]",
                         help="Temperatures to generate. e.g. [0.1, 0.5, 1.0] (lower temperature has higher entropy)")
+    parser.add_argument("--multiverse_samples", type=int, default=0,
+                        help="if > 0 enables multiverse return estimation.")
+    parser.add_argument("--multiverse_period", type=int, default=100,
+                        help="number of steps between multiverse return sampling")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
+    parser.add_argument("--max_frames", type=int, default=30*60*15, help="Max number of frames in evaluation or video.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed to use.")
     parser.add_argument("--samples", type=int, default=100, help="Number of samples to generate in eval mode.")
     eval_args = parser.parse_args()
@@ -196,4 +222,7 @@ if __name__ == "__main__":
                     max_epoch=max_epoch,
                     seed=eval_args.seed,
                     eval_epoch=eval_args.epoch,
+                    multiverse_samples=eval_args.multiverse_samples,
+                    multiverse_period=eval_args.multiverse_period,
+                    max_frames=eval_args.max_frames,
                 )

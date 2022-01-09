@@ -470,6 +470,7 @@ class TVFModel(nn.Module):
         self.actions = actions
         self.device = device
         self.dtype = dtype
+        self.test_mode = False # if set to true disables normalization constant updates
         self.observation_normalization = observation_normalization
 
         self.name = "PPG-" + network
@@ -541,7 +542,8 @@ class TVFModel(nn.Module):
 
         if not ignore_update:
             batch_mean = torch.mean(x, dim=0).detach().cpu().numpy()
-            batch_var = torch.var(x, dim=0).detach().cpu().numpy()
+            # unbiased=False to match numpy
+            batch_var = torch.var(x, dim=0, unbiased=False).detach().cpu().numpy()
             batch_count = x.shape[0]
             self.obs_rms.update_from_moments(batch_mean, batch_var, batch_count)
 
@@ -595,7 +597,13 @@ class TVFModel(nn.Module):
 
         return errors
 
-    def forward(self, x, aux_features=None, output: str = "default", policy_temperature: float = 1.0):
+    def forward(
+            self,
+            x,
+            aux_features=None,
+            output: str = "default",
+            policy_temperature: float = 1.0,
+        ):
         """
 
         Forward input through model and return dictionary containing
@@ -611,6 +619,7 @@ class TVFModel(nn.Module):
         x: tensor of dims [B, *obs_shape]
         aux_features: (optional) int32 tensor of dims [B, H]
         output: which network(s) to run ["both", "policy", "value"]
+        is_test: if true disables normalization constant updates.
 
         Outputs are:
             policy: policy->policy
@@ -624,7 +633,7 @@ class TVFModel(nn.Module):
         result = {}
         x = self.prep_for_model(x)
         if self.observation_normalization:
-            x = self.perform_normalization(x)
+            x = self.perform_normalization(x, ignore_update=self.test_mode)
 
         # special case for single model version (faster)
         if self.architecture == "single":

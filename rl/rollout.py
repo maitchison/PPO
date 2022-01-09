@@ -20,6 +20,7 @@ import math
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
 from .config import args
+from .mutex import Mutex
 from .replay import ExperienceReplayBuffer
 
 import collections
@@ -2704,7 +2705,13 @@ class Runner:
 
         self.update_learning_rates()
 
-        self.train_policy()
+        with Mutex(args.get_mutex_key) as mx:
+            self.log.watch_mean(
+                "mutex_wait", round(1000 * mx.wait_time), display_name="mutex",
+                type="int",
+                display_width=8,
+            )
+            self.train_policy()
 
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.

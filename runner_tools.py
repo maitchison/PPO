@@ -41,6 +41,8 @@ DEVICE="auto"
 OUTPUT_FOLDER="./Run"
 WORKERS=8
 
+ROLLOUT_SIZE = 128*128
+
 ATARI_VAL = ['Krull', 'KungFuMaster', 'Seaquest']
 ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
 ATARI_2 = ['Krull', 'KungFuMaster']
@@ -53,10 +55,24 @@ LONG_TERM_CREDIT = ['BeamRider', 'Pong', 'Skiing', 'Surround']  # long term cred
 DIVERSE_5 = ['BattleZone', 'TimePilot', "Seaquest", "Breakout", "Freeway"] # not the real atari 5..., also not 5.
 DIVERSE_10 = list(set(ATARI_5 + LONG_TERM_CREDIT + ['Breakout']))
 
+# these are very similar to my diverse 10 set...
+AGENT57_10 = [
+    "BeamRider",
+    "Freeway",
+    "MontezumaRevenge",
+    "Pitfall",
+    "Pong",
+    "PrivateEye",
+    "Skiing",
+    "Solaris",
+    "Surround",
+    "Venture"
+]
+
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 
-canonical_57 = [
+ATARI_57 = [
     "Alien",
     "Amidar",
     "Assault",
@@ -116,7 +132,6 @@ canonical_57 = [
     "Zaxxon"
 ]
 
-
 # these are the reference settings, they should not be changed
 TVF_reference_args = {
     'checkpoint_every': int(5e6),
@@ -141,17 +156,18 @@ TVF_reference_args = {
     'n_steps': 128,
     'policy_mini_batch_size': 512,
     'value_mini_batch_size': 512,
+    'distil_mini_batch_size': 512,
     'policy_epochs': 3,
     'value_epochs': 2,
-    'distill_epochs': 1,
-    'distill_beta': 1.0,
+    'distil_epochs': 1,
+    'distil_beta': 1.0,
     'target_kl': -1,
     'ppo_epsilon': 0.1,
     'policy_lr': 2.5e-4,
     'value_lr': 2.5e-4,
-    'distill_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
     'entropy_bonus': 1e-3,
-    'tvf_force_ext_value_distill': True,
+    'tvf_force_ext_value_distil': True,
     'hidden_units': 256,
     'gae_lambda': 0.95,
 
@@ -190,120 +206,6 @@ PPO_reference_args = DNA_reference_args.copy()
 PPO_reference_args.update({
     'use_tvf': False,
     'architecture': 'single',
-})
-
-
-# these are the standard args I use for most experiments.
-# maybe remove this, and make it per experiment. The issue is that I can never change these settings...
-standard_args = {
-    'checkpoint_every': int(5e6),
-    'workers': WORKERS,
-    'architecture': 'dual',
-    'export_video': False,
-    'epochs': 50,  # really want to see where these go...
-    'use_compression': 'auto',
-    'warmup_period': 1000,
-    # helps on some games to make sure they are really out of sync at the beginning of training.
-    'disable_ev': False,
-    'seed': 0,
-
-    # env parameters
-    'time_aware': True,
-    'terminal_on_loss_of_life': False,
-    'reward_clipping': "off",
-    'value_transform': 'identity',
-
-    # parameters found by hyperparameter search...
-    'max_grad_norm': 5.0,
-    'agents': 128,
-    'n_steps': 128,
-    'policy_mini_batch_size': 512,
-    'value_mini_batch_size': 512,
-    'policy_epochs': 3,
-    'value_epochs': 2,
-    'distill_epochs': 1,
-    'distill_beta': 1.0,
-    'target_kl': -1,
-    'ppo_epsilon': 0.1,
-    'policy_lr': 2.5e-4,
-    'value_lr': 2.5e-4,
-    'distill_lr': 2.5e-4,
-    'entropy_bonus': 1e-3,
-    'tvf_force_ext_value_distill': False,
-    'hidden_units': 256,
-    'gae_lambda': 0.95,
-
-    # tvf params
-    'use_tvf': True,
-    'tvf_value_distribution': 'fixed_geometric',
-    'tvf_horizon_distribution': 'fixed_geometric',
-    'tvf_horizon_scale': 'log',
-    'tvf_time_scale': 'log',
-    'tvf_hidden_units': 256,
-    'tvf_value_samples': 128,
-    'tvf_horizon_samples': 32,
-    'tvf_mode': 'exponential',
-    'tvf_n_step': 80,  # makes no difference...
-    'tvf_exp_gamma': 2.0,  # 2.0 would be faster, but 1.5 tested slightly better.
-    'tvf_coef': 0.5,
-    'tvf_soft_anchor': 0,
-    'tvf_exp_mode': "transformed",
-
-    # horizon
-    'gamma': 1.0,
-    'tvf_gamma': 1.0,
-    'tvf_max_horizon': 30000,
-}
-
-# these enhanced args improve performance, but make the algorithm slower.
-enhanced_args = standard_args.copy()
-enhanced_args.update({
-    'tvf_horizon_samples': 128,
-    'tvf_exp_gamma': 1.5,  # 2.0 would be faster, but 1.5 tested slightly better.
-})
-
-# these enhanced args improve performance, but make the algorithm slower.
-simple_args = enhanced_args.copy()
-simple_args.update({
-    'tvf_force_ext_value_distill': True,
-})
-
-replay_simple_args = enhanced_args.copy()
-replay_simple_args.update({
-    'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-    'replay_mixing':False,
-    'distill_epochs': 1,
-    'distil_period':2,
-    'replay_size': 1 * 128 * 128,
-    'replay_mode': "uniform",
-    'dna_dual_constraint': 0.3,
-    'use_compression': False, # required for replay buffer (for the moment.)
-    'use_mutex': True, # faster...
-    'tvf_force_ext_value_distill': True,
-})
-
-replay_full_args = replay_simple_args.copy()
-replay_full_args.update({
-    'tvf_force_ext_value_distill': True,
-})
-
-
-# these are the new default replay buffer updated to support new renamed config settings,
-replay_args = enhanced_args.copy()
-replay_args.update({
-    'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-    'replay_mixing': False,
-    'distill_epochs': 1,
-    'distil_period': 1,
-    'replay_size': 128 * 128,
-    'distil_batch_size': 128 * 128 // 2,
-    'replay_mode': "uniform",
-    'dna_dual_constraint': 0.3,
-    'use_compression': True,
-    'use_mutex': True, # faster...
-    'tvf_force_ext_value_distill': False,
 })
 
 

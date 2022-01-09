@@ -223,7 +223,7 @@ class Config:
 
     @property
     def get_mutex_key(self):
-        if self.mutex_key is not None and self.mutex_key.lower() == 'device':
+        if self.mutex_key.lower() == 'device':
             return args.device
         else:
             return self.mutex_key
@@ -485,7 +485,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--quiet_mode", type=str2bool, default=False)
 
     # other
-    parser.add_argument("--mutex_key", type=str, default=None,
+    parser.add_argument("--mutex_key", type=str, default='',
                         help="uses mutex locking so that only one GPU can be working on a rollout at a time. " +
                              "(use DEVICE) to set automatically to current device."
                         )

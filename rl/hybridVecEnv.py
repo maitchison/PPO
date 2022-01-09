@@ -57,8 +57,10 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
 
         if len(env_fns) <= max_cpus:
             # this is just a standard vec env
-            super().__init__(env_fns, copy=copy, shared_memory=True)
+            super().__init__(env_fns, copy=copy, shared_memory=True, worker=_worker_shared_memory)
             self.is_batched = False
+            self.n_sequential = 1
+            self.n_parallel = len(env_fns)
         else:
             # create sequential envs for each worker
             assert len(env_fns) % max_cpus == 0, "Number of environments ({}) must be a multiple of the CPU count ({}).".format(len(env_fns), max_cpus)
@@ -75,9 +77,7 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             if verbose:
                 print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
 
-            worker_function = _worker_shared_memory
-
-            super().__init__(vec_functions, worker=worker_function, copy=copy, shared_memory=True)
+            super().__init__(vec_functions, copy=copy, shared_memory=True, worker=_worker_shared_memory)
 
             self.is_batched = True
             # super will set num_envs to number of workers, so we fix it here.
@@ -102,6 +102,14 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             for k, v in result.items():
                 buffer[f"vec_{counter:03d}"] = v
                 counter += 1
+
+    def restore_env_state(self, env_index:int, buffer: dict):
+        """
+        Restores state of specific environment
+        """
+        pipe = self.parent_pipes[env_index]
+        pipe.send(('load', buffer))
+        results, successes = pipe.recv()
 
     def restore_state(self, buffer):
         # split data up...
@@ -139,7 +147,9 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
                 np.reshape(infos, [-1])
             )
         else:
-            return super().step(actions)
+            # info's comes back as tuple, change it to a list here so we are the same as above.
+            obs, rews, dones, infos = super().step(actions)
+            return obs, rews, dones, list(infos)
 
 def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
 
@@ -173,8 +183,11 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 save_dict = utils.save_env_state(env)
                 pipe.send((save_dict, True))
             elif command == 'load':
-                wrappers.utils.restore_env_state(env, data)
-                pipe.send((None, True))
+                try:
+                    wrappers.utils.restore_env_state(env, data)
+                    pipe.send((None, True))
+                except Exception as e:
+                    pipe.send((e, False))
             elif command == 'close':
                 pipe.send((None, True))
                 break

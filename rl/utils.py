@@ -464,6 +464,113 @@ def draw_image(frame, im, dx, dy, scale=4):
             c = (im[y,x]*255,im[y,x]*255,im[y,x]*255)
             draw_pixel(frame, dx+x*scale, dy+y*scale, c, sx=scale, sy=scale)
 
+def draw_numbers(frame, x, y, value:int, color=(255,255,255), zero_pad=0, size=1):
+    """
+    Draws number onto frame
+    :param frame:
+    :param x:
+    :param y:
+    :param s:
+    :param color:
+    :return:
+    """
+
+    numbers = [
+        [
+            [0, 1, 1, 0],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+        ],
+        [
+            [0, 1, 1, 0],
+            [1, 1, 1, 0],
+            [0, 0, 1, 0],
+            [0, 0, 1, 0],
+            [0, 0, 1, 0],
+            [1, 1, 1, 1],
+        ],
+        [
+            [0, 1, 1, 0],
+            [1, 0, 0, 1],
+            [0, 0, 0, 1],
+            [0, 0, 1, 0],
+            [0, 1, 0, 0],
+            [1, 1, 1, 1],
+        ],
+        [
+            [1, 1, 1, 0],
+            [0, 0, 0, 1],
+            [0, 1, 1, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [1, 1, 1, 0],
+        ],
+        [
+            [1, 0, 0, 0],
+            [1, 0, 1, 0],
+            [1, 0, 1, 0],
+            [1, 1, 1, 1],
+            [0, 0, 1, 0],
+            [0, 0, 1, 0],
+        ],
+        [
+            [1, 1, 1, 1],
+            [1, 0, 0, 0],
+            [1, 1, 1, 0],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [1, 1, 1, 0],
+        ],
+        [
+            [0, 1, 1, 1],
+            [1, 0, 0, 0],
+            [1, 1, 1, 0],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+        ],
+        [
+            [1, 1, 1, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+        ],
+        [
+            [0, 1, 1, 0],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [0, 1, 1, 0],
+        ],
+        [
+            [0, 1, 1, 0],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [0, 1, 1, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+        ],
+    ]
+
+    if zero_pad == 0:
+        s = str(value)
+    else:
+        s = str(value).zfill(zero_pad)
+    for index, char in enumerate(s):
+        if char not in "0123456789":
+            continue
+        number = numbers[ord(char)-ord('0')]
+        for i in range(4):
+            for j in range(6):
+                if number[j][i]:
+                    draw_pixel(frame, x + (i + index * 5) * size, y + (j*size), color, sx=size, sy=size)
+
 def compose_frame(state_frame, rendered_frame, channels=None):
     """ Puts together a composite frame containing rendered frame and state. """
 

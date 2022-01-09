@@ -153,6 +153,11 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, *
 
     for seed in range(parallel_jobs):
         job_name = f"pong_{seed}"
+
+        # set default parameters
+        params["use_compression"] = params.get("use_compression", args.use_compression)
+        params["observation_normalization"] = params.get("observation_normalization", args.observation_normalization)
+
         p = execute_job(
             BENCHMARK_FOLDER,
             job_name,
@@ -160,8 +165,6 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, *
             env_name="Pong",
             device=f'cuda:{seed % GPUS}',
             numa_id=args.numa[seed % len(args.numa)] if args.numa is not None else None,
-            use_compression=args.use_compression,
-            observation_normalization=args.observation_normalization,
             epochs=BENCHMARK_EPOCHS,
             quiet_mode=not args.verbose,
             **params
@@ -194,7 +197,7 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, *
     return results[0] if is_scalar else results
 
 
-def run_benchmark(description: str, job_counts: list):
+def run_benchmark(description: str, job_counts: list, **kwargs):
 
     # clean start
     os.system(f'rm -r ./Run/{BENCHMARK_FOLDER}')
@@ -204,7 +207,9 @@ def run_benchmark(description: str, job_counts: list):
     baseline_ips = None
 
     for jobs in job_counts:
-        ips = sum(generate_benchmark_result(parallel_jobs=jobs, show_compression_stats=jobs == job_counts[0]))
+        ips = sum(
+            generate_benchmark_result(parallel_jobs=jobs, show_compression_stats=jobs == job_counts[0], **kwargs)
+        )
         if baseline_ips is None:
             baseline_ips = ips
         ratio = ips / baseline_ips
@@ -300,6 +305,13 @@ if __name__ == "__main__":
                 run_benchmark("full", [1, 1 * GPUS, 2 * GPUS])
         elif mode == "quick":
             run_benchmark("quick", [1])
+        elif mode == "ppo":
+            run_benchmark(
+                "ppo",
+                [1, 1 * GPUS, 2 * GPUS, 3 * GPUS],
+                use_tvf=False,
+                architecture="single",
+            )
         elif mode == "regression":
             run_regressions()
         elif mode == "show":

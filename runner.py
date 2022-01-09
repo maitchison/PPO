@@ -9,8 +9,12 @@ if __name__ == "__main__":
 
     # load in the jobs...
     import ERP
+    import EPGG
+    import EA57
 
-    ERP.setup()
+    # ERP.setup()
+    # EPGG.setup()
+    EA57.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

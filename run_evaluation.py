@@ -1,5 +1,7 @@
 # limit to 4 threads...
 import os
+import typing
+
 os.environ["MKL_NUM_THREADS"] = "4"
 import torch
 torch.set_num_threads(4)
@@ -165,6 +167,9 @@ def load_checkpoint(checkpoint_path, device=None):
     env_state = checkpoint["env_state"]
     CURRENT_HORIZON = checkpoint.get("current_horizon", 0)
 
+    if "obs_rms" in checkpoint:
+        model.obs_rms = checkpoint["obs_rms"]
+
     if "VecNormalizeRewardWrapper" in env_state:
         # the new way
         REWARD_SCALE = env_state['VecNormalizeRewardWrapper']['ret_rms'][1] ** 0.5
@@ -243,6 +248,11 @@ def make_model(env):
 
     try:
         additional_args['centered'] = args.observation_scaling == "centered"
+    except:
+        pass
+
+    try:
+        additional_args['observation_normalization'] = args.observation_normalization
     except:
         pass
 
@@ -412,6 +422,8 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
             num_rollouts=batch_samples,
             temperature=temperature,
             include_horizons=False,
+            multiverse_samples=eval_args.multiverse_samples,
+            multiverse_period=eval_args.multiverse_period,
             seed_base=eval_args.seed+(counter*17)
         )
 
@@ -449,10 +461,8 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
     with open(filename+".dat", "wb") as f:
         pickle.dump(data, f)
 
-def generate_rollout(model, max_frames = 30*60*15, include_video=False, temperature=1.0, zero_time=False):
-    return generate_rollouts(
-        model, max_frames, include_video, num_rollouts=1, temperature=temperature, zero_time=zero_time
-    )[0]
+def generate_rollout(model, **kwargs):
+    return generate_rollouts(model, num_rollouts=1, **kwargs)[0]
 
 def generate_fake_rollout(num_frames = 30*60):
     """
@@ -467,6 +477,17 @@ def generate_fake_rollout(num_frames = 30*60):
         'frames': np.zeros([num_frames, 210, 334, 3], dtype=np.uint8)
     }
 
+def make_envs(include_video:bool=False, seed_base:int=0, num_envs:int=1, force_hybrid_async:bool=False):
+    # create environment(s) if not already given
+    env_fns = [lambda i=i: atari.make(monitor_video=include_video, seed=(i * 997) + seed_base) for i in
+               range(num_envs)]
+    if num_envs > 16 or force_hybrid_async:
+        envs = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
+    else:
+        envs = sync_vector_env.SyncVectorEnv(env_fns)
+    return envs
+
+# todo: make a proper buffer class
 
 def generate_rollouts(
         model,
@@ -476,51 +497,66 @@ def generate_rollouts(
         temperature=1.0,
         include_horizons=True,
         zero_time=False,
+        multiverse_samples:int=0,
+        multiverse_period:int=100,
+        rewards_only:bool=False,
+        venvs=None,
+        env_states:np.ndarray=None,
+        env_times:np.ndarray=None,
         seed_base=None,
     ):
     """
     Generates rollouts
+
+    @param venvs: If given the environment to use to generate the rollouts
+    @param env_state: If given then initial state of the environments, if not given the environment will be reset.
+    @param rewards_only: if true returns only the rewards gained.
     """
 
+    model.test_mode = True
     seed_base = seed_base or eval_args.seed
 
-    env_fns = [lambda i=i: atari.make(monitor_video=include_video, seed=(i*997)+seed_base) for i in range(num_rollouts)]
-    if num_rollouts > 16:
-        env = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
+    if venvs is None:
+        venvs = make_envs(include_video=include_video, seed_base=seed_base, num_envs=num_rollouts)
+
+    if env_states is not None:
+        states = env_states
     else:
-        env = sync_vector_env.SyncVectorEnv(env_fns)
+        states = venvs.reset()
 
-    states = env.reset()
     infos = None
-
     is_running = [True] * num_rollouts
-
     frame_count = 0
-
     buffers:List[Dict[str, Union[bool, list, np.ndarray, CompressedStack]]] = []
 
     for i in range(num_rollouts):
-        buffers.append({
-            'values': [],   # values for each horizon of dims [K]
-            'tvf_discounted_values': [],  # values for each horizon discounted with TVF_gamma instead of gamma, [K]
-            'times': [],  # normalized time step
-            'raw_values': [],  # values for each horizon of dims [K] (unscaled)
-            'errors': [],   # std error estimates for each horizon of dims [K]
-            'model_values': [], # models predicted value (float)
-            'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
-            'raw_rewards': [], # raw unscaled reward from the atari environment
-            'noops': 0,
-        })
-
-        if include_video:
-            buffers[-1]['frames'] = CompressedStack()  # video frames
+        if rewards_only:
+            buffers.append({'rewards':[], 'raw_rewards':[]})
+        else:
+            buffers.append({
+                'values': [],   # values for each horizon of dims [K]
+                'tvf_discounted_values': [],  # values for each horizon discounted with TVF_gamma instead of gamma, [K]
+                'times': [],  # normalized time step
+                'raw_values': [],  # values for each horizon of dims [K] (unscaled)
+                'errors': [],   # std error estimates for each horizon of dims [K]
+                'model_values': [], # models predicted value (float)
+                'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
+                'raw_rewards': [], # raw unscaled reward from the atari environment
+                'return_sample': [], # return samples for each horizon
+                'noops': 0,
+            })
+            if include_video:
+                buffers[-1]['frames'] = CompressedStack()  # video frames
 
     if include_horizons and args.use_tvf:
         horizons = np.repeat(np.arange(int(args.tvf_max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
     else:
         horizons = np.repeat(np.arange(args.tvf_max_horizon, args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
 
-    times = np.zeros([num_rollouts])
+    if env_times is None:
+        times = np.zeros([num_rollouts])
+    else:
+        times = env_times
 
     # get value transform (will not be in some of the older scripts)
     try:
@@ -531,6 +567,13 @@ def generate_rollouts(
     # set seeds
     torch.manual_seed(seed_base)
     np.random.seed(seed_base)
+
+    # generate multiverse envs
+    if multiverse_samples > 0:
+        multi_envs = make_envs(seed_base=seed_base, num_envs=multiverse_samples, force_hybrid_async=True)
+        multi_envs.reset()
+    else:
+        multi_envs = None
 
     while any(is_running) and frame_count < max_frames:
 
@@ -559,12 +602,12 @@ def generate_rollouts(
 
         if temperature == 0:
             probs = model_out["argmax_policy"].detach().cpu().numpy()
-            action = np.asarray([np.argmax(prob) for prob in probs], dtype=np.int32)
+            actions = np.asarray([np.argmax(prob) for prob in probs], dtype=np.int32)
         else:
             log_probs = model_out["log_policy"].detach().cpu().numpy()
             if np.isnan(log_probs).any():
                 raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
-            action = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
+            actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
         prev_states = states.copy()
         prev_times = times.copy()
@@ -573,7 +616,7 @@ def generate_rollouts(
         else:
             prev_infos = None
 
-        states, rewards, dones, infos = env.step(action)
+        states, rewards, dones, infos = venvs.step(actions)
 
         # this happens on the first frame, prev_infos is set to None as reset does not generate an info
         # so we use the next info to get the rendered frame... what a pain...
@@ -582,6 +625,69 @@ def generate_rollouts(
 
         # go though each agent...
         for i in range(len(states)):
+
+            def append_buffer(key, value):
+                if key in buffers[i]:
+                    if type(value) is np.ndarray:
+                        value = value.copy()
+                    buffers[i][key].append(value)
+                else:
+                    pass
+
+            def set_buffer(key, value):
+                if key in buffers[i]:
+                    buffers[i][key] = value
+                else:
+                    pass
+
+            # handle multiverse
+            if multi_envs is not None:
+                if (frame_count % multiverse_period == 0):
+                    # prep multiverse envs...
+                    root_env_state = utils.save_env_state(venvs.envs[i])
+                    buffer = {}
+                    for j in range(multi_envs.n_sequential):
+                        buffer[f"vec_{j:03d}"] = root_env_state
+                    for j in range(multi_envs.n_parallel):
+                        pipe = multi_envs.parent_pipes[j]
+                        pipe.send(('load', buffer))
+                        error, ok = pipe.recv()
+                        assert ok, "Failed env load with error:" + str(error)
+                    initial_states = np.asarray([states[i] for _ in range(multiverse_samples)])
+                    initial_times = np.asarray([times[i] for _ in range(multiverse_samples)])
+                    multiverse_buffer = generate_rollouts(
+                        model,
+                        max_frames=max_frames-frame_count,
+                        num_rollouts=multiverse_samples,
+                        include_video=False,
+                        temperature=temperature,
+                        include_horizons=False,
+                        zero_time=zero_time,
+                        rewards_only=True,
+                        multiverse_samples=0,
+                        multiverse_period=0,
+                        venvs=multi_envs,
+                        env_states=initial_states,
+                        env_times=initial_times,
+                        seed_base=i*59+frame_count*1013+6673,
+                    )
+                    # calculate the returns at each horizon
+                    all_rewards = np.zeros([multiverse_samples, max_frames], dtype=np.float32)
+                    for j in range(multiverse_samples):
+                        sample_rewards = multiverse_buffer[j]['raw_rewards']
+                        all_rewards[j, :len(sample_rewards)] = sample_rewards
+                    discounts = np.asarray([args.gamma ** t for t in range(max_frames)], dtype=np.float32)
+                    discounted_rewards = all_rewards * discounts[None, :]
+                    discounted_returns = np.cumsum(discounted_rewards, axis=1)
+                    append_buffer('return_sample', discounted_returns)
+                    # stub: debug print
+                    # print(f"(discounted) returns at t={frame_count} are {discounted_returns[:, -1]}")
+                    # print(f"reward lengths are {[len(multiverse_buffer[j]['raw_rewards']) for j in range(multiverse_samples)]}")
+                    # print(" returns are :")
+                    # for j in range(multiverse_samples):
+                    #     print(" -"+str(j)+":", np.cumsum(multiverse_buffer[j]['raw_rewards']))
+                else:
+                    append_buffer('return_sample', None)
 
             if not is_running[i]:
                 continue
@@ -592,7 +698,7 @@ def generate_rollouts(
 
             # check for infos
             if "noop_start" in infos[i]:
-                buffers[i]["noops"] = infos[i]["noop_start"]
+                set_buffer("noops", infos[i]["noop_start"])
 
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
@@ -603,25 +709,26 @@ def generate_rollouts(
                 channels = prev_infos[i].get("channels", None)
                 rendered_frame = prev_infos[i].get("monitor_obs", prev_states[i])
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
-                buffers[i]['frames'].append(frame)
+                append_buffer('frames', frame)
 
             if horizons is not None:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
                 values = ValueTransform.H_inv(values)
 
                 if needs_rediscount():
-                    buffers[i]['tvf_discounted_values'].append(values)
+                    append_buffer('tvf_discounted_values', values)
                     values = rediscount_TVF(values, args.gamma)
 
-                buffers[i]['values'].append(values)
+                append_buffer('values', values)
                 if "tvf_raw_value" in model_out:
                     raw_values = model_out["tvf_raw_value"][i, :].detach().cpu().numpy()
-                    buffers[i]['raw_values'].append(raw_values)
+                    append_buffer('raw_values', raw_values)
 
-            buffers[i]['model_values'].append(model_value)
-            buffers[i]['rewards'].append(rewards[i])
-            buffers[i]['times'].append(prev_times[i])
-            buffers[i]['raw_rewards'].append(raw_reward)
+            append_buffer('model_values', model_value)
+
+            append_buffer('rewards', rewards[i])
+            append_buffer('times', prev_times[i])
+            append_buffer('raw_rewards', raw_reward)
 
         frame_count += 1
 
@@ -636,7 +743,10 @@ def generate_rollouts(
             if len(buffer[key]) == 0:
                 del buffer[key]
             else:
-                buffer[key] = np.asarray(buffer[key])
+                if key in ["return_sample"]:
+                    buffer[key] = np.asarray(buffer[key], dtype=object)
+                else:
+                    buffer[key] = np.asarray(buffer[key])
 
     return buffers
 
@@ -671,8 +781,8 @@ class QuickPlot():
         plt.ylim(self._y_min, self._y_max)
         plt.grid(alpha=0.2)
         if self.log_scale:
-            plt.xlabel("log_2(1+h)")
-            plt.xlim(1, np.log2(args.tvf_max_horizon + 1))
+            plt.xlabel("$\log_10(10+h)$")
+            plt.xlim(1, np.log10(args.tvf_max_horizon + 10))
         else:
             plt.xlabel("h")
             plt.xlim(0, args.tvf_max_horizon)
@@ -763,10 +873,55 @@ class QuickPlot():
             old_x = new_x
             old_y = new_y
 
+    def plot_between(self, xs, y_low, y_high, color, edges_only: bool=False):
+        """
+        We assume xs are sorted.
+        """
+
+        if self.log_scale:
+            xs = np.log10(10+np.asarray(xs))
+
+        c = mpl.colors.to_rgba(color)[:3][::-1] # swap from RGB to BGA
+        c = (np.asarray(c, dtype=np.float32) * 255).astype(dtype=np.uint8)
+
+        zipped_data = list(zip(xs, y_low))
+        transformed_data = self._transform.transform(zipped_data)
+        tx, ty1 = transformed_data[:, 0], transformed_data[:, 1]
+
+        zipped_data = list(zip(xs, y_high))
+        transformed_data = self._transform.transform(zipped_data)
+        tx, ty2 = transformed_data[:, 0], transformed_data[:, 1]
+
+        prev_x = tx[0]-1
+        current_x = int(prev_x)
+        prev_y1 = ty1[0]
+        prev_y2 = ty2[0]
+
+        def lerp(x, x1, x2, y1, y2):
+            factor = (x - x1) / (x2-x1)
+            return y2 * factor + y1 * (1-factor)
+
+        for new_x, new_y1, new_y2 in zip(tx, ty1, ty2):
+            while current_x < int(new_x):
+                current_x += 1
+                x = int(current_x)
+                y_top = int(lerp(current_x, prev_x, new_x, prev_y1, new_y1))
+                y_bottom = int(lerp(current_x, prev_x, new_x, prev_y2, new_y2))
+                if edges_only:
+                    self.plot_pixel(x, y_top, c)
+                    self.plot_pixel(x, y_bottom, c)
+                else:
+                    self.v_line(x, y_top, y_bottom, c)
+
+            prev_x = new_x
+            prev_y1 = new_y1
+            prev_y2 = new_y2
+
+
 def export_movie(
         model,
         filename_base,
-        max_frames = 30*60*15,
+        max_frames:int = 30*60*15,
         include_score_in_filename=False,
         temperature=1.0,
         zero_time=False,
@@ -792,7 +947,15 @@ def export_movie(
 
     print(f"Video {filename_base} ", end='', flush=True)
 
-    buffer = generate_rollout(model, max_frames, include_video=True, temperature=temperature, zero_time=zero_time)
+    buffer = generate_rollout(
+        model,
+        max_frames=max_frames,
+        include_video=True,
+        temperature=temperature,
+        multiverse_samples=eval_args.multiverse_samples,
+        multiverse_period=eval_args.multiverse_period,
+        zero_time=zero_time
+    )
     rewards = buffer["rewards"]
     raw_rewards = buffer["raw_rewards"]
     print(f"ratio:{buffer['frames'].ratio:.2f} ", end='', flush=True)
@@ -812,9 +975,15 @@ def export_movie(
         max_true_return = max(max_true_return, final_return)
         min_true_return = min(min_true_return, final_return)
 
+    max_return_sample = float('-inf')
+    if "return_sample" in buffer:
+        for sample in buffer["return_sample"]:
+            if sample is not None:
+                max_return_sample = max(max_return_sample, sample.max())
+
     max_value_estimate = np.max(buffer["values"]) * REWARD_SCALE
     min_value_estimate = np.min(buffer["values"]) * REWARD_SCALE
-    y_max = max(max_true_return, max_value_estimate)
+    y_max = max(max_true_return, max_value_estimate, max_return_sample)
     y_min = min(min_true_return, min_value_estimate)
 
     # draw background plot
@@ -823,6 +992,13 @@ def export_movie(
     log_fig = QuickPlot(y_min, y_max, log_scale=True, invert_score=inv_score)
     linear_fig = QuickPlot(y_min, y_max, log_scale=False, invert_score=inv_score)
     plot_height, plot_width = log_fig.buffer.shape[:2]
+
+    def plot(xs, ys, color:typing.Union[str, tuple] ='white'):
+        """
+        Plot data on both the log and linear graphs
+        """
+        log_fig.plot(xs, ys, color)
+        linear_fig.plot(xs, ys, color)
 
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
     final_score = sum(raw_rewards)
@@ -862,46 +1038,74 @@ def export_movie(
         true_returns = true_rewards * discount_weights[:len(true_rewards)]
         true_returns = np.cumsum(true_returns)
 
+        # calculate return distribution when multiverse is enabled
+        return_samples = buffer.get("return_sample", None)
+        if return_samples is not None:
+            # not all timesteps have a return sample
+            return_sample = return_samples[t]
+        else:
+            return_sample = None
+
         # plotting...
         log_fig.clear()
         linear_fig.clear()
 
-        if len(true_returns) < args.tvf_max_horizon+1:
-            padded_true_returns = np.zeros([args.tvf_max_horizon+1], dtype=np.float32) + true_returns[-1]
-            padded_true_returns[:len(true_returns)] = true_returns
-            true_returns = padded_true_returns
-        xs = list(range(len(true_returns)))
-        ys = true_returns
-        log_fig.plot(xs, ys, 'lightcoral')
-        linear_fig.plot(xs, ys, 'lightcoral')
+        if return_sample is not None:
+            # plot return sample
+
+            mean = np.mean(return_sample, axis=0)
+
+            xs = list(range(len(mean)))
+            for p in [log_fig, linear_fig]:
+                low = np.quantile(return_sample, 0.5 - 0.9545/2, axis=0)
+                high = np.quantile(return_sample, 0.5 + 0.9545/2, axis=0)
+                p.plot_between(xs, low, high, (0.10, 0.10, 0.20))
+            for p in [log_fig, linear_fig]:
+                low = np.quantile(return_sample, 0.50 - 0.341, axis=0)
+                high = np.quantile(return_sample, 0.50 + 0.341, axis=0)
+                p.plot_between(xs, low, high, (0.25, 0.25, 0.35))
+            for p in [log_fig, linear_fig]:
+                low = np.min(return_sample, axis=0)
+                high = np.max(return_sample, axis=0)
+                p.plot_between(xs, low, high, (0.45, 0.25, 0.35), edges_only=True)
+            plot(xs, mean, (0.45,0.45,0.55))
+        else:
+            # otherwise plot this episodes return
+            if len(true_returns) < args.tvf_max_horizon+1:
+                padded_true_returns = np.zeros([args.tvf_max_horizon+1], dtype=np.float32) + true_returns[-1]
+                padded_true_returns[:len(true_returns)] = true_returns
+                true_returns = padded_true_returns
+            xs = list(range(len(true_returns)))
+            ys = true_returns
+            plot(xs, ys, 'lightcoral')
 
         # show current horizon
-        log_fig.plot([CURRENT_HORIZON], [0], 'white')
-        linear_fig.plot([CURRENT_HORIZON], [0], 'white')
+        plot([CURRENT_HORIZON], [0], 'white')
 
         # plot predicted values
         if args.use_tvf:
             xs = list(range(len(buffer["values"][t])))
             ys = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
-            log_fig.plot(xs, ys, 'greenyellow')
-            linear_fig.plot(xs, ys, 'greenyellow')
+            plot(xs, ys, 'greenyellow')
         else:
             # white dot representing value estimate
             xs = [args.tvf_max_horizon-10, args.tvf_max_horizon]
             y = buffer["model_values"][t] * REWARD_SCALE
             ys = [y, y]
-            log_fig.plot(xs, ys, 'white')
-            linear_fig.plot(xs, ys, 'white')
+            plot(xs, ys, 'white')
 
         if needs_rediscount():
             # plot originally predicted values (without rediscounting)
             xs = list(range(len(buffer["tvf_discounted_values"][t])))
             ys = buffer["tvf_discounted_values"][t] * REWARD_SCALE  # model learned scaled rewards
-            log_fig.plot(xs, ys, 'green')
-            linear_fig.plot(xs, ys, 'green')
+            plot(xs, ys, 'green')
 
         frame[:plot_height, -plot_width:] = log_fig.buffer
         frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer
+
+        # show clock
+        frame_height, frame_width, frame_channels = frame.shape
+        utils.draw_numbers(frame, frame_width-100, frame_height-20, t, color=(255, 0, 0), zero_pad=4, size=3)
 
         video_out.write(frame)
 
@@ -943,6 +1147,10 @@ if __name__ == "__main__":
     parser.add_argument("--temperature", type=float, help="Temperature to use during evaluation (float).")
     parser.add_argument("--samples", type=int, default=64, help="Number of samples to use during evaluation.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed")
+    parser.add_argument("--max_frames", type=int, default=30*60*15, help="maximum number of frames to generate for videos.")
+    parser.add_argument("--multiverse_samples", type=int, default=0, help="if > 0 enables multiverse return estimation.")
+    parser.add_argument("--multiverse_period", type=int, default=100,
+                        help="number of steps between multiverse return sampling")
     parser.add_argument("--device", type=str, default=None, help="device to train on")
 
     eval_args = parser.parse_args()
@@ -968,6 +1176,7 @@ if __name__ == "__main__":
                 os.path.splitext(eval_args.output_file)[0],
                 include_score_in_filename=True,
                 temperature=temperature,
+                max_frames=eval_args.max_frames,
             )
         elif eval_args.mode == "video_nt":
             video_filename = export_movie(
@@ -976,13 +1185,15 @@ if __name__ == "__main__":
                 include_score_in_filename=True,
                 temperature=temperature,
                 zero_time=True,
+                max_frames=eval_args.max_frames,
             )
         elif eval_args.mode == "eval":
             evaluate_model(
                 model,
                 os.path.splitext(eval_args.output_file)[0],
                 samples=samples,
-                temperature=temperature
+                temperature=temperature,
+                max_frames = eval_args.max_frames,
             )
         else:
             raise Exception(f"Invalid mode {args.mode}")
