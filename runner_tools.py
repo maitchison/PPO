@@ -39,7 +39,7 @@ class bcolors:
 
 DEVICE="auto"
 OUTPUT_FOLDER="./Run"
-WORKERS=8
+WORKERS = 8
 
 ROLLOUT_SIZE = 128*128
 
@@ -167,7 +167,7 @@ TVF_reference_args = {
     'value_lr': 2.5e-4,
     'distil_lr': 2.5e-4,
     'entropy_bonus': 1e-3,
-    'tvf_force_ext_value_distil': True,
+    'tvf_force_ext_value_distil': False,
     'hidden_units': 256,
     'gae_lambda': 0.95,
 
@@ -182,7 +182,7 @@ TVF_reference_args = {
     'tvf_horizon_samples': 32,
     'tvf_mode': 'exponential',
     'tvf_n_step': 80,  # makes no difference...
-    'tvf_exp_gamma': 2.0,  # 2.0 would be faster, but 1.5 tested slightly better.
+    'tvf_exp_gamma': 1.5,  # 2.0 would be faster, but 1.5 tested slightly better.
     'tvf_coef': 0.5,
     'tvf_soft_anchor': 0,
     'tvf_exp_mode': "transformed",
@@ -207,6 +207,31 @@ PPO_reference_args.update({
     'use_tvf': False,
     'architecture': 'single',
 })
+
+# settings used in the Rainbow DQN paper, but without reward clipping or terminal on loss of life
+# (these are the settings my early tests used)
+EASY_MODE = {
+    "terminal_on_loss_of_life": False,
+    "reward_clipping": "off",
+    "full_action_space": False,
+    "sticky_actions": False,
+}
+
+# settings used in the Rainbow DQN paper.
+RAINBOW_MODE = {
+    "terminal_on_loss_of_life": True,
+    "reward_clipping": 1,
+    "full_action_space": False,
+    "sticky_actions": False,
+}
+
+# hard mode (best practice)
+HARD_MODE = {
+    "terminal_on_loss_of_life": False,
+    "reward_clipping": "off",
+    "full_action_space": True,
+    "sticky_actions": True,
+}
 
 
 def add_job(

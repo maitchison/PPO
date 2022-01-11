@@ -72,6 +72,9 @@ def calculate_tp_returns(dones: np.ndarray, final_tp_estimate: np.ndarray):
 def calculate_mc_returns(rewards, dones, final_value_estimate, gamma) -> np.ndarray:
     """
     Calculates returns given a batch of rewards, dones, and a final value estimate.
+
+    Note: This is not really montie carlo returns, it's just n-step returns with n=nsteps.
+
     Input is vectorized so it can calculate returns for multiple agents at once.
     :param rewards: nd array of dims [N,A]
     :param dones:   nd array of dims [N,A] where 1 = done and 0 = not done.
@@ -100,7 +103,7 @@ def calculate_gae(
         final_value_estimate,
         batch_terminal,
         gamma: float,
-        lamb=1.0,
+        lamb=0.95,
         normalize=False
     ):
     """
@@ -546,10 +549,10 @@ class Runner:
 
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
-        self.int_value = np.zeros([N, A], dtype=np.float32)
+        self.int_value = np.zeros([N+1, A], dtype=np.float32)
 
         # log optimal
-        self.sqr_value = np.zeros([N, A], dtype=np.float32)
+        self.sqr_value = np.zeros([N+1, A], dtype=np.float32)
         self.sqr_returns = np.zeros([N, A], dtype=np.float32)
 
         # returns generation
@@ -561,8 +564,6 @@ class Runner:
         # terminal prediction
         self.tp_final_value_estimate = np.zeros([A], dtype=np.float32)
         self.tp_returns = np.zeros([N, A], dtype=np.float32)  # terminal state predictions are generated the same was as returns.
-
-        self.int_final_value_estimate = np.zeros([A], dtype=np.float32)
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
         self.ems_norm = np.zeros([args.agents])
@@ -605,11 +606,7 @@ class Runner:
                         )
 
         #  these horizons will always be generated and their scores logged.
-        self.tvf_debug_horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
-                                   h <= args.tvf_max_horizon]
-        if args.tvf_max_horizon not in self.tvf_debug_horizons:
-            self.tvf_debug_horizons.append(args.tvf_max_horizon)
-        self.tvf_debug_horizons.sort()
+        self.tvf_debug_horizons = self.get_standard_horizon_sample(args.tvf_max_horizon)
 
         # quick check to make sure value transform is correct
         for x in [3.1415, -3.1415, 0, 10, -10, 1, -1, 10000, -10000]:
@@ -631,9 +628,22 @@ class Runner:
     def distil_lr(self):
         return self.anneal(args.distil_lr, enable=args.distil_lr_anneal)
 
+
+    def get_standard_horizon_sample(self, max_horizon: int):
+        """
+        Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = current_horizon.
+        These may change over time (if current horizon changes). Use debug_horizons for a fixed set.
+        """
+        assert max_horizon <= 30000, "horizons over 30k not yet supported."
+        horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
+                                   h <= max_horizon]
+        if max_horizon not in horizons:
+            horizons.append(max_horizon)
+        return horizons
+
     @property
     def rnd_lr(self):
-        return args.value_lr
+        return args.rnd_lr
 
     def update_learning_rates(self):
         """
@@ -812,17 +822,8 @@ class Runner:
         # so that there is something in the buffer to start with.
         self.episode_length_buffer.append(1000)
 
-    def run_random_agent(self, iterations):
-        self.log.info("Warming up model with random agent...")
-
-        # collect experience
-        self.reset()
-
-        for iteration in range(iterations):
-            self.generate_rollout(is_warmup=True)
-
     @torch.no_grad()
-    def batch_forward(self, obs:np.ndarray, aux_features=None, max_batch_size=None, **kwargs):
+    def detached_batch_forward(self, obs:np.ndarray, aux_features=None, max_batch_size=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
             obs: np array of dims [B, *state_shape]
@@ -846,7 +847,7 @@ class Runner:
             for batch_idx in range(batches):
                 batch_start = batch_idx * max_batch_size
                 batch_end = min((batch_idx + 1) * max_batch_size, B)
-                batch_result = self.batch_forward(
+                batch_result = self.detached_batch_forward(
                     obs[batch_start:batch_end],
                     aux_features=aux_features[batch_start:batch_end] if aux_features is not None else None,
                     max_batch_size=max_batch_size,
@@ -1265,7 +1266,7 @@ class Runner:
         pass
 
     @torch.no_grad()
-    def generate_rollout(self, is_warmup=False):
+    def generate_rollout(self):
 
         assert self.vec_env is not None, "Please call create_envs first."
 
@@ -1281,16 +1282,12 @@ class Runner:
             prev_time = self.time.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            model_out = self.batch_forward(self.obs, output="policy")
+            model_out = self.detached_batch_forward(self.obs, output="policy")
 
             log_policy = model_out["log_policy"].cpu().numpy()
 
-            # during warm-up we simply collect experience through a uniform random policy.
-            if is_warmup:
-                actions = np.random.randint(0, self.model.actions, size=[self.A], dtype=np.int32)
-            else:
-                # sample actions and run through environment.
-                actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
+            # sample actions and run through environment.
+            actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
 
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
 
@@ -1300,26 +1297,6 @@ class Runner:
             # per step reward noise
             if args.per_step_reward_noise > 0:
                 ext_rewards += np.random.normal(0, args.per_step_reward_noise, size=ext_rewards.shape)
-
-            # work out our intrinsic rewards
-            if args.use_intrinsic_rewards:
-                value_int = model_out["int_value"].detach().cpu().numpy()
-
-                int_rewards = np.zeros_like(ext_rewards)
-
-                if args.use_rnd:
-                    if is_warmup:
-                        # in random mode just update the normalization constants
-                        self.model.perform_normalization(self.obs)
-                    else:
-                        # reward is prediction error on state we land inn.
-                        loss_rnd = self.model.prediction_error(self.obs).detach().cpu().numpy()
-                        int_rewards += loss_rnd
-                else:
-                    assert False, "No intrinsic rewards set."
-
-                self.int_rewards[t] = int_rewards
-                self.int_value[t] = value_int
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", ext_rewards) for reward, info in zip(ext_rewards, infos)],
@@ -1340,16 +1317,15 @@ class Runner:
 
                     # reset is handled automatically by vectorized environments
                     # so just need to keep track of book-keeping
-                    if not is_warmup:
-                        self.ep_count += 1
-                        self.log.watch_full("ep_score", info["ep_score"], history_length=100)
-                        self.log.watch_full("ep_length", info["ep_length"])
-                        self.log.watch_mean("ep_count", self.ep_count, history_length=1)
+                    self.ep_count += 1
+                    self.log.watch_full("ep_score", info["ep_score"], history_length=100)
+                    self.log.watch_full("ep_length", info["ep_length"])
+                    self.log.watch_mean("ep_count", self.ep_count, history_length=1)
 
-                        if "game_freeze" in info:
-                            self.game_crashes += 1
-                        if "reward_clip" in info:
-                            self.reward_clips += 1
+                    if "game_freeze" in info:
+                        self.game_crashes += 1
+                    if "reward_clip" in info:
+                        self.reward_clips += 1
 
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
@@ -1373,6 +1349,64 @@ class Runner:
             last_obs = self.obs
         self.all_obs[-1] = last_obs
         self.all_time[-1] = self.time
+
+        # calculate intrinsic rewards (if needed)
+        # work out our intrinsic rewards
+        if args.use_intrinsic_rewards:
+
+            N, A = self.prev_time.shape
+            aux_features = None
+            if args.use_tvf:
+                aux_features = package_aux_features(
+                    np.asarray(self.get_standard_horizon_sample(self.current_horizon)),
+                    self.all_time.reshape([(N+1) * A])
+                )
+            output = self.detached_batch_forward(
+                self.all_obs.reshape([(N+1) * A]),
+                aux_features,
+                output="full"
+            )
+
+            # this is annoying to have to do, because prediction error goes through a different system I need
+            # to rewrite the batching code here...
+            if args.architecture == "dual":
+                # in dual mode all value estimates are on the value network
+                int_value = output["value_int_value"]
+            elif args.architecture == "single":
+                # in single mode everything is on the policy network
+                int_value = output["policy_int_value"]
+            else:
+                raise ValueError(f"Invalid architecture {args.architecture}. Expected [dual|single]")
+            self.int_value[:, :] = int_value.reshape([(N + 1), A]).detach().cpu().numpy()
+
+            if args.use_rnd:
+                N, A = self.prev_obs.shape
+                for n in range(N):
+                    this_obs = self.prev_obs[n]
+                    if this_obs.dtype == object:
+                        this_obs = np.asarray([this_obs[i].decompress() for i in range(len(this_obs))])
+                    with torch.no_grad():
+                        rnd_error = self.model.rnd_prediction_error(this_obs)
+                    self.int_rewards[n] = rnd_error.detach().cpu().numpy()
+
+            elif args.use_ebd:
+                if args.use_tvf:
+                    if args.tvf_force_ext_value_distil:
+                        # in this case it is just policy_ext_value that has been trained
+                        policy_prediction = output["policy_ext_value"][..., np.newaxis]
+                        value_prediction = output["value_tvf_value"][..., -1][..., np.newaxis]
+                    else:
+                        # use samples from entire curve
+                        policy_prediction = output["policy_tvf_value"]
+                        value_prediction = output["value_tvf_value"]
+                else:
+                    policy_prediction = output["policy_ext_value"][..., np.newaxis]
+                    value_prediction = output["value_ext_value"][..., np.newaxis]
+                errors = (policy_prediction - value_prediction).mean(dim=-1)
+                int_rewards = torch.square(errors).reshape([N+1, A])
+                self.int_rewards = int_rewards[:-1].cpu().numpy()
+            else:
+                assert False, "No intrinsic rewards set."
 
         # add data to replay buffer if needed
         if self.replay_buffer is not None:
@@ -1441,7 +1475,7 @@ class Runner:
 
             time = time.reshape(N*A)
 
-            model_out = self.batch_forward(
+            model_out = self.detached_batch_forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 aux_features=package_aux_features(horizons, time),
                 output="value",
@@ -1455,7 +1489,7 @@ class Runner:
                 result = values.reshape([N, A, horizons.shape[-1]]).cpu().numpy()
         else:
             assert horizons is None, "PPO only supports max horizon value estimates"
-            model_out = self.batch_forward(
+            model_out = self.detached_batch_forward(
                 obs=obs.reshape([N * A, *state_shape]),
                 output="value",
             )
@@ -1769,11 +1803,15 @@ class Runner:
             self.int_returns_raw = calculate_mc_returns(
                 self.int_rewards,
                 args.intrinsic_reward_propagation * self.terminals,
-                self.int_final_value_estimate,
+                self.int_value[-1],
                 args.gamma_int
             )
 
             if args.normalize_intrinsic_rewards:
+                # note: this is a bit weird, should not I be treating the intrinsic rewards as normal rewards
+                # i.e. calculated advantages from the returns generated from int_rew + ext_rew, and not doing
+                # them seprately and adding together
+                # (actually doing them separetely allows for different gamma.
 
                 # normalize returns using EMS
                 for t in range(self.N):
@@ -1788,15 +1826,22 @@ class Runner:
             else:
                 self.intrinsic_reward_norm_scale = 1
 
+            # note: it would be much better to do this by getting it from gae...
             self.int_returns = calculate_mc_returns(
                 self.int_rewards,
                 args.intrinsic_reward_propagation * self.terminals,
-                self.int_final_value_estimate,
+                self.int_value[-1],
                 args.gamma_int
             )
 
-            self.int_advantage = calculate_gae(self.int_rewards, self.int_value, self.int_final_value_estimate, None,
-                                               args.gamma_int)
+            self.int_advantage = calculate_gae(
+                self.int_rewards,
+                self.int_value[:-1],
+                self.int_value[-1],
+                None,
+                args.gamma_int,
+                args.gae_lambda
+            )
 
         self.advantage = args.extrinsic_reward_scale * self.ext_advantage
         if args.use_intrinsic_rewards:
@@ -1858,7 +1903,7 @@ class Runner:
             self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int", display_width=0)
             self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std",
                                 display_width=0)
-            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value.ravel(), self.int_returns.ravel()))
+            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value[:-1].ravel(), self.int_returns.ravel()))
             if args.use_rnd:
                 self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
                                     display_width=0, display_priority=-2)
@@ -1868,29 +1913,6 @@ class Runner:
 
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
-
-    def train_rnd_minibatch(self, data, zero_grad=True, apply_update=True, loss_scale=1.0):
-
-        raise Exception("Not implemented yet")
-
-        # mini_batch_size = len(data["prev_state"])
-        #
-        # # -------------------------------------------------------------------------
-        # # Calculate loss_rnd
-        # # -------------------------------------------------------------------------
-        #
-        # if args.use_rnd:
-        #     # learn prediction slowly by only using some of the samples... otherwise it learns too quickly.
-        #     predictor_proportion = np.clip(32 / args.agents, 0.01, 1)
-        #     n = int(len(prev_states) * predictor_proportion)
-        #     loss_rnd = -self.model.prediction_error(prev_states[:n]).mean()
-        #     loss = loss + loss_rnd
-        #
-        #     self.log.watch_mean("loss_rnd", loss_rnd)
-        #
-        #     self.log.watch_mean("feat_mean", self.model.features_mean, display_width=0)
-        #     self.log.watch_mean("feat_var", self.model.features_var, display_width=10)
-        #     self.log.watch_mean("feat_max", self.model.features_max, display_width=10, display_precision=1)
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -2250,7 +2272,7 @@ class Runner:
 
             if args.use_clipped_value_loss:
                 old_pred_values = data["{}_value".format(value_head)]
-                # is is essentially trust region for value learning, and seems to help a lot.
+                # is is essentially trust region for value learning, but does not seem to help.
                 value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
                                                                          -args.ppo_epsilon, +args.ppo_epsilon)
                 vf_losses1 = (value_prediction - returns).pow(2)
@@ -2258,7 +2280,7 @@ class Runner:
                 loss_value = torch.mean(torch.max(vf_losses1, vf_losses2))
             else:
                 # simpler version, just use MSE.
-                vf_losses1 = (value_prediction - returns).pow(2)
+                vf_losses1 = torch.square(value_prediction - returns)
                 loss_value = torch.mean(vf_losses1)
             loss_value = loss_value * args.vf_coef
             self.log.watch_mean("loss_v_" + value_head, loss_value, history_length=64, display_name="ls_v_" + value_head)
@@ -2317,7 +2339,6 @@ class Runner:
         # this means the spinning up version is right.
 
         with torch.no_grad():
-
             clip_frac = torch.gt(torch.abs(ratio - 1.0), args.ppo_epsilon).float().mean()
             kl_approx = (old_logpac - logpac).mean()
             kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
@@ -2460,6 +2481,43 @@ class Runner:
         else:
             return 1.0
 
+    def train_rnd_minibatch(self, data, loss_scale: float = 1.0):
+
+        # -------------------------------------------------------------------------
+        # Random network distillation update
+        # -------------------------------------------------------------------------
+        # note: we include this here so that it can be used with PPO. In practice it does not matter if the
+        # policy network or the value network learns this, as the parameters for the prediction model are
+        # separate anyway.
+
+        loss_rnd = self.model.rnd_prediction_error(data["prev_state"]).mean()
+        self.log.watch_mean("loss_rnd", loss_rnd)
+
+        self.log.watch_mean("feat_mean", self.model.rnd_features_mean, display_width=0)
+        self.log.watch_mean("feat_var", self.model.rnd_features_var, display_width=10)
+        self.log.watch_mean("feat_max", self.model.rnd_features_max, display_width=10, display_precision=1)
+
+        loss = loss_rnd * loss_scale
+        loss.backward()
+
+
+    def train_rnd(self):
+
+        batch_data = {}
+        B = args.batch_size
+        N, A, *state_shape = self.prev_obs.shape
+
+        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])[:round(B*args.rnd_experience_proportion)]
+
+        for _ in range(args.rnd_epochs):
+            self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_rnd_minibatch,
+                mini_batch_size=args.rnd_mini_batch_size,
+                optimizer=self.rnd_optimizer,
+                label="rnd",
+            )
+
 
     def train_policy(self):
 
@@ -2489,7 +2547,7 @@ class Runner:
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
-            batch_data["int_value"] = self.int_value.reshape(B)
+            batch_data["int_value"] = self.int_value[:-1].reshape(B)
 
         # policy constraint
         if args.needs_dual_constraint:
@@ -2502,14 +2560,14 @@ class Runner:
                 horizons = np.repeat(horizons[None, :], B, axis=0)
                 batch_data["horizons"] = horizons
                 batch_data["time"] = self.prev_time.reshape([B])
-                model_out = self.batch_forward(
+                model_out = self.detached_batch_forward(
                     obs=batch_data["prev_state"],
                     output="policy",
                     aux_features=package_aux_features(batch_data["horizons"], batch_data["time"])
                 )
                 batch_data["old_value"] = model_out["tvf_value"].detach().cpu().numpy()
             else:
-                model_out = self.batch_forward(obs=batch_data["prev_state"], output="policy")
+                model_out = self.detached_batch_forward(obs=batch_data["prev_state"], output="policy")
                 batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
 
         policy_epochs = 0
@@ -2528,6 +2586,7 @@ class Runner:
             policy_epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
+
         self.log.watch_full("policy_epochs", policy_epochs,
                             display_width=9 if args.target_kl >= 0 else 0,
                             display_name="epochs_p"
@@ -2547,7 +2606,7 @@ class Runner:
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
-            batch_data["int_value"] = self.int_value.reshape(B)
+            batch_data["int_value"] = self.int_value[:-1].reshape(B) # only needed for clipped objective
 
         if args.use_log_optimal:
             batch_data["sqr_returns"] = self.sqr_returns.reshape(B)
@@ -2644,7 +2703,7 @@ class Runner:
             ).reshape([B])
             batch_data["value_targets"] = target_values.reshape([B])
 
-        model_out = self.batch_forward(obs=distil_obs, output="policy")
+        model_out = self.detached_batch_forward(obs=distil_obs, output="policy")
         batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
         return batch_data
@@ -2719,6 +2778,9 @@ class Runner:
             if args.distil_epochs > 0 and self.batch_counter % args.distil_period == 0 and \
                     self.step > args.distil_delay:
                 self.train_distil()
+
+        if args.use_rnd:
+            self.train_rnd()
 
         self.batch_counter += 1
 
@@ -2831,6 +2893,7 @@ def get_rediscounted_value_estimate(
 def package_aux_features(horizons: Union[np.ndarray, torch.Tensor], time: Union[np.ndarray, torch.Tensor]):
     """
     Return aux features for given horizons and time fraction.
+    Output is [B, H, 2] where final dim is (horizon, time)
 
     horizons: [B, H] or [H]
     time: [B]

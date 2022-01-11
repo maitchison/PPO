@@ -470,7 +470,7 @@ class TVFModel(nn.Module):
         self.actions = actions
         self.device = device
         self.dtype = dtype
-        self.test_mode = False # if set to true disables normalization constant updates
+        self.test_mode = False  # if set to true disables normalization constant updates
         self.observation_normalization = observation_normalization
 
         self.name = "PPG-" + network
@@ -515,8 +515,10 @@ class TVFModel(nn.Module):
             assert self.observation_normalization, "rnd requires observation normalization."
             self.prediction_net = RNDPredictor_Net(single_channel_input_dims)
             self.target_net = RNDTarget_Net(single_channel_input_dims)
-            self.features_mean = 0
-            self.features_std = 0
+            self.rnd_features_mean = 0.0
+            self.rnd_features_std = 0.0
+            self.rnd_features_var = 0.0
+            self.rnd_features_max = 0.0
 
         self.set_device_and_dtype(device, dtype)
 
@@ -534,7 +536,7 @@ class TVFModel(nn.Module):
         """
 
         # update normalization constants
-        assert type(x) is torch.Tensor
+        assert type(x) is torch.Tensor, "Input for normalization should be tensor"
         assert x.dtype == torch.float32
 
         B, C, H, W = x.shape
@@ -575,11 +577,14 @@ class TVFModel(nn.Module):
 
         self.device, self.dtype = device, dtype
 
-    def prediction_error(self, x):
+    def rnd_prediction_error(self, x):
         """ Returns prediction error for given state. """
 
-        # only need first channel for this.
-        x = self.perform_normalization(x)
+        B, C, H, W = x.shape
+
+        x = self.prep_for_model(x)
+        x = self.perform_normalization(x, ignore_update=True)
+        x = x[:, 0:1, :, :]  # rnd works on just one channel
 
         # random features have too low varience due to weight initialization being different from the OpenAI implementation
         # we adjust it here by simply multiplying the output to scale the features to have a max of around 3
@@ -588,12 +593,11 @@ class TVFModel(nn.Module):
 
         # note: I really want to normalize these... otherwise scale just makes such a difference.
         # or maybe tanh the features?
+        self.rnd_features_mean = float(random_features.mean().detach().cpu())
+        self.rnd_features_var = float(random_features.var(axis=0).mean().detach().cpu())
+        self.rnd_features_max = float(random_features.abs().max().detach().cpu())
 
-        self.features_mean = float(random_features.mean().detach().cpu())
-        self.features_var = float(random_features.var(axis=0).mean().detach().cpu())
-        self.features_max = float(random_features.abs().max().detach().cpu())
-
-        errors = (random_features - predicted_features).pow(2).mean(axis=1)
+        errors = torch.square(random_features - predicted_features).mean(dim=1)
 
         return errors
 
@@ -605,7 +609,6 @@ class TVFModel(nn.Module):
             policy_temperature: float = 1.0,
         ):
         """
-
         Forward input through model and return dictionary containing
 
             log_policy: log policy

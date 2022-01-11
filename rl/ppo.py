@@ -10,12 +10,12 @@ import shlex
 from . import compression
 from .logger import Logger, LogVariable
 from .rollout import Runner, save_progress
-from .mutex import Mutex
 
 import torch.multiprocessing
 
 from . import utils, models, keyboard
 from .config import args
+
 
 def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     if verbose:
@@ -27,7 +27,7 @@ def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     for t in range(max(max_steps)):
         masks = t < max_steps
         with torch.no_grad():
-            model_out = runner.batch_forward(runner.obs, output="policy")
+            model_out = runner.detached_batch_forward(runner.obs, output="policy")
             log_policy = model_out["log_policy"].cpu().numpy()
         actions = np.asarray([
             utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)

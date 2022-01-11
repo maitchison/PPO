@@ -154,7 +154,10 @@ class Config:
         self.disable_ev         = bool()
 
         self.use_rnd            = bool()
+        self.use_ebd            = bool()
         self.warmup_period      = int()
+        self.rnd_lr             = float()
+        self.rnd_experience_proportion = float()
 
         self.per_step_reward_noise    = float()
         self.debug_terminal_logging = bool()
@@ -215,11 +218,19 @@ class Config:
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd
+        return self.use_rnd or self.use_ebd
 
     @property
     def needs_dual_constraint(self):
         return args.dna_dual_constraint != 0 and args.architecture == "dual" and args.distil_epochs > 0
+
+    @property
+    def rnd_epochs(self):
+        return 1
+
+    @property
+    def rnd_mini_batch_size(self):
+        return self.value_mini_batch_size
 
     @property
     def get_mutex_key(self):
@@ -234,7 +245,7 @@ class Config:
 
     @property
     def normalize_intrinsic_rewards(self):
-        return self.use_rnd
+        return self.use_rnd or self.use_ebd
 
     @property
     def noop_start(self):
@@ -384,6 +395,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--value_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--distil_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
+    parser.add_argument("--rnd_lr", type=float, default=1.0e-4, help="Learning rate for Adam optimizer")
 
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
@@ -461,6 +473,10 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--use_rnd", type=str2bool, default=False,
                         help="Enables the Random Network Distillation (RND) module.")
+    parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
+
+    parser.add_argument("--use_ebd", type=str2bool, default=False,
+                        help="Enables the Exploration by Disagreement reward.")
 
     parser.add_argument("--normalize_advantages", type=str2bool, default=True)
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
@@ -512,9 +528,12 @@ def parse_args(no_env=False, args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
+    assert not (args.use_ebd and not args.architecture == "dual"), "EBD requires dual architecture"
+
     # set defaults
     if args.intrinsic_reward_propagation is None:
-        args.intrinsic_reward_propagation = args.use_rnd
+        # this seems keen to getting intrinsic motivation to work
+        args.intrinsic_reward_propagation = (args.use_rnd or args.use_ebd)
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
     if cmd_args.get("use_mutex", False):
