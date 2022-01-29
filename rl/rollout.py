@@ -4,12 +4,14 @@ import os
 import numpy as np
 import gym
 import scipy.stats
+from collections import Counter
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import time
+import time as clock
 import json
 import cv2
 import pickle
@@ -47,7 +49,7 @@ def save_progress(log: Logger):
     details["eta"] = (frames_remaining / details["fps"]) if details["fps"] > 0 else 0
     details["host"] = args.hostname
     details["device"] = args.device
-    details["last_modified"] = time.time()
+    details["last_modified"] = clock.time()
     with open(os.path.join(args.log_folder, "progress.txt"), "w") as f:
         json.dump(details, f, indent=4)
 
@@ -1071,6 +1073,136 @@ class Runner:
 
         return returns
 
+    def _calculate_exp_sampled_returns_fast(
+            self,
+            n_step_list: list,
+            gamma: float,
+            rewards: np.ndarray,
+            dones: np.ndarray,
+            required_horizons: np.ndarray,
+            value_sample_horizons: np.ndarray,
+            value_samples: np.ndarray,
+            ignore_oversteps=False,
+    ):
+        """
+        Calculate returns using n_steps at powers of two.
+        This allows information to transform more quickly from short horizons to long
+        But does not require many calculations, and should work fine for large n_steps
+
+        This is an optimized version, that should be much faster than the default
+
+        """
+
+        # the idea here is to progressively update a running total of the n-step rewards, then apply bootsrapping
+        # quickly in a vectorized way. Unlike the previous algorithm, this is O(n) rather then O(n^2) where n is n_steps
+        # I also take advantage of the fact that nstep(n`,h) = nstep(n,h) for all n`>=n. This allows me to illiminate
+        # many of the horizon updates once we get into the high n_steps.
+
+        # optimizations
+        # 1. We do not recalculate duplicate n_step values, instead we weight them
+        # 2. We use the fact that nstep(n`,h) = nstep(n,h) for all n`>=n to ignore some horizons
+        # 3. We generate the reward sums progressively, which is much quicker
+
+        # the disadvantage here is that we can not reuse the n_step algorithm
+        H = self.current_horizon
+        n_step_list = [n for n in n_step_list if n <= H]  # can not have n_step greater max_horizon
+        n_step_list.sort()
+        n_step_weights = Counter(n_step_list)
+
+        assert value_sample_horizons[0] == 0 and value_sample_horizons[
+            -1] == self.current_horizon, "First and value horizon are required."
+
+        N, A = rewards.shape
+        K = len(required_horizons)
+
+        total_weight = sum(n_step_weights.values())
+        remaining_weight = total_weight
+
+        # this allows us to map to our 'sparse' returns table
+        h_lookup = {}
+        for index, h in enumerate(required_horizons):
+            if h not in h_lookup:
+                h_lookup[h] = [index]
+            else:
+                h_lookup[h].append(index)
+
+        returns = np.zeros([N, A, K], dtype=np.float32) + ValueTransform.H(0)
+        cumulative_rewards = np.zeros_like(rewards)
+        discount = np.ones_like(rewards)
+
+        if ignore_oversteps:
+            weights = []
+            n_step_copy = n_step_list.copy()
+            weight = total_weight
+            for n in range(N):
+                while n_step_copy[-1]+n > N:
+                    n_step_copy.pop()
+                    weight -= 1
+                weights.append(weight)
+            weights = np.asarray(weights)[:, None, None]
+        else:
+            weights = np.asarray([total_weight for _ in range(N)])[:, None, None]
+
+        current_n_step = 0
+
+        for n_step, weight in n_step_weights.items():
+
+            # step 1, update our cumulative reward count
+            while current_n_step < n_step:
+                cumulative_rewards[:(N-current_n_step)] += rewards[current_n_step:] * discount[:(N-current_n_step)]
+                discount[:(N-current_n_step)] *= gamma
+                discount[:(N-current_n_step)] *= (1-dones[current_n_step:])
+
+                current_n_step += 1
+
+                # set short horizons as we go...
+                for h in h_lookup.keys():
+                    # this is a bit dumb, but one horizon might be in the list twice, so we need to update
+                    # both indexes to it. This could happen with random sampling I guess?
+                    for i in h_lookup[h]:
+                        if current_n_step < h and current_n_step == n_step:
+                            returns[:, :, i] += cumulative_rewards * weight
+                        elif current_n_step == h:
+                            # this is the final one, give it all the remaining weight...
+                            if ignore_oversteps:
+                                weight_so_far = total_weight - remaining_weight
+                                weight_to_go = np.clip(weights[:, :, 0] - weight_so_far, 0, float('inf'))
+                                returns[:, :, i] += cumulative_rewards * weight_to_go
+                            else:
+                                returns[:, :, i] += cumulative_rewards * remaining_weight
+
+            # we can do most of this with one big update, however near the end of the rollout we need to account
+            # for the fact that we are actually using a shorter n-step
+            steps_made = current_n_step
+            block_size = 1 + N - current_n_step
+            for h_index, h in enumerate(required_horizons):
+                if h - steps_made <= 0:
+                    continue
+                interpolated_value = _interpolate(
+                    value_sample_horizons,
+                    value_samples[steps_made:block_size + steps_made],
+                    h - steps_made
+                )
+                returns[:block_size, :, h_index] += interpolated_value * discount[:block_size] * weight
+
+            # next do the remaining few steps
+            # this is a bit slow for large n_step, but most of the estimates are low n_step anyway
+            # (this could be improved by simply ignoring these n-step estimates
+            # the problem with this is that it places *a lot* of emphasis on the final value estimate
+            if not ignore_oversteps:
+                for t in range(1 + N - current_n_step, N):
+                    steps_made = min(current_n_step, N - t)
+                    if t + steps_made > N:
+                        continue
+                    for h_index, h in enumerate(required_horizons):
+                        if h - steps_made > 0:
+                            interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
+                            returns[t, :, h_index] += interpolated_value * discount[t] * weight
+
+            remaining_weight -= weight
+
+        return returns / weights
+
     def get_adaptive_n_step(self, h):
         # the 0.5 makes adaptive tvf_n_step line up better with normal n_step returns
         # i.e. the both like approximately 40 n_steps
@@ -1172,11 +1304,62 @@ class Runner:
             value_samples=value_samples,
         )
 
-        if tvf_mode == "exponential":
+        if tvf_mode == "exponential_experimental":
+            start_time = clock.time()
+            returns1 = self._calculate_exp_sampled_returns(
+                dims=(N, A, len(required_horizons)),
+                n_step_func=n_step_func,
+                required_horizons=required_horizons,
+            )
+            slow_time = clock.time() - start_time
+
+            start_time = clock.time()
+            returns2 = self._calculate_exp_sampled_returns_fast(
+                n_step_list=self.get_exponential_n_steps(),
+                gamma=self.tvf_gamma,
+                rewards=rewards,
+                dones=dones,
+                required_horizons=required_horizons,
+                value_sample_horizons=value_sample_horizons,
+                value_samples=value_samples,
+                ignore_oversteps=False,
+            )
+            fast_time = clock.time() - start_time
+            returns = returns1
+            error = np.sum(np.abs(returns1-returns2))
+            error_max = np.max(np.abs(returns1 - returns2))
+            terms = np.sum(dones)
+            print(f"Fast: {fast_time:.4f} Slow: {slow_time:.4f} {error:.4f}/{error_max:.4f} {terms}")
+        elif tvf_mode == "exponential_old":
+            # this is the old version, it's very similar to exponential_full (off by around 1e-8)
             returns = self._calculate_exp_sampled_returns(
                 dims=(N, A, len(required_horizons)),
                 n_step_func=n_step_func,
                 required_horizons=required_horizons,
+            )
+        elif tvf_mode == "exponential":
+            # for 32x1024 old method took 16 seconds, this one takes 0.6 seconds. (with exp_gamma=1.4)
+            returns = self._calculate_exp_sampled_returns_fast(
+                n_step_list=self.get_exponential_n_steps(),
+                gamma=self.tvf_gamma,
+                rewards=rewards,
+                dones=dones,
+                required_horizons=required_horizons,
+                value_sample_horizons=value_sample_horizons,
+                value_samples=value_samples,
+                ignore_oversteps=True,
+            )
+        elif tvf_mode == "exponential_full":
+            # this is a bit slower for larger n_steps, and tends to overuse the final value estimate.
+            returns = self._calculate_exp_sampled_returns_fast(
+                n_step_list=self.get_exponential_n_steps(),
+                gamma=self.tvf_gamma,
+                rewards=rewards,
+                dones=dones,
+                required_horizons=required_horizons,
+                value_sample_horizons=value_sample_horizons,
+                value_samples=value_samples,
+                ignore_oversteps=False,
             )
         elif tvf_mode == "adaptive":
             returns = self._calculate_adaptive_sampled_returns(

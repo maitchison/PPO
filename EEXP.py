@@ -902,13 +902,12 @@ def rc():
             run_name=f"env={env} agents=32 n_steps=1024 adv",
             log_delta_v=True,
             use_compression=True,
-            epochs=50,
+            epochs=30,
             agents=32,
             n_steps=1024,
             replay_size=64*512,
             distil_batch_size=64*512,
             policy_mini_batch_size=2048,
-
             default_params=RC4,
         )
         add_job(
@@ -916,7 +915,7 @@ def rc():
             run_name=f"env={env} agents=64 n_steps=512 adv",
             log_delta_v=True,
             use_compression=True,
-            epochs=50,
+            epochs=30,
             agents=32,
             n_steps=1024,
             replay_size=64 * 512,
@@ -1085,7 +1084,7 @@ def rc():
                         experiment_name="RC8",
                         run_name=f"env={env} agents={agents} n_steps={n_steps} {'adv' if adv else ''}",
                         use_compression=True,
-                        epochs=50,
+                        epochs=30,
                         agents=agents,
                         n_steps=n_steps,
                         replay_size=agents*n_steps,
@@ -1093,7 +1092,30 @@ def rc():
                         **(adv_options if adv else {}),
                         default_params=RC4,
                     )
+        add_job(
+            experiment_name="RC8",
+            run_name=f"env={env} agents={128} n_steps={128} [ref]",
+            use_compression=True,
+            epochs=30,
+            agents=128,
+            n_steps=128,
+            replay_size=agents * n_steps,
+            distil_batch_size=agents * n_steps,
+            default_params=RC4,
+        )
 
+        # RC9 just make sure new exp mode works
+        for tvf_mode in ["exponential", "exponential_old", "exponential_full"]:
+            add_job(
+                experiment_name="RC9",
+                run_name=f"env={env} {tvf_mode}",
+                use_compression=True,
+                n_steps=1024,
+                agents=32,
+                tvf_mode=tvf_mode,
+                epochs=20,
+                default_params=RC4,
+            )
 
 
 
