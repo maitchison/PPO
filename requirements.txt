@@ -5,3 +5,5 @@ lz4
 blosc
 matplotlib
 pandas
+scipy
+numpy

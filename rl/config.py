@@ -29,18 +29,27 @@ class Config:
         self.epochs             = float()
         self.limit_epochs       = int()
         self.distil_beta        = float()
+        self.distil_ir          = float()
         self.distil_period      = int()
         self.distil_freq_ratio  = float()
         self.distil_batch_size_ratio = float()
         self.replay_size        = int()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
-        self.replay_hashing     = bool()
+        self.replay_duplicate_removal = bool()
+
+        # replay constraint
+        self.policy_replay_constraint = float()
+        self.value_replay_constraint = float()
+        self.policy_replay_constraint_anneal = str()
+        self.value_replay_constraint_anneal = str()
+        self.log_delta_v = bool()
+
         self.quite_mode         = bool()
 
         self.observation_normalization = bool()
-        self.intrinsic_reward_scale = float()
-        self.extrinsic_reward_scale = float()
+        self.ir_scale = float()
+        self.er_scale = float()
 
         self.reward_normalization = bool()
         self.reward_scale       = float()
@@ -57,7 +66,7 @@ class Config:
         self.save_checkpoints   = bool()
         self.output_folder      = str()
         self.hostname           = str()
-        self.sticky_actions     = bool()
+        self.repeat_action_probability = float()
         self.guid               = str()
         self.max_micro_batch_size = int()
         self.policy_mini_batch_size = int()
@@ -104,7 +113,8 @@ class Config:
         self.eb_beta            = float()
         self.eb_theta           = float()
     
-        self.time_aware = bool()
+        self.embed_time = bool()
+        self.embed_action = bool()
         self.ed_type = str()
         self.ed_gamma = float()
 
@@ -133,6 +143,7 @@ class Config:
         self.policy_lr_anneal = bool()
         self.value_lr_anneal = bool()
         self.distil_lr_anneal = bool()
+        self.anneal_target_epoch = int()
 
         self.sa_mu = float()
         self.sa_sigma = float()
@@ -143,7 +154,8 @@ class Config:
         self.frame_skip         = int()
         self.timeout = int()
 
-        self.normalize_advantages = bool()
+        self.normalize_advantages = str()
+        self.advantage_clipping = float()
         self.checkpoint_compression = bool()
 
         self.use_clipped_value_loss = bool()
@@ -155,11 +167,21 @@ class Config:
 
         self.use_rnd            = bool()
         self.use_ebd            = bool()
+        self.use_erp            = bool()
+        self.erp_samples        = int()
+        self.erp_reduce         = str()
+        self.erp_relu           = bool()
+        self.erp_bias           = bool()
+        self.erp_source         = str()
+        self.erp_exclude_zero   = bool()
         self.warmup_period      = int()
         self.rnd_lr             = float()
         self.rnd_experience_proportion = float()
+        self.intrinsic_reward_propagation = bool()
+        self.advantage_epsilon = float()
+        self.advantage_clipping = float()
 
-        self.per_step_reward_noise    = float()
+        self.per_step_reward_noise = float()
         self.debug_terminal_logging = bool()
         self.debug_value_logging = bool()
         self.seed = int()
@@ -181,8 +203,8 @@ class Config:
         self.ema_frame_stack = bool()
 
         # tvf loss
-        self.tvf_loss_fn = bool()
-        self.tvf_huber_loss_delta = bool()
+        self.tvf_loss_fn = str()
+        self.tvf_huber_loss_delta = float()
         self.use_tanh_clipping = bool()
 
         self.use_compression = bool()
@@ -209,16 +231,15 @@ class Config:
                 self.use_compression = str2bool(str(self.use_compression))
 
     @property
-    def propagate_intrinsic_rewards(self):
-        return not self.use_rnd
-
-    @property
     def reward_normalization_gamma(self):
-        return self.override_reward_normalization_gamma if self.override_reward_normalization_gamma >= 0 else self.gamma
+        gamma = self.tvf_gamma if self.use_tvf else self.gamma
+        if self.override_reward_normalization_gamma is not None:
+            gamma = self.override_reward_normalization_gamma
+        return gamma
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_ebd
+        return self.use_rnd or self.use_ebd or self.use_erp
 
     @property
     def needs_dual_constraint(self):
@@ -241,11 +262,11 @@ class Config:
 
     @property
     def full_curve_distil(self):
-        return args.use_tvf and not args.tvf_force_ext_value_distil
+        return self.use_tvf and not self.tvf_force_ext_value_distil
 
     @property
     def normalize_intrinsic_rewards(self):
-        return self.use_rnd or self.use_ebd
+        return self.use_intrinsic_rewards
 
     @property
     def noop_start(self):
@@ -289,6 +310,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model or raises error. If set to false and new run will be started.")
+
 
     parser.add_argument("--network", type=str, default="nature", help="Encoder used, [nature|impala]")
     parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
@@ -362,6 +384,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
+    parser.add_argument("--distil_ir", type=float, default=0.25, help="Uses intrinsic reward distillation (if available)")
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to replay_size (or rollout batch size if replay is disabled).")
 
     parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
@@ -371,7 +394,17 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
-    parser.add_argument("--replay_hashing", type=str2bool, default=False)
+    parser.add_argument("--replay_duplicate_removal", type=str2bool, default=False)
+    parser.add_argument("--policy_replay_constraint", type=float, default=0.0,
+                        help="How much to constrain policy on historical data when making updates.")
+    parser.add_argument("--value_replay_constraint", type=float, default=0.0,
+                        help="How much to constrain value on historical data when making updates.")
+    parser.add_argument("--value_replay_constraint_anneal", type=str, default="off",
+                        help="[off|linear|cos|cos_linear]")
+    parser.add_argument("--policy_replay_constraint_anneal", type=str, default="off",
+                        help="[off|linear|cos|cos_linear]")
+    parser.add_argument("--log_delta_v", type=str2bool, default=False)
+
     parser.add_argument("--distil_delay", type=int, default=0, help="Number of steps to wait before starting distillation")
     parser.add_argument("--distil_min_var", type=float, default=0.0,
                         help="If the variance of the value networks value estimates are less than this distil will not run.")
@@ -395,7 +428,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--value_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--distil_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
-    parser.add_argument("--rnd_lr", type=float, default=1.0e-4, help="Learning rate for Adam optimizer")
+    parser.add_argument("--rnd_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
+    parser.add_argument("--advantage_epsilon", type=float, default=1e-8, help="Epsilon used when normalizing advantages.")
+    parser.add_argument("--advantage_clipping", type=float, default=None,
+                        help="Advantages will be clipped to this, (after normalization)")
+
 
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
@@ -409,14 +446,17 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
                         help="Anneals learning rate to 0 (linearly) over training")
     parser.add_argument("--value_transform", type=str, default="identity", help="[identity|sqrt]")
+    parser.add_argument("--anneal_target_epoch", type=float, default=None, help="Epoch to anneal to zero by")
 
     # -----------------
 
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
-    parser.add_argument("--intrinsic_reward_scale", type=float, default=1)
-    parser.add_argument("--extrinsic_reward_scale", type=float, default=1)
+    parser.add_argument("--er_scale", type=float, default=1.0, help="Extrinsic reward scale.")
+    parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
+    parser.add_argument("--ir_anneal", type=str, default="off",
+                        help="Anneals intrinsic rewards over training. [off|linear|cos|cos_linear]")
 
     parser.add_argument("--max_micro_batch_size", type=int, default=512)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
@@ -432,7 +472,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)
     parser.add_argument("--output_folder", type=str, default="./")
     parser.add_argument("--hostname", type=str, default=socket.gethostname())
-    parser.add_argument("--sticky_actions", type=str2bool, default=False)
+    parser.add_argument("--repeat_action_probability", type=float, default=0.0)
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
     parser.add_argument("--per_step_reward_noise", type=float, default=0.0, help="Standard deviation of noise added to (normalized) reward each step.")
@@ -443,7 +483,7 @@ def parse_args(no_env=False, args_override=None):
                         help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
     parser.add_argument("--use_compression", type=str, default='auto',
                         help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
-    parser.add_argument("--override_reward_normalization_gamma", type=float, default=-1)
+    parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
     parser.add_argument("--eb_alpha", type=float, default=0.0)
     parser.add_argument("--eb_beta", type=float, default=0.0)
@@ -456,7 +496,8 @@ def parse_args(no_env=False, args_override=None):
                         help="Verifies on load, that the MD5 of atari ROM matches the ALE.")
 
     # episodic discounting
-    parser.add_argument("--time_aware", type=str2bool, default=True)
+    parser.add_argument("--embed_time", type=str2bool, default=True, help="Encodes time into observation")
+    parser.add_argument("--embed_action", type=str2bool, default=True, help="Encodes actions into observation")
     parser.add_argument("--ed_type", type=str, default="none", help="[none|finite|geometric|quadratic|power|harmonic]")
     parser.add_argument("--ed_gamma", type=float, default=0.99)
     parser.add_argument("--full_action_space", type=str2bool, default=False)
@@ -476,12 +517,23 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
 
     parser.add_argument("--use_ebd", type=str2bool, default=False,
-                        help="Enables the Exploration by Disagreement reward.")
+                        help="Enables the exploration by disagreement reward.")
+    parser.add_argument("--use_erp", type=str2bool, default=False,
+                        help="Enables the exploration by replay diversity reward.")
+    parser.add_argument("--erp_source", type=str, default="replay",
+                        help="[replay|rollout|both]")
+    parser.add_argument("--erp_reduce", type=str, default="min",
+                        help="reduce function for exploration by replay diversity [mean|min|top5]")
+    parser.add_argument("--erp_relu", type=str2bool, default=True)
+    parser.add_argument("--erp_bias", type=str, default="internal", help="[centered|none|internal]")
+    parser.add_argument("--erp_exclude_zero", type=str2bool, default=False)
 
-    parser.add_argument("--normalize_advantages", type=str2bool, default=True)
+    parser.add_argument("--normalize_advantages", type=str, default="norm")
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
                         help="allows intrinsic returns to propagate through end of episode."
     )
+    parser.add_argument("--erp_samples", type=int, default=512,
+                        help="Number of samples to use for exploration by replay diversity density estimator")
 
     parser.add_argument("--disable_ev", type=str2bool, default=False,
                         help="disables explained variance calculations (faster)."
@@ -510,15 +562,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--layer_norm", type=str2bool, default=False)
     parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
 
-    # due to compatability
-    parser.add_argument("--use_mutex", type=str2bool, default=False, help=argparse.SUPPRESS)
-    parser.add_argument("--distill_epochs", dest="distil_epochs", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--distill_beta", dest="distil_beta", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--tvf_force_ext_value_distill", dest="tvf_force_ext_value_distil", type=str2bool,
-                        help=argparse.SUPPRESS)
-    parser.add_argument("--distil_resampling", type=str2bool, help=argparse.SUPPRESS) # ignored
-    parser.add_argument("--distill_lr", dest="distil_lr", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--distill_lr_anneal", dest="distil_lr_anneal", type=str2bool, help=argparse.SUPPRESS)
+    # legacy
+    parser.add_argument("--time_aware", type=str2bool, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--sticky_actions", type=str2bool, default=None, help=argparse.SUPPRESS)
 
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
@@ -529,18 +575,37 @@ def parse_args(no_env=False, args_override=None):
                                                                "best to not use it with color at the moment."
 
     assert not (args.use_ebd and not args.architecture == "dual"), "EBD requires dual architecture"
+    assert not (args.erp_source == "both" and args.replay_size == 0), "erp_source=both requires a replay buffer"
 
     # set defaults
     if args.intrinsic_reward_propagation is None:
-        # this seems keen to getting intrinsic motivation to work
-        args.intrinsic_reward_propagation = (args.use_rnd or args.use_ebd)
+        # this seems key to getting intrinsic motivation to work
+        # without it the agent might never want to die (as it can gain int_reward forever).
+        # maybe this is correct behavour? Not sure.
+        args.intrinsic_reward_propagation = (args.use_rnd or args.use_ebd or args.use_erp)
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
-    if cmd_args.get("use_mutex", False):
-        print("warning, use_mutex is deprecated, use mutex_key instead.")
-        args.mutex_key = "DEVICE"
     if args.distil_batch_size is None or args.distil_batch_size < 0:
         args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
+
+    if args.sticky_actions is not None:
+        if args.sticky_actions:
+            args.repeat_action_probability = 0.25
+        else:
+            args.repeat_action_probability = 0.0
+
+    if args.time_aware is not None:
+        args.embed_time = args.time_aware
+
+    # legacy settings
+    # if cmd_args.get("use_mutex", False):
+    #     print("warning, use_mutex is deprecated, use mutex_key instead.")
+    #     args.mutex_key = "DEVICE"
+
+    # if args.extrinsic_reward_scale is not None:
+    #     args.er_scale = args.extrinsic_reward_scale
+    # if args.intrinsic_reward_scale is not None:
+    #     args.ir_scale = args.intrinsic_reward_scale
 
     # smart config
     buffer_size = args.replay_size if args.replay_size > 0 else args.batch_size

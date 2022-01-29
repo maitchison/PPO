@@ -27,13 +27,13 @@ def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
     for t in range(max(max_steps)):
         masks = t < max_steps
         with torch.no_grad():
-            model_out = runner.detached_batch_forward(runner.obs, output="policy")
+            model_out = runner.detached_batch_forward(runner.obs, output="policy", update_normalization=True)
             log_policy = model_out["log_policy"].cpu().numpy()
         actions = np.asarray([
             utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
         ], dtype=np.int32)
         runner.obs, ext_rewards, dones, infos = runner.vec_env.step(actions)
-        runner.time = np.asarray([info["time_frac"] for info in infos])
+        runner.time = np.asarray([info["time"] for info in infos])
         if t % 100 == 0 and verbose:
             print(".", end='', flush=True)
 
@@ -69,7 +69,7 @@ def train(model: models.TVFModel, log: Logger):
     # setup logging
     log.add_variable(LogVariable("ep_score", 100, "stats",
                                  display_width=12))  # these need to be added up-front as it might take some
-    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=12))  # time get get first score / length.
+    log.add_variable(LogVariable("ep_length", 100, "stats", display_width=12))  # time to get first score / length.
 
     # calculate some variables
     batch_size = (args.n_steps * args.agents)
@@ -156,6 +156,7 @@ def train(model: models.TVFModel, log: Logger):
                   display_precision=2)
         log.watch("walltime", walltime,
                   display_priority=3, display_scale=1 / (60 * 60), display_postfix="h", display_precision=1)
+        log.watch("time", time.time(), display_width=0)
 
     # save early progress
     iteration = start_iteration

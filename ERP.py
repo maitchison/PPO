@@ -61,7 +61,7 @@ ERP1_args = {
     'distil_beta': 1.0,
     'distil_lr': 2.5e-4,
     'replay_mode': "uniform",
-    'replay_hashing': True,
+    'replay_hashing': True, # changed to replay_duplicate_removal, and this should be off.
     'dna_dual_constraint': 0,
 
     # horizon

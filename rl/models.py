@@ -20,9 +20,9 @@ class Base_Net(nn.Module):
         self.hidden_units = hidden_units
         self.trace_module = None
 
-    def jit(self):
+    def jit(self, device):
         assert self.trace_module is None, "Multiple calls to jit."
-        fake_input = torch.zeros([256, *self.input_dims])
+        fake_input = torch.zeros([256, *self.input_dims], device=device)
         self.trace_module = torch.jit.trace(self, example_inputs=fake_input)
 
 class ImpalaCNN_Net(Base_Net):
@@ -234,13 +234,15 @@ class DualHeadNet(nn.Module):
             actions=None,
             use_policy_head=True,
             use_value_head=True,
+            device=None,
             **kwargs
     ):
         super().__init__()
 
         self.encoder = construct_network(network, input_dims, hidden_units=hidden_units, **kwargs)
-        if not kwargs.get("layer_norm", False):
-            self.encoder.jit() # faster...
+        # jit is in theory a little faster, but can be harder to debug
+        self.encoder = self.encoder.to(device)
+        self.encoder.jit(device)
 
         assert self.encoder.hidden_units == hidden_units
 
@@ -301,7 +303,7 @@ class DualHeadNet(nn.Module):
         fn_map = {
             'identity': lambda x: 1,
             'linear': lambda x: x,
-            'log': lambda x: torch.log(1+x),
+            'log': lambda x: torch.log10(10+x)-1,
             'sqrt': lambda x: torch.sqrt(x),
         }
 
@@ -338,8 +340,9 @@ class DualHeadNet(nn.Module):
             features = self.encoder.trace_module(x)
         else:
             features = self.encoder(x)
-        features = F.relu(features)
 
+        result['raw_features'] = features  # used for debugging sometimes
+        features = F.relu(features)
         result['features'] = features  # used for debugging sometimes
 
         if self.use_policy_head and not exclude_policy:
@@ -470,7 +473,6 @@ class TVFModel(nn.Module):
         self.actions = actions
         self.device = device
         self.dtype = dtype
-        self.test_mode = False  # if set to true disables normalization constant updates
         self.observation_normalization = observation_normalization
 
         self.name = "PPG-" + network
@@ -491,6 +493,7 @@ class TVFModel(nn.Module):
             tvf_value_scale_norm=tvf_value_scale_norm,
             layer_norm=layer_norm,
             actions=actions,
+            device=device,
             **(network_args or {})
         )
 
@@ -527,7 +530,7 @@ class TVFModel(nn.Module):
         return self.forward(x, state, output="policy")["log_policy"].detach().cpu().numpy()
 
     @torch.no_grad()
-    def perform_normalization(self, x: torch.tensor, ignore_update: bool = False):
+    def perform_normalization(self, x: torch.tensor, update_normalization: bool = False):
         """
         x: input as [B, C, H, W]
         Applies normalization transform, and updates running mean / std.
@@ -542,7 +545,7 @@ class TVFModel(nn.Module):
         B, C, H, W = x.shape
         assert (C, H, W) == self.input_dims
 
-        if not ignore_update:
+        if update_normalization:
             batch_mean = torch.mean(x, dim=0).detach().cpu().numpy()
             # unbiased=False to match numpy
             batch_var = torch.var(x, dim=0, unbiased=False).detach().cpu().numpy()
@@ -577,13 +580,17 @@ class TVFModel(nn.Module):
 
         self.device, self.dtype = device, dtype
 
-    def rnd_prediction_error(self, x):
-        """ Returns prediction error for given state. """
+    def rnd_prediction_error(self, x, already_normed=False):
+        """ Returns prediction error for given state.
+            input should be preped and normalized
+        """
 
         B, C, H, W = x.shape
 
-        x = self.prep_for_model(x)
-        x = self.perform_normalization(x, ignore_update=True)
+        if not already_normed:
+            x = self.prep_for_model(x)
+            x = self.perform_normalization(x)
+
         x = x[:, 0:1, :, :]  # rnd works on just one channel
 
         # random features have too low varience due to weight initialization being different from the OpenAI implementation
@@ -607,6 +614,8 @@ class TVFModel(nn.Module):
             aux_features=None,
             output: str = "default",
             policy_temperature: float = 1.0,
+            include_rnd=False,
+            update_normalization=False,
         ):
         """
         Forward input through model and return dictionary containing
@@ -636,7 +645,10 @@ class TVFModel(nn.Module):
         result = {}
         x = self.prep_for_model(x)
         if self.observation_normalization:
-            x = self.perform_normalization(x, ignore_update=self.test_mode)
+            x = self.perform_normalization(x, update_normalization=update_normalization)
+
+        if include_rnd:
+            result["rnd_error"] = self.rnd_prediction_error(x, already_normed=True)
 
         # special case for single model version (faster)
         if self.architecture == "single":
@@ -652,7 +664,6 @@ class TVFModel(nn.Module):
             # required for distillation.
             policy_part = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
             value_part = self.value_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
-            result = {}
             for k,v in policy_part.items():
                 result["policy_" + k] = v
             for k, v in value_part.items():

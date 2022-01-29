@@ -1,7 +1,9 @@
+import logging
 import os
 
 import numpy as np
 import gym
+import scipy.stats
 
 import torch
 import torch.nn as nn
@@ -69,11 +71,9 @@ def calculate_tp_returns(dones: np.ndarray, final_tp_estimate: np.ndarray):
     return returns
 
 
-def calculate_mc_returns(rewards, dones, final_value_estimate, gamma) -> np.ndarray:
+def calculate_bootstrapped_returns(rewards, dones, final_value_estimate, gamma) -> np.ndarray:
     """
     Calculates returns given a batch of rewards, dones, and a final value estimate.
-
-    Note: This is not really montie carlo returns, it's just n-step returns with n=nsteps.
 
     Input is vectorized so it can calculate returns for multiple agents at once.
     :param rewards: nd array of dims [N,A]
@@ -516,6 +516,7 @@ class Runner:
         self.policy_shape = [model.actions]
 
         self.batch_counter = 0
+        self.erp_stats = {}
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
@@ -547,9 +548,14 @@ class Runner:
         self.ext_advantage = np.zeros([N, A], dtype=np.float32)
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
 
+        self.replay_value_estimates = np.zeros([N, A], dtype=np.float32)
+
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
         self.int_value = np.zeros([N+1, A], dtype=np.float32)
+        self.int_advantage = np.zeros([N, A], dtype=np.float32)
+        self.int_returns = np.zeros([N, A], dtype=np.float32)
+        self.intrinsic_reward_norm_scale: float = 1
 
         # log optimal
         self.sqr_value = np.zeros([N+1, A], dtype=np.float32)
@@ -557,8 +563,6 @@ class Runner:
 
         # returns generation
         self.ext_returns = np.zeros([N, A], dtype=np.float32)
-
-        self.int_returns_raw = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
         # terminal prediction
@@ -584,7 +588,7 @@ class Runner:
                 obs_shape=self.prev_obs.shape[2:],
                 obs_dtype=self.prev_obs.dtype,
                 mode=args.replay_mode,
-                filter_duplicates=args.replay_hashing,
+                filter_duplicates=args.replay_duplicate_removal,
             )
 
         self.debug_replay_buffers = []
@@ -606,27 +610,59 @@ class Runner:
                         )
 
         #  these horizons will always be generated and their scores logged.
-        self.tvf_debug_horizons = self.get_standard_horizon_sample(args.tvf_max_horizon)
+        self.tvf_debug_horizons = [0] + self.get_standard_horizon_sample(args.tvf_max_horizon)
 
         # quick check to make sure value transform is correct
         for x in [3.1415, -3.1415, 0, 10, -10, 1, -1, 10000, -10000]:
             new_x = ValueTransform.H(ValueTransform.H_inv(x))
             assert abs(new_x - x) < 1e-6, f"Expected H(H^-1({x})) to be {x} but was {new_x}"
 
-    def anneal(self, x, enable=True):
-        return x * np.clip(1-(self.step / (args.epochs * 1e6)), 0, 1) if enable else x
+    def anneal(self, x, mode: str = "linear"):
+
+        anneal_epoch = args.anneal_target_epoch or args.epochs
+        factor = 1.0
+
+        assert mode in ["off", "linear", "cos", "cos_linear", "linear_inc", "quad_inc"], f"invalid mode {mode}"
+
+        if mode in ["linear", "cos_linear"]:
+            factor *= np.clip(1-(self.step / (anneal_epoch * 1e6)), 0, 1)
+        if mode in ["linear_inc"]:
+            factor *= np.clip((self.step / (anneal_epoch * 1e6)), 0, 1)
+        if mode in ["quad_inc"]:
+            factor *= np.clip((self.step / (anneal_epoch * 1e6))**2, 0, 1)
+        if mode in ["cos", "cos_linear"]:
+            factor *= (1 + math.cos(math.pi * 2 * self.step / 20e6)) / 2
+
+        return x * factor
+
 
     @property
     def value_lr(self):
-        return self.anneal(args.value_lr, enable=args.value_lr_anneal)
+        return self.anneal(args.value_lr, mode="linear" if args.value_lr_anneal else "off")
+
+    @property
+    def intrinsic_reward_scale(self):
+        return self.anneal(args.ir_scale, mode=args.ir_anneal)
+
+    @property
+    def extrinsic_reward_scale(self):
+        return args.er_scale
+
+    @property
+    def current_policy_replay_constraint(self):
+        return self.anneal(args.policy_replay_constraint, mode=args.policy_replay_constraint_anneal)
+
+    @property
+    def current_value_replay_constraint(self):
+        return self.anneal(args.value_replay_constraint, mode=args.value_replay_constraint_anneal)
 
     @property
     def policy_lr(self):
-        return self.anneal(args.policy_lr, enable=args.policy_lr_anneal)
+        return self.anneal(args.policy_lr, mode="linear" if args.policy_lr_anneal else "off")
 
     @property
     def distil_lr(self):
-        return self.anneal(args.distil_lr, enable=args.distil_lr_anneal)
+        return self.anneal(args.distil_lr, mode="linear" if args.distil_lr_anneal else "off")
 
 
     def get_standard_horizon_sample(self, max_horizon: int):
@@ -691,8 +727,6 @@ class Runner:
         if args.reward_normalization:
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
-                # todo: this won't work with auto adjusting gamma, hmm... also. code uses discounting
-                #       in a really strange way...
                 gamma=args.reward_normalization_gamma,
                 scale=args.reward_scale,
                 returns_transform=lambda x: ValueTransform.H(x)
@@ -705,6 +739,8 @@ class Runner:
 
     def save_checkpoint(self, filename, step):
 
+        # todo: would be better to serialize the rollout automatically I think (maybe use opt_out for serialization?)
+
         data = {
             'step': step,
             'ep_count': self.ep_count,
@@ -716,7 +752,12 @@ class Runner:
             'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
             'value_optimizer_state_dict': self.value_optimizer.state_dict(),
             'batch_counter': self.batch_counter,
+            'reward_clips': self.reward_clips,
+            'game_crashes': self.game_crashes,
         }
+
+        if args.use_erp:
+            data['erp_stats'] = self.erp_stats
 
         if self.replay_buffer is not None:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
@@ -777,7 +818,7 @@ class Runner:
         self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
         self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
         if "rnd_optimizer_state_dict" in checkpoint:
-            self.rnd_optimizer = checkpoint['rnd_optimizer_state_dict']
+            self.rnd_optimizer.load_state_dict(checkpoint['rnd_optimizer_state_dict'])
 
         if args.auto_strategy[:2] == "sa":
             self.horizon_sa = checkpoint['horizon_sa']
@@ -788,6 +829,11 @@ class Runner:
         self.ep_count = checkpoint.get('ep_count', 0)
         self.episode_length_buffer = checkpoint['episode_length_buffer']
         self.batch_counter = checkpoint.get('batch_counter', 0)
+        self.reward_clips = checkpoint.get('reward_clips', 0)
+        self.game_crashes = checkpoint.get('game_crashes', 0)
+
+        if args.use_erp:
+            self.erp_stats = checkpoint['erp_stats']
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -812,6 +858,7 @@ class Runner:
 
         # initialize agent
         self.obs = self.vec_env.reset()
+        self.time *= 0
         self.episode_score *= 0
         self.episode_len *= 0
         self.step = 0
@@ -1158,6 +1205,44 @@ class Runner:
 
         return returns
 
+    @torch.no_grad()
+    def get_diversity(self, obs, buffer:np.ndarray, reduce_fn=np.nanmean):
+        """
+        Returns an estimate of the feature-wise distance between input obs, and the current replay buffer.
+        """
+
+        samples = min(args.erp_samples, len(buffer))
+
+        replay_sample = np.random.choice(len(buffer), [samples], replace=False)
+        replay_sample.sort()
+
+        buffer_output = self.detached_batch_forward(
+            buffer[replay_sample],
+            output="value"
+        )
+
+        obs_output = self.detached_batch_forward(
+            obs,
+            output="value"
+        )
+
+        features_code = "features" if args.erp_relu else "raw_features"
+        replay_features = buffer_output[features_code]
+        obs_features = obs_output[features_code]
+
+        distances = torch.cdist(replay_features[None, :, :], obs_features[None, :, :], p=2)
+        distances = distances[0, :, :].cpu().numpy()
+
+        if args.erp_exclude_zero:
+            distances[distances == 0] = np.nan
+
+        reduced_values = reduce_fn(distances, axis=0)
+        is_nan = np.isnan(reduced_values)
+        if np.any(is_nan):
+            self.log.warn("NaNs found in diversity calculation. Setting to zero.")
+            reduced_values[is_nan] = 0
+        return reduced_values
+
 
     @torch.no_grad()
     def export_movie(self, filename, include_rollout=False, include_video=True, max_frames=60 * 60 * 15):
@@ -1265,6 +1350,14 @@ class Runner:
     def export_debug_value(self, filename, value):
         pass
 
+    @property
+    def erp_internal_distance(self):
+        return self.erp_stats.get("erp_internal_distance", None)
+
+    @erp_internal_distance.setter
+    def erp_internal_distance(self, value):
+        self.erp_stats["erp_internal_distance"] = value
+
     @torch.no_grad()
     def generate_rollout(self):
 
@@ -1276,15 +1369,27 @@ class Runner:
         # Compress: 2ms
         # everything else should be minimal.
 
+        self.int_rewards *= 0
+
         for t in range(self.N):
 
             prev_obs = self.obs.copy()
             prev_time = self.time.copy()
 
             # forward state through model, then detach the result and convert to numpy.
-            model_out = self.detached_batch_forward(self.obs, output="policy")
+            model_out = self.detached_batch_forward(
+                self.obs,
+                output="policy",
+                include_rnd=args.use_rnd,
+                update_normalization=True
+            )
 
             log_policy = model_out["log_policy"].cpu().numpy()
+
+            if args.use_rnd:
+                # update the intrinsic rewards
+                self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
+                self.int_value[t] = model_out["int_value"].detach().cpu().numpy()
 
             # sample actions and run through environment.
             actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
@@ -1292,7 +1397,7 @@ class Runner:
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
 
             # time fraction
-            self.time = np.asarray([info["time_frac"] for info in infos])
+            self.time = np.asarray([info["time"] for info in infos])
 
             # per step reward noise
             if args.per_step_reward_noise > 0:
@@ -1306,8 +1411,12 @@ class Runner:
             self.episode_len += 1
 
             for i, (done, info) in enumerate(zip(dones, infos)):
-                if done:
+                if "reward_clips" in info:
+                    self.reward_clips += info["reward_clips"]
+                if "game_freeze" in info:
+                    self.game_crashes += 1
 
+                if done:
                     # this should be always updated, even if it's just a loss of life terminal
                     self.episode_length_buffer.append(info["ep_length"])
 
@@ -1321,11 +1430,6 @@ class Runner:
                     self.log.watch_full("ep_score", info["ep_score"], history_length=100)
                     self.log.watch_full("ep_length", info["ep_length"])
                     self.log.watch_mean("ep_count", self.ep_count, history_length=1)
-
-                    if "game_freeze" in info:
-                        self.game_crashes += 1
-                    if "reward_clip" in info:
-                        self.reward_clips += 1
 
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
@@ -1350,49 +1454,101 @@ class Runner:
         self.all_obs[-1] = last_obs
         self.all_time[-1] = self.time
 
-        # calculate intrinsic rewards (if needed)
-        # work out our intrinsic rewards
-        if args.use_intrinsic_rewards:
+        # work out final value if needed
+        if args.use_rnd:
+            final_state_out = self.detached_batch_forward(self.obs, output="policy")
+            self.int_value[-1] = final_state_out["int_value"].detach().cpu().numpy()
 
+        # check if environments are in sync or not...
+        rollout_rvs = self.time / max(self.time)
+        ks = scipy.stats.kstest(rvs=rollout_rvs, cdf=scipy.stats.uniform.cdf)
+        self.log.watch("t_ks", ks.statistic, display_width=0)
+        self.log.watch("t_ksp", ks.pvalue, display_width=0)
+
+        # calculate int_value for intrinsic motivation (RND does not need this as it was done during rollout)
+        # note: RND generates int_value during rollout, however in dual mode these need to (and should) come
+        # from the value network, so we redo them here.
+        if args.use_ebd or args.use_erp or (args.use_rnd and args.architecture == "dual"):
             N, A = self.prev_time.shape
             aux_features = None
             if args.use_tvf:
                 aux_features = package_aux_features(
                     np.asarray(self.get_standard_horizon_sample(self.current_horizon)),
-                    self.all_time.reshape([(N+1) * A])
+                    self.all_time.reshape([(N + 1) * A])
                 )
             output = self.detached_batch_forward(
-                self.all_obs.reshape([(N+1) * A]),
+                utils.merge_first_two_dims(self.all_obs),
                 aux_features,
                 output="full"
             )
+            self.int_value[:, :] = output["value_int_value"].reshape([(N + 1), A]).detach().cpu().numpy()
 
-            # this is annoying to have to do, because prediction error goes through a different system I need
-            # to rewrite the batching code here...
-            if args.architecture == "dual":
-                # in dual mode all value estimates are on the value network
-                int_value = output["value_int_value"]
-            elif args.architecture == "single":
-                # in single mode everything is on the policy network
-                int_value = output["policy_int_value"]
-            else:
-                raise ValueError(f"Invalid architecture {args.architecture}. Expected [dual|single]")
-            self.int_value[:, :] = int_value.reshape([(N + 1), A]).detach().cpu().numpy()
+            if args.use_erp:
+                # calculate intrinsic reward via replay diversity
 
-            if args.use_rnd:
-                N, A = self.prev_obs.shape
-                for n in range(N):
-                    this_obs = self.prev_obs[n]
-                    if this_obs.dtype == object:
-                        this_obs = np.asarray([this_obs[i].decompress() for i in range(len(this_obs))])
-                    with torch.no_grad():
-                        rnd_error = self.model.rnd_prediction_error(this_obs)
-                    self.int_rewards[n] = rnd_error.detach().cpu().numpy()
+                if args.erp_reduce == "mean":
+                    reduce_fn = np.nanmean
+                elif args.erp_reduce == "min":
+                    reduce_fn = np.nanmin
+                elif args.erp_reduce == "top5":
+                    def top5(x, axis):
+                        x_sorted = np.sort(x, axis=axis)[:5]
+                        return np.nanmean(x_sorted, axis=axis)
+                    reduce_fn = top5
+                else:
+                    raise ValueError(f"Invalid erp_reduce {args.erp_reduce}")
 
-            elif args.use_ebd:
+                def get_distances(source):
+                    samples = min(args.erp_samples, len(source))
+                    sample = np.random.choice(len(source), [samples], replace=False)
+                    internal_distance = self.get_diversity(source[sample], source, reduce_fn).mean()
+                    rollout_distances = self.get_diversity(utils.merge_first_two_dims(self.prev_obs), source, reduce_fn)
+                    return internal_distance, rollout_distances
+
+                def get_intrinsic_rewards(mode:str):
+                    if mode == "rollout" or self.replay_buffer.current_size == 0:
+                        internal_distance, rollout_distances = get_distances(utils.merge_first_two_dims(self.prev_obs))
+                    elif mode == "replay":
+                        internal_distance, rollout_distances = get_distances(self.replay_buffer.data[:self.replay_buffer.current_size])
+                    else:
+                        raise ValueError(f"Invalid mode {mode}")
+
+                    # ema to smooth out noisy on replay internal distance
+                    id_code = f"{mode}_internal_distance"
+                    if id_code not in self.erp_stats:
+                        self.erp_stats[id_code] = internal_distance
+                    else:
+                        self.erp_stats[id_code] = 0.95 * self.erp_stats[id_code] + 0.05 * internal_distance
+                    self.log.watch_mean(f"{mode}_internal_distance", internal_distance, display_width=0)
+
+                    # calculate intrinsic reward
+                    self.log.watch_mean_std(f"{mode}_distance", rollout_distances, display_width=0)
+                    if args.erp_bias == "centered":
+                        bias = rollout_distances.mean()
+                    elif args.erp_bias == "none":
+                        bias = 0
+                    elif args.erp_bias == "internal":
+                        bias = self.erp_stats[id_code]
+                    else:
+                        raise ValueError(f"Invalid erp_bias {args.erp_bias}")
+
+                    return (rollout_distances.reshape([N, A]) - bias) / self.erp_stats[id_code]
+
+                if args.erp_source == "rollout":
+                    self.int_rewards += get_intrinsic_rewards("rollout")
+                elif args.erp_source == "replay":
+                    self.int_rewards += get_intrinsic_rewards("replay")
+                elif args.erp_source == "both":
+                    self.int_rewards += (get_intrinsic_rewards("replay") + get_intrinsic_rewards("rollout")) / 2
+                else:
+                    raise ValueError(f"Invalid erp_source {args.erp_source}")
+
+            if args.use_ebd:
                 if args.use_tvf:
                     if args.tvf_force_ext_value_distil:
                         # in this case it is just policy_ext_value that has been trained
+                        # note: there might be a problem here as value gets time, but policy does not, using
+                        # a shorter horizon might work better...
                         policy_prediction = output["policy_ext_value"][..., np.newaxis]
                         value_prediction = output["value_tvf_value"][..., -1][..., np.newaxis]
                     else:
@@ -1404,9 +1560,10 @@ class Runner:
                     value_prediction = output["value_ext_value"][..., np.newaxis]
                 errors = (policy_prediction - value_prediction).mean(dim=-1)
                 int_rewards = torch.square(errors).reshape([N+1, A])
-                self.int_rewards = int_rewards[:-1].cpu().numpy()
-            else:
-                assert False, "No intrinsic rewards set."
+                self.int_rewards += int_rewards[:N].cpu().numpy()
+
+
+        self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
         # add data to replay buffer if needed
         if self.replay_buffer is not None:
@@ -1438,7 +1595,8 @@ class Runner:
     def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
                             horizons: Union[None, np.ndarray, int] = None,
                             return_transformed: bool = False,
-                            ) -> np.ndarray:
+                            include_model_out: bool = False,
+                            ) -> Union[np.ndarray, tuple]:
         """
         Returns value estimates for each given observation
         If horizons are none current_horizon is used.
@@ -1496,13 +1654,18 @@ class Runner:
             result = model_out["ext_value"].reshape([N, A]).cpu().numpy()
 
         if return_transformed:
-            return result
+            pass
         else:
-            return ValueTransform.H_inv(result)
+            result = ValueTransform.H_inv(result)
+
+        if include_model_out:
+            return result, model_out
+        else:
+            return result
 
 
     @torch.no_grad()
-    def log_value_quality(self, samples):
+    def log_value_quality(self):
         """
         Writes value quality stats to log
         """
@@ -1513,12 +1676,9 @@ class Runner:
             # because we use sampling it is not guaranteed that these horizons will be included, so we need to
             # recalculate everything
 
-            agent_sample_count = np.clip(samples, 1, args.agents)
-            agent_filter = np.random.choice(args.agents, agent_sample_count, replace=False)
-
             values = self.get_value_estimates(
-                obs=self.prev_obs[:, agent_filter],
-                time=self.prev_time[:, agent_filter],
+                obs=self.prev_obs,
+                time=self.prev_time,
                 horizons=np.asarray(self.tvf_debug_horizons)
             )
 
@@ -1532,10 +1692,10 @@ class Runner:
             targets = ValueTransform.H_inv(self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=self.tvf_debug_horizons,
-                obs=self.all_obs[:, agent_filter],
-                time=self.all_time[:, agent_filter],
-                rewards=self.ext_rewards[:, agent_filter],
-                dones=self.terminals[:, agent_filter],
+                obs=self.all_obs,
+                time=self.all_time,
+                rewards=self.ext_rewards,
+                dones=self.terminals,
                 tvf_mode="nstep", # <-- MC is the least bias method we can do...
                 tvf_n_step=self.current_horizon,
             ))
@@ -1560,6 +1720,18 @@ class Runner:
                     history_length=1
                 )
                 self.log.watch_mean(
+                    f"v_mu_{h:04d}",
+                    value.mean(),
+                    display_width=8 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
+                    history_length=1
+                )
+                self.log.watch_mean(
+                    f"v_std_{h:04d}",
+                    value.std(),
+                    display_width=8 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
+                    history_length=1
+                )
+                self.log.watch_mean(
                     f"tv_{h:04d}",
                     this_var,
                     display_width=0,
@@ -1576,6 +1748,8 @@ class Runner:
                                     display_width=0, history_length=1)
                 self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)),
                                     display_width=0, history_length=1)
+                # val tells me the value at each horizon, using this to debug high returns in montezuma's revenge
+                self.log.watch_mean(f"val_{h:04d}", np.mean(target), display_width=0, history_length=1)
 
             self.log.watch_mean(
                 f"ev_average",
@@ -1586,7 +1760,7 @@ class Runner:
             )
 
         else:
-            targets = calculate_mc_returns(
+            targets = calculate_bootstrapped_returns(
                 self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
             )
             values = self.ext_value[:self.N]
@@ -1679,7 +1853,10 @@ class Runner:
             horizons=horizons
         ).reshape([(N + 1), A])
 
+
     def calculate_returns(self):
+
+        self.old_time = time.time()
 
         N, A, *state_shape = self.prev_obs.shape
 
@@ -1788,7 +1965,7 @@ class Runner:
             ratios = var / (sqr_exp+1e-6)
             ratios = np.clip(ratios, -5, 5) # just so we don't get an overflow
 
-            alpha = self.anneal(args.lo_alpha, enable=args.lo_alpha_anneal)
+            alpha = self.anneal(args.lo_alpha, mode="linear" if args.lo_alpha_anneal else "off")
 
             rho = np.exp(-0.5 * alpha * ratios)
 
@@ -1799,53 +1976,41 @@ class Runner:
             self.ext_advantage *= rho
 
         if args.use_intrinsic_rewards:
-            # calculate the returns, but let returns propagate through terminal states.
-            self.int_returns_raw = calculate_mc_returns(
-                self.int_rewards,
-                args.intrinsic_reward_propagation * self.terminals,
-                self.int_value[-1],
-                args.gamma_int
-            )
 
             if args.normalize_intrinsic_rewards:
-                # note: this is a bit weird, should not I be treating the intrinsic rewards as normal rewards
-                # i.e. calculated advantages from the returns generated from int_rew + ext_rew, and not doing
-                # them seprately and adding together
-                # (actually doing them separetely allows for different gamma.
-
                 # normalize returns using EMS
+                # this is this how openai did it (i.e. forward rather than backwards)
                 for t in range(self.N):
-                    self.ems_norm = 0.99 * self.ems_norm + self.int_rewards[t, :]
+                    terminals = (not args.intrinsic_reward_propagation) * self.terminals[t, :]
+                    self.ems_norm = (1-terminals) * args.gamma_int * self.ems_norm + self.int_rewards[t, :]
                     self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
 
                 # normalize the intrinsic rewards
-                # we multiply by 0.4 otherwise the intrinsic returns sit around 1.0, and we want them to be more like 0.4,
-                # which is approximately where normalized returns will sit.
+                # the 0.4 means that the returns average around 1, which is similar to where the
+                # extrinsic returns should average. I used to have a justification for this being that
+                # the clipping during normalization means that the input has std < 1 and this accounts for that
+                # but since we multiply by EMS normalizing scale this shouldn't happen.
+                # in any case, the 0.4 is helpful as it means |return_int| ~ |return_ext|, which is good when
+                # we try to set the intrinsic_reward_scale hyperparameter.
+                # One final thought, this also means that return_ratio, under normal circumstances, should be
+                # about 1.0
                 self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-                self.int_rewards = self.int_rewards / self.intrinsic_reward_norm_scale * 0.4
-            else:
-                self.intrinsic_reward_norm_scale = 1
-
-            # note: it would be much better to do this by getting it from gae...
-            self.int_returns = calculate_mc_returns(
-                self.int_rewards,
-                args.intrinsic_reward_propagation * self.terminals,
-                self.int_value[-1],
-                args.gamma_int
-            )
+                self.int_rewards = (self.int_rewards / self.intrinsic_reward_norm_scale)
 
             self.int_advantage = calculate_gae(
                 self.int_rewards,
-                self.int_value[:-1],
-                self.int_value[-1],
-                None,
-                args.gamma_int,
-                args.gae_lambda
+                self.int_value[:N],
+                self.int_value[N],
+                (not args.intrinsic_reward_propagation) * self.terminals,
+                gamma=args.gamma_int,
+                lamb=args.gae_lambda
             )
 
-        self.advantage = args.extrinsic_reward_scale * self.ext_advantage
+            self.int_returns = self.int_advantage + self.int_value[:N]
+
+        self.advantage = self.extrinsic_reward_scale * self.ext_advantage
         if args.use_intrinsic_rewards:
-            self.advantage += args.intrinsic_reward_scale * self.int_advantage
+            self.advantage += self.intrinsic_reward_scale * self.int_advantage
 
         if args.observation_normalization:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
@@ -1854,16 +2019,9 @@ class Runner:
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0)
         self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)
 
-        self.log.watch_mean("adv_mean", np.mean(self.advantage), display_width=0)
-        self.log.watch_mean("adv_std", np.std(self.advantage), display_width=0)
-        self.log.watch_mean("adv_max", np.max(self.advantage), display_width=0)
-        self.log.watch_mean("adv_min", np.min(self.advantage), display_width=0)
-        self.log.watch_mean("batch_reward_ext", np.mean(self.ext_rewards), display_name="rew_ext", display_width=0)
-        self.log.watch_mean("batch_return_ext", np.mean(self.ext_returns), display_name="ret_ext")
-        self.log.watch_mean("batch_return_ext_std", np.std(self.ext_returns), display_name="ret_ext_std",
-                            display_width=0)
-        # self.log.watch_mean("value_est_ext", np.mean(self.ext_value), display_name="est_v_ext", display_width=0)
-        # self.log.watch_mean("value_est_ext_std", np.std(self.ext_value), display_name="est_v_ext_std", display_width=0)
+        self.log.watch_mean_std("reward_ext", self.ext_rewards, display_name="rew_ext", display_width=0)
+        self.log.watch_mean_std("return_ext", self.ext_returns, display_name="ret_ext")
+        self.log.watch_mean_std("value_ext", self.ext_value, display_name="est_v_ext", display_width=0)
 
         self.log.watch("game_crashes", self.game_crashes, display_width=0 if self.game_crashes == 0 else 8)
         self.log.watch("reward_clips", self.reward_clips, display_width=0 if self.reward_clips == 0 else 8)
@@ -1882,37 +2040,28 @@ class Runner:
 
         self.log.watch("gamma", self.gamma, display_width=0)
 
-        if not args.disable_ev:
+        if not args.disable_ev and self.batch_counter % 2 == 0:
             # only about 3% slower with this on.
-            self.log_value_quality(samples=64)
+            self.log_value_quality()
 
         if args.use_intrinsic_rewards:
-            self.log.watch_mean("batch_reward_int", np.mean(self.int_rewards), display_name="rew_int", display_width=0)
-            self.log.watch_mean("batch_reward_int_std", np.std(self.int_rewards), display_name="rew_int_std",
-                                display_width=0)
-            self.log.watch_mean("batch_return_int", np.mean(self.int_returns), display_name="ret_int")
-            self.log.watch_mean("batch_return_int_std", np.std(self.int_returns), display_name="ret_int_std",
-                                display_width=0)
-            self.log.watch_mean("batch_return_int_raw_mean", np.mean(self.int_returns_raw),
-                                display_name="ret_int_raw_mu",
-                                display_width=0)
-            self.log.watch_mean("batch_return_int_raw_std", np.std(self.int_returns_raw),
-                                display_name="ret_int_raw_std",
-                                display_width=0)
-
-            self.log.watch_mean("value_est_int", np.mean(self.int_value), display_name="est_v_int", display_width=0)
-            self.log.watch_mean("value_est_int_std", np.std(self.int_value), display_name="est_v_int_std",
-                                display_width=0)
+            self.log.watch_mean_std("reward_int", self.int_rewards, display_name="rew_int", display_width=0)
+            self.log.watch_mean_std("return_int", self.int_returns, display_name="ret_int", display_width=0)
+            self.log.watch_mean_std("value_int", self.int_value, display_name="est_v_int", display_width=0)
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value[:-1].ravel(), self.int_returns.ravel()))
-            if args.use_rnd:
-                self.log.watch_mean("batch_reward_int_unnorm", np.mean(self.int_rewards), display_name="rew_int_unnorm",
-                                    display_width=0, display_priority=-2)
-                self.log.watch_mean("batch_reward_int_unnorm_std", np.std(self.int_rewards),
-                                    display_name="rew_int_unnorm_std",
-                                    display_width=0)
+            self.log.watch_mean_std("adv", self.advantage, display_width=0)
+            self.log.watch_mean_std("adv_ext", self.ext_advantage, display_width=0)
+            self.log.watch_mean_std("adv_int", self.int_advantage, display_width=0)
+            self.log.watch_mean("ir_scale", self.intrinsic_reward_scale, display_width=0)
+            self.log.watch_mean(
+                "return_ratio",
+                np.mean(np.abs(self.ext_returns)) / np.mean(np.abs(self.int_returns)),
+                display_name="return_ratio",
+                display_width=10
+            )
 
         if args.normalize_intrinsic_rewards:
-            self.log.watch_mean("norm_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
+            self.log.watch_mean("reward_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -1956,14 +2105,14 @@ class Runner:
             # MSE loss, sum across samples
             return torch.square(targets - predictions)
         elif args.tvf_loss_fn == "huber":
-            if args.huber_loss_delta == 0:
+            if args.tvf_huber_loss_delta == 0:
                 loss = torch.abs(targets - predictions)
             else:
                 # Smooth huber loss
                 # see https://en.wikipedia.org/wiki/Huber_loss
                 errors = targets - predictions
-                loss = args.huber_loss_delta ** 2 * (
-                        torch.sqrt(1 + (errors / args.huber_loss_delta) ** 2) - 1
+                loss = args.tvf_huber_loss_delta ** 2 * (
+                        torch.sqrt(1 + (errors / args.tvf_huber_loss_delta) ** 2) - 1
                 )
             return loss
         elif args.tvf_loss_fn == "h_weighted":
@@ -2008,7 +2157,15 @@ class Runner:
             predictions = model_out["tvf_value"]
             loss_value = 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
 
-        loss = loss + loss_value
+        # do intrinsic reward distil (maybe needed if env has very few rewards)
+        if args.use_intrinsic_rewards and args.distil_ir:
+            targets = data["int_value_targets"]
+            predictions = model_out["int_value"]
+            loss_int = 0.5 * args.distil_ir * self.calculate_value_loss(targets, predictions).mean()
+        else:
+            loss_int = 0
+
+        loss = loss + loss_value + loss_int
 
         old_policy_logprobs = data["old_log_policy"]
         logps = model_out["log_policy"]
@@ -2071,7 +2228,6 @@ class Runner:
             value_heads.append("sqr")
         return value_heads
 
-
     def train_value_minibatch(self, data, loss_scale=1.0):
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
@@ -2116,6 +2272,20 @@ class Runner:
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_name="ls_tvf", display_width=8)
+
+        # -------------------------------------------------------------------------
+        # Replay constraint
+        # -------------------------------------------------------------------------
+        if args.value_replay_constraint != 0:
+            targets = data["replay_value_estimate"]
+            vrc_aux_features = package_aux_features(np.asarray([self.current_horizon]), data["replay_time"].cpu().numpy())
+            vrc_output = self.model.forward(data["replay_prev_state"], output="value", aux_features=vrc_aux_features)
+            predictions = vrc_output["tvf_value"][..., 0]
+            vrc_loss = self.current_value_replay_constraint * torch.mean(torch.square(targets - predictions))
+            self.log.watch_mean("loss_vrc", vrc_loss, history_length=64 * args.value_epochs, display_name="ls_vrf",
+                                display_width=8)
+            loss = loss + vrc_loss
+
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -2275,8 +2445,8 @@ class Runner:
                 # is is essentially trust region for value learning, but does not seem to help.
                 value_prediction_clipped = old_pred_values + torch.clamp(value_prediction - old_pred_values,
                                                                          -args.ppo_epsilon, +args.ppo_epsilon)
-                vf_losses1 = (value_prediction - returns).pow(2)
-                vf_losses2 = (value_prediction_clipped - returns).pow(2)
+                vf_losses1 = torch.square(value_prediction - returns)
+                vf_losses2 = torch.square(value_prediction_clipped - returns)
                 loss_value = torch.mean(torch.max(vf_losses1, vf_losses2))
             else:
                 # simpler version, just use MSE.
@@ -2291,7 +2461,7 @@ class Runner:
 
         mini_batch_size = len(data["prev_state"])
 
-        loss = torch.tensor(0, dtype=torch.float32, device=self.model.device)
+        gain = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
         prev_states = data["prev_state"]
         actions = data["actions"].to(torch.long)
@@ -2324,7 +2494,7 @@ class Runner:
 
         loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
         loss_clip_mean = loss_clip.mean()
-        loss = loss + loss_clip_mean
+        gain = gain + loss_clip_mean
 
         # approx kl
         # this is from https://stable-baselines.readthedocs.io/en/master/_modules/stable_baselines/ppo2/ppo2.html
@@ -2349,7 +2519,7 @@ class Runner:
 
         if args.architecture == "single":
             # negative because we're doing gradient ascent.
-            loss = loss - self.train_value_heads(model_out, data)
+            gain = gain - self.train_value_heads(model_out, data)
 
         # -------------------------------------------------------------------------
         # Optional value constraint
@@ -2374,7 +2544,21 @@ class Runner:
                 display_precision=5,
                 history_length=64 * args.policy_epochs
             )
-            loss = loss - value_constraint_loss
+            gain = gain - value_constraint_loss
+
+        # -------------------------------------------------------------------------
+        # Calculate replay kl
+        # -------------------------------------------------------------------------
+
+        if args.policy_replay_constraint != 0:
+            replay_prev_states = data["replay_prev_state"]
+            old_replay_policy_logprobs = data["replay_log_policy"]
+            replay_out = self.model.forward(replay_prev_states, output="policy")
+            new_replay_policy_logprobs = replay_out["log_policy"]
+            replay_kl = F.kl_div(old_replay_policy_logprobs, new_replay_policy_logprobs, log_target=True, reduction="batchmean")
+            loss_replay_kl = self.current_policy_replay_constraint * replay_kl
+            self.log.watch_mean("loss_replay_kl", loss_replay_kl, display_width=0)
+            gain = gain - loss_replay_kl  # maximizing gain
 
         # -------------------------------------------------------------------------
         # Calculate loss_entropy
@@ -2383,13 +2567,13 @@ class Runner:
         entropy = -(logps.exp() * logps).sum(axis=1)
         entropy = entropy.mean()
         loss_entropy = entropy * self.current_entropy_bonus
-        loss = loss + loss_entropy
+        gain = gain + loss_entropy
 
         # -------------------------------------------------------------------------
         # Calculate gradients
         # -------------------------------------------------------------------------
 
-        opt_loss = loss * -loss_scale
+        opt_loss = -gain * loss_scale
         opt_loss.backward()
 
         # -------------------------------------------------------------------------
@@ -2402,7 +2586,7 @@ class Runner:
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("entropy", entropy)
         self.log.watch_mean("loss_ent", loss_entropy, display_name=f"ls_ent", display_width=8)
-        self.log.watch_mean("loss_policy", loss, display_name=f"ls_policy")
+        self.log.watch_mean("loss_policy", gain, display_name=f"ls_policy")
 
         return {
             'kl_approx': float(kl_approx.detach()),  # make sure we don't pass the graph through.
@@ -2486,7 +2670,7 @@ class Runner:
         # -------------------------------------------------------------------------
         # Random network distillation update
         # -------------------------------------------------------------------------
-        # note: we include this here so that it can be used with PPO. In practice it does not matter if the
+        # note: we include this here so that it can be used with PPO. In practice, it does not matter if the
         # policy network or the value network learns this, as the parameters for the prediction model are
         # separate anyway.
 
@@ -2538,16 +2722,38 @@ class Runner:
             if args.use_log_optimal:
                 batch_data["sqr_returns"] = self.sqr_returns.reshape([B])
 
-        if args.normalize_advantages:
+        # sort out advantages
+        advantages = self.advantage.reshape(B)
+        self.log.watch_stats("advantages_raw", advantages, display_width=0)
+
+        if args.normalize_advantages != "off":
             # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
-            advantages = self.advantage.reshape(B)
-            batch_data["advantages"] = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        else:
-            batch_data["advantages"] = self.advantage.reshape(B)
+            if args.normalize_advantages == "center":
+                advantages = advantages - advantages.mean()
+            elif args.normalize_advantages in ["norm", "True", "true", "on"]:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + args.advantage_epsilon)
+            else:
+                raise ValueError(f"Invalid normalize_advantages mode {args.normalize_advantages}")
+            self.log.watch_stats("advantages_norm", advantages, display_width=0)
+
+        if args.advantage_clipping is not None:
+            advantages = np.clip(advantages, -args.advantage_clipping, +args.advantage_clipping)
+            self.log.watch_stats("advantages_clipped", advantages, display_width=0)
+
+        self.log.watch_stats("advantages", advantages, display_width=0)
+        batch_data["advantages"] = advantages
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
-            batch_data["int_value"] = self.int_value[:-1].reshape(B)
+            batch_data["int_value"] = self.int_value[:N].reshape(B)
+
+        # replay constraint
+        if args.policy_replay_constraint != 0:
+            assert args.replay_size > 0, "replay_constraint requires replay"
+            replay_states = self.replay_buffer.data
+            batch_data["replay_prev_state"] = replay_states
+            batch_data["replay_log_policy"] = self.detached_batch_forward(replay_states, output="policy")["log_policy"].cpu().numpy()
+
 
         # policy constraint
         if args.needs_dual_constraint:
@@ -2606,7 +2812,7 @@ class Runner:
 
         if args.use_intrinsic_rewards:
             batch_data["int_returns"] = self.int_returns.reshape(B)
-            batch_data["int_value"] = self.int_value[:-1].reshape(B) # only needed for clipped objective
+            batch_data["int_value"] = self.int_value[:N].reshape(B) # only needed for clipped objective
 
         if args.use_log_optimal:
             batch_data["sqr_returns"] = self.sqr_returns.reshape(B)
@@ -2615,6 +2821,30 @@ class Runner:
         if (not args.use_tvf) and args.use_clipped_value_loss:
             # these are needed if we are using the clipped value objective...
             batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
+
+        def get_value_estimate(prev_states, times):
+            assert args.use_tvf, "log_delta_v and replay_restraint require use_tvf=true (for the moment)"
+            aux_features = package_aux_features(np.asarray([self.current_horizon]), times)
+            return self.detached_batch_forward(
+                prev_states, output="value", aux_features=aux_features
+            )["tvf_value"][..., 0].detach().cpu().numpy()
+
+        old_replay_values = None
+        old_rollout_values = None
+
+        if args.value_replay_constraint != 0 or args.log_delta_v:
+            prev_states = self.replay_buffer.data
+            times = self.replay_buffer.time
+            batch_data["replay_prev_state"] = prev_states
+            batch_data["replay_time"] = times
+            old_replay_values = get_value_estimate(prev_states, times)
+            batch_data["replay_value_estimate"] = old_replay_values
+
+        if args.log_delta_v:
+            # we also want the rollout values...
+            old_rollout_values = get_value_estimate(
+                utils.merge_first_two_dims(self.prev_obs), utils.merge_first_two_dims(self.prev_time))
+
 
         for value_epoch in range(args.value_epochs):
 
@@ -2636,6 +2866,17 @@ class Runner:
                 optimizer=self.value_optimizer,
                 label="value",
             )
+
+        # get delta-v value
+        if args.log_delta_v:
+            new_replay_values = get_value_estimate(self.replay_buffer.data, self.replay_buffer.time)
+            new_rollout_values = get_value_estimate(
+                utils.merge_first_two_dims(self.prev_obs), utils.merge_first_two_dims(self.prev_time)
+            )
+            replay_delta_v = np.mean(np.square(new_replay_values - old_replay_values))
+            rollout_delta_v = np.mean(np.square(new_rollout_values - old_rollout_values))
+            self.log.watch("replay_delta_v", replay_delta_v, display_width=0)
+            self.log.watch("rollout_delta_v", rollout_delta_v, display_width=0)
 
     def get_distil_batch(self, samples_wanted:int):
         """
@@ -2686,23 +2927,32 @@ class Runner:
             horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
                                                     args.tvf_horizon_distribution)
             H = len(horizons)
-            target_values = self.get_value_estimates(
+            output = self.get_value_estimates(
                 obs=distil_obs[np.newaxis], # change from [B,*obs_shape] to [1,B,*obs_shape]
                 time=distil_time[np.newaxis],
                 horizons=horizons,
                 return_transformed=True,
-            ).reshape([B, H])
-
+                include_model_out=args.use_intrinsic_rewards,
+            )
             batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
             batch_data["tvf_time"] = distil_time.reshape([B])
-            batch_data["value_targets"] = target_values.reshape([B, H])
         else:
-            target_values = self.get_value_estimates(
+            output = self.get_value_estimates(
                 obs=distil_obs[np.newaxis], time=distil_time[np.newaxis],
                 return_transformed=True,
-            ).reshape([B])
-            batch_data["value_targets"] = target_values.reshape([B])
+                include_model_out=args.use_intrinsic_rewards,
+            )
 
+        if args.use_intrinsic_rewards:
+            target_values, model_out = output
+            target_int_values = model_out["int_value"].cpu().numpy()
+            batch_data["int_value_targets"] = target_int_values.reshape([B])
+        else:
+            target_values = output
+
+        batch_data["value_targets"] = utils.merge_first_two_dims(target_values)
+
+        # get old policy
         model_out = self.detached_batch_forward(obs=distil_obs, output="policy")
         batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
 
@@ -2768,7 +3018,7 @@ class Runner:
             self.log.watch_mean(
                 "mutex_wait", round(1000 * mx.wait_time), display_name="mutex",
                 type="int",
-                display_width=8,
+                display_width=0,
             )
             self.train_policy()
 
@@ -2895,6 +3145,9 @@ def package_aux_features(horizons: Union[np.ndarray, torch.Tensor], time: Union[
     Return aux features for given horizons and time fraction.
     Output is [B, H, 2] where final dim is (horizon, time)
 
+    Horizons should be floats from 0..tvf_max_horizons
+    Time should be floats from 0..tvf_max_horizons
+
     horizons: [B, H] or [H]
     time: [B]
 
@@ -2935,7 +3188,7 @@ def _scale_function(x, method):
     elif method == "zero":
         return x*0
     elif method == "log":
-        return (1+x).log2()
+        return (10+x).log10()-1
     elif method == "sqrt":
         return x.sqrt()
     elif method == "centered":

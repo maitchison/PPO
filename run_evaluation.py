@@ -39,7 +39,7 @@ from rl.config import args
 import lz4.frame as lib
 import os
 
-DEVICE = "cuda:0"
+DEVICE = "cpu"
 REWARD_SCALE = float()
 CURRENT_HORIZON = int()
 PARALLEL_ENVS = 20 # number of environments to run in parallel
@@ -142,7 +142,6 @@ def load_checkpoint(checkpoint_path, device=None):
 
     load_args(checkpoint_path)
 
-    args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
     args.res_x, args.res_y = (84, 84)
 
     args.experiment_name = Path(os.path.join(os.path.join(os.getcwd(), checkpoint_path))).parts[-3]
@@ -190,21 +189,13 @@ def make_model(env):
     additional_args['use_rnd'] = args.use_rnd
     additional_args['use_rnn'] = False
 
-    try:
-        additional_args['tvf_horizon_transform'] = rollout.horizon_scale_function
-    except:
-        # this was the old method
-        additional_args['tvf_horizon_transform'] = lambda x: x / args.tvf_max_horizon
+    additional_args['tvf_horizon_transform'] = rollout.horizon_scale_function
+    additional_args['tvf_time_transform'] = rollout.time_scale_function
 
     try:
         network = args.network
     except:
         network = "nature"
-
-    try:
-        additional_args['tvf_time_transform'] = rollout.time_scale_function
-    except:
-        pass
 
     try:
         additional_args['tvf_hidden_units'] = args.tvf_hidden_units
@@ -326,7 +317,6 @@ def rediscount_TVF(values, new_gamma):
         discount *= new_gamma
         rediscounted_values[h] = discounted_reward_sum
     return rediscounted_values
-
 
 def rediscount_TVF_minimize_error(value_mu, value_std, new_gamma):
     """
@@ -543,6 +533,8 @@ def generate_rollouts(
                 'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
                 'raw_rewards': [], # raw unscaled reward from the atari environment
                 'return_sample': [], # return samples for each horizon
+                'actions': [],
+                'probs': [],
                 'noops': 0,
             })
             if include_video:
@@ -605,6 +597,7 @@ def generate_rollouts(
             actions = np.asarray([np.argmax(prob) for prob in probs], dtype=np.int32)
         else:
             log_probs = model_out["log_policy"].detach().cpu().numpy()
+            probs = np.exp(log_probs)
             if np.isnan(log_probs).any():
                 raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
             actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
@@ -702,7 +695,15 @@ def generate_rollouts(
 
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
             raw_reward = infos[i].get("raw_reward", rewards[i])
-            times[i] = infos[i]["time_frac"] if not zero_time else 0.0
+
+            # old versions accidentally used time_frac... if time is there we use that instead
+            time = 0.0
+            if not zero_time:
+                time = infos[i].get("time", infos[i]["time_frac"])
+            times[i] = time
+
+            append_buffer('actions', actions[i])
+            append_buffer('probs', probs[i])
 
             if 'frames' in buffers[i]:
                 agent_layers = prev_states[i]
@@ -731,6 +732,8 @@ def generate_rollouts(
             append_buffer('raw_rewards', raw_reward)
 
         frame_count += 1
+
+    print(f" (completed {frame_count} out of max {max_frames})")
 
     # turn lists into np arrays
     for buffer in buffers:
@@ -781,7 +784,7 @@ class QuickPlot():
         plt.ylim(self._y_min, self._y_max)
         plt.grid(alpha=0.2)
         if self.log_scale:
-            plt.xlabel("$\log_10(10+h)$")
+            plt.xlabel("$\log_{10}(10+h)$")
             plt.xlim(1, np.log10(args.tvf_max_horizon + 10))
         else:
             plt.xlabel("h")
@@ -963,6 +966,7 @@ def export_movie(
 
     # work out discounting values to make plotting a little faster
     discount_weights = args.gamma ** np.arange(0, args.tvf_max_horizon+1)
+    tvf_discount_weights = args.tvf_gamma ** np.arange(0, args.tvf_max_horizon + 1)
 
     #  work out how big our graph will be (with a coarse estimate)
     max_true_return = 0.0
@@ -1037,6 +1041,8 @@ def export_movie(
         true_rewards = rewards[t:t+args.tvf_max_horizon]
         true_returns = true_rewards * discount_weights[:len(true_rewards)]
         true_returns = np.cumsum(true_returns)
+        true_tvf_discounted_returns = true_rewards * tvf_discount_weights[:len(true_rewards)]
+        true_tvf_discounted_returns = np.cumsum(true_tvf_discounted_returns)
 
         # calculate return distribution when multiverse is enabled
         return_samples = buffer.get("return_sample", None)
@@ -1099,6 +1105,10 @@ def export_movie(
             xs = list(range(len(buffer["tvf_discounted_values"][t])))
             ys = buffer["tvf_discounted_values"][t] * REWARD_SCALE  # model learned scaled rewards
             plot(xs, ys, 'green')
+            # also plot true score (with tvf_gamma)
+            xs = list(range(len(true_tvf_discounted_returns)))
+            ys = true_tvf_discounted_returns
+            plot(xs, ys, 'purple')
 
         frame[:plot_height, -plot_width:] = log_fig.buffer
         frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer
@@ -1106,6 +1116,17 @@ def export_movie(
         # show clock
         frame_height, frame_width, frame_channels = frame.shape
         utils.draw_numbers(frame, frame_width-100, frame_height-20, t, color=(255, 0, 0), zero_pad=4, size=3)
+
+        # show action and distribution
+        probs = buffer["probs"][t]
+        action_taken = buffer["actions"][t]
+        for i, prob in enumerate(probs):
+            x = i*8
+            y = 0
+            utils.draw_pixel(frame, x, y+8, c=tuple(int(x) for x in [255*prob, 255*prob, 255*prob]), sx=8, sy=8)
+            if i == action_taken:
+                utils.draw_pixel(frame, x, y, c=(255, 255, 255), sx=8, sy=8)
+            utils.draw_pixel(frame, x, y+16, c=tuple(int(x) for x in [32, i % 2 * 128, 0]), sx=8, sy=8)
 
         video_out.write(frame)
 

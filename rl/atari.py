@@ -116,34 +116,24 @@ ec3beb6d8b5689e867bafb5d5f507491 word_zapper.bin
 c5930d0e8cdae3e037349bfa08e871be yars_revenge.bin
 eea0da9b987d661264cce69a7c13c3bd zaxxon.bin""".split("\n")]}
 
-# get list of game environments...
-_game_envs = defaultdict(set)
-for env in gym.envs.registry.all():
-    env_type = env.entry_point.split(':')[0].split('.')[-1]
-    _game_envs[env_type].add(env.id)
-
-def make(non_determinism=None, monitor_video=False, seed=None, args=None, force_noop=None):
+def make(non_determinism=None, monitor_video=False, seed=None, args=None):
     """ Construct environment of given name, including any required wrappers."""
 
     # this global reference will not work on windows when we spawn instead of fork,
     # so make sure to pass args in as an argument.
     args = args or config.args
 
-    env_type = None
-
-    env_name = args.env_name
-
-    for k,v in _game_envs.items():
-        if env_name in v:
-            env_type = k
+    env_name = f"ALE/{args.environment}-v5"
 
     env = gym.make(
         env_name,
+        obs_type='rgb' if (monitor_video or args.color) else 'grayscale',
+        # ALE will skip over frames without applying max, so we handle the frameskip with our own wrapper
+        frameskip=1,
+        repeat_action_probability=args.repeat_action_probability,
         full_action_space=args.full_action_space,
-        obs_type='rgb' if (monitor_video or args.color) else 'grayscale'
     )
-    if env_type == "atari" and args.atari_rom_check and args.environment not in IGNORE_ROMS_LIST:
-
+    if args.atari_rom_check and args.environment not in IGNORE_ROMS_LIST:
         try:
             # this is the atari-py method
             path = env.unwrapped.game_path
@@ -164,86 +154,70 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None, force_
         np.random.seed(seed)
         env.seed(seed)
 
-    if env_name == "MemorizeNoFrameskip-v4":
-        env.set_number_of_actions_and_cards(args.memorize_actions, args.memorize_cards)
-
-    # default non-determinism
-    non_determinism = non_determinism or ("noop" if args.noop_start else "none")
-
     if args.timeout > 0:
         env = wrappers.TimeLimitWrapper(env, args.timeout)
 
-    if env_type == "atari":
+    env = wrappers.SaveEnvStateWrapper(env)
 
-        assert "NoFrameskip" in env_name
+    if args.noop_start:
+        env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
 
-        env = wrappers.SaveEnvStateWrapper(env)
+    env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
 
-        non_determinism = non_determinism.lower()
-        if non_determinism == "noop":
-            env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
-            env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
-        elif non_determinism == "frame-skip":
-            env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
-            env = wrappers.FrameSkipWrapper(env, min_skip=int(args.frame_skip*0.5), max_skip=int(args.frame_skip*1.5), reduce_op=np.max)
-        elif non_determinism == "none":
-            env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
-        else:
-            raise Exception("Invalid non determinism type {}.".format(non_determinism))
+    env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
+    env = wrappers.EpisodeScoreWrapper(env)
 
-        env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
-        env = wrappers.EpisodeScoreWrapper(env)
+    if args.input_crop:
+        env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
 
-        if args.input_crop:
-            env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
-
-        if args.reward_clipping == "off":
-            pass
-        elif args.reward_clipping == "sqrt":
-            env = wrappers.SqrtRewardWrapper(env)
-        else:
-            try:
-                clip = float(args.reward_clipping)
-            except:
-                raise ValueError("reward_clipping should be off, sqrt, or a float")
-            env = wrappers.ClipRewardWrapper(env, clip)
-
-        # apply filter
-        if args.filter == "none":
-            pass
-        elif args.filter == "hash":
-            env = wrappers.HashWrapper(env, args.hash_size)
-        elif args.filter == "hash_time":
-            env = wrappers.HashWrapper(env, args.hash_size, use_time=True)
-        else:
-            raise Exception("Invalid observation filter {}.".format(args.filter))
-
-        env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
-
-        if args.ed_type != "none":
-            env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
-
-        if args.reward_scale != 1.0 and not args.reward_normalization:
-            env = wrappers.RewardScaleWrapper(env, args.reward_scale)
-
-        if args.terminal_on_loss_of_life:
-            env = wrappers.EpisodicLifeEnv(env)
-
-        if args.deferred_rewards != 0:
-            env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
-
-        if args.ema_frame_stack:
-            env = wrappers.EMAFrameStack(env, n_stacks=args.frame_stack, gamma=args.ema_frame_stack_gamma)
-        else:
-            env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
-
-        if args.time_aware:
-            # must come after frame_stack
-            env = wrappers.TimeAwareWrapper(env)
-
-        env = wrappers.NullActionWrapper(env)
-
+    if args.reward_clipping == "off":
+        pass
+    elif args.reward_clipping == "sqrt":
+        env = wrappers.SqrtRewardWrapper(env)
     else:
-        raise Exception("Unsupported env_type {} for env {}".format(env_type, env_name))
+        try:
+            clip = float(args.reward_clipping)
+        except:
+            raise ValueError("reward_clipping should be off, sqrt, or a float")
+        env = wrappers.ClipRewardWrapper(env, clip)
+
+    # apply filter
+    if args.filter == "none":
+        pass
+    elif args.filter == "hash":
+        env = wrappers.HashWrapper(env, args.hash_size)
+    elif args.filter == "hash_time":
+        env = wrappers.HashWrapper(env, args.hash_size, use_time=True)
+    else:
+        raise Exception("Invalid observation filter {}.".format(args.filter))
+
+    env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
+
+    if args.embed_action:
+        # must come after frame_stack
+        env = wrappers.ActionAwareWrapper(env)
+
+    if args.ed_type != "none":
+        env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
+
+    if args.reward_scale != 1.0 and not args.reward_normalization:
+        env = wrappers.RewardScaleWrapper(env, args.reward_scale)
+
+    if args.terminal_on_loss_of_life:
+        env = wrappers.EpisodicLifeEnv(env)
+
+    if args.deferred_rewards != 0:
+        env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
+
+    if args.ema_frame_stack:
+        env = wrappers.EMAFrameStack(env, n_stacks=args.frame_stack, gamma=args.ema_frame_stack_gamma)
+    else:
+        env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
+
+    if args.embed_time:
+        # must come after frame_stack
+        env = wrappers.TimeAwareWrapper(env)
+
+    env = wrappers.NullActionWrapper(env)
 
     return env

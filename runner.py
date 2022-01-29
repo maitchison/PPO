@@ -11,10 +11,12 @@ if __name__ == "__main__":
     import ERP
     import EPGG
     import EA57
+    import EEXP
 
     # ERP.setup()
     # EPGG.setup()
     EA57.setup()
+    EEXP.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

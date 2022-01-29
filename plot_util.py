@@ -304,6 +304,15 @@ class RunLog():
         except:
             pass
 
+        try:
+            # include unscaled value estimates
+            keys = list(result.keys())
+            for k in keys:
+                if k.startswith("v_mu_") or k.startswith("v_std_"):
+                    result[k+"_rs"] = result[k] * result["reward_scale"]
+        except:
+            pass
+
         self._fields = result
 
 
@@ -466,10 +475,10 @@ def compare_runs(
 
         ys = np.asarray([np.mean(y_sample) for y_sample in all_ys])
         ys_std = np.asarray([np.std(y_sample) for y_sample in all_ys])
-        ys_low = [np.max(y_sample) for y_sample in all_ys]
-        ys_high = [np.min(y_sample) for y_sample in all_ys]
-        #ys_low = ys - ys_std
-        #ys_high = ys + ys_std
+        #ys_low = [np.max(y_sample) for y_sample in all_ys]
+        #ys_high = [np.min(y_sample) for y_sample in all_ys]
+        ys_low = ys - ys_std
+        ys_high = ys + ys_std
 
         for x_raw, y_raw in zip(group_xs, group_ys):
             # raw curves

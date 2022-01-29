@@ -201,11 +201,38 @@ DNA_reference_args.update({
     'use_tvf': False,
 })
 
+
+# at 30k horizon
+RP1U_reference_args = TVF_reference_args.copy()
+RP1U_reference_args.update({
+    'distil_epochs': 1,
+    'distil_period': 1,
+    'replay_size': 1 * ROLLOUT_SIZE,
+    'distil_batch_size': 1 * ROLLOUT_SIZE,
+    'replay_mode': "uniform",
+})
+
+# at 30k horizon
+ERP_reference_args = RP1U_reference_args.copy()
+ERP_reference_args.update({
+    'use_erp': True,
+    'ir_scale': 0.6,
+    'anneal_target_epoch': 50,
+    "ir_anneal": "linear",
+})
+
 # at 30k horizon
 PPO_reference_args = DNA_reference_args.copy()
 PPO_reference_args.update({
     'use_tvf': False,
     'architecture': 'single',
+})
+
+TVF99_reference_args = TVF_reference_args.copy()
+TVF99_reference_args.update({
+    'gamma': 0.99,
+    'tvf_gamma': 0.99,
+    'tvf_max_horizon': 300,
 })
 
 # settings used in the Rainbow DQN paper, but without reward clipping or terminal on loss of life

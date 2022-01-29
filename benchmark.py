@@ -60,9 +60,9 @@ regression_args = {
     'ppo_epsilon': 0.1,
     'policy_lr': 2.5e-4,
     'value_lr': 2.5e-4,
-    'distill_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
     'entropy_bonus': 1e-3,
-    'tvf_force_ext_value_distill': False,
+    'tvf_force_ext_value_distil': False,
     'hidden_units': 256,
     'gae_lambda': 0.95,
 
@@ -136,7 +136,7 @@ def print_outputs(outs, errs):
         print(Color.FAIL + line + Color.ENDC)
 
 
-def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, **params):
+def generate_benchmark_result(parallel_jobs=0, show_compression_stats=False, **params):
     """
     Runs pong for 10M three times and checks the results.
 
@@ -158,11 +158,13 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats = False, *
         params["use_compression"] = params.get("use_compression", args.use_compression)
         params["observation_normalization"] = params.get("observation_normalization", args.observation_normalization)
 
+        if "env_name" not in params:
+            params['env_name'] = "Pong"
+
         p = execute_job(
             BENCHMARK_FOLDER,
             job_name,
             seed=seed,
-            env_name="Pong",
             device=f'cuda:{seed % GPUS}',
             numa_id=args.numa[seed % len(args.numa)] if args.numa is not None else None,
             epochs=BENCHMARK_EPOCHS,
@@ -205,6 +207,10 @@ def run_benchmark(description: str, job_counts: list, **kwargs):
     print(f"Running {description} benchmark on {DEVICE} with {GPUS} GPUS...")
 
     baseline_ips = None
+
+    if args.custom_args is not None:
+        kwargs = kwargs.copy()
+        kwargs.update(ast.literal_eval(args.custom_args))
 
     for jobs in job_counts:
         ips = sum(
@@ -283,12 +289,13 @@ if __name__ == "__main__":
         os.environ["MKL_THREADING_LAYER"] = "GNU"
 
         parser = argparse.ArgumentParser(description="Trainer for PPO2")
-        parser.add_argument("mode", type=str)
+        parser.add_argument("mode", type=str, help="[full|quick|ppo|regression|show]")
         parser.add_argument("--verbose", type=str2bool, default=False)
         parser.add_argument("--use_compression", type=str2bool, default=True)
         parser.add_argument("--observation_normalization", type=str2bool, default=True)
         parser.add_argument("--numa", type=str, default=None, help='e.g. [0,1]')
         parser.add_argument("--jobs", type=str, default=None)
+        parser.add_argument("--custom_args", type=str, default=None)
 
         args = parser.parse_args()
 

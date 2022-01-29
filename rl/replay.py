@@ -8,7 +8,8 @@ import time
 import hashlib
 import typing
 
-import rl.compression
+import torch
+
 from rl.compression import BufferSlot
 
 
@@ -80,12 +81,16 @@ class ExperienceReplayBuffer:
         self.hashes = state_dict["hashes"].copy()
         self.stats_total_duplicates_removed = self.stats_total_duplicates_removed
 
-    def estimate_diversity(self, max_samples=32):
+    @torch.no_grad()
+    def estimate_replay_diversity(self, max_samples=32):
         """
         Returns an estimate of the diversity within the replay buffer using L2 distance in pixel space.
         max_samples: maximum number of samples to use. All pairs will be tested, so number of pairs is this number
             squared.
         """
+
+        results = {}
+
         sample = np.random.choice(
             self.current_size,
             size=min(max_samples, self.current_size),
@@ -94,19 +99,43 @@ class ExperienceReplayBuffer:
         data = self.data[sample]
         if data.dtype == np.object:
             data = np.asarray([data[i].decompress() for i in range(len(data))], dtype=np.float32) / 255
-        distances = []
-        for i in range(len(data)):
-            for j in range(i, len(data)):
-                distances.append(np.sum((data[i] - data[j]) ** 2) ** 0.5)
-        return np.mean(distances)
+        else:
+            data = np.asarray(data, dtype=np.float32) / 255
+
+        # might have been faster if we did this on the gpu...
+        data = torch.from_numpy(data)
+        B, *state_shape = data.shape
+        data = data.reshape([1, B, np.prod(state_shape)])
+
+        distances = torch.cdist(data, data, p=2)
+        distances = distances[0, :, :].cpu().numpy()
+
+        # diversity is average distance between x and the elements in the set
+        # density is an estimate of the minimum distance between x and nearest elements of the set
+
+        results['mean'] = float(distances.mean())
+        # matrix will include the distance to oneself, remove these when calculating the min
+        for i in range(len(distances)):
+            distances[i, i] = float('inf')
+
+        for k in [1, 2, 3, 4, 5]:
+            results[f'k{k}'] = float(np.sort(distances, axis=0)[:k].mean())
+
+        return results
 
     def log_stats(self, log):
 
-        # takes around 1.7s for a 16x(128*128) replay.
+        # takes around 1.7s for a 16x(128*128) replay (for 32 samples...)
         start_time = time.time()
-        log.watch_mean(f"{self.name}_diversity", self.estimate_diversity(32), display_width=0)
-        log.watch_mean(f"{self.name}_duplicates", self.count_duplicates(), display_width=0)
-        log.watch_mean(f"{self.name}_current_duplicates_frac", self.count_duplicates() / len(self.data), display_width=0)
+        diversity_results = self.estimate_replay_diversity(128)  # note, sample count changes density estimate.
+        log.watch_mean(f"{self.name}_diversity", diversity_results["mean"], display_width=0)
+        log.watch_mean(f"{self.name}_density", diversity_results["k1"], display_width=0)
+        for k, v in diversity_results.items():
+            log.watch_mean(f"{self.name}_diversity_{k}", v, display_width=0)
+        if self.data.dtype == np.object:
+            # duplicate counting is far too slow unless compression is enabled.
+            log.watch_mean(f"{self.name}_duplicates", self.count_duplicates(), display_width=0)
+            log.watch_mean(f"{self.name}_current_duplicates_frac", self.count_duplicates() / len(self.data), display_width=0)
         log.watch_mean(f"{self.name}_total_duplicates_removed", self.stats_total_duplicates_removed, display_width=0)
         log.watch_mean(f"{self.name}_last_duplicates_removed", self.stats_last_duplicates_removed, display_width=0)
         log.watch_mean(f"{self.name}_last_entries_added", self.stats_last_entries_added, display_width=0)
@@ -117,7 +146,7 @@ class ExperienceReplayBuffer:
 
     def count_duplicates(self):
         """
-        Counts the number of duplicates in the replay buffer (a bit slow).
+        Counts the number of duplicates in the replay buffer (a bit slow, especially if compression is not used).
         """
         hashes = np.asarray(
             [ExperienceReplayBuffer.get_observation_hash(x) for x in self.data],

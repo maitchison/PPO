@@ -4,8 +4,9 @@ Atari-57 Main runs
 """
 
 from runner_tools import WORKERS, add_job, random_search, Categorical
-from runner_tools import PPO_reference_args, DNA_reference_args, TVF_reference_args
 from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE
+from runner_tools import PPO_reference_args, DNA_reference_args, TVF_reference_args, TVF99_reference_args, \
+    ERP_reference_args, RP1U_reference_args
 
 
 def atari57(priority: int = 0):
@@ -14,302 +15,43 @@ def atari57(priority: int = 0):
             'env_name': env,
             'priority': priority,
             'seed': 1,
-            'hostname': "ML"
+            'hostname': "ML",
+            'epochs': 20, # just to get a feel for things early on
         }
+
         COMMON_ARGS.update(RAINBOW_MODE)
+
         add_job(
             f"A57_RAINBOW",
-            run_name=f"game={env} rp1u (1)",
+            run_name=f"game={env} tvf (1)",
             default_params=TVF_reference_args,
-            distil_epochs=1,
-            distil_period=1,
-            replay_size=1 * ROLLOUT_SIZE,
-            distil_batch_size=1 * ROLLOUT_SIZE,
-            replay_mode="uniform",
             **COMMON_ARGS,
         )
-        # add_job(
-        #     f"A57_RAINBOW",
-        #     run_name=f"game={env} tvf (1)",
-        #     default_params=TVF_reference_args,
-        #     **COMMON_ARGS,
+        add_job(
+            f"A57_RAINBOW",
+            run_name=f"game={env} dna (1)",
+            default_params=DNA_reference_args,
+            **COMMON_ARGS,
+        )
+        add_job(
+            f"A57_RAINBOW",
+            run_name=f"game={env} ppo (1)",
+            default_params=PPO_reference_args,
+            **COMMON_ARGS,
+        )
 
-        # )
-        # add_job(
-        #     f"A57_RAINBOW",
-        #     env_name=env,
-        #     run_name=f"game={env} dna (1)",
-        #     default_params=DNA_reference_args,
-        #     **COMMON_ARGS,
-        # )
-        # add_job(
-        #     f"A57_RAINBOW",
-        #     env_name=env,
-        #     run_name=f"game={env} ppo (1)",
-        #     default_params=PPO_reference_args,
-        #     **COMMON_ARGS,
-        # )
-
-
-def crazy_climber(priority: int = 0):
-    # quick tests to see if we can fix crazy climber with full curve learning
-    EPOCHS = 30 # just interested in ev for small horizons
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"ppo_norm (seed=1)",
-        default_params=PPO_reference_args,
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"dna_norm (seed=1)",
-        default_params=DNA_reference_args,
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"tvf_norm (seed=1)",
-        default_params=TVF_reference_args,
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-        replay_mode="uniform",
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [enhanced] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        tvf_exp_gamma=1.5,
-        tvf_horizon_samples=128,
-        value_mini_batch_size=1024,
-        distil_mini_batch_size=1024,
-        max_micro_batch_size=1024,
-
-        replay_mode="uniform",
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [enhanced, easy] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        terminal_on_loss_of_life=True,
-        value_transform="sqrt",
-
-        tvf_exp_gamma=1.5,
-        tvf_horizon_samples=128,
-        value_mini_batch_size=1024,
-        distil_mini_batch_size=1024,
-        max_micro_batch_size=1024,
-
-        replay_mode="uniform",
-        priority=priority,
-        seed=1,
-        hostname="desktop",
-    )
-
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [enhanced, easy2] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        terminal_on_loss_of_life=True,
-
-        tvf_exp_gamma=1.5,
-        tvf_horizon_samples=128,
-        value_mini_batch_size=1024,
-        distil_mini_batch_size=1024,
-        max_micro_batch_size=1024,
-
-        replay_mode="uniform",
-        priority=priority,
-        seed=1,
-        hostname="desktop",
-    )
-
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [anneal] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        distil_lr_anneal=True,
-
-        replay_mode="uniform",
-        priority=priority,
-        epochs=50,
-        seed=1,
-        hostname="desktop",
-    )
-
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [dc] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        dna_dual_constraint = 0.3,
-
-        replay_mode="uniform",
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [mvh] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        tvf_n_dedicated_value_heads=16, # old code... might not work..
-
-        replay_mode="uniform",
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-
-    add_job(
-        f"CC",
-        env_name="CrazyClimber",
-        run_name=f"rp1u [av_r] (seed=1)",
-        default_params=TVF_reference_args,
-        distil_epochs=1,
-        distil_period=1,
-        replay_size=1 * ROLLOUT_SIZE,
-        distil_batch_size=1 * ROLLOUT_SIZE,
-
-        tvf_value_scale_fn="linear", # average reward
-
-        replay_mode="uniform",
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-
-def ebd(priority: int=0):
-    EPOCHS = 20
-    add_job(
-        f"EBD",
-        env_name="MontezumaRevenge",
-        run_name=f"tvf",
-        default_params=TVF_reference_args,
-        priority=priority-100,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"EBD",
-        env_name="MontezumaRevenge",
-        run_name=f"rnd_0.25",
-        default_params=TVF_reference_args,
-        use_rnd=True,
-        rnd_experience_proportion=0.25,
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"EBD",
-        env_name="MontezumaRevenge",
-        run_name=f"rnd_1.0",
-        default_params=TVF_reference_args,
-        use_rnd=True,
-        rnd_experience_proportion=1.0,
-        priority=priority,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"EBD",
-        env_name="MontezumaRevenge",
-        run_name=f"ebd_full",
-        default_params=TVF_reference_args,
-        priority=priority,
-        use_ebd=True,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
-    add_job(
-        f"EBD",
-        env_name="MontezumaRevenge",
-        run_name=f"ebd_simple",
-        default_params=TVF_reference_args,
-        tvf_force_ext_value_distil=True,
-        priority=priority,
-        use_ebd=True,
-        epochs=EPOCHS,
-        seed=1,
-        hostname="desktop",
-    )
+        # new folder as code for exploration was added after the others
+        # started...
+        # would be nice to go back and get the others all running on the same codebase.
+        add_job(
+            f"A57_RAINBOW_2",
+            run_name=f"game={env} erp (1)",
+            default_params=ERP_reference_args,
+            **COMMON_ARGS,
+        )
 
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
     atari57(priority=priority_modifier)
-    crazy_climber(priority=10)
-    ebd(priority=50)
+    pass

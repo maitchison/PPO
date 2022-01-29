@@ -71,9 +71,6 @@ def main():
     if args.use_icm and args.use_rnd:
         raise Exception("Can only use either ICM or RND, not both.")
 
-    # get model
-    args.env_name = utils.get_environment_name(args.environment, args.sticky_actions)
-
     # check the output folder is valid...
     assert os.path.isdir(args.output_folder), "Can not find path " + args.output_folder
 
@@ -114,7 +111,7 @@ def main():
     fake_env = atari.make()
     n_actions = fake_env.action_space.n
     obs_space = fake_env.observation_space.shape
-    log.info("Playing {} with {} obs_space and {} actions.".format(args.env_name, obs_space, n_actions))
+    log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
     utils.lock_job()
 

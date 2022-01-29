@@ -186,6 +186,14 @@ class Logger():
         """ Logs a value, creates full variable if needed. """
         self.watch(key, value, history_length=history_length, type="stats", **kwargs)
 
+    def watch_mean_std(self, key, value: np.ndarray, **kwargs):
+        """ Logs a value, creates full variable if needed. """
+        self.watch_mean(key, np.mean(value), **kwargs)
+        if "display_name" in kwargs:
+            kwargs["display_name"] = kwargs["display_name"] + "_std"
+        self.watch_mean(key+"_std", np.std(value), **kwargs)
+
+
     def watch_stats(self, key, value, history_length=100, **kwargs):
         """ Logs a value, creates full variable if needed. """
 

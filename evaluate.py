@@ -12,7 +12,7 @@ import random
 
 from shutil import copyfile
 
-DEVICE = "cuda:1"
+DEVICE = "cpu"
 REWARD_SCALE = float()
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 
@@ -68,7 +68,8 @@ def run_evaluation_script(
 
     # set device
     args.append('--device')
-    args.append('cuda:'+str(random.randint(0, 1)))
+    #args.append('cuda:'+str(random.randint(0, 1)))
+    args.append(DEVICE)
 
     old_path = os.getcwd()
     try:

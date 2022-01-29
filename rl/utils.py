@@ -53,9 +53,6 @@ def get_disallowed_devices():
         return []
 
 
-def get_environment_name(environment, sticky_actions=False):
-    return "{}NoFrameskip-v{}".format(environment, "0" if sticky_actions else "4")
-
 def check_for_exteme_or_nan(X, name="array", extreme_limit=10000):
     """ Makes sure elements in array are non NaN and are within reasonable limits. """
 
@@ -845,12 +842,15 @@ def detect_numa_groups():
     Returns list  of numa groups, or 0 if numactl is not installed
     """
     import subprocess
-    p = subprocess.Popen(["numactl", "--show"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    outs, errs = p.communicate(timeout=30)
-    for line in outs.decode("utf-8").split("\n"):
-        if line.startswith("cpubind: "):
-            line = line[len("cpubind: "):]
-            return [int(x) for x in line.split(" ") if x != '']
+    try:
+        p = subprocess.Popen(["numactl", "--show"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        outs, errs = p.communicate(timeout=30)
+        for line in outs.decode("utf-8").split("\n"):
+            if line.startswith("cpubind: "):
+                line = line[len("cpubind: "):]
+                return [int(x) for x in line.split(" ") if x != '']
+    except:
+        pass
     return 0
 
 

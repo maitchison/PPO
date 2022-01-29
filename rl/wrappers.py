@@ -108,6 +108,39 @@ class NoPassThruWrapper(gym.Wrapper):
             self.first = False
         return self.obs, 0, False, self.info
 
+
+class ActionAwareWrapper(gym.Wrapper):
+    """
+    Includes previous on frame.
+    input should be [H, W, C] of dtype np.unit8
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        return self._process_obs(obs, -1)
+
+    def _process_obs(self, obs, action: int):
+        assert obs.dtype == np.uint8
+        H, W, C = obs.shape
+
+        BLOCK_SIZE = 4
+
+        if action > 0:
+            x = action * BLOCK_SIZE
+            y = 0
+            obs[x:x+BLOCK_SIZE, y:y+BLOCK_SIZE, :] = 255
+        return obs
+
+    def step(self, action):
+        assert type(action) in [int, np.int, np.int32, np.int16], f"Action aware requires discrete actions, but found action of type {type(action)}"
+        obs, reward, done, info = self.env.step(action)
+        return self._process_obs(obs, action), reward, done, info
+
+
+
 class TimeAwareWrapper(gym.Wrapper):
     """
     Includes time on frame of last channel of observation (which is last state if using stacking)
@@ -247,6 +280,7 @@ class FrameSkipWrapper(gym.Wrapper):
         self._min_skip = min_skip
         self._max_skip = max_skip
         self._reduce_op = reduce_op
+        self._t = 0
 
     def step(self, action):
         """Repeat action, sum reward, and max over last two observations."""
@@ -274,10 +308,28 @@ class FrameSkipWrapper(gym.Wrapper):
         # doesn't matter
         reduce_frame = self._reduce_op(self._obs_buffer, axis=0)
 
+        # fix up the time step
+        # normally time refers to the steps in the environment, however it's convenient to instead use number
+        # of interactions with the environment. Therefore we remap the 'time' statistic to the number of interactions
+        # and store the origional time as time_raw.
+        if 'time' in info:
+            info['time_raw'] = info['time']
+        info['time'] = self._t
+
+        self._t += 1
+
         return reduce_frame, total_reward, done, info
 
+    def save_state(self, buffer):
+        buffer["t"] = self._t
+
+    def restore_state(self, buffer):
+        self._t = buffer["t"]
+
     def reset(self, **kwargs):
+        self._t = 0
         return self.env.reset(**kwargs)
+
 
 
 class ClipRewardWrapper(gym.Wrapper):
@@ -467,9 +519,10 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         if self.clip is not None:
             rewards_copy = scaled_rewards.copy()
             scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
-            if not (rewards_copy == scaled_rewards).all():
+            clips = np.sum(rewards_copy != scaled_rewards)
+            if clips > 0:
                 # log if clipping occurred.
-                infos[0]["reward_clip"] = True
+                infos[0]["reward_clips"] = clips
 
         scaled_rewards *= self.scale
 
@@ -609,6 +662,7 @@ class TimeLimitWrapper(gym.Wrapper):
         # episode, so time_frac should be 0. Remember time_frac is the time of the state we *land in* not
         # of the state we started from.
         info['time_frac'] = (self._elapsed_steps / self._max_episode_steps) if not done else 0
+        info['time'] = self._elapsed_steps if not done else 0
         return observation, reward, done, info
 
     def reset(self, **kwargs):
@@ -702,21 +756,21 @@ class NullActionWrapper(gym.Wrapper):
     def __init__(self, env):
         gym.Wrapper.__init__(self, env)
         self._prev_obs = None
-        self._prev_time_frac = 0.0
+        self._prev_info = {}
 
     def step(self, action:int):
         if action < 0:
-            return self._prev_obs, 0, False, {'time_frac': self._prev_time_frac}
+            return self._prev_obs, 0, False, self._prev_info
         else:
             obs, reward, done, info = self.env.step(action)
             self._prev_obs = obs
-            if "time_frac" in info:
-                self._prev_time_frac = info["time_frac"]
+            self._prev_info = info
             return obs, reward, done, info
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
         self._prev_obs = obs
+        self._prev_info = {}
         return obs
 
 
