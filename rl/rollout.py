@@ -1095,7 +1095,7 @@ class Runner:
 
         # the idea here is to progressively update a running total of the n-step rewards, then apply bootsrapping
         # quickly in a vectorized way. Unlike the previous algorithm, this is O(n) rather then O(n^2) where n is n_steps
-        # I also take advantage of the fact that nstep(n`,h) = nstep(n,h) for all n`>=n. This allows me to illiminate
+        # I also take advantage of the fact that nstep(n`,h) = nstep(n,h) for all n`>=n. This allows me to eliminate
         # many of the horizon updates once we get into the high n_steps.
 
         # optimizations
@@ -1139,9 +1139,9 @@ class Runner:
                     n_step_copy.pop()
                     weight -= 1
                 weights.append(weight)
-            weights = np.asarray(weights)[:, None, None]
+            weights = np.asarray(weights, dtype=np.float32)[:, None, None]
         else:
-            weights = np.asarray([total_weight for _ in range(N)])[:, None, None]
+            weights = np.asarray([total_weight for _ in range(N)], dtype=np.float32)[:, None, None]
 
         current_n_step = 0
 
@@ -3238,6 +3238,8 @@ class Runner:
 
         for k, v in batch_data.items():
             assert len(v) == batch_size, f"Batch input must all match in entry count. Expecting {batch_size} but found {len(v)} on {k}"
+            assert type(v) is np.ndarray, f"Batch input must be numpy array but {k} was {type(v)}"
+            assert v.dtype in [np.uint8, np.int64, np.float32], f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
 
         mini_batches = batch_size // mini_batch_size
         micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)

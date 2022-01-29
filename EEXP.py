@@ -1116,6 +1116,16 @@ def rc():
                 epochs=20,
                 default_params=RC4,
             )
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} tvf_exp_gamma=1.1",
+            use_compression=True,
+            n_steps=1024,
+            agents=32,
+            tvf_exp_gamma=1.1,
+            epochs=20,
+            default_params=RC4,
+        )
 
 
 
