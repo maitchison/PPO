@@ -1,10 +1,8 @@
-import logging
 import os
 
 import numpy as np
 import gym
 import scipy.stats
-from collections import Counter
 
 import torch
 import torch.nn as nn
@@ -18,11 +16,11 @@ import pickle
 import gzip
 from collections import defaultdict
 from typing import Union, Optional
-import bisect
 import math
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
+from .returns import get_return_estimate
 from .config import args
 from .mutex import Mutex
 from .replay import ExperienceReplayBuffer
@@ -384,35 +382,6 @@ def calculate_tvf_td(
             estimate = reward_sum + bootstrap_estimate
             returns[t, :, h] = estimate
     return returns
-
-
-def _interpolate(horizons, values, target_horizon: int):
-    """
-    Returns linearly interpolated value from source_values
-
-    horizons: sorted ndarray of shape[K] of horizons, must be in *strictly* ascending order
-    values: ndarray of shape [*shape, K] where values[...,h] corresponds to horizon horizons[h]
-    target_horizon: the horizon we would like to know the interpolated value of
-
-    """
-
-    if target_horizon <= 0:
-        # by definition value of a 0 horizon is 0.
-        return values[..., 0] * 0
-
-    index = bisect.bisect_left(horizons, target_horizon)
-    if index == 0:
-        return values[..., 0]
-    if index == len(horizons):
-        return values[..., -1]
-    value_pre = values[..., index - 1]
-    value_post = values[..., index]
-    dx = (horizons[index] - horizons[index - 1])
-    if dx == 0:
-        # this happens if there are repeated values, in this case just take leftmost result
-        return value_pre
-    factor = (target_horizon - horizons[index - 1]) / dx
-    return value_pre * (1 - factor) + value_post * factor
 
 
 class SimulatedAnnealing:
@@ -913,337 +882,6 @@ class Runner:
                 obs = np.asarray([obs[i].decompress() for i in range(len(obs))])
             return self.model.forward(obs, aux_features=aux_features, **kwargs)
 
-    def _calculate_n_step_sampled_returns(
-            self,
-            n_step:int,
-            gamma:float,
-            rewards: np.ndarray,
-            dones: np.ndarray,
-            required_horizons: np.ndarray,
-            value_sample_horizons: np.ndarray,
-            value_samples: np.ndarray,
-        ):
-        """
-        This is a fancy n-step sampled returns calculation
-
-        n_step: n-step to use in calculation
-        gamma: discount to use
-        reward: nd array of dims [N, A]
-        dones: nd array of dims [N, A]
-        required_horizons: nd array of dims [K]
-        value_samples: nd array of dims [N, A, K], where value_samples[n,a,k] is the value of the nth timestep ath agent
-            for horizon required_horizons[k]
-
-        If n_step td_lambda is negative it is taken as
-        """
-
-        assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == self.current_horizon, "First and value horizon are required."
-
-        N, A = rewards.shape
-        H = self.current_horizon
-        K = len(required_horizons)
-
-        # this allows us to map to our 'sparse' returns table
-        h_lookup = {}
-        for index, h in enumerate(required_horizons):
-            if h not in h_lookup:
-                h_lookup[h] = [index]
-            else:
-                h_lookup[h].append(index)
-
-        returns = np.zeros([N, A, K], dtype=np.float32) + ValueTransform.H(0)
-
-        # generate return estimates using n-step returns
-        for t in range(N):
-
-            # first collect the rewards
-            discount = np.ones([A], dtype=np.float32)
-            reward_sum = np.zeros([A], dtype=np.float32)
-            steps_made = 0
-
-            for n in range(1, n_step + 1):
-                if (t + n - 1) >= N:
-                    break
-                # n_step is longer than horizon required
-                if n >= H:
-                    break
-                this_reward = rewards[t + n - 1, :]
-                reward_sum += discount * this_reward
-                discount *= gamma * (1 - dones[t + n - 1, :])
-                steps_made += 1
-
-                # the first n_step returns are just the discounted rewards, no bootstrap estimates...
-                if n in h_lookup:
-                    returns[t, :, h_lookup[n]] = ValueTransform.H(reward_sum)
-
-            for h_index, h in enumerate(required_horizons):
-                if h-steps_made <= 0:
-                    # these are just the accumulated sums and don't need horizon bootstrapping
-                    continue
-                interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made, :], h - steps_made)
-                returns[t, :, h_index] = ValueTransform.H(reward_sum + ValueTransform.H_inv(interpolated_value) * discount)
-
-        return returns
-
-    def _calculate_lambda_sampled_returns(
-            self,
-            dims:tuple,
-            td_lambda: float,
-            n_step_func: callable,
-            required_horizons,
-    ):
-        """
-        Calculate td_lambda returns using sampling
-        """
-
-        N, A, K = dims
-
-        if td_lambda == 0:
-            return n_step_func(1, required_horizons)
-
-        if td_lambda == 1:
-            return n_step_func(N, required_horizons)
-
-        # first calculate the weight for each return
-        current_weight = (1-td_lambda)
-        weights = np.zeros([N], dtype=np.float32)
-        for n in range(N):
-            weights[n] = current_weight
-            current_weight *= td_lambda
-        # use last n-step for remaining weight
-        weights[-1] = 1.0 - np.sum(weights[:-1])
-
-        returns = np.zeros([N, A, K], dtype=np.float32)
-        if args.tvf_lambda_samples == -1:
-            # if we have disabled sampling just generate them all and weight them accordingly
-            for n, weight in zip(range(N), weights):
-                returns += weight * n_step_func(n+1, required_horizons)
-            return returns
-        else:
-            # otherwise sample randomly from n_steps with replacement
-            for _ in range(args.tvf_lambda_samples):
-                sampled_n_step = np.random.choice(range(N), p=weights) + 1
-                returns += n_step_func(sampled_n_step, required_horizons) / args.tvf_lambda_samples
-            return returns
-
-
-    def _calculate_exp_sampled_returns(
-            self,
-            dims:tuple,
-            n_step_func: callable,
-            required_horizons,
-    ):
-        """
-        Calculate returns using n_steps at powers of two.
-        This allows information to transform more quickly from short horizons to long
-        But does not require many calculations, and should work fine for large n_steps
-        """
-
-        # note: this averages over the transformed values, which is just fine as it means that we will be more
-        # robust to outliers. (assuming the transform compresses the value function)
-
-        n_steps = self.get_exponential_n_steps()
-
-        if args.tvf_exp_mode == "masked":
-            # this is the masked version, not sure if it's right...
-            # the advantage of this method is that it puts less weight on the highest n-step.
-            # i.e. for h=5 the n-step values would be [1, 2, 4, 5, 5, 5, 5, 5, 5, 5]
-            # which means we don't get (much) bootstrapping...
-            returns = n_step_func(n_steps[0], required_horizons)
-            count = np.ones_like(required_horizons)
-            for n in n_steps[1:]:
-                # mask out returns that have nsteps > horizon
-                mask = n <= required_horizons
-                count += mask
-                returns += n_step_func(n, required_horizons) * mask
-            returns *= 1/count
-        elif args.tvf_exp_mode == "default":
-            returns = n_step_func(n_steps[0], required_horizons)
-            for n in n_steps[1:]:
-                returns += n_step_func(n, required_horizons)
-            returns *= 1/(len(n_steps))
-        elif args.tvf_exp_mode == "transformed":
-            returns = ValueTransform.H_inv(n_step_func(n_steps[0], required_horizons))
-            for n in n_steps[1:]:
-                returns += ValueTransform.H_inv(n_step_func(n, required_horizons))
-            returns *= 1/(len(n_steps))
-            returns = ValueTransform.H(returns)
-        else:
-            raise ValueError(f"Invalid exp mode {args.tvf_exp_mode}")
-
-        return returns
-
-    def _calculate_exp_sampled_returns_fast(
-            self,
-            n_step_list: list,
-            gamma: float,
-            rewards: np.ndarray,
-            dones: np.ndarray,
-            required_horizons: np.ndarray,
-            value_sample_horizons: np.ndarray,
-            value_samples: np.ndarray,
-            ignore_oversteps=False,
-    ):
-        """
-        Calculate returns using n_steps at powers of two.
-        This allows information to transform more quickly from short horizons to long
-        But does not require many calculations, and should work fine for large n_steps
-
-        This is an optimized version, that should be much faster than the default
-
-        """
-
-        # the idea here is to progressively update a running total of the n-step rewards, then apply bootsrapping
-        # quickly in a vectorized way. Unlike the previous algorithm, this is O(n) rather then O(n^2) where n is n_steps
-        # I also take advantage of the fact that nstep(n`,h) = nstep(n,h) for all n`>=n. This allows me to eliminate
-        # many of the horizon updates once we get into the high n_steps.
-
-        # optimizations
-        # 1. We do not recalculate duplicate n_step values, instead we weight them
-        # 2. We use the fact that nstep(n`,h) = nstep(n,h) for all n`>=n to ignore some horizons
-        # 3. We generate the reward sums progressively, which is much quicker
-
-        # the disadvantage here is that we can not reuse the n_step algorithm
-        H = self.current_horizon
-        n_step_list = [n for n in n_step_list if n <= H]  # can not have n_step greater max_horizon
-        n_step_list.sort()
-        n_step_weights = Counter(n_step_list)
-
-        assert value_sample_horizons[0] == 0 and value_sample_horizons[
-            -1] == self.current_horizon, "First and value horizon are required."
-
-        N, A = rewards.shape
-        K = len(required_horizons)
-
-        total_weight = sum(n_step_weights.values())
-        remaining_weight = total_weight
-
-        # this allows us to map to our 'sparse' returns table
-        h_lookup = {}
-        for index, h in enumerate(required_horizons):
-            if h not in h_lookup:
-                h_lookup[h] = [index]
-            else:
-                h_lookup[h].append(index)
-
-        returns = np.zeros([N, A, K], dtype=np.float32) + ValueTransform.H(0)
-        cumulative_rewards = np.zeros_like(rewards)
-        discount = np.ones_like(rewards)
-
-        if ignore_oversteps:
-            weights = []
-            n_step_copy = n_step_list.copy()
-            weight = total_weight
-            for n in range(N):
-                while n_step_copy[-1]+n > N:
-                    n_step_copy.pop()
-                    weight -= 1
-                weights.append(weight)
-            weights = np.asarray(weights, dtype=np.float32)[:, None, None]
-        else:
-            weights = np.asarray([total_weight for _ in range(N)], dtype=np.float32)[:, None, None]
-
-        current_n_step = 0
-
-        for n_step, weight in n_step_weights.items():
-
-            # step 1, update our cumulative reward count
-            while current_n_step < n_step:
-                cumulative_rewards[:(N-current_n_step)] += rewards[current_n_step:] * discount[:(N-current_n_step)]
-                discount[:(N-current_n_step)] *= gamma
-                discount[:(N-current_n_step)] *= (1-dones[current_n_step:])
-
-                current_n_step += 1
-
-                # set short horizons as we go...
-                for h in h_lookup.keys():
-                    # this is a bit dumb, but one horizon might be in the list twice, so we need to update
-                    # both indexes to it. This could happen with random sampling I guess?
-                    for i in h_lookup[h]:
-                        if current_n_step < h and current_n_step == n_step:
-                            returns[:, :, i] += cumulative_rewards * weight
-                        elif current_n_step == h:
-                            # this is the final one, give it all the remaining weight...
-                            if ignore_oversteps:
-                                weight_so_far = total_weight - remaining_weight
-                                weight_to_go = np.clip(weights[:, :, 0] - weight_so_far, 0, float('inf'))
-                                returns[:, :, i] += cumulative_rewards * weight_to_go
-                            else:
-                                returns[:, :, i] += cumulative_rewards * remaining_weight
-
-            # we can do most of this with one big update, however near the end of the rollout we need to account
-            # for the fact that we are actually using a shorter n-step
-            steps_made = current_n_step
-            block_size = 1 + N - current_n_step
-            for h_index, h in enumerate(required_horizons):
-                if h - steps_made <= 0:
-                    continue
-                interpolated_value = _interpolate(
-                    value_sample_horizons,
-                    value_samples[steps_made:block_size + steps_made],
-                    h - steps_made
-                )
-                returns[:block_size, :, h_index] += interpolated_value * discount[:block_size] * weight
-
-            # next do the remaining few steps
-            # this is a bit slow for large n_step, but most of the estimates are low n_step anyway
-            # (this could be improved by simply ignoring these n-step estimates
-            # the problem with this is that it places *a lot* of emphasis on the final value estimate
-            if not ignore_oversteps:
-                for t in range(1 + N - current_n_step, N):
-                    steps_made = min(current_n_step, N - t)
-                    if t + steps_made > N:
-                        continue
-                    for h_index, h in enumerate(required_horizons):
-                        if h - steps_made > 0:
-                            interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
-                            returns[t, :, h_index] += interpolated_value * discount[t] * weight
-
-            remaining_weight -= weight
-
-        return returns / weights
-
-    def get_adaptive_n_step(self, h):
-        # the 0.5 makes adaptive tvf_n_step line up better with normal n_step returns
-        # i.e. the both like approximately 40 n_steps
-        return max(1, int(0.5 * args.tvf_n_step * h / self.current_horizon))
-
-    def get_exponential_n_steps(self):
-        """
-        Returns a list of horizons spaced out exponentially for given horizon.
-        In some cases horizons might be duplicated (in which case they should have extra weighting)
-        """
-        results = []
-        current_h = 1
-        while True:
-            results.append(round(current_h))
-            current_h *= args.tvf_exp_gamma
-            if current_h > args.n_steps:
-                break
-        return results
-
-    def _calculate_adaptive_sampled_returns(
-            self,
-            n_step_func: callable,
-            required_horizons,
-    ):
-        """
-        Calculate returns where n_steps depends on horizon
-        """
-
-        required_n_steps = [self.get_adaptive_n_step(h) for h in required_horizons]
-        n_step_lookup = defaultdict(list)
-        for n, h in zip(required_n_steps, required_horizons):
-            n_step_lookup[n].append(h)
-
-        results = []
-        for n, hs in n_step_lookup.items():
-            results.append(n_step_func(n, hs))
-        returns = np.concatenate(results, axis=-1)
-
-        return returns
-
-
     def calculate_sampled_returns(
             self,
             value_sample_horizons: Union[list, np.ndarray],
@@ -1278,8 +916,8 @@ class Runner:
         time = time if time is not None else self.all_time
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
-        tvf_mode = tvf_mode or args.tvf_mode
-        tvf_n_step = tvf_n_step or args.tvf_n_step
+        tvf_mode = tvf_mode or args.tvf_return_mode
+        tvf_n_step = tvf_n_step or args.tvf_return_n_step
 
         N, A, *state_shape = obs[:-1].shape
 
@@ -1294,98 +932,31 @@ class Runner:
 
         value_samples = self.get_value_estimates(obs=obs, time=time, horizons=value_sample_horizons, return_transformed=True)
 
-        n_step_func = lambda x, y: self._calculate_n_step_sampled_returns(
-            n_step=x,
-            gamma=self.tvf_gamma,
+        # step 2: calculate the returns
+        start_time = clock.time()
+        returns = get_return_estimate(
+            mode=tvf_mode,
+            gamma=args.tvf_gamma,
             rewards=rewards,
             dones=dones,
-            required_horizons=y,
+            required_horizons=required_horizons,
             value_sample_horizons=value_sample_horizons,
             value_samples=value_samples,
+            c=args.tvf_return_c,
+            n_step=tvf_n_step,
+            lamb=args.tvf_return_lambda,
+            max_samples=args.tvf_return_samples,
+            rho=args.tvf_return_rho,
+            adaptive=args.tvf_return_adaptive,
+            masked=args.tvf_return_masked,
         )
-
-        if tvf_mode == "exponential_experimental":
-            start_time = clock.time()
-            returns1 = self._calculate_exp_sampled_returns(
-                dims=(N, A, len(required_horizons)),
-                n_step_func=n_step_func,
-                required_horizons=required_horizons,
-            )
-            slow_time = clock.time() - start_time
-
-            start_time = clock.time()
-            returns2 = self._calculate_exp_sampled_returns_fast(
-                n_step_list=self.get_exponential_n_steps(),
-                gamma=self.tvf_gamma,
-                rewards=rewards,
-                dones=dones,
-                required_horizons=required_horizons,
-                value_sample_horizons=value_sample_horizons,
-                value_samples=value_samples,
-                ignore_oversteps=False,
-            )
-            fast_time = clock.time() - start_time
-            returns = returns1
-            error = np.sum(np.abs(returns1-returns2))
-            error_max = np.max(np.abs(returns1 - returns2))
-            terms = np.sum(dones)
-            print(f"Fast: {fast_time:.4f} Slow: {slow_time:.4f} {error:.4f}/{error_max:.4f} {terms}")
-        elif tvf_mode == "exponential_old":
-            # this is the old version, it's very similar to exponential_full (off by around 1e-8)
-            returns = self._calculate_exp_sampled_returns(
-                dims=(N, A, len(required_horizons)),
-                n_step_func=n_step_func,
-                required_horizons=required_horizons,
-            )
-        elif tvf_mode == "exponential":
-            # for 32x1024 old method took 16 seconds, this one takes 0.6 seconds. (with exp_gamma=1.4)
-            returns = self._calculate_exp_sampled_returns_fast(
-                n_step_list=self.get_exponential_n_steps(),
-                gamma=self.tvf_gamma,
-                rewards=rewards,
-                dones=dones,
-                required_horizons=required_horizons,
-                value_sample_horizons=value_sample_horizons,
-                value_samples=value_samples,
-                ignore_oversteps=True,
-            )
-        elif tvf_mode == "exponential_full":
-            # this is a bit slower for larger n_steps, and tends to overuse the final value estimate.
-            returns = self._calculate_exp_sampled_returns_fast(
-                n_step_list=self.get_exponential_n_steps(),
-                gamma=self.tvf_gamma,
-                rewards=rewards,
-                dones=dones,
-                required_horizons=required_horizons,
-                value_sample_horizons=value_sample_horizons,
-                value_samples=value_samples,
-                ignore_oversteps=False,
-            )
-        elif tvf_mode == "adaptive":
-            returns = self._calculate_adaptive_sampled_returns(
-                n_step_func=n_step_func,
-                required_horizons=required_horizons,
-            )
-        elif tvf_mode == "lambda":
-            returns = self._calculate_lambda_sampled_returns(
-                dims=(N, A, len(required_horizons)),
-                td_lambda=args.tvf_lambda,
-                n_step_func=n_step_func,
-                required_horizons=required_horizons,
-            )
-        elif tvf_mode == "nstep":
-            returns = self._calculate_n_step_sampled_returns(
-                n_step=tvf_n_step,
-                gamma=self.tvf_gamma,
-                rewards=rewards,
-                dones=dones,
-                required_horizons=required_horizons,
-                value_sample_horizons=value_sample_horizons,
-                value_samples=value_samples,
-            )
-        else:
-            raise ValueError("Invalid tvf_mode")
-
+        return_estimate_time = clock.time() - start_time
+        self.log.watch_mean(
+            "time_return_estimate",
+            return_estimate_time,
+            display_precision=2,
+            display_name="t_re",
+        )
         return returns
 
     @torch.no_grad()
@@ -1879,7 +1450,7 @@ class Runner:
                 time=self.all_time,
                 rewards=self.ext_rewards,
                 dones=self.terminals,
-                tvf_mode="nstep", # <-- MC is the least bias method we can do...
+                tvf_mode="fixed",  # <-- MC is the least bias method we can do...
                 tvf_n_step=self.current_horizon,
             ))
 
@@ -2538,7 +2109,7 @@ class Runner:
         This is the old algorithm with no sampling, and locked to nstep returns.
         """
 
-        assert args.tvf_mode == "nstep", "Only nstep returns supported with tvf_value_samples=-1 at the moment."
+        assert args.tvf_return_mode == "nstep", "Only nstep returns supported with tvf_value_samples=-1 at the moment."
 
         value_estimates = self.get_value_estimates(
             obs=self.all_obs,
@@ -2553,7 +2124,7 @@ class Runner:
                 values=value_estimates[:-1],
                 final_value_estimates=value_estimates[-1],
                 gamma=self.tvf_gamma,
-                n_step=args.tvf_n_step,
+                n_step=args.tvf_return_n_step,
         )
 
         horizons = np.arange(0, self.current_horizon+1)[None, None, :]
@@ -2932,8 +2503,14 @@ class Runner:
 
         # replay constraint
         if args.policy_replay_constraint != 0:
+
             assert args.replay_size > 0, "replay_constraint requires replay"
-            replay_states = self.replay_buffer.data
+
+            samples = np.arange(self.replay_buffer.current_size)
+            if len(samples) != B:
+                samples = np.random.choice(samples, B, replace=len(samples) < B)
+
+            replay_states = self.replay_buffer.data[samples]
             batch_data["replay_prev_state"] = replay_states
             batch_data["replay_log_policy"] = self.detached_batch_forward(replay_states, output="policy")["log_policy"].cpu().numpy()
 
@@ -3016,8 +2593,14 @@ class Runner:
         old_rollout_values = None
 
         if args.value_replay_constraint != 0 or args.log_delta_v:
-            prev_states = self.replay_buffer.data
-            times = self.replay_buffer.time
+
+            # we need the replay sample to be the same size as the rollout
+            samples = np.arange(self.replay_buffer.current_size)
+            if len(samples) != B:
+                samples = np.random.choice(samples, B, replace=len(samples) < B)
+
+            prev_states = self.replay_buffer.data[samples]
+            times = self.replay_buffer.time[samples]
             batch_data["replay_prev_state"] = prev_states
             batch_data["replay_time"] = times
             old_replay_values = get_value_estimate(prev_states, times)
@@ -3239,7 +2822,8 @@ class Runner:
         for k, v in batch_data.items():
             assert len(v) == batch_size, f"Batch input must all match in entry count. Expecting {batch_size} but found {len(v)} on {k}"
             assert type(v) is np.ndarray, f"Batch input must be numpy array but {k} was {type(v)}"
-            assert v.dtype in [np.uint8, np.int64, np.float32], f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
+            assert v.dtype in [np.uint8, np.int64, np.float32, np.object], \
+                f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
 
         mini_batches = batch_size // mini_batch_size
         micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)

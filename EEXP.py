@@ -897,34 +897,37 @@ def rc():
             default_params=RC4,
         )
 
-        add_job(
-            experiment_name="RC5",
-            run_name=f"env={env} agents=32 n_steps=1024 adv",
-            log_delta_v=True,
-            use_compression=True,
-            epochs=30,
-            agents=32,
-            n_steps=1024,
-            replay_size=64*512,
-            distil_batch_size=64*512,
-            policy_mini_batch_size=2048,
-            default_params=RC4,
-        )
-        add_job(
-            experiment_name="RC5",
-            run_name=f"env={env} agents=64 n_steps=512 adv",
-            log_delta_v=True,
-            use_compression=True,
-            epochs=30,
-            agents=32,
-            n_steps=1024,
-            replay_size=64 * 512,
-            distil_batch_size=64 * 512,
-            policy_mini_batch_size=2048,
-            policy_replay_constraint=1.0,  # this is just so we don't do too much damage with those bad updates...
-            entropy_bonus=0.0003,  # prc helps like an entropy bonus
-            default_params=RC4,
-        )
+        # add_job(
+        #     experiment_name="RC5",
+        #     run_name=f"env={env} agents=32 n_steps=512 adv (2x)",
+        #     log_delta_v=True,
+        #     use_compression=True,
+        #     epochs=30,
+        #     agents=32,
+        #     n_steps=1024,
+        #     replay_size=64 * 512,
+        #     distil_batch_size=64 * 512,
+        #     policy_mini_batch_size=2048,
+        #     policy_replay_constraint=1.0,  # this is just so we don't do too much damage with those bad updates...
+        #     entropy_bonus=0.0003,  # prc helps like an entropy bonus
+        #     default_params=RC4,
+        # )
+
+        # add_job(
+        #     experiment_name="RC5",
+        #     run_name=f"env={env} agents=32 n_steps=512 adv (1x)",
+        #     log_delta_v=True,
+        #     use_compression=True,
+        #     epochs=30,
+        #     agents=32,
+        #     n_steps=1024,
+        #     replay_size=32*512,
+        #     distil_batch_size=32*512,
+        #     policy_mini_batch_size=2048,
+        #     policy_replay_constraint=1.0,  # this is just so we don't do too much damage with those bad updates...
+        #     entropy_bonus=0.0003,  # prc helps like an entropy bonus
+        #     default_params=RC4,
+        # )
         add_job(
             experiment_name="RC5",
             run_name=f"env={env} n_steps=256",
@@ -1075,7 +1078,7 @@ def rc():
 
         for agents in [32, 64]:
             for n_steps in [256, 512, 1024]:
-                for adv in [True,False]:
+                for adv in [True, False]:
                     adv_options = {
                         'policy_replay_constraint': 1.0,  # this is just so we don't do too much damage with those bad updates...
                         'entropy_bonus': 0.0003,  # prc helps like an entropy bonus
@@ -1084,7 +1087,7 @@ def rc():
                         experiment_name="RC8",
                         run_name=f"env={env} agents={agents} n_steps={n_steps} {'adv' if adv else ''}",
                         use_compression=True,
-                        epochs=30,
+                        epochs=50 if n_steps==1024 else 30,
                         agents=agents,
                         n_steps=n_steps,
                         replay_size=agents*n_steps,
@@ -1104,29 +1107,153 @@ def rc():
             default_params=RC4,
         )
 
-        # RC9 just make sure new exp mode works
-        for tvf_mode in ["exponential", "exponential_old", "exponential_full"]:
+        RC9 = RC4.copy()
+        RC9.update({
+            'n_steps': 1024,
+            'agents': 32,
+            'replay_size': 2 * 32 * 1024,
+            'distil_batch_size': 2 * 32 * 1024,
+            'use_compression': True,
+            'epochs': 30,
+            'priority': 150,
+        })
+
+        # Make sure the new exp mode works, and compare against the old one...
+        for tvf_mode in ["exponential", "exponential_old", "exponential_masked"]:
             add_job(
                 experiment_name="RC9",
-                run_name=f"env={env} {tvf_mode}",
-                use_compression=True,
-                n_steps=1024,
-                agents=32,
+                run_name=f"env={env} {tvf_mode} 32x1024 2u",
                 tvf_mode=tvf_mode,
-                epochs=20,
-                default_params=RC4,
+                default_params=RC9,
             )
+        # see if DNA is stable as well
         add_job(
             experiment_name="RC9",
-            run_name=f"env={env} tvf_exp_gamma=1.1",
-            use_compression=True,
+            run_name=f"env={env} 32x1024 2u (dna)",
+            use_tvf=False,
+            default_params=RC9,
+        )
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 (ppo)",
+            use_tvf=False,
+            architecture="single",
+            replay_size=0,
+            distil_epochs=0,
+            default_params=RC9,
+        )
+        # this is a bit of a guess for fast stable learning...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 16x1024 2u rc=1.0",
             n_steps=1024,
-            agents=32,
+            agents=16,
+            replay_size=2 * 16 * 1024,
+            distil_batch_size=2 * 16 * 1024,
+            policy_replay_constraint=1.0,
+            epochs=30,
+            default_params=RC9,
+        )
+        # see if low exp_gamma helps...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 2u tvf_exp_gamma=1.1",
             tvf_exp_gamma=1.1,
-            epochs=20,
-            default_params=RC4,
+            default_params=RC9,
+        )
+        # see if rc helps...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 2u rc=1.0",
+            policy_replay_constraint=1.0,
+            default_params=RC9,
+        )
+        # see if policy batch_size helps...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 2u p_mbs=2k",
+            policy_mini_batch_size=2048,
+            default_params=RC9,
+        )
+        # see if value batch_size helps...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 2u v_mbs=2k",
+            value_mini_batch_size=2048,
+            default_params=RC9,
+        )
+        # see if less distil helps...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 2u dbs=1x",
+            distil_batch_size=1 * 32 * 1024,
+            default_params=RC9,
+        )
+        # see if less replay is ok...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 1u",
+            replay_size=1 * 32 * 1024,
+            distil_batch_size=1 * 32 * 1024,
+            default_params=RC9,
+        )
+        # see if high exp_gamma helps...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 32x1024 2u tvf_exp_gamma=2.0",
+            tvf_exp_gamma=2.0,
+            default_params=RC9,
+        )
+        # see if very fat works...
+        add_job(
+            experiment_name="RC9",
+            run_name=f"env={env} 128x1024 1u ",
+            policy_replay_constraint=1.0,
+            ppo_epsilon=0.3,
+            replay_size=1 * 128 * 1024,
+            distil_batch_size=1 * 128 * 1024,
+            default_params=RC9,
         )
 
+def re1(priority=50):
+
+    # return estimation
+
+    for env in ["CrazyClimber", "Alien", "Breakout"]:
+
+        # this is designed to be fast (both in terms of learning speed, and computation)
+        RE1 = RP1U_reference_args.copy()
+        RE1.update({
+            'use_compression': False,
+            'epochs': 30,
+            'priority': 100 if env == "CrazyClimber" else 95,
+            'seed': 1,
+            'env_name': env,
+            'ppo_epsilon': 0.2,
+            'replay_size': 32 * 1024,
+            'distil_batch_size': 32 * 1024,
+            'policy_mini_batch_size': 2048,   # makes things more stable
+            'policy_replay_constraint': 1.0,  # also helps with stability
+            'agents': 16,
+            'n_steps': 1024,
+        })
+
+        # remove any obsolete args
+        del RE1["time_aware"]
+        del RE1["tvf_exp_gamma"]
+        del RE1["tvf_mode"]
+        del RE1["tvf_n_step"]
+
+        # first lets just get a quick feel for the return estimators with their default settings (plus adaptive)
+        for mode in ["fixed", "uniform", "linear", "exponential", "geometric"]:
+            for adaptive in [True, False]:
+                add_job(
+                    experiment_name="RE1",
+                    run_name=f"env={env} mode={mode} {'(adaptive)' if adaptive else ''}",
+                    tvf_return_mode=mode,
+                    tvf_return_adaptive=adaptive,
+                    default_params=RE1,
+                )
 
 
 def setup(priority_modifier=0):
@@ -1136,5 +1263,6 @@ def setup(priority_modifier=0):
     exp3(priority=50)
     exp4(priority=10, hostname="")
     rc()
+    re1(priority=50)
 
 

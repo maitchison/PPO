@@ -89,18 +89,23 @@ class Config:
         self.tvf_value_scale_fn = str()
         self.tvf_value_scale_norm = str()
         self.tvf_gamma          = float()
-        self.tvf_lambda         = float()
-        self.tvf_lambda_samples = int()
+
+        self.tvf_return_samples = int()
+        self.tvf_return_mode = str()
+        self.tvf_return_n_step = int()
+        self.tvf_return_lambda = float()
+        self.tvf_return_rho = float()
+        self.tvf_return_c = float()
+        self.tvf_return_adaptive = bool()
+        self.tvf_return_masked = bool()
+
         self.hidden_units   = int()
         self.tvf_activation     = str()
         self.tvf_soft_anchor    = float()
         self.tvf_horizon_scale  = str()
         self.tvf_time_scale = str()
-        self.tvf_n_step         = int()
-        self.tvf_mode           = str()
+
         self.tvf_n_dedicated_value_heads  = int()
-        self.tvf_exp_gamma      = float()
-        self.tvf_exp_mode       = str()
         self.tvf_force_ext_value_distil = bool()
         self.tvf_hidden_units = int()
         self.use_tvf = bool()
@@ -337,8 +342,17 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_force_ext_value_distil", type=str2bool, default=False)
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
-    parser.add_argument("--tvf_lambda", type=float, default=1.0, help="Lambda for TVF(\lambda)")
-    parser.add_argument("--tvf_lambda_samples", type=int, default=16, help="Number of n-step samples to use for tvf_lambda calculation")
+
+    parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
+    parser.add_argument("--tvf_return_samples", type=int, default=40, help="Number of n-step samples to use for tvf_lambda calculation")
+    parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
+    parser.add_argument("--tvf_return_lambda", type=float, default=0.95, help="Lambda for TVF(\lambda)")
+    parser.add_argument("--tvf_return_rho", type=float, default=1.5, help="Rho for geometric mode")
+    parser.add_argument("--tvf_return_c", type=float, default=6.0, help="Used for adaptive return estimation.")
+    parser.add_argument("--tvf_return_adaptive", type=str2bool, default=False, help="Enables adaptive horizon return estimation")
+    parser.add_argument("--tvf_return_masked", type=str2bool, default=False,
+                        help="Changes how n_step estimates are handled when there are not enough rewards (not working well).")
+
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
     parser.add_argument("--auto_horizon", type=str2bool, default=False, help="Automatically adjust max_horizon to clip(mean episode length + 3std, max(horizon samples, value samples), max_horizon)")
     parser.add_argument("--auto_gamma", type=str, default="off",
@@ -361,10 +375,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
     parser.add_argument("--tvf_hidden_units", type=int, default=512, help="units used for value prediction")
 
-    parser.add_argument("--tvf_n_step", type=int, default=16, help="n step to use")
-    parser.add_argument("--tvf_mode", type=str, default="nstep", help="[nstep|adaptive|exponential|lambda]")
-    parser.add_argument("--tvf_exp_gamma", type=float, default=2.0)
-    parser.add_argument("--tvf_exp_mode", type=str, default="default", help="[default|masked|transformed]")
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Enabled TVF mode.")
 
     # simulated annealing
@@ -565,6 +575,11 @@ def parse_args(no_env=False, args_override=None):
     # legacy
     parser.add_argument("--time_aware", type=str2bool, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--sticky_actions", type=str2bool, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--tvf_exp_gamma", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--tvf_mode", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--tvf_exp_mode", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--tvf_n_step", type=int, default=None, help=argparse.SUPPRESS)
+
 
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
@@ -588,14 +603,23 @@ def parse_args(no_env=False, args_override=None):
     if args.distil_batch_size is None or args.distil_batch_size < 0:
         args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
 
+    # legacy settings (for compatability)
     if args.sticky_actions is not None:
         if args.sticky_actions:
             args.repeat_action_probability = 0.25
         else:
             args.repeat_action_probability = 0.0
-
     if args.time_aware is not None:
         args.embed_time = args.time_aware
+    if args.tvf_exp_gamma is not None:
+        args.tvf_return_rho = args.tvf_exp_gamma
+    if args.tvf_mode is not None:
+        args.tvf_return_mode = args.tvf_mode
+    if args.tvf_n_step is not None:
+        args.tvf_return_n_step = args.tvf_n_step
+    if args.tvf_exp_mode is not None:
+        print("Warning, tvf_exp_mode has been removed, and is being ignored.")
+
 
     # legacy settings
     # if cmd_args.get("use_mutex", False):
@@ -622,11 +646,6 @@ def parse_args(no_env=False, args_override=None):
             args.distil_period *= 2
             args.distil_epochs *= 2
         args.distil_period = round(args.distil_period)
-
-    try:
-        args.tvf_lambda = float(args.tvf_lambda)
-    except:
-        pass
 
     assert args.tvf_value_samples <= args.tvf_max_horizon, "tvf_value_samples must be <= tvf_max_horizon."
     assert args.tvf_horizon_samples <= args.tvf_max_horizon, "tvf_horizon_samples must be <= tvf_max_horizon."

@@ -673,7 +673,7 @@ class TimeLimitWrapper(gym.Wrapper):
         buffer["_elapsed_steps"] = self._elapsed_steps
 
     def restore_state(self, buffer):
-        self._elapsed_steps= buffer["_elapsed_steps"]
+        self._elapsed_steps = buffer["_elapsed_steps"]
 
 
 class AtariWrapper(gym.Wrapper):
