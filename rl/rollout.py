@@ -891,7 +891,9 @@ class Runner:
             rewards=None,
             dones=None,
             tvf_mode=None,
-            tvf_n_step=None
+            tvf_n_step=None,
+            masked=None,
+            adaptive=None,
     ):
         """
         Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
@@ -918,6 +920,8 @@ class Runner:
         dones = dones if dones is not None else self.terminals
         tvf_mode = tvf_mode or args.tvf_return_mode
         tvf_n_step = tvf_n_step or args.tvf_return_n_step
+        masked = masked or args.tvf_return_masked
+        adaptive = adaptive or args.tvf_return_adaptive
 
         N, A, *state_shape = obs[:-1].shape
 
@@ -947,8 +951,8 @@ class Runner:
             lamb=args.tvf_return_lambda,
             max_samples=args.tvf_return_samples,
             rho=args.tvf_return_rho,
-            adaptive=args.tvf_return_adaptive,
-            masked=args.tvf_return_masked,
+            adaptive=adaptive,
+            masked=masked,
         )
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -1217,7 +1221,6 @@ class Runner:
         rollout_rvs = self.time / max(self.time)
         ks = scipy.stats.kstest(rvs=rollout_rvs, cdf=scipy.stats.uniform.cdf)
         self.log.watch("t_ks", ks.statistic, display_width=0)
-        self.log.watch("t_ksp", ks.pvalue, display_width=0)
 
         # calculate int_value for intrinsic motivation (RND does not need this as it was done during rollout)
         # note: RND generates int_value during rollout, however in dual mode these need to (and should) come
@@ -1320,15 +1323,18 @@ class Runner:
         self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
         # add data to replay buffer if needed
+        steps = (np.arange(args.n_steps * args.agents) + self.step)
         if self.replay_buffer is not None:
             self.replay_buffer.add_experience(
                 utils.merge_first_two_dims(self.prev_obs),
                 utils.merge_first_two_dims(self.prev_time),
+                steps,
             )
         for replay in self.debug_replay_buffers:
             replay.add_experience(
                 utils.merge_first_two_dims(self.prev_obs),
                 utils.merge_first_two_dims(self.prev_time),
+                steps,
             )
 
         if args.debug_terminal_logging:
@@ -1452,6 +1458,8 @@ class Runner:
                 dones=self.terminals,
                 tvf_mode="fixed",  # <-- MC is the least bias method we can do...
                 tvf_n_step=self.current_horizon,
+                masked=False,
+                adaptive=False,
             ))
 
             total_not_explained_var = 0
@@ -1798,13 +1806,13 @@ class Runner:
             # only about 3% slower with this on.
             self.log_value_quality()
 
+        self.log.watch_mean_std("adv_ext", self.ext_advantage, display_width=0)
+
         if args.use_intrinsic_rewards:
             self.log.watch_mean_std("reward_int", self.int_rewards, display_name="rew_int", display_width=0)
             self.log.watch_mean_std("return_int", self.int_returns, display_name="ret_int", display_width=0)
             self.log.watch_mean_std("value_int", self.int_value, display_name="est_v_int", display_width=0)
             self.log.watch_mean("ev_int", utils.explained_variance(self.int_value[:-1].ravel(), self.int_returns.ravel()))
-            self.log.watch_mean_std("adv", self.advantage, display_width=0)
-            self.log.watch_mean_std("adv_ext", self.ext_advantage, display_width=0)
             self.log.watch_mean_std("adv_int", self.int_advantage, display_width=0)
             self.log.watch_mean("ir_scale", self.intrinsic_reward_scale, display_width=0)
             self.log.watch_mean(
@@ -2774,9 +2782,7 @@ class Runner:
             #     print(f" -> {kl:<10.6f} {value:<10.6f} {targ:<10.6f} {pred:<10.6f}")
             # print()
 
-    def train(self, step):
-
-        self.step = step
+    def train(self):
 
         self.update_learning_rates()
 

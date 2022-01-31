@@ -166,6 +166,8 @@ def train(model: models.TVFModel, log: Logger):
 
     for _ in range(start_iteration, end_iteration):
 
+        runner.step = iteration*batch_size
+
         step_start_time = time.time()
 
         rollout_start_time = time.time()
@@ -178,7 +180,7 @@ def train(model: models.TVFModel, log: Logger):
         returns_time = (time.time() - returns_start_time) / batch_size
 
         train_start_time = time.time()
-        runner.train(iteration*batch_size)
+        runner.train()
         train_time = (time.time() - train_start_time) / batch_size
 
         step_time = (time.time() - step_start_time) / batch_size

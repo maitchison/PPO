@@ -1229,13 +1229,13 @@ def re1(priority=50):
             'priority': 100 if env == "CrazyClimber" else 95,
             'seed': 1,
             'env_name': env,
-            'ppo_epsilon': 0.2,
-            'replay_size': 32 * 1024,
-            'distil_batch_size': 32 * 1024,
+            'ppo_epsilon': 0.1,               # 0.2 was a bad idea... 0.15 is probably the best...
+            'replay_size': 16 * 1024,
+            'distil_batch_size': 16 * 1024,
             'policy_mini_batch_size': 2048,   # makes things more stable
-            'policy_replay_constraint': 1.0,  # also helps with stability
-            'agents': 16,
-            'n_steps': 1024,
+            # 'policy_replay_constraint': 1.0,  # also helps with stability
+            'agents': 32,                     # 32 agents is mostly for performance reasons
+            'n_steps': 512,                   # 1024, works better but 512 is better on memory, and 30-seconds seems right.
         })
 
         # remove any obsolete args
@@ -1247,9 +1247,12 @@ def re1(priority=50):
         # first lets just get a quick feel for the return estimators with their default settings (plus adaptive)
         for mode in ["fixed", "uniform", "linear", "exponential", "geometric"]:
             for adaptive in [True, False]:
+                if mode == "geometric" and adaptive:
+                    # this mode does not exist
+                    continue
                 add_job(
                     experiment_name="RE1",
-                    run_name=f"env={env} mode={mode} {'(adaptive)' if adaptive else ''}",
+                    run_name=f"env={env} mode={mode}{' (adaptive)' if adaptive else ''}",
                     tvf_return_mode=mode,
                     tvf_return_adaptive=adaptive,
                     default_params=RE1,

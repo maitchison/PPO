@@ -7,6 +7,7 @@ import math
 import time
 import hashlib
 import typing
+import scipy.stats
 
 import torch
 
@@ -28,7 +29,6 @@ class ExperienceReplayBuffer:
             model.train(rollout)
             buffer.add_experience(rollout.obs)
             process_replay_experience(buffer.data)
-
     """
 
     def __init__(self,
@@ -49,6 +49,7 @@ class ExperienceReplayBuffer:
         self.ring_buffer_location = 0
         self.data = np.zeros([0, *obs_shape], dtype=obs_dtype)
         self.time = np.zeros([0], dtype=np.float32) # this is annoying, maybe there's a better way?
+        self.step = np.zeros([0], dtype=np.uint64)
         self.hashes = np.zeros([0], dtype=np.uint64)
         self.filter_duplicates = filter_duplicates
         self.mode = mode
@@ -67,6 +68,7 @@ class ExperienceReplayBuffer:
             'ring_buffer_location': self.ring_buffer_location,
             'data': self.data.copy() if force_copy else self.data,
             'time': self.time.copy() if force_copy else self.time,
+            'step': self.step.copy() if force_copy else self.step,
             'hashes': self.hashes.copy() if force_copy else self.hashes,
             'stats_total_duplicates_removed': self.stats_total_duplicates_removed,
             'name': self.name,
@@ -78,6 +80,7 @@ class ExperienceReplayBuffer:
         self.ring_buffer_location = state_dict['ring_buffer_location']
         self.data = state_dict["data"].copy()
         self.time = state_dict["time"].copy()
+        self.step = state_dict["step"].copy()
         self.hashes = state_dict["hashes"].copy()
         self.stats_total_duplicates_removed = self.stats_total_duplicates_removed
 
@@ -141,6 +144,12 @@ class ExperienceReplayBuffer:
         log.watch_mean(f"{self.name}_last_entries_added", self.stats_last_entries_added, display_width=0)
         log.watch_mean(f"{self.name}_last_duplicates_removed_frac", self.stats_last_duplicate_frac, display_width=0)
         log.watch_mean(f"{self.name}_size", len(self.data), display_width=0)
+
+        # measure how uniform replay is
+        ks = scipy.stats.kstest(rvs=self.step / max(self.step), cdf=scipy.stats.uniform.cdf)
+        log.watch("rp_ks", ks.statistic, display_width=0)
+        log.watch_stats("rp_stats", self.step, display_width=0, history_length=1)
+
         replay_log_time = time.time() - start_time
         log.watch_mean(f"{self.name}_log_time", replay_log_time, display_width=0)
 
@@ -179,7 +188,7 @@ class ExperienceReplayBuffer:
         else:
             raise ValueError("Invalid type for hashing {type(x)}")
 
-    def _remove_duplicates(self, data, time, hashes):
+    def _remove_duplicates(self, data, time, step, hashes):
         """
         Returns a new data, time with duplicates removed.
         Duplicates are either duplicates within the data or duplicates that are already in the replay
@@ -199,16 +208,17 @@ class ExperienceReplayBuffer:
 
         data = data[mask]
         time = time[mask]
+        step = step[mask]
         hashes = hashes[mask]
 
         self.stats_last_duplicates_removed = len(mask) - sum(mask)
         self.stats_total_duplicates_removed += self.stats_last_duplicates_removed
         self.stats_last_entries_added = sum(mask)
 
-        return data, time, hashes
+        return data, time, step, hashes
 
 
-    def add_experience(self, new_experience: np.ndarray, new_time: np.ndarray = None):
+    def add_experience(self, new_experience: np.ndarray, new_time: np.ndarray, new_step: np.ndarray):
         """
         Adds new experience to the experience replay
 
@@ -223,12 +233,14 @@ class ExperienceReplayBuffer:
 
         self.stats_last_entries_submitted = len(new_experience)
 
-        new_hashes = np.asarray(
-            [ExperienceReplayBuffer.get_observation_hash(x) for x in new_experience],
-            dtype=np.uint64
-        )
         if self.filter_duplicates:
-            new_experience, new_time, new_hashes = self._remove_duplicates(new_experience, new_time, new_hashes)
+            new_hashes = np.asarray(
+                [ExperienceReplayBuffer.get_observation_hash(x) for x in new_experience],
+                dtype=np.uint64
+            )
+            new_experience, new_time, new_step, new_hashes = self._remove_duplicates(new_experience, new_time, new_step, new_hashes)
+        else:
+            new_hashes = None
 
         # 2. work out how many new entries we want to use, and resample them
         new_entry_count = len(new_experience)
@@ -260,10 +272,12 @@ class ExperienceReplayBuffer:
             old_n, *obs_shape = self.data.shape
             self.data.resize([new_buffer_size, *obs_shape], refcheck=False)
             self.time.resize([new_buffer_size], refcheck=False)
+            self.step.resize([new_buffer_size], refcheck=False)
             self.hashes.resize([new_buffer_size], refcheck=False)
             new_slots = new_buffer_size - old_n
             self.data[old_n:] = new_experience[ids[:new_slots]]
             self.time[old_n:] = new_time[ids[:new_slots]]
+            self.step[old_n:] = new_step[ids[:new_slots]]
             if new_hashes is not None:
                 self.hashes[old_n:] = new_hashes[ids[:new_slots]]
             ids = ids[new_slots:]
@@ -283,8 +297,8 @@ class ExperienceReplayBuffer:
                 self.data[destination] = new_experience[source]
                 if new_hashes is not None:
                     self.hashes[destination] = new_hashes[source]
-                if new_time is not None:
-                    self.time[destination] = new_time[source]
+                self.time[destination] = new_time[source]
+                self.step[destination] = new_step[source]
 
             self.ring_buffer_location += len(ids)
             self.stats_last_entries_added += len(ids)

@@ -18,7 +18,7 @@ def get_return_estimate(
     max_samples:int = 40,
     rho: float = 1.5,
     adaptive: bool = False,
-    masked: bool =False
+    masked: bool = False
 ):
 
     args = {
@@ -53,7 +53,7 @@ def get_return_estimate(
             result = get_return_estimate(
                 mode=mode,
                 **args,
-                **_get_adaptive_args(h, c),
+                **_get_adaptive_args(mode, h, c),
                 adaptive=False
             )[:, :, 0]
             for i in indexes:
@@ -112,15 +112,18 @@ def get_weighted_sample_estimate(n_samples:int, weighting: np.ndarray, **kwargs)
     return _calculate_sampled_return_multi(n_step_list=samples, **kwargs)
 
 
-def _get_adaptive_args(h:int, c:float):
+def _get_adaptive_args(mode: str, h:int, c:float):
     """
     Returns the adaptive settings for horizon of length h, and parameter c
     """
-    return {
-        'n_step': math.ceil(h / c),
-        'lamb': 1-(1/math.ceil(h / c)),
-        }
-
+    if mode == "fixed":
+        return {'n_step': math.ceil(h / c)}
+    elif mode == "uniform":
+        return {'n_step': math.ceil(2 * h / c)}
+    elif mode == "linear":
+        return {'n_step': math.ceil(4 * h / c)}
+    elif mode == "exponential":
+        return {'lamb': 1-(1/math.ceil(h / c))}
 
 
 def _interpolate(horizons, values, target_horizon: int):
@@ -189,7 +192,9 @@ def _calculate_sampled_return_multi(
 
     # if we have n_step requests that exceed the longest horizon we can cap these to the longest horizon.
     max_h = max(required_horizons)
+    max_n = len(rewards)
     n_step_list = np.clip(n_step_list, 1, max_h)
+    n_step_list = np.clip(n_step_list, 1, max_n)
 
     # calculate the weight for each n_step
     if n_step_weights is None:

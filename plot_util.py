@@ -329,6 +329,7 @@ def compare_runs(
         color_filter=None,
         style_filter=None,
         group_filter=None,
+        zorder_filter=None,
         smooth_factor=None,
         reference_run=None,
         x_axis_name=None,
@@ -426,7 +427,7 @@ def compare_runs(
             color = auto_color
             ls = auto_style
             alpha = 1.0
-            zorder = None
+            zorder = None if zorder_filter is None else zorder_filter(run_name, run_params)
 
 
         if run_data is reference_run:

@@ -348,7 +348,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
     parser.add_argument("--tvf_return_lambda", type=float, default=0.95, help="Lambda for TVF(\lambda)")
     parser.add_argument("--tvf_return_rho", type=float, default=1.5, help="Rho for geometric mode")
-    parser.add_argument("--tvf_return_c", type=float, default=6.0, help="Used for adaptive return estimation.")
+    parser.add_argument("--tvf_return_c", type=float, default=25.0, help="Used for adaptive return estimation.")
     parser.add_argument("--tvf_return_adaptive", type=str2bool, default=False, help="Enables adaptive horizon return estimation")
     parser.add_argument("--tvf_return_masked", type=str2bool, default=False,
                         help="Changes how n_step estimates are handled when there are not enough rewards (not working well).")
