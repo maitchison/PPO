@@ -1233,6 +1233,7 @@ def re1(priority=50):
             'replay_size': 16 * 1024,
             'distil_batch_size': 16 * 1024,
             'policy_mini_batch_size': 2048,   # makes things more stable
+            'tvf_return_mode': "geometric",   # seems to work well as a default
             # 'policy_replay_constraint': 1.0,  # also helps with stability
             'agents': 32,                     # 32 agents is mostly for performance reasons
             'n_steps': 512,                   # 1024, works better but 512 is better on memory, and 30-seconds seems right.
@@ -1242,6 +1243,7 @@ def re1(priority=50):
         del RE1["time_aware"]
         del RE1["tvf_exp_gamma"]
         del RE1["tvf_mode"]
+        del RE1["tvf_exp_mode"]
         del RE1["tvf_n_step"]
 
         # first lets just get a quick feel for the return estimators with their default settings (plus adaptive)
@@ -1257,6 +1259,32 @@ def re1(priority=50):
                     tvf_return_adaptive=adaptive,
                     default_params=RE1,
                 )
+
+    for env in ["CrazyClimber"]:
+        # run next one on my machine... in fact, move them all to my machine...
+        AGENTS = 128
+        DVQ = RE1.copy()
+        DVQ.update({
+            'env_name': env,
+            'warmup_period': 10*1000,
+            'log_detailed_return_stats': True,
+            'ldrs_samples': 64,
+            'agents': AGENTS,
+            'n_steps': 512,
+            'replay_size': AGENTS * 512,
+            'distil_batch_size': AGENTS * 512,
+            'priority': 176,
+            'hostname': "desktop",
+            'workers': 16, # faster..
+        })
+
+        # run the initial return estimation evaluation script
+        # v2 has mask fixed, and I switched the order to NSAV (from SNAV)
+        add_job(
+            experiment_name="RE_DVQ2",
+            run_name=f"env={env}",
+            default_params=DVQ,
+        )
 
 
 def setup(priority_modifier=0):

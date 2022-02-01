@@ -770,7 +770,6 @@ class NullActionWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
         self._prev_obs = obs
-        self._prev_info = {}
         return obs
 
 
@@ -868,7 +867,7 @@ class FrameStack(gym.Wrapper):
         assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
-        c,h,w = env.observation_space.shape
+        c, h, w = env.observation_space.shape
 
         assert c in [1, 3], "Invalid shape {}".format(env.observation_space.shape)
 

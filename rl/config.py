@@ -38,6 +38,12 @@ class Config:
         self.replay_mixing      = bool()
         self.replay_duplicate_removal = bool()
 
+        # value logging
+        self.log_detailed_return_stats = bool()
+        self.ldrs_freq = int()
+        self.ldrs_samples = int()
+        self.ldrs_rollout_length = int()
+
         # replay constraint
         self.policy_replay_constraint = float()
         self.value_replay_constraint = float()
@@ -352,6 +358,12 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_adaptive", type=str2bool, default=False, help="Enables adaptive horizon return estimation")
     parser.add_argument("--tvf_return_masked", type=str2bool, default=False,
                         help="Changes how n_step estimates are handled when there are not enough rewards (not working well).")
+    parser.add_argument("--log_detailed_return_stats", type=str2bool, default=False,
+                        help="Enables recording of variance / bias for *all* return estimators durning training. (this is very slow!).")
+    parser.add_argument("--ldrs_samples", type=int, default=64)
+    parser.add_argument("--ldrs_freq", type=int, default=16)
+    parser.add_argument("--ldrs_rollout_length", type=int, default=2048)
+
 
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
     parser.add_argument("--auto_horizon", type=str2bool, default=False, help="Automatically adjust max_horizon to clip(mean episode length + 3std, max(horizon samples, value samples), max_horizon)")

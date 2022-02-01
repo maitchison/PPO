@@ -493,6 +493,7 @@ class Runner:
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
         self.time = np.zeros([A], dtype=np.float32)
+        self.done = np.zeros([A], dtype=np.bool)
 
         if args.mutex_key:
             log.info(f"Using mutex key <yellow>{args.get_mutex_key}<end>")
@@ -830,6 +831,7 @@ class Runner:
         # initialize agent
         self.obs = self.vec_env.reset()
         self.time *= 0
+        self.done = np.zeros_like(self.done)
         self.episode_score *= 0
         self.episode_len *= 0
         self.step = 0
@@ -1196,6 +1198,7 @@ class Runner:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
 
             self.all_obs[t] = prev_obs
+            self.done = dones
 
             self.all_time[t] = prev_time
             self.actions[t] = actions
@@ -1423,6 +1426,165 @@ class Runner:
         else:
             return result
 
+    @torch.no_grad()
+    def log_detailed_value_quality(self):
+        """
+
+        This function generates detailed logging information about quality of each of the return estimation methods.
+        It is *very* slow, and logs *a lot* of information but can give helpful insights into which estimation
+        methods work best when, and what hyperparameters they should use.
+
+        The function uses the actual return distribution for a each horizon < args.n_steps. This is achived by
+        generating the rollout multiple times using different seeds to get the actual return distribution for the
+        starting state for each of the horizons.
+
+        One disadvantage of this approach is that the value estimates used are taken from the agent used durning
+        training, and therefore if these estimates are poor (or biased) it might effect the other estimates.
+        For this reason it's normally best to set return estimation to fixed with tvf_return_n_step=tvf_n_step so
+        that the return estimates are unbiased. (not 100% sure about this actually... maybe just use exp, which seems
+        good enough.)
+
+        Suggestion is to run this with 128 agents and n_steps=512, with a 10k desync
+        """
+
+        # step 1: get ground truth by regenerating the rollout 100 times
+        root_env_state = utils.save_env_state(self.vec_env) # save current state of environments
+
+        # helpful variables for later
+
+        h = 1
+        HORIZONS = []
+        while h <= args.ldrs_rollout_length:
+            HORIZONS.append(h)
+            h *= 2
+        S = args.ldrs_samples    # number of samples (required number depends on env + agent stochasticity)
+        N = args.ldrs_rollout_length  # N here need not be n_steps
+        A = args.agents          # agents must be the same as the number of training agents
+        K = len(HORIZONS)
+
+        VALUE_SAMPLE_HORIZONS = self.generate_horizon_sample(
+            N, 128, distribution="fixed_geometric", force_first_and_last=True
+        )
+        VALUE_SAMPLE_HORIZONS = list(set(VALUE_SAMPLE_HORIZONS)) # remove any duplicates
+        VALUE_SAMPLE_HORIZONS.sort()
+        V = len(VALUE_SAMPLE_HORIZONS)
+
+        # rollout stuff
+        discount = np.ones([A], dtype=np.float32)
+
+        # need these for all samples
+        rewards = np.zeros([N, S, A], dtype=np.float32)
+        mask = np.zeros([N, S, A], dtype=np.bool)
+        dones = np.zeros([N, S, A], dtype=np.bool)
+        returns = np.zeros([S, A, K], dtype=np.float32)  # returns are for the initial state only
+
+        # value estimates are for each transition in rollout, store in float16 to save some space
+        # (otherwise his is 1.3G per save, even with compression)
+        value_estimates = np.zeros([N+1, S, A, V], dtype=np.float16)
+        all_times = np.zeros([N + 1, S, A], dtype=np.uint32)  # not needed, just for debugging
+
+        # this is required as otherwise when we call .step it will simply overwrite the old self.obs (which we need for later)
+        self.obs = self.obs.copy()
+
+        for seed in range(S):
+
+            seed_base = self.step + (seed * 191)
+
+            # set general seeds
+            torch.manual_seed(seed_base)
+            np.random.seed(seed_base)
+
+            # init rollout stuff
+            discount = np.ones_like(discount)
+            obs = self.obs  # [A, *state_shape]
+            infos = []
+
+            # reset and reseed environments
+            utils.restore_env_state(self.vec_env, root_env_state)
+            #self.vec_env.seed([seed_base + i * 7 for i in range(A)])
+            time = self.time
+
+            steps_completed = 0
+
+            still_running = np.ones([A], dtype=np.bool)
+
+            for t in range(N):
+                # forward observation through model
+                aux_features = package_aux_features(
+                    np.asarray(VALUE_SAMPLE_HORIZONS),
+                    time)
+                model_out = self.detached_batch_forward(obs, output='full', aux_features=aux_features)
+                log_probs = model_out["policy_log_policy"].cpu().numpy()
+
+                # sample action and act
+                # note: we mask out actions of completed agents, this saves a bit of time as the wrapper will not
+                # forward the action on (i.e. it will not be simulated)
+                actions = utils.sample_action_from_logp(log_probs).astype("int32")
+                actions = np.asarray([a if running else -1 for a, running in zip(actions, still_running)], np.int32) # a bit faster
+                obs, rews, done, infos = self.vec_env.step(actions)
+
+                # book keeping
+                time = np.asarray([info["time"] for info in infos])
+                rewards[t, seed, :] = rews * still_running  # all we need are the rewards, dones, and the value estimates
+                dones[t, seed, :] = done
+                all_times[t, seed, :] = time * still_running
+                mask[t, seed, :] = still_running
+                value_estimates[t, seed, :, :] = model_out["value_tvf_value"].cpu().numpy() * still_running[:, None]
+
+                # update return counts as we go
+                for i, h in enumerate(HORIZONS):
+                    if t < h:
+                        returns[seed, :, i] += rews * discount
+
+                # update discount
+                discount *= args.tvf_gamma
+                discount *= (1-done)
+
+                steps_completed += 1
+
+                still_running *= (1-done).astype(np.bool)
+
+                if sum(still_running) == 0:
+                    # this occurs if all agents have died.
+                    break
+
+            print(".", end='', flush=True)
+
+            # final value estimate
+            time = np.asarray([info["time"] for info in infos])
+            aux_features = package_aux_features(
+                np.asarray(VALUE_SAMPLE_HORIZONS),
+                time
+            )
+            model_out = self.detached_batch_forward(obs, output='full', aux_features=aux_features)
+            value_estimates[steps_completed, seed, :, :] = model_out["value_tvf_value"].cpu().numpy()
+            all_times[steps_completed, seed, :] = time
+
+        print("")
+
+        # save the data
+        with gzip.open(f"{args.log_folder}/rollouts_{self.step//args.batch_size}.gz", "wb") as f:
+            data = {
+                'rewards': rewards,
+                'dones': dones,
+                'returns': returns,
+                'required_horizons': np.asarray(HORIZONS),
+                'value_sample_horizons': VALUE_SAMPLE_HORIZONS,
+                'value_samples': value_estimates,
+                'reward_scale': self.reward_scale,
+                'mask': mask,
+                'all_times': all_times,
+                'gamma': args.tvf_gamma,
+            }
+            pickle.dump(data, f)
+
+        # restore final state so training can pick up where we left off.
+        # the seeding means that results should be consistent, even if we add additional evaluations
+        seed_base = self.step + 187
+        utils.restore_env_state(self.vec_env, root_env_state)
+        #self.vec_env.seed([seed_base + i * 7 for i in range(A)])
+        torch.manual_seed(seed_base)
+        np.random.seed(seed_base)
 
     @torch.no_grad()
     def log_value_quality(self):
@@ -1805,6 +1967,9 @@ class Runner:
         if not args.disable_ev and self.batch_counter % 2 == 0:
             # only about 3% slower with this on.
             self.log_value_quality()
+
+        if args.log_detailed_return_stats and self.batch_counter % args.ldrs_freq == 0:
+            self.log_detailed_value_quality()
 
         self.log.watch_mean_std("adv_ext", self.ext_advantage, display_width=0)
 

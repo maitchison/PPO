@@ -103,6 +103,19 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
                 buffer[f"vec_{counter:03d}"] = v
                 counter += 1
 
+    def seed(self, seeds=None):
+        if self.is_batched:
+            # put seeds into 2d python array.
+            seeds = np.reshape(seeds, [self.n_parallel, self.n_sequential])
+            seeds = [list(seeds[i]) for i in range(len(seeds))]
+
+            for pipe, seed in zip(self.parent_pipes, seeds):
+                pipe.send(('seed', [int(x) for x in seed]))
+            _, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
+            self._raise_if_errors(successes)
+        else:
+            super().seed(seeds)
+
     def restore_env_state(self, env_index:int, buffer: dict):
         """
         Restores state of specific environment

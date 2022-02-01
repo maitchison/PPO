@@ -317,8 +317,8 @@ def _calculate_sampled_return(
     reward: nd array of dims [N, A]
     dones: nd array of dims [N, A]
     required_horizons: nd array of dims [K]
-    value_samples: nd array of dims [N, A, K], where value_samples[n, a, k] is the value of the nth timestep ath agent
-        for horizon required_horizons[k]
+    value_samples: nd array of dims [N, A, K], where value_samples[n, a, v] is the value of the nth timestep ath agent
+        for horizon value_sample_horizons[v]
     n_step: n-step to use in calculation
     masked: ignored (used in calculate_sampled_return_multi)
 
@@ -327,6 +327,9 @@ def _calculate_sampled_return(
 
     N, A = rewards.shape
     K = len(required_horizons)
+    V = len(value_sample_horizons)
+
+    assert value_samples.shape == (N+1, A, V)
 
     # this allows us to map to our 'sparse' returns table
     h_lookup = {}

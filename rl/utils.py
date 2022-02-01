@@ -288,7 +288,7 @@ def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, 
 def is_sorted(x):
     return all(a <= b for a, b in zip(x, x[1:]))
 
-def explained_variance(ypred, y):
+def explained_variance(ypred, y, bias:float=0):
     """
     # from https://github.com/openai/random-network-distillation/blob/436c47b7d42ffe904373c7b8ab6b2d0cff9c80d8/utils.py
     Computes fraction of variance that ypred explains about y.
@@ -303,7 +303,7 @@ def explained_variance(ypred, y):
 
     vary = np.var(y)
 
-    return float('nan') if vary == 0 else np.clip(1 - np.var(y-ypred)/vary, -1, 1)
+    return float('nan') if (vary+bias) == 0 else np.clip(1 - (np.var(y-ypred)+bias)/(vary+bias), -1, 1)
 
 class RunningMeanStd(object):
     """

@@ -162,3 +162,4 @@ if __name__ == "__main__":
             # just ignore any errors while trying to log result
             print(f"An error occurred while logging this error, {logging_error}")
         raise e
+    
