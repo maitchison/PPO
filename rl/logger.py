@@ -145,6 +145,8 @@ class Logger():
         self._vars = {}
         self._history = []
 
+        self.mute = False
+
     def get_level(self, level):
         if level == self.DEBUG:
             return "DEBUG"
@@ -164,6 +166,8 @@ class Logger():
 
     def watch(self, key, value, **kwargs):
         """ Logs a value, creates log variable if needed. """
+        if self.mute:
+            return
         if type(value) in [float, np.float] and np.isnan(value):
             # ignore nans
             return

@@ -13,8 +13,8 @@ if __name__ == "__main__":
     import EA57
     import EEXP
 
-    # ERP.setup()
-    # EPGG.setup()
+    #ERP.setup()
+    #EPGG.setup()
     EA57.setup()
     EEXP.setup()
 

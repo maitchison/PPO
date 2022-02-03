@@ -229,6 +229,7 @@ class RunLog():
 
         self._patterns = {
             'log_': lambda x: np.log10(np.clip(x, LOG_CAP, float('inf'))),
+            'log2_': lambda x: np.log2(np.clip(x, LOG_CAP, float('inf'))),
             'neg_': lambda x: -x,
             'exp_': lambda x: np.exp(x),
             '1m_': lambda x: 1 - x,

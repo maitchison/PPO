@@ -1215,6 +1215,52 @@ def rc():
             default_params=RC9,
         )
 
+def abs(priority=50):
+    """
+    adaptive batch size
+    """
+
+    for env in ["CrazyClimber", "Breakout", "Alien", "Pong"]: # also alien...
+        for abs in ["shadow", "on"]:
+            add_job(
+                env_name=env,
+                experiment_name="ABS2",
+                run_name=f"env={env} abs={abs}",
+                abs_mode=abs,
+                use_compression=False,
+                priority=priority,
+                hostname='desktop',
+                default_params=RP1U_reference_args,
+            )
+        # this is just to see if hard coding the found values works better...
+        add_job(
+            env_name=env,
+            experiment_name="ABS2",
+            run_name=f"env={env} 321 2048-128-128",
+            use_compression=False,
+            priority=priority,
+            policy_mini_batch_size=2048,
+            value_mini_batch_size=128,
+            distil_mini_batch_size=128,
+            hostname='desktop',
+            epochs=20,
+            default_params=RP1U_reference_args,
+        )
+        add_job(
+            env_name=env,
+            experiment_name="ABS2",
+            run_name=f"env={env} 621 8096-128-128",
+            use_compression=False,
+            priority=priority,
+            policy_epochs=6,
+            policy_mini_batch_size=8192,
+            value_mini_batch_size=128,
+            distil_mini_batch_size=128,
+            hostname='desktop',
+            epochs=20,
+            default_params=RP1U_reference_args,
+        )
+
 def re1(priority=50):
 
     # return estimation
@@ -1260,7 +1306,7 @@ def re1(priority=50):
                     default_params=RE1,
                 )
 
-    for env in ["CrazyClimber"]:
+    for env in ["CrazyClimber", "Breakout", "Alien"]:
         # run next one on my machine... in fact, move them all to my machine...
         AGENTS = 128
         DVQ = RE1.copy()
@@ -1273,9 +1319,10 @@ def re1(priority=50):
             'n_steps': 512,
             'replay_size': AGENTS * 512,
             'distil_batch_size': AGENTS * 512,
-            'priority': 176,
+            'priority': -176,
             'hostname': "desktop",
             'workers': 16, # faster..
+            'epochs': 50,
         })
 
         # run the initial return estimation evaluation script
@@ -1295,5 +1342,6 @@ def setup(priority_modifier=0):
     exp4(priority=10, hostname="")
     rc()
     re1(priority=50)
+    abs(priority=-50)
 
 

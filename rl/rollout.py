@@ -20,7 +20,7 @@ import math
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
-from .returns import get_return_estimate
+from .returns import get_return_estimate, _interpolate
 from .config import args
 from .mutex import Mutex
 from .replay import ExperienceReplayBuffer
@@ -488,6 +488,7 @@ class Runner:
 
         self.batch_counter = 0
         self.erp_stats = {}
+        self.abs_stats = {}
 
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
@@ -1354,6 +1355,76 @@ class Runner:
                             marker=t-first_frame+1
                         )
 
+    def estimate_critical_batch_size(self, batch_data, mini_batch_func, optimizer: torch.optim.Optimizer, label):
+        """
+        Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
+        See: https://arxiv.org/pdf/1812.06162.pdf
+        """
+
+        self.log.mute = True
+        result = {}
+
+        def process_gradient(context):
+            # calculate norm of gradient
+            parameters = []
+            for group in optimizer.param_groups:
+                for p in group['params']:
+                    if p.grad is not None:
+                        parameters.append(p)
+
+            result['grad_magnitude'] = nn.utils.clip_grad_norm_(parameters, 100)
+            return True  # make sure to not apply the gradient!
+
+        hook = {'after_mini_batch': process_gradient}
+
+        b_small = 32
+        b_big = len(batch_data["prev_state"])
+
+        # take 16 samples of the small gradient.
+        # ideally we would do this using a shuffle, but with replacement should be fine too
+        g_b_small_squared = 0
+        for sample in range(16):
+            self.train_batch(batch_data, mini_batch_func, b_small, optimizer, label, hooks=hook)
+            g_b_small_squared += float(result['grad_magnitude']) / 16
+        g_b_small_squared *= g_b_small_squared
+
+        self.train_batch(batch_data, mini_batch_func, b_big, optimizer, label, hooks=hook)
+        g_b_big_squared = float(result['grad_magnitude'])
+        g_b_big_squared *= g_b_big_squared
+
+        g2 = (b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small)
+        s = (g_b_small_squared - g_b_big_squared) / (1/b_small - 1/b_big)
+        self.log.mute = False
+
+        self.abs_stats[f'{label}_s'] = 0.95 * self.abs_stats.get(f'{label}_s', s) + 0.05 * s
+        self.abs_stats[f'{label}_g2'] = 0.95 * self.abs_stats.get(f'{label}_g2', g2) + 0.05 * g2
+
+        # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
+        # to avoid this we clip the *smoothed* g2 to epsilon.
+        # alternative include larger batch_sizes, and / or larger EMA horizon.
+        epsilon = 1e-4
+        target_smooth_ratio = self.abs_stats[f'{label}_s'] / np.clip(self.abs_stats[f'{label}_g2'], epsilon, float('inf'))
+
+        # a second lager of EMA makes sure that mini-batch size doesn't flick between 8k, and 32 every other update.
+        # slow changes in the ratio will come through quickly, but large flucations will be averaged out.
+        self.abs_stats[f'{label}_ratio'] = self.abs_stats.get(f'{label}_ratio', target_smooth_ratio) * 0.95 + target_smooth_ratio * 0.05
+
+        self.log.watch(f'abs_{label}_s', s, display_precision=0, display_width=0)
+        self.log.watch(f'abs_{label}_g2', g2, display_precision=0, display_width=0)
+        self.log.watch(f'abs_{label}_b', target_smooth_ratio, display_precision=0, display_width=0)
+        self.log.watch(f'abs_{label}_smooth_b', self.abs_stats[f'{label}_ratio'], display_precision=0, display_width=0)
+        self.log.watch(
+            f'abs_{label}_sqrt_b',
+            np.clip(target_smooth_ratio, 0, float('inf')) ** 0.5,
+            display_precision=0,
+            display_name=f"{label}_sns"
+
+        )
+
+        return self.abs_stats[f'{label}_ratio']
+
+
+
     @torch.no_grad()
     def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
                             horizons: Union[None, np.ndarray, int] = None,
@@ -1462,6 +1533,8 @@ class Runner:
         A = args.agents          # agents must be the same as the number of training agents
         K = len(HORIZONS)
 
+        # unfortunately we can not get estimates for horizons longer than N, so just generate the return estimates
+        # up to N.
         VALUE_SAMPLE_HORIZONS = self.generate_horizon_sample(
             N, 128, distribution="fixed_geometric", force_first_and_last=True
         )
@@ -1476,7 +1549,10 @@ class Runner:
         rewards = np.zeros([N, S, A], dtype=np.float32)
         mask = np.zeros([N, S, A], dtype=np.bool)
         dones = np.zeros([N, S, A], dtype=np.bool)
-        returns = np.zeros([S, A, K], dtype=np.float32)  # returns are for the initial state only
+
+        # returns are for the initial state only,
+        # and are the return returns for this seed.
+        returns = np.zeros([S, A, K], dtype=np.float32)
 
         # value estimates are for each transition in rollout, store in float16 to save some space
         # (otherwise his is 1.3G per save, even with compression)
@@ -1562,6 +1638,32 @@ class Runner:
 
         print("")
 
+        # Generate all n_step estimates
+
+        # actually we will just calculate these on load, generating them takes about 20 seconds, loading
+        # them takes around 60 seconds.
+
+        # n_step_return_estimate = np.zeros([K, N + 1, S, A], dtype=np.float32)
+        # discount = np.ones([S, A], dtype=np.float32)
+        # # rewards are  NSA
+        # # dones are NSA
+        # # value_samples are NSAV
+        #
+        # for t in range(N):
+        #     for i, h in enumerate(HORIZONS):
+        #         if t < h:
+        #             n_step_return_estimate[i, t + 1:] += (rewards[t] * discount)[None, :, :]
+        #     discount *= args.tvf_gamma
+        #     discount *= (1 - dones[t])
+        #     for i, h in enumerate(HORIZONS):
+        #         if h - (t + 1) > 0:
+        #             boot_strap_values = _interpolate(VALUE_SAMPLE_HORIZONS, value_estimates[t + 1].astype('float32'),
+        #                                              h - (t + 1))
+        #             n_step_return_estimate[i, t + 1] += boot_strap_values * discount
+        #
+        # # we calculated the n_step=0 result, which we remove here...
+        # n_step_return_estimate = n_step_return_estimate[:, 1:]
+
         # save the data
         with gzip.open(f"{args.log_folder}/rollouts_{self.step//args.batch_size}.gz", "wb") as f:
             data = {
@@ -1646,13 +1748,13 @@ class Runner:
                 self.log.watch_mean(
                     f"v_mu_{h:04d}",
                     value.mean(),
-                    display_width=8 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
+                    display_width=0 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
                     history_length=1
                 )
                 self.log.watch_mean(
                     f"v_std_{h:04d}",
                     value.std(),
-                    display_width=8 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
+                    display_width=0 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
                     history_length=1
                 )
                 self.log.watch_mean(
@@ -2629,6 +2731,16 @@ class Runner:
                 label="rnd",
             )
 
+    @property
+    def wants_abs_update(self):
+        """
+        returns if this batch step wants an adaptive batch_size update or not.
+        """
+        # these are a bit slow, so do it less frequently (actually it needs to be done more often due to noise)
+        # also make sure to update frequently at the beginning as the EMA will be warming up.
+        update_freq = 1 # was 4.
+        return args.abs_mode != "off" and (self.batch_counter % update_freq == 0 or self.batch_counter < 10)
+
 
     def train_policy(self):
 
@@ -2687,7 +2799,6 @@ class Runner:
             batch_data["replay_prev_state"] = replay_states
             batch_data["replay_log_policy"] = self.detached_batch_forward(replay_states, output="policy")["log_policy"].cpu().numpy()
 
-
         # policy constraint
         if args.needs_dual_constraint:
             if args.full_curve_distil:
@@ -2709,19 +2820,26 @@ class Runner:
                 model_out = self.detached_batch_forward(obs=batch_data["prev_state"], output="policy")
                 batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
 
+
+        # abs
+        if self.wants_abs_update:
+            self.estimate_critical_batch_size(
+                batch_data, self.train_policy_minibatch, self.policy_optimizer, "policy"
+            )
+
         policy_epochs = 0
         for _ in range(args.policy_epochs):
             results = self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_policy_minibatch,
-                mini_batch_size=args.policy_mini_batch_size,
+                mini_batch_size=self.policy_mini_batch_size,
                 optimizer=self.policy_optimizer,
                 label="policy",
                 hooks={
                     'after_mini_batch': lambda x: x["outputs"][-1]["kl_approx"] > 1.5 * args.target_kl
                 } if args.target_kl > 0 else {}
             )
-            expected_mini_batches = (args.batch_size / args.policy_mini_batch_size)
+            expected_mini_batches = (args.batch_size / self.policy_mini_batch_size)
             policy_epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
@@ -2730,6 +2848,8 @@ class Runner:
                             display_width=9 if args.target_kl >= 0 else 0,
                             display_name="epochs_p"
                             )
+
+        self.log.watch(f'policy_mbs', self.policy_mini_batch_size, display_width=0)
 
     def train_value(self):
 
@@ -2784,24 +2904,27 @@ class Runner:
             old_rollout_values = get_value_estimate(
                 utils.merge_first_two_dims(self.prev_obs), utils.merge_first_two_dims(self.prev_time))
 
+        if args.use_tvf:
+            # we do this once at the start, generate one returns estimate for each epoch on different horizons then
+            # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
+            # we don't drift, as the updates will modify our model and change the value estimates.
+            # it is possible that instead we should be updating our return estimates as we go though
+            returns, horizons = self.generate_return_sample(force_first_and_last=True)
+            batch_data["tvf_returns"] = returns.reshape([B, -1])
+            batch_data["tvf_horizons"] = horizons.reshape([B, -1])
+            batch_data["tvf_time"] = self.prev_time.reshape([B])
+
+        # abs
+        if self.wants_abs_update:
+            self.estimate_critical_batch_size(
+                batch_data, self.train_value_minibatch, self.value_optimizer, "value"
+            )
 
         for value_epoch in range(args.value_epochs):
-
-            if args.use_tvf:
-                # we do this once at the start, generate one returns estimate for each epoch on different horizons then
-                # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
-                # we don't drift, as the updates will modify our model and change the value estimates.
-                # it is possible that instead we should be updating our return estimates as we go though
-                if value_epoch == 0:
-                    returns, horizons = self.generate_return_sample(force_first_and_last=True)
-                    batch_data["tvf_returns"] = returns.reshape([B, -1])
-                    batch_data["tvf_horizons"] = horizons.reshape([B, -1])
-                    batch_data["tvf_time"] = self.prev_time.reshape([B])
-
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
-                mini_batch_size=args.value_mini_batch_size,
+                mini_batch_size=self.value_mini_batch_size,
                 optimizer=self.value_optimizer,
                 label="value",
             )
@@ -2816,6 +2939,8 @@ class Runner:
             rollout_delta_v = np.mean(np.square(new_rollout_values - old_rollout_values))
             self.log.watch("replay_delta_v", replay_delta_v, display_width=0)
             self.log.watch("rollout_delta_v", rollout_delta_v, display_width=0)
+
+        self.log.watch(f"value_mbs", self.value_mini_batch_size, display_width=0)
 
     def get_distil_batch(self, samples_wanted:int):
         """
@@ -2897,7 +3022,43 @@ class Runner:
 
         return batch_data
 
+    def get_adaptive_mbs(self, noise_scale: float, r=50):
+        """
+        Returns an appropriate mini-batch size based on the cbs estimate.
+        """
 
+        # todo: factor in the number of epochs
+
+        min_size = 128  # partly for performance, partly for safety
+        max_size = args.batch_size
+        if noise_scale < 0:
+            # this happens quite a bit...
+            noise_scale = 0
+        target_batch_size = math.sqrt(r*noise_scale)
+        clipped_target_batch_size = np.clip(target_batch_size, min_size, max_size)
+        quantised_target_batch_size = 2 ** round(math.log2(clipped_target_batch_size))
+        return quantised_target_batch_size
+
+    @property
+    def distil_mini_batch_size(self):
+        if args.abs_mode == "on" and self.step > 1e6:
+            return self.get_adaptive_mbs(self.abs_stats['distil_ratio'], r=50*args.distil_epochs)
+        else:
+            return args.distil_mini_batch_size
+
+    @property
+    def policy_mini_batch_size(self):
+        if args.abs_mode == "on" and self.step > 1e6:
+            return self.get_adaptive_mbs(self.abs_stats['policy_ratio'], r=50*args.policy_epochs)
+        else:
+            return args.policy_mini_batch_size
+
+    @property
+    def value_mini_batch_size(self):
+        if args.abs_mode == "on" and self.step > 1e6:
+            return self.get_adaptive_mbs(self.abs_stats['value_ratio'], r=50*args.value_epochs)
+        else:
+            return args.value_mini_batch_size
 
     def train_distil(self):
 
@@ -2924,6 +3085,12 @@ class Runner:
         if args.distil_min_var > 0 and np.var(batch_data["value_targets"]) < args.distil_min_var:
             return
 
+        # abs
+        if self.wants_abs_update:
+            self.estimate_critical_batch_size(
+                batch_data, self.train_distil_minibatch, self.distil_optimizer, "distil"
+            )
+
         for distil_epoch in range(args.distil_epochs):
 
             kl_losses.clear()
@@ -2934,7 +3101,7 @@ class Runner:
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
-                mini_batch_size=args.distil_mini_batch_size,
+                mini_batch_size=self.distil_mini_batch_size,
                 optimizer=self.distil_optimizer,
                 hooks={
                     'after_mini_batch': log_specific_losses
@@ -2946,6 +3113,8 @@ class Runner:
             # for kl, value, targ, pred in zip(kl_losses, value_losses, targ_var, pred_var):
             #     print(f" -> {kl:<10.6f} {value:<10.6f} {targ:<10.6f} {pred:<10.6f}")
             # print()
+
+        self.log.watch(f"distil_mbs", self.distil_mini_batch_size, display_width=0)
 
     def train(self):
 
@@ -2978,7 +3147,8 @@ class Runner:
             mini_batch_size,
             optimizer: torch.optim.Optimizer,
             label,
-            hooks: Union[dict, None] = None) -> dict:
+            hooks: Union[dict, None] = None
+        ) -> dict:
         """
         Trains agent on current batch of experience
         Returns context with
@@ -3028,9 +3198,7 @@ class Runner:
                         data = np.asarray([data[i].decompress() for i in range(len(data))])
                     micro_batch_data[var_name] = torch.from_numpy(data).to(self.model.device, non_blocking=True)
 
-                outputs.append(mini_batch_func(
-                    micro_batch_data, loss_scale=1 / micro_batches
-                ))
+                outputs.append(mini_batch_func(micro_batch_data, loss_scale=1 / micro_batches))
 
             context = {
                 'mini_batches': j + 1,
@@ -3043,6 +3211,9 @@ class Runner:
                     break
 
             self.optimizer_step(optimizer=optimizer, label=label)
+
+        # free up memory by releasing grads.
+        optimizer.zero_grad(set_to_none=True)
 
         return context
 

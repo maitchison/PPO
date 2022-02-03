@@ -33,7 +33,7 @@ def desync_envs(runner, min_duration:int, max_duration:int, verbose=True):
             utils.sample_action_from_logp(prob) if mask else -1 for prob, mask in zip(log_policy, masks)
         ], dtype=np.int32)
         runner.obs, ext_rewards, dones, infos = runner.vec_env.step(actions)
-        runner.time = np.asarray([info["time"] for info in infos])
+        runner.time = np.asarray([info.get("time", 0.0) for info in infos])
         if t % 100 == 0 and verbose:
             print(".", end='', flush=True)
 
