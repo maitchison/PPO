@@ -454,6 +454,7 @@ def make_envs(include_video:bool=False, seed_base:int=0, num_envs:int=1, force_h
 
 # todo: make a proper buffer class
 
+@torch.no_grad()
 def generate_rollouts(
         model,
         max_frames = 30*60*15,
@@ -506,7 +507,7 @@ def generate_rollouts(
                 'times': [],  # normalized time step
                 'raw_values': [],  # values for each horizon of dims [K] (unscaled)
                 'std': [],   # estimated std of return for each horizon of dims [K]
-                'sqr': [],  # estimated expected square of return for each horizon of dims [K]
+                'sqrt_m2': [],  # estimated sqrt of second moment of return for each horizon of dims [K]
                 'model_values': [], # models predicted value (float)
                 'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
                 'raw_rewards': [], # raw unscaled reward from the atari environment
@@ -678,9 +679,11 @@ def generate_rollouts(
             append_buffer('probs', probs[i])
 
             if args.learn_second_moment:
-                variance = (model_out["tvf_ext_value_sqr"] - model_out["tvf_ext_value"] ** 2)[i].detach().cpu().numpy()
+                sqrt_m2_est = model_out["tvf_ext_value_sqr"]
+                m2_est = torch.relu(sqrt_m2_est)**2
+                variance = (m2_est - model_out["tvf_ext_value"] ** 2)[i].detach().cpu().numpy()
                 append_buffer('std', np.clip(variance, 0, float('inf')**0.5))
-                append_buffer('sqr', model_out["tvf_ext_value_sqr"][i].detach().cpu().numpy())
+                append_buffer('sqrt_m2', sqrt_m2_est[i].detach().cpu().numpy())
 
 
             if 'frames' in buffers[i]:
@@ -1040,7 +1043,7 @@ def export_movie(
             color = (0.4, 0.4, 0.4)
             fig.plot_between(xs, ys_min, ys_max, color, edges_only=True)
 
-            sqrt_square = (np.abs(buffer["sqr"][t]) ** 0.5) * np.sign(buffer["sqr"][t]) * REWARD_SCALE
+            sqrt_square = buffer["sqrt_m2"][t] * REWARD_SCALE
             fig.plot(xs, sqrt_square, (0.6, 0.3, 0.1))
 
         if return_sample is not None:

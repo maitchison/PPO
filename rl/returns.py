@@ -15,11 +15,16 @@ def get_return_estimate(
     sqr_value_samples: np.ndarray = None,
     n_step: int = 40,
     max_samples: int = 40,
-    square: bool = False,
+    second_moment: bool = False,
     masked: bool = False,
     log=None,
 ):
-    if square:
+
+    """
+    @second_moment calculates the second moment instead of the first (i.e. E(return^2)
+    """
+
+    if second_moment:
         assert sqr_value_samples is not None, "Must include bootstrapped square value samples"
 
     N, A = rewards.shape
@@ -41,8 +46,11 @@ def get_return_estimate(
     if mode == "fixed":
         samples = [n_step]
     elif mode == "exponential":
+        # this just makes things a bit faster for small n_step horizons
+        # essentially we ignore the very rare, very long n_steps.
+        eff_h = min(n_step * 3, N)
         lamb = 1-(1/n_step)
-        weights = np.asarray([lamb ** x for x in range(N)], dtype=np.float32)
+        weights = np.asarray([lamb ** x for x in range(eff_h)], dtype=np.float32)
     else:
         raise ValueError(f"Invalid returns mode {mode}")
 
@@ -51,7 +59,7 @@ def get_return_estimate(
         probs = weights / weights.sum()
         samples = np.random.choice(range(1, max_n + 1), max_samples, replace=True, p=probs)
 
-    if square:
+    if second_moment:
         # stub for the moment verify the algorithm is working
         # if log is not None:
         #     random_h = np.random.randint(1, 10)
@@ -372,6 +380,25 @@ def calculate_second_moment_estimate_td(
     return rewards**2 + 2*gamma*rewards * first_moment_estimates[1:] + (gamma**2)*second_moment_estimates[1:]
 
 
+def reweigh_samples(n_step_list:list, weights=None):
+    """
+    Takes a list of n_step lengths, and (optinally) their weights, and returns a new list of samples / weights
+    such that duplicate n_steps have had their weight added together.
+    I.e. reweigh_samples = [1,1,1,2] -> ([1,2], [1:3,2:1])
+    """
+    if weights is None:
+        weights = [1.0 for _ in n_step_list]
+    n_step_weight = defaultdict(float)
+    for n, weight in zip(n_step_list, weights):
+        n_step_weight[n] += weight
+
+    # remove any duplicates (these will be handled by the weight calculation)
+    n_step_list = list(set(n_step_list))
+    n_step_list.sort()
+    return n_step_list, n_step_weight
+
+
+
 def _calculate_sampled_sqr_return_multi_reference(
     n_step_list: list,
     gamma: float,
@@ -388,8 +415,7 @@ def _calculate_sampled_sqr_return_multi_reference(
     Very slow reference version of square return calculation
     """
 
-    if n_step_weights is None:
-        n_step_weights = [1] * len(n_step_list)
+    n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights)
 
     N, A = rewards.shape
     K = len(required_horizons)
@@ -398,7 +424,8 @@ def _calculate_sampled_sqr_return_multi_reference(
 
     for h_index, h in enumerate(required_horizons):
 
-        for target_n_step, weight in zip(n_step_list, n_step_weights):
+        for target_n_step in n_step_list:
+            weight = n_step_weights[target_n_step]
 
             # calculate the n_step squared return estimate
             for t in range(N):

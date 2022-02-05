@@ -102,11 +102,12 @@ class Config:
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
         self.tvf_return_n_step = int()
+        self.sqr_return_mode = str()
         self.sqr_return_n_step = int()
 
-        self.hidden_units   = int()
-        self.tvf_activation     = str()
-        self.tvf_horizon_scale  = str()
+        self.hidden_units = int()
+        self.tvf_activation = str()
+        self.tvf_horizon_scale = str()
         self.tvf_time_scale = str()
 
         self.tvf_force_ext_value_distil = bool()
@@ -351,6 +352,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_samples", type=int, default=40, help="Number of n-step samples to use for tvf_lambda calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
     parser.add_argument("--sqr_return_n_step", type=int, default=80, help="n step to use for tvf_return_sqr estimation")
+    parser.add_argument("--sqr_return_mode", type=str, default="fixed", help="[fixed|exponential]")
     parser.add_argument("--log_detailed_return_stats", type=str2bool, default=False,
                         help="Enables recording of variance / bias for *all* return estimators durning training. (this is very slow!).")
     parser.add_argument("--ldrs_samples", type=int, default=64)
@@ -602,7 +604,7 @@ def parse_args(no_env=False, args_override=None):
     if args.intrinsic_reward_propagation is None:
         # this seems key to getting intrinsic motivation to work
         # without it the agent might never want to die (as it can gain int_reward forever).
-        # maybe this is correct behavour? Not sure.
+        # maybe this is correct behaviour? Not sure.
         args.intrinsic_reward_propagation = (args.use_rnd or args.use_ebd or args.use_erp)
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma

@@ -891,7 +891,7 @@ class Runner:
             dones=None,
             tvf_mode=None,
             tvf_n_step=None,
-            square: bool = False,
+            sqrt_second_moment: bool = False,
     ):
         """
         Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
@@ -901,6 +901,7 @@ class Runner:
         value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
         required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
         head: which head to use for estimate, i.e. ext_value, int_value, ext_value_square etc
+        sqrt_second_moment: returns the sqrt of the second moment (instead of the first moment)
         """
 
         assert utils.is_sorted(required_horizons), "Required horizons must be sorted"
@@ -938,15 +939,17 @@ class Runner:
             head=f"{head}_value",
         )
 
-        if square:
-            sqr_value_samples = self.get_value_estimates(
+        if sqrt_second_moment:
+            sqrt_m2_value_samples = self.get_value_estimates(
                 obs=obs,
                 time=time,
                 horizons=value_sample_horizons,
                 head=f"{head}_value_sqr",
             )
+            # model predicts sqrt of sqr, so need to square it here
+            m2_value_samples = np.maximum(sqrt_m2_value_samples, 0) ** 2
         else:
-            sqr_value_samples = None
+            m2_value_samples = None
 
         # step 2: calculate the returns
         start_time = clock.time()
@@ -958,12 +961,14 @@ class Runner:
             required_horizons=required_horizons,
             value_sample_horizons=value_sample_horizons,
             value_samples=value_samples,
-            sqr_value_samples=sqr_value_samples,
+            sqr_value_samples=m2_value_samples,
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
-            square=square,
+            second_moment=sqrt_second_moment,
             log=self.log
         )
+        if sqrt_second_moment:
+            returns = np.maximum(returns, 0) ** 0.5
 
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -1751,7 +1756,7 @@ class Runner:
                 tvf_mode="fixed",  # <-- MC is the least bias method we can do...
                 tvf_n_step=args.n_steps,
                 head=return_head,
-                square=False
+                sqrt_second_moment=False
             )
 
             first_moment_targets = targets
@@ -1767,7 +1772,7 @@ class Runner:
                     tvf_mode="fixed",  # <-- MC is the least bias method we can do...
                     tvf_n_step=args.n_steps,
                     head=return_head,
-                    square=True
+                    sqrt_second_moment=True
                 )
 
             total_not_explained_var = 0
@@ -1799,7 +1804,7 @@ class Runner:
                 )
 
                 if return_square:
-                    var_est = targets[:, :, h_index] - (first_moment_targets[:, :, h_index]**2)  # [N, A]
+                    var_est = targets[:, :, h_index]**2 - (first_moment_targets[:, :, h_index]**2)  # [N, A]
                     self.log.watch_mean(
                         f"var_{h}",
                         var_est.mean(),
@@ -2265,7 +2270,6 @@ class Runner:
         if args.use_tvf and args.learn_second_moment:
             targets = data["tvf_returns_sqr"]
             value_predictions = model_out["tvf_ext_value_sqr"]
-            # L1 loss might be better here...
             sqr_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
             sqr_loss = sqr_loss.mean(dim=-1)
             sqr_loss = 0.5 * args.tvf_coef * sqr_loss.mean()
@@ -2387,10 +2391,12 @@ class Runner:
             returns = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=horizon_samples,
-                tvf_mode="fixed", # for the moment just use a simple fixed estimate
+                tvf_mode=args.sqr_return_mode, # for the moment just use a simple fixed estimate
                 tvf_n_step=args.sqr_return_n_step,
-                square=True
+                sqrt_second_moment=True
             )
+            # we learn the square of the expected square
+            returns = returns.clip(returns, 0, float('inf')) ** 0.5
         else:
             returns = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,

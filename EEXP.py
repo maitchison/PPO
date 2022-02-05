@@ -1349,9 +1349,11 @@ def second_moment(priority=0):
             'replay_size': 64 * 512,
             'distil_batch_size': 64 * 512,
             'policy_mini_batch_size': 2048,
-            'epochs': 20,
+            'epochs': 10,
+            'seed': 1,
             'learn_second_moment': True,
             'hostname': 'desktop',
+            'priority': priority,
         }
     )
 
@@ -1361,8 +1363,6 @@ def second_moment(priority=0):
             experiment_name="SML2",
             run_name=f"env={env} (ref)",
             env_name=env,
-            seed=1,
-            priority=priority,
             learn_second_moment=False,
             default_params=SML,
         )
@@ -1371,11 +1371,48 @@ def second_moment(priority=0):
                 experiment_name="SML2",
                 run_name=f"env={env} sml n_step={n_step}",
                 env_name=env,
-                seed=1,
                 sqr_return_n_step=n_step,
-                priority=priority,
                 default_params=SML,
             )
+
+    SML3 = SML.copy()
+    SML3.update(
+        {
+            # this should be more stable
+            'tvf_max_horizon': 300,
+            'tvf_gamma': 0.99,
+            'gamma': 0.99,
+            'epochs': 20,
+        }
+    )
+
+    # for env in ["CrazyClimber", "Alien", "Breakout"]:
+    for env in ["Alien"]:
+        add_job(
+            experiment_name="SML3",
+            run_name=f"env={env} (ref)",
+            env_name=env,
+            learn_second_moment=False,
+            default_params=SML3,
+        )
+        for n_step in [1, 4, 8, 16]:
+            add_job(
+                experiment_name="SML3",
+                run_name=f"env={env} sml n_step={n_step}",
+                env_name=env,
+                sqr_return_mode="fixed",
+                sqr_return_n_step=n_step,
+                default_params=SML3,
+            )
+            if n_step > 1:
+                add_job(
+                    experiment_name="SML3",
+                    run_name=f"env={env} sml exp={n_step}",
+                    env_name=env,
+                    sqr_return_mode="exponential",
+                    sqr_return_n_step=n_step,
+                    default_params=SML3,
+                )
 
 
 def setup(priority_modifier=0):
