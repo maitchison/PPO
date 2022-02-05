@@ -181,7 +181,7 @@ TVF_reference_args = {
     'tvf_value_samples': 128,
     'tvf_horizon_samples': 32,
     'tvf_mode': 'exponential',
-    'tvf_n_step': 80,  # makes no difference...
+    'tvf_n_step': 80,  # effective horizon of the return estimator
     'tvf_exp_gamma': 1.5,  # 2.0 would be faster, but 1.5 tested slightly better.
     'tvf_coef': 0.5,
     'tvf_soft_anchor': 0,

@@ -1306,7 +1306,8 @@ def re1(priority=50):
                     default_params=RE1,
                 )
 
-    for env in ["CrazyClimber", "Breakout", "Alien"]:
+    #for env in ["CrazyClimber", "Breakout", "Alien"]:
+    for env in ["CrazyClimber", "Alien", "Breakout"]:
         # run next one on my machine... in fact, move them all to my machine...
         AGENTS = 128
         DVQ = RE1.copy()
@@ -1319,7 +1320,7 @@ def re1(priority=50):
             'n_steps': 512,
             'replay_size': AGENTS * 512,
             'distil_batch_size': AGENTS * 512,
-            'priority': -176,
+            'priority': 276,
             'hostname': "desktop",
             'workers': 16, # faster..
             'epochs': 50,
@@ -1333,6 +1334,49 @@ def re1(priority=50):
             default_params=DVQ,
         )
 
+def second_moment(priority=0):
+    """
+    Tests to make sure we can learn second moment for each horizon.
+    Also want to know if we can learn this by directly squaring the return.
+    """
+
+    SML = RP1U_reference_args.copy()
+    SML.update(
+        {
+            # this should be more stable
+            'agents': 64,
+            'n_steps': 512,
+            'replay_size': 64 * 512,
+            'distil_batch_size': 64 * 512,
+            'policy_mini_batch_size': 2048,
+            'epochs': 20,
+            'learn_second_moment': True,
+            'hostname': 'desktop',
+        }
+    )
+
+    #for env in ["CrazyClimber", "Alien", "Breakout"]:
+    for env in ["Alien"]:
+        add_job(
+            experiment_name="SML2",
+            run_name=f"env={env} (ref)",
+            env_name=env,
+            seed=1,
+            priority=priority,
+            learn_second_moment=False,
+            default_params=SML,
+        )
+        for n_step in [1, 4, 8, 16, 32, 64]:
+            add_job(
+                experiment_name="SML2",
+                run_name=f"env={env} sml n_step={n_step}",
+                env_name=env,
+                seed=1,
+                sqr_return_n_step=n_step,
+                priority=priority,
+                default_params=SML,
+            )
+
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
@@ -1343,5 +1387,6 @@ def setup(priority_modifier=0):
     rc()
     re1(priority=50)
     abs(priority=-50)
+    second_moment(199)
 
 

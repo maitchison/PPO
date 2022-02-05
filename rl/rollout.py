@@ -20,7 +20,7 @@ import math
 
 from .logger import Logger
 from . import utils, atari, hybridVecEnv, wrappers, models, compression
-from .returns import get_return_estimate, _interpolate
+from .returns import get_return_estimate
 from .config import args
 from .mutex import Mutex
 from .replay import ExperienceReplayBuffer
@@ -505,7 +505,7 @@ class Runner:
             log.info(f"Compression <green>enabled<end>")
             self.all_obs = np.zeros([N + 1, A], dtype=np.object)
         else:
-            FORCE_PINNED = True
+            FORCE_PINNED = args.device != "cpu"
             if FORCE_PINNED:
                 # make the memory pinned...
                 all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8)
@@ -585,10 +585,6 @@ class Runner:
         #  these horizons will always be generated and their scores logged.
         self.tvf_debug_horizons = [0] + self.get_standard_horizon_sample(args.tvf_max_horizon)
 
-        # quick check to make sure value transform is correct
-        for x in [3.1415, -3.1415, 0, 10, -10, 1, -1, 10000, -10000]:
-            new_x = ValueTransform.H(ValueTransform.H_inv(x))
-            assert abs(new_x - x) < 1e-6, f"Expected H(H^-1({x})) to be {x} but was {new_x}"
 
     def anneal(self, x, mode: str = "linear"):
 
@@ -702,7 +698,6 @@ class Runner:
                 self.vec_env,
                 gamma=args.reward_normalization_gamma,
                 scale=args.reward_scale,
-                returns_transform=lambda x: ValueTransform.H(x)
             )
 
         if verbose:
@@ -889,14 +884,14 @@ class Runner:
             self,
             value_sample_horizons: Union[list, np.ndarray],
             required_horizons: Union[list, np.ndarray, int],
+            head: str = "ext", # ext|int
             obs=None,
             time=None,
             rewards=None,
             dones=None,
             tvf_mode=None,
             tvf_n_step=None,
-            masked=None,
-            adaptive=None,
+            square: bool = False,
     ):
         """
         Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
@@ -905,6 +900,7 @@ class Runner:
         rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
         value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
         required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
+        head: which head to use for estimate, i.e. ext_value, int_value, ext_value_square etc
         """
 
         assert utils.is_sorted(required_horizons), "Required horizons must be sorted"
@@ -923,8 +919,6 @@ class Runner:
         dones = dones if dones is not None else self.terminals
         tvf_mode = tvf_mode or args.tvf_return_mode
         tvf_n_step = tvf_n_step or args.tvf_return_n_step
-        masked = masked or args.tvf_return_masked
-        adaptive = adaptive or args.tvf_return_adaptive
 
         N, A, *state_shape = obs[:-1].shape
 
@@ -937,7 +931,22 @@ class Runner:
         # for MC this is just an estimate at the end of the window
         assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == self.current_horizon, "First and value horizon are required."
 
-        value_samples = self.get_value_estimates(obs=obs, time=time, horizons=value_sample_horizons, return_transformed=True)
+        value_samples = self.get_value_estimates(
+            obs=obs,
+            time=time,
+            horizons=value_sample_horizons,
+            head=f"{head}_value",
+        )
+
+        if square:
+            sqr_value_samples = self.get_value_estimates(
+                obs=obs,
+                time=time,
+                horizons=value_sample_horizons,
+                head=f"{head}_value_sqr",
+            )
+        else:
+            sqr_value_samples = None
 
         # step 2: calculate the returns
         start_time = clock.time()
@@ -949,14 +958,13 @@ class Runner:
             required_horizons=required_horizons,
             value_sample_horizons=value_sample_horizons,
             value_samples=value_samples,
-            c=args.tvf_return_c,
+            sqr_value_samples=sqr_value_samples,
             n_step=tvf_n_step,
-            lamb=args.tvf_return_lambda,
             max_samples=args.tvf_return_samples,
-            rho=args.tvf_return_rho,
-            adaptive=adaptive,
-            masked=masked,
+            square=square,
+            log=self.log
         )
+
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
             "time_return_estimate",
@@ -1341,6 +1349,22 @@ class Runner:
                 steps,
             )
 
+        # log the expected return, and expected squared return for each horizon
+        # this is just for debugging second moment learning
+        for h in self.tvf_debug_horizons:
+            # this will be a bit noisy, as we only use the first transition within the rollout.
+            if h < self.N:
+                self.log.watch_mean(
+                    f"av_r_{h}",
+                    self.ext_rewards[:h].sum(axis=0).mean(),
+                    display_width=0,
+                )
+                self.log.watch_mean(
+                    f"av_r2_{h}",
+                    (self.ext_rewards[:h].sum(axis=0)**2).mean(),
+                    display_width=0,
+                )
+
         if args.debug_terminal_logging:
             for t in range(self.N):
                 first_frame = max(t-2, 0)
@@ -1428,8 +1452,8 @@ class Runner:
     @torch.no_grad()
     def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
                             horizons: Union[None, np.ndarray, int] = None,
-                            return_transformed: bool = False,
                             include_model_out: bool = False,
+                            head: str = "ext_value",
                             ) -> Union[np.ndarray, tuple]:
         """
         Returns value estimates for each given observation
@@ -1440,8 +1464,6 @@ class Runner:
             ndarray of dims [K] (returns NAK)
             integer (returns NA for horizon given
             none (returns NA for current horizon
-        return_transformed: By default returns the true value, but can optionally return transformed value estimates.
-
 
         returns: ndarray of dims [N, A, K] if horizons was array else [N, A]
         """
@@ -1473,7 +1495,7 @@ class Runner:
                 output="value",
             )
 
-            values = model_out["tvf_value"]
+            values = model_out[f"tvf_{head}"]
 
             if scalar_output:
                 result = values.reshape([N, A]).cpu().numpy()
@@ -1485,12 +1507,7 @@ class Runner:
                 obs=obs.reshape([N * A, *state_shape]),
                 output="value",
             )
-            result = model_out["ext_value"].reshape([N, A]).cpu().numpy()
-
-        if return_transformed:
-            pass
-        else:
-            result = ValueTransform.H_inv(result)
+            result = model_out[head].reshape([N, A]).cpu().numpy()
 
         if include_model_out:
             return result, model_out
@@ -1689,7 +1706,7 @@ class Runner:
         np.random.seed(seed_base)
 
     @torch.no_grad()
-    def log_value_quality(self):
+    def log_value_quality(self, head="ext_value"):
         """
         Writes value quality stats to log
         """
@@ -1700,10 +1717,11 @@ class Runner:
             # because we use sampling it is not guaranteed that these horizons will be included, so we need to
             # recalculate everything
 
-            values = self.get_value_estimates(
+            values = self.get_value_estimates( # [N, A, K]
                 obs=self.prev_obs,
                 time=self.prev_time,
-                horizons=np.asarray(self.tvf_debug_horizons)
+                horizons=np.asarray(self.tvf_debug_horizons),
+                head=head,
             )
 
             value_samples = self.generate_horizon_sample(
@@ -1713,7 +1731,17 @@ class Runner:
                 force_first_and_last=True,
             )
 
-            targets = ValueTransform.H_inv(self.calculate_sampled_returns(
+            return_head = "ext"
+            if head == "ext_value":
+                return_square = False
+                postfix=''
+            elif head == "ext_value_sqr":
+                return_square = True
+                postfix='_sq'
+            else:
+                raise ValueError(f"Value logging does not (yet) support head {head}.")
+
+            targets = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=self.tvf_debug_horizons,
                 obs=self.all_obs,
@@ -1721,16 +1749,32 @@ class Runner:
                 rewards=self.ext_rewards,
                 dones=self.terminals,
                 tvf_mode="fixed",  # <-- MC is the least bias method we can do...
-                tvf_n_step=self.current_horizon,
-                masked=False,
-                adaptive=False,
-            ))
+                tvf_n_step=args.n_steps,
+                head=return_head,
+                square=False
+            )
+
+            first_moment_targets = targets
+
+            if return_square:
+                targets = self.calculate_sampled_returns(
+                    value_sample_horizons=value_samples,
+                    required_horizons=self.tvf_debug_horizons,
+                    obs=self.all_obs,
+                    time=self.all_time,
+                    rewards=self.ext_rewards,
+                    dones=self.terminals,
+                    tvf_mode="fixed",  # <-- MC is the least bias method we can do...
+                    tvf_n_step=args.n_steps,
+                    head=return_head,
+                    square=True
+                )
 
             total_not_explained_var = 0
             total_var = 0
-            for index, h in enumerate(self.tvf_debug_horizons):
-                value = values[:, :, index].reshape(-1)
-                target = targets[:, :, index].reshape(-1)
+            for h_index, h in enumerate(self.tvf_debug_horizons):
+                value = values[:, :, h_index].reshape(-1)
+                target = targets[:, :, h_index].reshape(-1)
 
                 this_var = np.var(target)
                 this_not_explained_var = np.var(target - value)
@@ -1740,48 +1784,34 @@ class Runner:
                 ev = 0 if (this_var == 0) else np.clip(1 - this_not_explained_var / this_var, -1, 1)
 
                 self.log.watch_mean(
-                    f"ev_{h:04d}",
+                    f"ev_{h:04d}"+postfix,
                     ev,
-                    display_width=8 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
+                    display_width=8 if (10 <= h <= 30) or h == args.tvf_max_horizon else 0,
                     history_length=1
                 )
+
+                # this is just for debugging sml
                 self.log.watch_mean(
-                    f"v_mu_{h:04d}",
+                    f"v_{h}" + postfix,
                     value.mean(),
-                    display_width=0 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
-                    history_length=1
-                )
-                self.log.watch_mean(
-                    f"v_std_{h:04d}",
-                    value.std(),
-                    display_width=0 if (10 <= h <= 100) or h == args.tvf_max_horizon else 0,
-                    history_length=1
-                )
-                self.log.watch_mean(
-                    f"tv_{h:04d}",
-                    this_var,
                     display_width=0,
                     history_length=1
                 )
-                self.log.watch_mean(
-                    f"nev_{h:04d}",
-                    this_not_explained_var,
-                    display_width=0,
-                    history_length=1
-                )
-                # raw is RMS on unscaled error
-                self.log.watch_mean(f"raw_{h:04d}", np.mean(np.square(self.reward_scale * (value - target)) ** 0.5),
-                                    display_width=0, history_length=1)
-                self.log.watch_mean(f"mse_{h:04d}", np.mean(np.square(value - target)),
-                                    display_width=0, history_length=1)
-                # val tells me the value at each horizon, using this to debug high returns in montezuma's revenge
-                self.log.watch_mean(f"val_{h:04d}", np.mean(target), display_width=0, history_length=1)
+
+                if return_square:
+                    var_est = targets[:, :, h_index] - (first_moment_targets[:, :, h_index]**2)  # [N, A]
+                    self.log.watch_mean(
+                        f"var_{h}",
+                        var_est.mean(),
+                        display_width=0,
+                        history_length=1
+                    )
 
             self.log.watch_mean(
-                f"ev_average",
+                f"ev_average"+postfix,
                 0 if (total_var == 0) else np.clip(1 - total_not_explained_var / total_var, -1, 1),
                 display_width=8,
-                display_name="ev_avg",
+                display_name="ev_avg"+postfix,
                 history_length=1
             )
 
@@ -1818,26 +1848,6 @@ class Runner:
         Returns final time
         """
         return self.all_time[-1]
-
-    def calculate_second_moment_estimate(
-            self,
-            rewards:np.ndarray,
-            first_moment_estimates:np.ndarray,
-            second_moment_estimates:np.ndarray,
-            gamma: float
-    ):
-        """
-        rewards: ndarray of dims N, A
-        first_moment_estimates: ndarray of dims N+1, A
-        second_moment_estimates: ndarray of dims N+1, A
-        gamma: float
-        """
-
-        # based on https://jmlr.org/papers/volume17/14-335/14-335.pdf
-        # the idea here is to learn the second moment, then use the first and second moments to estimate variance.
-        # this is simply a td update, might extend to n-steps later on, if I can...
-
-        return rewards**2 + 2*gamma*rewards * first_moment_estimates[1:] + (gamma**2)*second_moment_estimates[1:]
 
     def get_tvf_rediscounted_value_estimates(self, rollout, new_gamma:float):
         """
@@ -1941,22 +1951,6 @@ class Runner:
             # in this case just generate ext value estimates from model
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
 
-        if args.use_log_optimal:
-            assert not args.use_tvf, "TVF not supported with log-optimal yet."
-            # get square value estimates..., would be better to not have to forward this a second time
-
-            with torch.no_grad():
-                model_out = self.model.forward(self.all_obs.reshape([(N+1)*A, *state_shape]), output='value')
-                sqr_value = model_out['sqr_value'].reshape([(N+1), A]).cpu().numpy()
-
-            self.sqr_value = sqr_value[:-1]  # exclude final value estimate
-            self.sqr_returns = self.calculate_second_moment_estimate(
-                rewards=self.ext_rewards,
-                first_moment_estimates=ext_value_estimates,
-                second_moment_estimates=sqr_value,
-                gamma=args.gamma
-            )
-
         self.ext_value = ext_value_estimates
 
         # GAE requires inputs to be true value not transformed value...
@@ -1980,26 +1974,7 @@ class Runner:
             )
 
         # calculate ext_returns for PPO targets
-        self.ext_returns = ValueTransform.H(self.ext_advantage + ext_value_estimates[:N])
-
-        # log-optimal adjustment
-        if args.use_log_optimal:
-            assert args.value_transform == "identity", "Log optimal will (probably) not work with value transforms."
-            sqr_exp = (self.ext_value[:-1] ** 2)
-            var = np.clip(self.sqr_value - sqr_exp, 0, float('inf'))
-
-            ratios = var / (sqr_exp+1e-6)
-            ratios = np.clip(ratios, -5, 5) # just so we don't get an overflow
-
-            alpha = self.anneal(args.lo_alpha, mode="linear" if args.lo_alpha_anneal else "off")
-
-            rho = np.exp(-0.5 * alpha * ratios)
-
-            self.log.watch("lo_rho_mean", np.mean(rho))
-            self.log.watch("lo_std_mean", np.std(rho))
-
-            rho = np.clip(rho, -5, 5)
-            self.ext_advantage *= rho
+        self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
 
         if args.use_intrinsic_rewards:
 
@@ -2068,7 +2043,9 @@ class Runner:
 
         if not args.disable_ev and self.batch_counter % 2 == 0:
             # only about 3% slower with this on.
-            self.log_value_quality()
+            self.log_value_quality('ext_value')
+            if args.learn_second_moment:
+                self.log_value_quality('ext_value_sqr')
 
         if args.log_detailed_return_stats and self.batch_counter % args.ldrs_freq == 0:
             self.log_detailed_value_quality()
@@ -2145,8 +2122,6 @@ class Runner:
                 )
             return loss
         elif args.tvf_loss_fn == "h_weighted":
-
-            assert args.value_transform == "identity", "h_weighting will not work properly with transformed value."
 
             if horizons is None:
                 # assume h = args.tvf_max_horizon for all elements.
@@ -2253,8 +2228,6 @@ class Runner:
             value_heads.append("ext")
         if args.use_intrinsic_rewards:
             value_heads.append("int")
-        if args.use_log_optimal:
-            value_heads.append("sqr")
         return value_heads
 
     def train_value_minibatch(self, data, loss_scale=1.0):
@@ -2281,26 +2254,25 @@ class Runner:
             # predictions "tvf_value" are [B, K]
             # predictions need to be generated... this could take a lot of time so just sample a few..
             targets = data["tvf_returns"]
-            value_predictions = model_out["tvf_value"]
-
-            if args.tvf_soft_anchor > 0:
-                assert torch.all(data["tvf_horizons"][:, 0] == 0)
-                anchor_loss = 0.5 * args.tvf_soft_anchor * torch.mean(torch.square(value_predictions[:,  0]))
-                self.log.watch_mean("loss_anchor", anchor_loss, display_width=8)
-                loss = loss + anchor_loss
-
+            value_predictions = model_out["tvf_ext_value"]
             tvf_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
-
-            # zero out loss for 0 horizon in this special case
-            if args.tvf_soft_anchor == -1:
-                tvf_loss = tvf_loss * torch.not_equal(data["tvf_horizons"], 0)
-
             tvf_loss = tvf_loss.mean(dim=-1)
-
             tvf_loss = 0.5 * args.tvf_coef * tvf_loss.mean()
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_name="ls_tvf", display_width=8)
+
+        if args.use_tvf and args.learn_second_moment:
+            targets = data["tvf_returns_sqr"]
+            value_predictions = model_out["tvf_ext_value_sqr"]
+            # L1 loss might be better here...
+            sqr_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
+            sqr_loss = sqr_loss.mean(dim=-1)
+            sqr_loss = 0.5 * args.tvf_coef * sqr_loss.mean()
+            loss = loss + sqr_loss
+
+            self.log.watch_mean("loss_sqr", sqr_loss, history_length=64*args.value_epochs, display_name="ls_sqr", display_width=8)
+
 
         # -------------------------------------------------------------------------
         # Replay constraint
@@ -2378,39 +2350,8 @@ class Runner:
         samples.sort()
         return np.rint(samples).astype(int)
 
-    def generate_all_returns(self):
-        """
-        Generates return estimates for current batch of data.
-        This is the old algorithm with no sampling, and locked to nstep returns.
-        """
-
-        assert args.tvf_return_mode == "nstep", "Only nstep returns supported with tvf_value_samples=-1 at the moment."
-
-        value_estimates = self.get_value_estimates(
-            obs=self.all_obs,
-            time=self.all_time,
-            horizons=np.arange(0, self.current_horizon + 1),
-            return_transformed=True,
-        )
-
-        returns = calculate_tvf_n_step(
-                rewards=self.ext_rewards,
-                dones=self.terminals,
-                values=value_estimates[:-1],
-                final_value_estimates=value_estimates[-1],
-                gamma=self.tvf_gamma,
-                n_step=args.tvf_return_n_step,
-        )
-
-        horizons = np.arange(0, self.current_horizon+1)[None, None, :]
-        horizons = np.repeat(horizons, self.N, axis=0)
-        horizons = np.repeat(horizons, self.A, axis=1)
-
-        return returns, horizons
-
-
     @torch.no_grad()
-    def generate_return_sample(self, force_first_and_last: bool = False):
+    def generate_return_sample(self, horizon_samples=None, square: bool=False, force_first_and_last: bool = False):
         """
         Generates return estimates for current batch of data.
 
@@ -2427,16 +2368,13 @@ class Runner:
         H = self.current_horizon
         N, A, *state_shape = self.prev_obs.shape
 
-        horizon_samples = self.generate_horizon_sample(
-            H,
-            args.tvf_horizon_samples,
-            distribution=args.tvf_horizon_distribution,
-            force_first_and_last=force_first_and_last,
-        )
-        if args.tvf_value_samples == -1:
-            # this uses the old algorithm with no value sampling
-            returns, horizons = self.generate_all_returns()
-            return returns[..., horizon_samples], horizons[..., horizon_samples]
+        if horizon_samples is None:
+            horizon_samples = self.generate_horizon_sample(
+                H,
+                args.tvf_horizon_samples,
+                distribution=args.tvf_horizon_distribution,
+                force_first_and_last=force_first_and_last,
+            )
 
         value_samples = self.generate_horizon_sample(
             H,
@@ -2445,10 +2383,19 @@ class Runner:
             force_first_and_last=True
         )
 
-        returns = self.calculate_sampled_returns(
-            value_sample_horizons=value_samples,
-            required_horizons=horizon_samples,
-        )
+        if square:
+            returns = self.calculate_sampled_returns(
+                value_sample_horizons=value_samples,
+                required_horizons=horizon_samples,
+                tvf_mode="fixed", # for the moment just use a simple fixed estimate
+                tvf_n_step=args.sqr_return_n_step,
+                square=True
+            )
+        else:
+            returns = self.calculate_sampled_returns(
+                value_sample_horizons=value_samples,
+                required_horizons=horizon_samples,
+            )
 
         horizon_samples = horizon_samples[None, None, :]
         horizon_samples = np.repeat(horizon_samples, N, axis=0)
@@ -2758,8 +2705,6 @@ class Runner:
         if args.architecture == "single":
             # ppo trains value during policy update
             batch_data["ext_returns"] = self.ext_returns.reshape([B])
-            if args.use_log_optimal:
-                batch_data["sqr_returns"] = self.sqr_returns.reshape([B])
 
         # sort out advantages
         advantages = self.advantage.reshape(B)
@@ -2867,10 +2812,6 @@ class Runner:
             batch_data["int_returns"] = self.int_returns.reshape(B)
             batch_data["int_value"] = self.int_value[:N].reshape(B) # only needed for clipped objective
 
-        if args.use_log_optimal:
-            batch_data["sqr_returns"] = self.sqr_returns.reshape(B)
-            batch_data["sqr_value"] = self.sqr_value.reshape(B)
-
         if (not args.use_tvf) and args.use_clipped_value_loss:
             # these are needed if we are using the clipped value objective...
             batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
@@ -2913,6 +2854,16 @@ class Runner:
             batch_data["tvf_returns"] = returns.reshape([B, -1])
             batch_data["tvf_horizons"] = horizons.reshape([B, -1])
             batch_data["tvf_time"] = self.prev_time.reshape([B])
+
+            if args.learn_second_moment:
+                # todo: generate these during rollout
+                sqr_returns, _ = self.generate_return_sample(
+                    horizon_samples=horizons[0, 0, :],
+                    force_first_and_last=True,
+                    square=True
+                )
+                batch_data["tvf_returns_sqr"] = sqr_returns.reshape([B, -1])
+
 
         # abs
         if self.wants_abs_update:
@@ -2995,7 +2946,6 @@ class Runner:
                 obs=distil_obs[np.newaxis], # change from [B,*obs_shape] to [1,B,*obs_shape]
                 time=distil_time[np.newaxis],
                 horizons=horizons,
-                return_transformed=True,
                 include_model_out=args.use_intrinsic_rewards,
             )
             batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
@@ -3003,7 +2953,6 @@ class Runner:
         else:
             output = self.get_value_estimates(
                 obs=distil_obs[np.newaxis], time=distil_time[np.newaxis],
-                return_transformed=True,
                 include_model_out=args.use_intrinsic_rewards,
             )
 
@@ -3339,28 +3288,6 @@ def expand_to_h(h,x):
     x = np.repeat(x, h, axis=2)
     return x
 
-class ValueTransform():
-
-    TRANSFORM_EPSILON = 1e-2
-
-    @staticmethod
-    def H(x):
-        if args.value_transform == "identity":
-            return x
-        elif args.value_transform == "sqrt":
-            # formula was designed to handle large returns, but mine are scaled, so scale up by 1000
-            # as ext_value is ~1.2, but returns in games are usually ~1000
-            return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + ValueTransform.TRANSFORM_EPSILON * x
-
-    @staticmethod
-    def H_inv(x):
-        if args.value_transform == "identity":
-            return x
-        elif args.value_transform == "sqrt":
-            # from https://openreview.net/pdf?id=Sye57xStvB (but with corrected square...)
-            return np.sign(x) * (((np.sqrt(
-                1 + (4 * ValueTransform.TRANSFORM_EPSILON) * (np.abs(x) + 1 + ValueTransform.TRANSFORM_EPSILON)) - 1) / (
-                                              2 * ValueTransform.TRANSFORM_EPSILON)) ** 2 - 1)
 
 class RolloutBuffer():
     """ Saves a rollout """

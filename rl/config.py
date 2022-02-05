@@ -102,19 +102,13 @@ class Config:
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
         self.tvf_return_n_step = int()
-        self.tvf_return_lambda = float()
-        self.tvf_return_rho = float()
-        self.tvf_return_c = float()
-        self.tvf_return_adaptive = bool()
-        self.tvf_return_masked = bool()
+        self.sqr_return_n_step = int()
 
         self.hidden_units   = int()
         self.tvf_activation     = str()
-        self.tvf_soft_anchor    = float()
         self.tvf_horizon_scale  = str()
         self.tvf_time_scale = str()
 
-        self.tvf_n_dedicated_value_heads  = int()
         self.tvf_force_ext_value_distil = bool()
         self.tvf_hidden_units = int()
         self.use_tvf = bool()
@@ -204,13 +198,9 @@ class Config:
 
         self.full_action_space = bool()
         self.terminal_on_loss_of_life = bool()
-        self.value_transform = str()
         self.force_restore = bool()
 
-        # log optimal
-        self.use_log_optimal = bool()
-        self.lo_alpha = float()
-        self.lo_alpha_anneal = bool()
+        self.learn_second_moment = bool()
 
         # ema frame stack
         self.ema_frame_stack_gamma = float()
@@ -311,6 +301,11 @@ def str2bool(v):
 
 def parse_args(no_env=False, args_override=None):
 
+    REMOVED_PARAMS = [
+        "tvf_soft_anchor", "tvf_exp_mode", "value_transform",
+        "tvf_n_dedicated_value_heads",
+    ]
+
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
     if not no_env:
@@ -355,12 +350,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
     parser.add_argument("--tvf_return_samples", type=int, default=40, help="Number of n-step samples to use for tvf_lambda calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
-    parser.add_argument("--tvf_return_lambda", type=float, default=0.95, help="Lambda for TVF(\lambda)")
-    parser.add_argument("--tvf_return_rho", type=float, default=1.5, help="Rho for geometric mode")
-    parser.add_argument("--tvf_return_c", type=float, default=25.0, help="Used for adaptive return estimation.")
-    parser.add_argument("--tvf_return_adaptive", type=str2bool, default=False, help="Enables adaptive horizon return estimation")
-    parser.add_argument("--tvf_return_masked", type=str2bool, default=False,
-                        help="Changes how n_step estimates are handled when there are not enough rewards (not working well).")
+    parser.add_argument("--sqr_return_n_step", type=int, default=80, help="n step to use for tvf_return_sqr estimation")
     parser.add_argument("--log_detailed_return_stats", type=str2bool, default=False,
                         help="Enables recording of variance / bias for *all* return estimators durning training. (this is very slow!).")
     parser.add_argument("--ldrs_samples", type=int, default=64)
@@ -382,9 +372,7 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--checkpoint_compression", type=str2bool, default=True, help="Enables checkpoint compression.")
 
-    parser.add_argument("--tvf_n_dedicated_value_heads", type=int, default=0)
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
-    parser.add_argument("--tvf_soft_anchor", type=float, default=50.0, help="MSE loss for V(*,0) being non-zero.")
 
     parser.add_argument("--abs_mode", type=str, default="off", help="Enables adaptive batch size. [off|on|shadow]")
 
@@ -398,10 +386,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--sa_mu", type=float, default=0.0)
     parser.add_argument("--sa_sigma", type=float, default=0.05)
 
-    # log-optimal
-    parser.add_argument("--use_log_optimal", type=str2bool, default=False, help="Enabled Log-Optimal mode.")
-    parser.add_argument("--lo_alpha", type=float, default=1.0, help="Risk factor for log-optimal mode.")
-    parser.add_argument("--lo_alpha_anneal", type=str2bool, default=False)
+    # second moment
+    parser.add_argument("--learn_second_moment", type=str2bool, default=False, help="Learns the second moment of the return.")
 
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
@@ -472,7 +458,7 @@ def parse_args(no_env=False, args_override=None):
                         help="Anneals learning rate to 0 (linearly) over training")
     parser.add_argument("--distil_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
                         help="Anneals learning rate to 0 (linearly) over training")
-    parser.add_argument("--value_transform", type=str, default="identity", help="[identity|sqrt]")
+
     parser.add_argument("--anneal_target_epoch", type=float, default=None, help="Epoch to anneal to zero by")
 
     # -----------------
@@ -594,9 +580,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--sticky_actions", type=str2bool, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--tvf_exp_gamma", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--tvf_mode", type=str, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--tvf_exp_mode", type=str, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--tvf_n_step", type=int, default=None, help=argparse.SUPPRESS)
 
+    for param in REMOVED_PARAMS:
+        parser.add_argument(f"--{param}", type=str, default=None, help=argparse.SUPPRESS)
 
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
@@ -636,8 +623,10 @@ def parse_args(no_env=False, args_override=None):
         args.tvf_return_mode = args.tvf_mode
     if args.tvf_n_step is not None:
         args.tvf_return_n_step = args.tvf_n_step
-    if args.tvf_exp_mode is not None:
-        print("Warning, tvf_exp_mode has been removed, and is being ignored.")
+
+    for param in REMOVED_PARAMS:
+        if param in vars(args).keys() and vars(args)[param] is not None:
+            print(f"Warning, {param} has been removed, and is being ignored.")
 
 
     # legacy settings

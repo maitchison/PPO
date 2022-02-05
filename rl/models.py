@@ -228,7 +228,6 @@ class DualHeadNet(nn.Module):
             tvf_horizon_transform,
             tvf_time_transform,
             tvf_max_horizon,
-            tvf_n_dedicated_value_heads: int = 0,
             tvf_value_scale_fn="identity",
             tvf_value_scale_norm="max",
             actions=None,
@@ -257,7 +256,6 @@ class DualHeadNet(nn.Module):
             self.policy_head = nn.Linear(self.encoder.hidden_units, actions)
 
         if self.use_value_head:
-            self.tvf_n_dedicated_value_heads = tvf_n_dedicated_value_heads
             self.tvf_activation = tvf_activation
             self.horizon_transform = tvf_horizon_transform
             self.time_transform = tvf_time_transform
@@ -266,7 +264,8 @@ class DualHeadNet(nn.Module):
             self.value_head = nn.Linear(self.encoder.hidden_units, 4)
             self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
             self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
-            self.tvf_head = nn.Linear(tvf_hidden_units, self.tvf_n_dedicated_value_heads + 1)
+            # we want intrinsic / extrinsic versions of first and second moments.
+            self.tvf_head = nn.Linear(tvf_hidden_units, 4, bias=False) # bias can cause problems as it will offset the entire curve.
 
             # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
             torch.nn.init.uniform_(
@@ -371,7 +370,8 @@ class DualHeadNet(nn.Module):
             value_values = self.value_head(features)
             result['ext_value'] = value_values[:, 0]
             result['int_value'] = value_values[:, 1]
-            result['sqr_value'] = value_values[:, 2]
+            result['ext_value_sqr'] = value_values[:, 2]
+            result['int_value_sqr'] = value_values[:, 3]
 
             # auxiliary features
             if aux_features is not None:
@@ -383,37 +383,23 @@ class DualHeadNet(nn.Module):
                 aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
                 _, H, _ = aux_features.shape
 
-                def get_tvf_values(features, aux_features):
-                    transformed_aux_features = torch.zeros_like(aux_features)
-                    horizon_in = aux_features[:, :, 0]
-                    time_in = aux_features[:, :, 1]
-                    transformed_aux_features[:, :, 0] = self.horizon_transform(horizon_in)
-                    transformed_aux_features[:, :, 1] = self.time_transform(time_in)
-                    features_part = self.tvf_hidden(features)
-                    aux_part = self.tvf_hidden_aux(transformed_aux_features)
-                    tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
-                    values = self.tvf_head(tvf_h)
-                    return self.apply_value_scale(values, horizon_in)
+                transformed_aux_features = torch.zeros_like(aux_features)
+                horizon_in = aux_features[:, :, 0]
+                time_in = aux_features[:, :, 1]
+                transformed_aux_features[:, :, 0] = self.horizon_transform(horizon_in)
+                transformed_aux_features[:, :, 1] = self.time_transform(time_in)
+                features_part = self.tvf_hidden(features)
+                aux_part = self.tvf_hidden_aux(transformed_aux_features)
+                tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
+                values = self.tvf_head(tvf_h)
+                values = self.apply_value_scale(values, horizon_in)
+                result['tvf_value'] = values[..., 0]  # old alise for tvf_ext_value
+                result['tvf_values'] = values  # helpful sometimes to just have all the values together
+                result['tvf_ext_value'] = values[..., 0]
+                result['tvf_int_value'] = values[..., 1]
+                result['tvf_ext_value_sqr'] = values[..., 2]  # second moment estimates...
+                result['tvf_int_value_sqr'] = values[..., 3]
 
-                if self.tvf_n_dedicated_value_heads == 0:
-                    # this is the old solution, just one head that predicts all horizons
-                    result['tvf_value'] = get_tvf_values(features, aux_features)[..., 0]
-                else:
-                    # for n heads are for horizons h, final head is the generic one.
-                    # this isn't the most efficient code, but it'll do...
-                    # what I'd like to do is to have separate networks, so dedicated heads do not require the horizon
-                    # to be input...
-                    values = get_tvf_values(features, aux_features)
-                    specific_values = values[..., :-1]
-                    specific_values[..., 0] = 0 # set h_0 = 0
-                    generic_values = values[..., -1]
-                    result['tvf_value'] = generic_values
-                    horizons = aux_features[:, :, 0]
-                    for h in range(0, self.tvf_n_dedicated_value_heads):
-                        # there's probably a better 'masked select' way to do this...
-                        mask = (horizons == h)
-                        inv_mask = torch.logical_not(mask)
-                        result['tvf_value'] = result['tvf_value'] * inv_mask + specific_values[..., h] * mask
         return result
 
 
@@ -456,7 +442,6 @@ class TVFModel(nn.Module):
             hidden_units:int = 512,
             tvf_hidden_units: int = 512,
             tvf_activation:str = "relu",
-            tvf_n_dedicated_value_heads:int = 0,
             tvf_value_scale_fn: str = "identity",
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
@@ -487,7 +472,6 @@ class TVFModel(nn.Module):
             tvf_hidden_units=tvf_hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
             tvf_time_transform=tvf_time_transform,
-            tvf_n_dedicated_value_heads=tvf_n_dedicated_value_heads,
             tvf_max_horizon=tvf_max_horizon,
             tvf_value_scale_fn=tvf_value_scale_fn,
             tvf_value_scale_norm=tvf_value_scale_norm,

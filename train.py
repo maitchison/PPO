@@ -126,7 +126,6 @@ def main():
         use_rnn=False,
         tvf_horizon_transform=rollout.horizon_scale_function,
         tvf_time_transform=rollout.time_scale_function,
-        tvf_n_dedicated_value_heads=args.tvf_n_dedicated_value_heads,
         tvf_max_horizon=args.tvf_max_horizon,
         tvf_value_scale_fn=args.tvf_value_scale_fn,
         tvf_value_scale_norm=args.tvf_value_scale_norm,

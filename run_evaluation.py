@@ -14,10 +14,11 @@ import argparse
 
 import json
 import pickle
-import time
+import time as clock
 import sys
 import socket
 import gzip
+from tqdm import tqdm
 
 from typing import Union, List, Dict
 
@@ -75,13 +76,13 @@ class CompressedStack():
         self._compression_time = None
 
     def append(self, x:np.ndarray):
-        start_time = time.time()
+        start_time = clock.time()
         compressed_data = lib.compress(x.tobytes())
         self.buffer.append((x.dtype, x.shape, compressed_data))
         self._uncompressed_size += x.nbytes
         self._compressed_size += len(compressed_data)
-        self._compression_time = self._compression_time or (time.time()-start_time)
-        self._compression_time = 0.999 * self._compression_time + 0.001 * (time.time()-start_time)
+        self._compression_time = self._compression_time or (clock.time()-start_time)
+        self._compression_time = 0.999 * self._compression_time + 0.001 * (clock.time()-start_time)
 
     @property
     def ratio(self):
@@ -257,32 +258,6 @@ def make_model(env):
             dtype=torch.float32,
             **{k:v for k,v in additional_args.items() if k in allowed_args},
         )
-
-class VT():
-    """
-    Coppied from rollout, should use rollout.ValueTransform, but older scripts won't have it...
-    """
-
-    TRANSFORM_EPSILON = 1e-2
-
-    @staticmethod
-    def H(x):
-        if args.value_transform == "identity":
-            return x
-        elif args.value_transform == "sqrt":
-            # formula was designed to handle large returns, but mine are scaled, so scale up by 1000
-            # as ext_value is ~1.2, but returns in games are usually ~1000
-            return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + VT.TRANSFORM_EPSILON * x
-
-    @staticmethod
-    def H_inv(x):
-        if args.value_transform == "identity":
-            return x
-        elif args.value_transform == "sqrt":
-            # from https://openreview.net/pdf?id=Sye57xStvB (but with corrected square...)
-            return np.sign(x) * (((np.sqrt(
-                1 + (4 * VT.TRANSFORM_EPSILON) * (np.abs(x) + 1 + VT.TRANSFORM_EPSILON)) - 1) / (
-                                              2 * VT.TRANSFORM_EPSILON)) ** 2 - 1)
 
 
 def discount_rewards(rewards, gamma):
@@ -503,6 +478,8 @@ def generate_rollouts(
     @param rewards_only: if true returns only the rewards gained.
     """
 
+    start_time = clock.time()
+
     model.test_mode = True
     seed_base = seed_base or eval_args.seed
 
@@ -528,7 +505,8 @@ def generate_rollouts(
                 'tvf_discounted_values': [],  # values for each horizon discounted with TVF_gamma instead of gamma, [K]
                 'times': [],  # normalized time step
                 'raw_values': [],  # values for each horizon of dims [K] (unscaled)
-                'errors': [],   # std error estimates for each horizon of dims [K]
+                'std': [],   # estimated std of return for each horizon of dims [K]
+                'sqr': [],  # estimated expected square of return for each horizon of dims [K]
                 'model_values': [], # models predicted value (float)
                 'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
                 'raw_rewards': [], # raw unscaled reward from the atari environment
@@ -549,12 +527,6 @@ def generate_rollouts(
         times = np.zeros([num_rollouts])
     else:
         times = env_times
-
-    # get value transform (will not be in some of the older scripts)
-    try:
-        ValueTransform = rollout.ValueTransform
-    except:
-        ValueTransform = VT
 
     # set seeds
     torch.manual_seed(seed_base)
@@ -705,6 +677,12 @@ def generate_rollouts(
             append_buffer('actions', actions[i])
             append_buffer('probs', probs[i])
 
+            if args.learn_second_moment:
+                variance = (model_out["tvf_ext_value_sqr"] - model_out["tvf_ext_value"] ** 2)[i].detach().cpu().numpy()
+                append_buffer('std', np.clip(variance, 0, float('inf')**0.5))
+                append_buffer('sqr', model_out["tvf_ext_value_sqr"][i].detach().cpu().numpy())
+
+
             if 'frames' in buffers[i]:
                 agent_layers = prev_states[i]
                 channels = prev_infos[i].get("channels", None)
@@ -714,7 +692,7 @@ def generate_rollouts(
 
             if horizons is not None:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
-                values = ValueTransform.H_inv(values)
+                values = values
 
                 if needs_rediscount():
                     append_buffer('tvf_discounted_values', values)
@@ -733,7 +711,11 @@ def generate_rollouts(
 
         frame_count += 1
 
-    print(f" (completed {frame_count} out of max {max_frames})")
+    multiplier = "" if num_rollouts == 1 else f" (x{num_rollouts})"
+
+    time_taken = clock.time() - start_time
+    fps = frame_count / time_taken
+    print(f" (length {frame_count}, fps: {fps:.1f}){multiplier}")
 
     # turn lists into np arrays
     for buffer in buffers:
@@ -991,18 +973,9 @@ def export_movie(
     y_min = min(min_true_return, min_value_estimate)
 
     # draw background plot
-    #inv_score = args.environment == "Skiing" # hack to make skiing plot correctly.
     inv_score = False # not needed any more
-    log_fig = QuickPlot(y_min, y_max, log_scale=True, invert_score=inv_score)
-    linear_fig = QuickPlot(y_min, y_max, log_scale=False, invert_score=inv_score)
-    plot_height, plot_width = log_fig.buffer.shape[:2]
-
-    def plot(xs, ys, color:typing.Union[str, tuple] ='white'):
-        """
-        Plot data on both the log and linear graphs
-        """
-        log_fig.plot(xs, ys, color)
-        linear_fig.plot(xs, ys, color)
+    fig = QuickPlot(y_min, y_max, log_scale=True, invert_score=inv_score)
+    plot_height, plot_width = fig.buffer.shape[:2]
 
     # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
     final_score = sum(raw_rewards)
@@ -1016,14 +989,14 @@ def export_movie(
     max_fps = float('-inf')
     min_fps = float('inf')
 
-    marker_time = time.time()
-    very_start_time = time.time()
+    marker_time = clock.time()
+    very_start_time = clock.time()
     fps_list = []
 
     # run through video and generate data
-    for t in range(len(rewards)):
+    for t in tqdm(range(len(rewards))):
 
-        start_frame_time = time.time()
+        start_frame_time = clock.time()
 
         # get frames
         frame = buffer["frames"].get(t)
@@ -1053,8 +1026,22 @@ def export_movie(
             return_sample = None
 
         # plotting...
-        log_fig.clear()
-        linear_fig.clear()
+        fig.clear()
+
+        if args.use_tvf and args.learn_second_moment:
+            # show 1 standard deviations
+            xs = list(range(len(buffer["values"][t])))
+            err = buffer["std"][t] * 1
+            ys_min = (buffer["values"][t] - err) * REWARD_SCALE  # model learned scaled rewards
+            ys_max = (buffer["values"][t] + err) * REWARD_SCALE  # model learned scaled rewards
+            color = (0.1, 0.1, 0.2)
+            fig.plot_between(xs, ys_min, ys_max, color)
+
+            color = (0.4, 0.4, 0.4)
+            fig.plot_between(xs, ys_min, ys_max, color, edges_only=True)
+
+            sqrt_square = (np.abs(buffer["sqr"][t]) ** 0.5) * np.sign(buffer["sqr"][t]) * REWARD_SCALE
+            fig.plot(xs, sqrt_square, (0.6, 0.3, 0.1))
 
         if return_sample is not None:
             # plot return sample
@@ -1062,19 +1049,16 @@ def export_movie(
             mean = np.mean(return_sample, axis=0)
 
             xs = list(range(len(mean)))
-            for p in [log_fig, linear_fig]:
-                low = np.quantile(return_sample, 0.5 - 0.9545/2, axis=0)
-                high = np.quantile(return_sample, 0.5 + 0.9545/2, axis=0)
-                p.plot_between(xs, low, high, (0.10, 0.10, 0.20))
-            for p in [log_fig, linear_fig]:
-                low = np.quantile(return_sample, 0.50 - 0.341, axis=0)
-                high = np.quantile(return_sample, 0.50 + 0.341, axis=0)
-                p.plot_between(xs, low, high, (0.25, 0.25, 0.35))
-            for p in [log_fig, linear_fig]:
-                low = np.min(return_sample, axis=0)
-                high = np.max(return_sample, axis=0)
-                p.plot_between(xs, low, high, (0.45, 0.25, 0.35), edges_only=True)
-            plot(xs, mean, (0.45,0.45,0.55))
+            low = np.quantile(return_sample, 0.5 - 0.9545/2, axis=0)
+            high = np.quantile(return_sample, 0.5 + 0.9545/2, axis=0)
+            fig.plot_between(xs, low, high, (0.10, 0.10, 0.20))
+            low = np.quantile(return_sample, 0.50 - 0.341, axis=0)
+            high = np.quantile(return_sample, 0.50 + 0.341, axis=0)
+            fig.plot_between(xs, low, high, (0.25, 0.25, 0.35))
+            low = np.min(return_sample, axis=0)
+            high = np.max(return_sample, axis=0)
+            fig.plot_between(xs, low, high, (0.45, 0.25, 0.35), edges_only=True)
+            fig.plot(xs, mean, (0.45,0.45,0.55))
         else:
             # otherwise plot this episodes return
             if len(true_returns) < args.tvf_max_horizon+1:
@@ -1083,35 +1067,35 @@ def export_movie(
                 true_returns = padded_true_returns
             xs = list(range(len(true_returns)))
             ys = true_returns
-            plot(xs, ys, 'lightcoral')
+            fig.plot(xs, ys, 'lightcoral')
 
         # show current horizon
-        plot([CURRENT_HORIZON], [0], 'white')
+        fig.plot([CURRENT_HORIZON], [0], 'white')
 
         # plot predicted values
         if args.use_tvf:
+
             xs = list(range(len(buffer["values"][t])))
             ys = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
-            plot(xs, ys, 'greenyellow')
+            fig.plot(xs, ys, 'greenyellow')
         else:
             # white dot representing value estimate
             xs = [args.tvf_max_horizon-10, args.tvf_max_horizon]
             y = buffer["model_values"][t] * REWARD_SCALE
             ys = [y, y]
-            plot(xs, ys, 'white')
+            fig.plot(xs, ys, 'white')
 
         if needs_rediscount():
             # plot originally predicted values (without rediscounting)
             xs = list(range(len(buffer["tvf_discounted_values"][t])))
             ys = buffer["tvf_discounted_values"][t] * REWARD_SCALE  # model learned scaled rewards
-            plot(xs, ys, 'green')
+            fig.plot(xs, ys, 'green')
             # also plot true score (with tvf_gamma)
             xs = list(range(len(true_tvf_discounted_returns)))
             ys = true_tvf_discounted_returns
-            plot(xs, ys, 'purple')
+            fig.plot(xs, ys, 'purple')
 
-        frame[:plot_height, -plot_width:] = log_fig.buffer
-        frame[plot_height:plot_height*2, -plot_width:] = linear_fig.buffer
+        frame[:plot_height, -plot_width:] = fig.buffer
 
         # show clock
         frame_height, frame_width, frame_channels = frame.shape
@@ -1130,7 +1114,7 @@ def export_movie(
 
         video_out.write(frame)
 
-        frame_time = time.time() - start_frame_time
+        frame_time = clock.time() - start_frame_time
 
         fps = 1 / frame_time
         fps_list.append(fps)
@@ -1138,13 +1122,13 @@ def export_movie(
         min_fps = min(fps, min_fps)
 
         # every 60 second print time
-        if (time.time() - marker_time) > 60:
-            print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-100:]):.1f} FPS> ", end='', flush=True)
-            marker_time = time.time()
+        # if (clock.time() - marker_time) > 60:
+        #     print(f"<{t}/{len(rewards)} - {np.mean(fps_list[-100:]):.1f} FPS> ", end='', flush=True)
+        #     marker_time = clock.time()
 
     video_out.release()
 
-    end_time = time.time()
+    end_time = clock.time()
     print(f"completed at {len(rewards) / (end_time - very_start_time):.1f} FPS")
 
     # rename temp file...
