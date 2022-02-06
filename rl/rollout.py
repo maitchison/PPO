@@ -891,7 +891,7 @@ class Runner:
             dones=None,
             tvf_mode=None,
             tvf_n_step=None,
-            sqrt_second_moment: bool = False,
+            sqrt_m2: bool = False,
     ):
         """
         Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
@@ -939,17 +939,17 @@ class Runner:
             head=f"{head}_value",
         )
 
-        if sqrt_second_moment:
+        if sqrt_m2:
             sqrt_m2_value_samples = self.get_value_estimates(
                 obs=obs,
                 time=time,
                 horizons=value_sample_horizons,
-                head=f"{head}_value_sqr",
+                head=f"{head}_value_m2",
             )
             # model predicts sqrt of sqr, so need to square it here
-            m2_value_samples = np.maximum(sqrt_m2_value_samples, 0) ** 2
+            value_samples_m2 = np.maximum(sqrt_m2_value_samples, 0) ** 2
         else:
-            m2_value_samples = None
+            value_samples_m2 = None
 
         # step 2: calculate the returns
         start_time = clock.time()
@@ -961,13 +961,11 @@ class Runner:
             required_horizons=required_horizons,
             value_sample_horizons=value_sample_horizons,
             value_samples=value_samples,
-            sqr_value_samples=m2_value_samples,
+            value_samples_m2=value_samples_m2,
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
-            second_moment=sqrt_second_moment,
-            log=self.log
         )
-        if sqrt_second_moment:
+        if sqrt_m2:
             returns = np.maximum(returns, 0) ** 0.5
 
         return_estimate_time = clock.time() - start_time
@@ -1740,9 +1738,9 @@ class Runner:
             if head == "ext_value":
                 return_square = False
                 postfix=''
-            elif head == "ext_value_sqr":
+            elif head == "ext_value_m2":
                 return_square = True
-                postfix='_sq'
+                postfix='_m2'
             else:
                 raise ValueError(f"Value logging does not (yet) support head {head}.")
 
@@ -1756,7 +1754,7 @@ class Runner:
                 tvf_mode="fixed",  # <-- MC is the least bias method we can do...
                 tvf_n_step=args.n_steps,
                 head=return_head,
-                sqrt_second_moment=False
+                sqrt_m2=False
             )
 
             first_moment_targets = targets
@@ -1772,7 +1770,7 @@ class Runner:
                     tvf_mode="fixed",  # <-- MC is the least bias method we can do...
                     tvf_n_step=args.n_steps,
                     head=return_head,
-                    sqrt_second_moment=True
+                    sqrt_m2=True
                 )
 
             total_not_explained_var = 0
@@ -2050,7 +2048,7 @@ class Runner:
             # only about 3% slower with this on.
             self.log_value_quality('ext_value')
             if args.learn_second_moment:
-                self.log_value_quality('ext_value_sqr')
+                self.log_value_quality('ext_value_m2')
 
         if args.log_detailed_return_stats and self.batch_counter % args.ldrs_freq == 0:
             self.log_detailed_value_quality()
@@ -2268,14 +2266,14 @@ class Runner:
             self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_name="ls_tvf", display_width=8)
 
         if args.use_tvf and args.learn_second_moment:
-            targets = data["tvf_returns_sqr"]
-            value_predictions = model_out["tvf_ext_value_sqr"]
+            targets = data["tvf_returns_m2"]
+            value_predictions = model_out["tvf_ext_value_m2"]
             sqr_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
             sqr_loss = sqr_loss.mean(dim=-1)
             sqr_loss = 0.5 * args.tvf_coef * sqr_loss.mean()
             loss = loss + sqr_loss
 
-            self.log.watch_mean("loss_sqr", sqr_loss, history_length=64*args.value_epochs, display_name="ls_sqr", display_width=8)
+            self.log.watch_mean("loss_m2", sqr_loss, history_length=64*args.value_epochs, display_name="ls_m2", display_width=8)
 
 
         # -------------------------------------------------------------------------
@@ -2355,13 +2353,15 @@ class Runner:
         return np.rint(samples).astype(int)
 
     @torch.no_grad()
-    def generate_return_sample(self, horizon_samples=None, square: bool=False, force_first_and_last: bool = False):
+    def generate_return_sample(self, horizon_samples=None, sqrt_m2: bool=False, force_first_and_last: bool = False):
         """
         Generates return estimates for current batch of data.
 
         force_first_and_last: if true always includes first and last horizon
 
         Note: could roll this into calculate_sampled_returns, and just have it return the horizons aswell?
+
+        @param sqrt_m2: returns the sqrt of the second moment instead of the first moment
 
         returns:
             returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
@@ -2387,16 +2387,14 @@ class Runner:
             force_first_and_last=True
         )
 
-        if square:
+        if sqrt_m2:
             returns = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=horizon_samples,
                 tvf_mode=args.sqr_return_mode, # for the moment just use a simple fixed estimate
                 tvf_n_step=args.sqr_return_n_step,
-                sqrt_second_moment=True
+                sqrt_m2=True
             )
-            # we learn the square of the expected square
-            returns = returns.clip(returns, 0, float('inf')) ** 0.5
         else:
             returns = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
@@ -2863,12 +2861,12 @@ class Runner:
 
             if args.learn_second_moment:
                 # todo: generate these during rollout
-                sqr_returns, _ = self.generate_return_sample(
+                sqrt_m2_returns, _ = self.generate_return_sample(
                     horizon_samples=horizons[0, 0, :],
                     force_first_and_last=True,
-                    square=True
+                    sqrt_m2=True
                 )
-                batch_data["tvf_returns_sqr"] = sqr_returns.reshape([B, -1])
+                batch_data["tvf_returns_m2"] = sqrt_m2_returns.reshape([B, -1])
 
 
         # abs

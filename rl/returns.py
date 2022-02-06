@@ -1,8 +1,61 @@
 import numpy as np
-import time
+import time as clock
 import bisect
 import math
 from collections import defaultdict
+
+
+def test_return_estimators(log=None):
+    """
+    Run a sequence of tests to make sure return estimators are correct.
+    """
+
+    st0 = np.random.get_state()
+    np.random.seed(123)
+
+    # create random data...
+    N, A, K, V = [64, 32, 14, 16]
+    default_args = {
+        'gamma': 0.99,
+        'rewards': np.random.random_integers(0, 2, [N, A]).astype('float32'),
+        'dones': (np.random.random_integers(0, 100, [N, A]) > 95),
+        'required_horizons': np.geomspace(1, 1024, num=K).astype('int32'),
+        'value_sample_horizons': np.geomspace(1, 1024, num=V).astype('int32'),
+        'value_samples': np.random.normal(0.1, 0.4, [N+1, A, V]),
+        'value_samples_m2': np.random.normal(0.1, 0.4, [N+1, A, V]) ** 2,
+    }
+
+    m3 = np.random.normal(0.1, 0.4, [N+1, A, V]) ** 3,
+
+    def verify(label: str, **kwargs):
+
+        args = default_args.copy()
+        args.update(kwargs)
+
+        start_time = clock.time()
+        m1_ref, m2_ref = np.stack(get_return_estimate(**args, force_reference=True))
+        r1_time = clock.time() - start_time
+
+        start_time = clock.time()
+        m1, m2 = np.stack(get_return_estimate(**args, force_reference=False))
+        r2_time = clock.time() - start_time
+
+        delta_m1 = np.abs(m1_ref - m1)
+        delta_m2 = np.abs(m2_ref - m2)
+
+        e_m1 = np.log10(delta_m1.max()+1e-12)
+        e_m2 = np.log10(delta_m2.max()+1e-12)
+
+        ratio = r1_time / r2_time
+
+        print(f"Times {r1_time:.1f}ms / {r2_time:.1f} ({ratio:.1f}x), error for {label} = {e_m1}/{e_m2}")
+
+
+    verify("n_step=8", mode='fixed', n_step=8)
+    verify("n_step=64", mode='fixed', n_step=64)
+
+    np.random.set_state(st0)
+
 
 def get_return_estimate(
     mode: str,
@@ -12,20 +65,36 @@ def get_return_estimate(
     required_horizons: np.ndarray,
     value_sample_horizons: np.ndarray,
     value_samples: np.ndarray,
-    sqr_value_samples: np.ndarray = None,
+    value_samples_m2: np.ndarray = None,
+    value_samples_m3: np.ndarray = None,
     n_step: int = 40,
     max_samples: int = 40,
-    second_moment: bool = False,
-    masked: bool = False,
-    log=None,
+    force_reference:bool = False
 ):
+    """
+    Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
+
+    @param mode: [fixed|exponential]
+    @param gamma: discount factor
+    @param rewards: float32 ndarray of dims [N, A] containing rewards
+    @param dones: bool ndarray of dims [N, A] containing true iff terminal state.
+    @param required_horizons: int32 ndarray of dims [K] containing list of horizons to calculate returns for
+    @param value_sample_horizons: int32 ndarray of dims [V] containing list of horizons for which a value estimate was calculated
+    @param value_samples: float32 ndarray of dims [N+1, A, V] bootstrap first moment estimates
+    @param value_samples_m2: float32 ndarray of dims [N+1, A, V] bootstrap second moment estimates
+    @param value_samples_m3: float32 ndarray of dims [N+1, A, V] bootstrap third moment estimates
+    @param n_step: horizon to use for fixed / exponential estimator
+    @param max_samples: maximum number of samples to use for the weighted average estimators
+    @force_reference: forces the use of the reference return estimator (which is quite slow.)
+
+    returns
+        E(r),                       (if only value_samples are provided)
+        (E(r), E(r^2)),             (if value_samples, value_samples_m2 are provided)
+        (E(r), E(r^2), E(r^3))      (if value_samples, value_samples_m2, value_samples_m3 are provided)
+
+    Where return estimates are a float32 numpy array of dims [N, A, K]
 
     """
-    @second_moment calculates the second moment instead of the first (i.e. E(return^2)
-    """
-
-    if second_moment:
-        assert sqr_value_samples is not None, "Must include bootstrapped square value samples"
 
     N, A = rewards.shape
     samples = None
@@ -38,8 +107,8 @@ def get_return_estimate(
         'required_horizons': required_horizons,
         'value_sample_horizons': value_sample_horizons,
         'value_samples': value_samples,
-        'sqr_value_samples': sqr_value_samples,
-        'masked': masked,
+        'value_samples_m2': value_samples_m2,
+        'value_samples_m3': value_samples_m3,
     }
 
     # fixed is a special case
@@ -59,20 +128,11 @@ def get_return_estimate(
         probs = weights / weights.sum()
         samples = np.random.choice(range(1, max_n + 1), max_samples, replace=True, p=probs)
 
-    if second_moment:
-        # stub for the moment verify the algorithm is working
-        # if log is not None:
-        #     random_h = np.random.randint(1, 10)
-        #     r1 = _calculate_sampled_sqr_return_multi_reference(n_step_list=[random_h], **args)
-        #     r2 = _calculate_sampled_sqr_return_multi(n_step_list=[random_h], **args)
-        #     delta = np.abs(r1-r2)
-        #     if delta.max() > 1e-6:
-        #         log.warn(f"Error for h={random_h} was {delta.mean()}/{delta.max()}")
-
-        # the fast version is almost there, but isn't quite right yet...
-        return _calculate_sampled_sqr_return_multi_reference(n_step_list=samples, **args)
+    if force_reference:
+        return _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
     else:
-        return _calculate_sampled_return_multi(n_step_list=samples, **args)
+        return _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
+
 
 def _get_adaptive_args(mode: str, h:int, c:float):
     """
@@ -117,7 +177,7 @@ def _interpolate(horizons, values, target_horizon: int):
     return value_pre * (1 - factor) + value_post * factor
 
 
-def _calculate_sampled_return_slow(n_step_list: list, **kwargs):
+def _calculate_sampled_return_reference(n_step_list: list, **kwargs):
     """
     Slow version of multi, using a loop. Used to check correctness.
     """
@@ -136,7 +196,7 @@ def _calculate_sampled_return_multi(
     required_horizons: np.ndarray,
     value_sample_horizons: np.ndarray,
     value_samples: np.ndarray,
-    sqr_value_samples: np.ndarray, # ignored
+    value_samples_m2: np.ndarray, # ignored
     n_step_weights: list = None,
     masked=False,
 ):
@@ -264,13 +324,14 @@ def _calculate_sampled_return_multi(
 
 
 def _calculate_sampled_return(
-        n_step:int,
-        gamma:float,
+        n_step: int,
+        gamma: float,
         rewards: np.ndarray,
         dones: np.ndarray,
         required_horizons: np.ndarray,
         value_sample_horizons: np.ndarray,
         value_samples: np.ndarray,
+        sqr_value_samples: np.ndarray, # not used
         masked:bool = False,
     ):
     """
@@ -399,7 +460,7 @@ def reweigh_samples(n_step_list:list, weights=None):
 
 
 
-def _calculate_sampled_sqr_return_multi_reference(
+def _calculate_sampled_return_multi_reference(
     n_step_list: list,
     gamma: float,
     rewards: np.ndarray,
@@ -407,12 +468,31 @@ def _calculate_sampled_sqr_return_multi_reference(
     required_horizons: np.ndarray,
     value_sample_horizons: np.ndarray,
     value_samples: np.ndarray,
-    sqr_value_samples: np.ndarray,
-    n_step_weights: list = None,
-    masked=False, # ignored
+    value_samples_m2: np.ndarray=None,
+    value_samples_m3: np.ndarray=None,
+    n_step_weights: list = None
 ):
     """
-    Very slow reference version of square return calculation
+    Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
+
+    @param n_step_list: a list of n_step estimates to use in weighted average
+    @param gamma: discount factor
+    @param rewards: float32 ndarray of dims [N, A] containing rewards
+    @param dones: bool ndarray of dims [N, A] containing true iff terminal state.
+    @param required_horizons: int32 ndarray of dims [K] containing list of horizons to calculate returns for
+    @param value_sample_horizons: int32 ndarray of dims [V] containing list of horizons for which a value estimate was calculated
+    @param value_samples: float32 ndarray of dims [N+1, A, V] bootstrap first moment estimates
+    @param value_samples_m2: float32 ndarray of dims [N+1, A, V] bootstrap second moment estimates
+    @param value_samples_m3: float32 ndarray of dims [N+1, A, V] bootstrap third moment estimates
+    @param n_step_weights: list of weights corresponding to n_step_list, if not given defaults to a uniform weighting
+
+    returns
+        E(r),                       (if only value_samples are provided)
+        (E(r), E(r^2)),             (if value_samples, value_samples_m2 are provided)
+        (E(r), E(r^2), E(r^3))      (if value_samples, value_samples_m2, value_samples_m3 are provided)
+
+    Where return estimates are a float32 numpy array of dims [N, A, K]
+
     """
 
     n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights)
@@ -420,12 +500,25 @@ def _calculate_sampled_sqr_return_multi_reference(
     N, A = rewards.shape
     K = len(required_horizons)
 
-    returns = np.zeros([N, A, K], dtype=np.float32)
+    returns_m1 = np.zeros([N, A, K], dtype=np.float32)
+    returns_m2 = np.zeros([N, A, K], dtype=np.float32)
+    returns_m3 = np.zeros([N, A, K], dtype=np.float32)
+
+    total_weight = sum(n_step_weights.values())
+
+    moment = 1
+    if value_samples_m2 is not None:
+        moment = 2
+    if value_samples_m3 is not None:
+        moment = 3
+
+    if moment == 3:
+        assert value_samples_m2 is not None, "Third moment requires second moment values."
 
     for h_index, h in enumerate(required_horizons):
 
         for target_n_step in n_step_list:
-            weight = n_step_weights[target_n_step]
+            weight = n_step_weights[target_n_step] / total_weight
 
             # calculate the n_step squared return estimate
             for t in range(N):
@@ -437,26 +530,73 @@ def _calculate_sampled_sqr_return_multi_reference(
 
                 # calculate s part
                 for i in range(n_step):
-                    reward_sum += rewards[t+i]
+                    reward_sum += rewards[t+i] * discount
                     discount *= gamma
                     discount *= (1 - dones[t+i])
 
                 s = reward_sum
+                m = 0
+                m2 = 0
+                m3 = 0
 
                 if h-n_step > 0:
-                    m = _interpolate(value_sample_horizons, value_samples[t+n_step], h-n_step)
-                    m2 = _interpolate(value_sample_horizons, sqr_value_samples[t+n_step], h-n_step)
-                    squared_estimate = s ** 2 + 2 * discount * s * m + (discount ** 2) * m2
+                    m = _interpolate(value_sample_horizons, value_samples[t+n_step], h-n_step) * discount
+                    if moment in [2,3]:
+                        m2 = _interpolate(value_sample_horizons, value_samples_m2[t+n_step], h-n_step) * (discount**2)
+                    if moment == 3:
+                        m3 = _interpolate(value_sample_horizons, value_samples_m3[t+n_step], h-n_step) * (discount**3)
                 else:
                     # essentially a MC estimate
-                    squared_estimate = s ** 2
+                    pass
 
-                returns[t, :, h_index] += squared_estimate * weight
+                returns_m1[t, :, h_index] += (s + m) * weight
+                if moment in [2,3]:
+                    returns_m2[t, :, h_index] += (s**2 + 2*s*m + m2) * weight
+                if moment == 3:
+                    returns_m3[t, :, h_index] += (s**3 + 3*(s**2)*m + 3*(s**1)*m2 + m3) * weight
 
-    return returns / np.sum(n_step_weights)
+    if moment == 1:
+        return returns_m1
+    elif moment == 2:
+        return returns_m1, returns_m2
+    else:
+        return returns_m1, returns_m2, returns_m3
+
+# def _calculate_sampled_return_multi_fast(
+#     n_step_list: list,
+#     gamma: float,
+#     rewards: np.ndarray,
+#     dones: np.ndarray,
+#     required_horizons: np.ndarray,
+#     value_sample_horizons: np.ndarray,
+#     value_samples: np.ndarray,
+#     value_samples_m2: np.ndarray,
+#     value_samples_m3: np.ndarray, # ignored
+#     n_step_weights: list = None,
+# ):
+#     """
+#     Just using this until I merge returns with sqr returns
+#     """
+#     args = {
+#         'gamma': gamma,
+#         'rewards': rewards,
+#         'dones': dones,
+#         'required_horizons': required_horizons,
+#         'value_sample_horizons': value_sample_horizons,
+#         'value_samples': value_samples,
+#         'value_samples_m2': value_samples_m2,
+#         'n_step_list': n_step_list,
+#         'n_step_weights': n_step_weights,
+#     }
+#     if value_samples_m2 is not None:
+#         m1 = _calculate_sampled_return_multi(**args)
+#         m2 = _calculate_sampled_sqr_return_multi(**args)
+#         return (m1, m2)
+#     else:
+#         return _calculate_sampled_return_multi(**args)
 
 
-def _calculate_sampled_sqr_return_multi(
+def _calculate_sampled_return_multi_fast(
     n_step_list: list,
     gamma: float,
     rewards: np.ndarray,
@@ -464,7 +604,7 @@ def _calculate_sampled_sqr_return_multi(
     required_horizons: np.ndarray,
     value_sample_horizons: np.ndarray,
     value_samples: np.ndarray,
-    sqr_value_samples: np.ndarray,
+    value_samples_m2: np.ndarray,
     n_step_weights: list = None,
     masked=False,
 ):
@@ -524,10 +664,14 @@ def _calculate_sampled_sqr_return_multi(
         else:
             h_lookup[h].append(index)
 
-    sqr_returns = np.zeros([N, A, K], dtype=np.float32)
+    returns_m1 = np.zeros([N, A, K], dtype=np.float32)
+    returns_m2 = np.zeros([N, A, K], dtype=np.float32)
+
     # S is defined as S_{k} sum_{i=0}^{k} gamma^i r_{t+i}, and is essentially just the cumulative reward, but capped
     # to some horizon k.
     S = np.zeros([N, A, K], dtype=np.float32) # partial reward sums
+    M = np.zeros([N, A, K], dtype=np.float32)  # partial reward sums
+    
     cumulative_rewards = np.zeros_like(rewards)
     discount = np.ones_like(rewards)
 
@@ -553,7 +697,7 @@ def _calculate_sampled_sqr_return_multi(
         while current_n_step < n_step:
             cumulative_rewards[:(N-current_n_step)] += rewards[current_n_step:] * discount[:(N-current_n_step)]
             for h in h_lookup.keys():
-                if h >= current_n_step:
+                if h >= (current_n_step+1):
                     for i in h_lookup[h]:
                         S[:(N-current_n_step), :, i] += rewards[current_n_step:] * discount[:(N-current_n_step)]
 
@@ -571,15 +715,18 @@ def _calculate_sampled_sqr_return_multi(
                 # both indexes to it. This could happen with random sampling I guess?
                 for i in h_lookup[h]:
                     if current_n_step < h and current_n_step == n_step:
-                        sqr_returns[:, :, i] += (cumulative_rewards**2) * weight # this could be done in bulk...
+                        returns_m1[:, :, i] += (cumulative_rewards) * weight # this could be done in bulk...
+                        returns_m2[:, :, i] += (cumulative_rewards**2) * weight # this could be done in bulk...
                     elif current_n_step == h:
                         # this is the final one, give it all the remaining weight...
                         if masked:
                             weight_so_far = total_weight - remaining_weight
                             weight_to_go = np.clip(h_weights[:, :, 0] - weight_so_far, 0, float('inf'))
-                            sqr_returns[:, :, i] += (cumulative_rewards**2) * weight_to_go
+                            returns_m1[:, :, i] += (cumulative_rewards) * weight_to_go
+                            returns_m2[:, :, i] += (cumulative_rewards**2) * weight_to_go
                         else:
-                            sqr_returns[:, :, i] += (cumulative_rewards**2) * remaining_weight
+                            returns_m1[:, :, i] += (cumulative_rewards) * remaining_weight
+                            returns_m2[:, :, i] += (cumulative_rewards**2) * remaining_weight
 
         # -----------------------------------
         # this is the M^2 part...
@@ -593,10 +740,11 @@ def _calculate_sampled_sqr_return_multi(
                 continue
             interpolated_sqr_value = _interpolate(
                 value_sample_horizons,
-                sqr_value_samples[steps_made:block_size + steps_made],
+                value_samples_m2[steps_made:block_size + steps_made],
                 h - steps_made
             )
-            sqr_returns[:block_size, :, h_index] += interpolated_sqr_value * (discount[:block_size]**2) * weight
+            returns_m1[:block_size, :, h_index] += interpolated_sqr_value * (discount[:block_size]) * weight
+            returns_m2[:block_size, :, h_index] += interpolated_sqr_value * (discount[:block_size]**2) * weight
 
         # next do the remaining few steps
         # this is a bit slow for large n_step, but most of the estimates are low n_step anyway
@@ -609,7 +757,7 @@ def _calculate_sampled_sqr_return_multi(
                     continue
                 for h_index, h in enumerate(required_horizons):
                     if h - steps_made > 0:
-                        interpolated_sqr_value = _interpolate(value_sample_horizons, sqr_value_samples[t + steps_made], h - steps_made)
+                        interpolated_sqr_value = _interpolate(value_sample_horizons, value_samples_m2[t + steps_made], h - steps_made)
                         sqr_returns[t, :, h_index] += interpolated_sqr_value * (discount[t]**2) * weight
 
         # -----------------------------------
@@ -632,6 +780,7 @@ def _calculate_sampled_sqr_return_multi(
                 interpolated_value * \
                 discount[:block_size] * \
                 weight
+
         # # next do the remaining few steps
         # # this is a bit slow for large n_step, but most of the estimates are low n_step anyway
         # # (this could be improved by simply ignoring these n-step estimates

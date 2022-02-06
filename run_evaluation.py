@@ -679,10 +679,10 @@ def generate_rollouts(
             append_buffer('probs', probs[i])
 
             if args.learn_second_moment:
-                sqrt_m2_est = model_out["tvf_ext_value_sqr"]
+                sqrt_m2_est = model_out["tvf_ext_value_m2"]
                 m2_est = torch.relu(sqrt_m2_est)**2
                 variance = (m2_est - model_out["tvf_ext_value"] ** 2)[i].detach().cpu().numpy()
-                append_buffer('std', np.clip(variance, 0, float('inf')**0.5))
+                append_buffer('std', np.clip(variance, 0, float('inf'))**0.5)
                 append_buffer('sqrt_m2', sqrt_m2_est[i].detach().cpu().numpy())
 
 

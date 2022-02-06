@@ -1382,16 +1382,25 @@ def second_moment(priority=0):
             'tvf_max_horizon': 300,
             'tvf_gamma': 0.99,
             'gamma': 0.99,
-            'epochs': 20,
+            'epochs': 10,
         }
     )
 
     # for env in ["CrazyClimber", "Alien", "Breakout"]:
-    for env in ["Alien"]:
+    #for env in ["Alien"]:
+    for env in []: # broken due to bad estimator
         add_job(
             experiment_name="SML3",
             run_name=f"env={env} (ref)",
             env_name=env,
+            learn_second_moment=False,
+            default_params=SML3,
+        )
+        add_job(
+            experiment_name="SML3",
+            run_name=f"env={env} (ref) (2)",
+            env_name=env,
+            seed=2,
             learn_second_moment=False,
             default_params=SML3,
         )
@@ -1414,6 +1423,55 @@ def second_moment(priority=0):
                     default_params=SML3,
                 )
 
+    SML4 = SML.copy()
+    SML4.update(
+        {
+            # this should be more stable
+            'tvf_max_horizon': 30000,
+            'tvf_gamma': 0.99997,
+            'gamma': 0.99997,
+            'epochs': 20,
+            'priority': 10,
+        }
+    )
+
+    # this was very slow
+
+    #for env in ["CrazyClimber", "Alien", "Breakout"]:
+    for env in []: # broken due to bad estimator
+        add_job(
+            experiment_name="SML4",
+            run_name=f"env={env} (ref)",
+            env_name=env,
+            learn_second_moment=False,
+            default_params=SML4,
+        )
+        add_job(
+            experiment_name="SML4",
+            run_name=f"env={env} (ref) (2)",
+            env_name=env,
+            seed=2,
+            learn_second_moment=False,
+            default_params=SML4,
+        )
+        for n_step in [1, 4, 8, 16]:
+            add_job(
+                experiment_name="SML4",
+                run_name=f"env={env} sml n_step={n_step}",
+                env_name=env,
+                sqr_return_mode="fixed",
+                sqr_return_n_step=n_step,
+                default_params=SML4,
+            )
+            if n_step > 1:
+                add_job(
+                    experiment_name="SML4",
+                    run_name=f"env={env} sml exp={n_step}",
+                    env_name=env,
+                    sqr_return_mode="exponential",
+                    sqr_return_n_step=n_step,
+                    default_params=SML4,
+                )
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.

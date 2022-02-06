@@ -397,8 +397,8 @@ class DualHeadNet(nn.Module):
                 result['tvf_values'] = values  # helpful sometimes to just have all the values together
                 result['tvf_ext_value'] = values[..., 0]
                 result['tvf_int_value'] = values[..., 1]
-                result['tvf_ext_value_sqr'] = values[..., 2]  # second moment estimates...
-                result['tvf_int_value_sqr'] = values[..., 3]
+                result['tvf_ext_value_m2'] = values[..., 2]  # second moment estimates...
+                result['tvf_int_value_m2'] = values[..., 3]
 
         return result
 
