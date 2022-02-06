@@ -98,6 +98,7 @@ class Config:
         self.tvf_value_scale_fn = str()
         self.tvf_value_scale_norm = str()
         self.tvf_gamma          = float()
+        self.return_estimator_mode = str()
 
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
@@ -566,6 +567,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
     parser.add_argument("--quiet_mode", type=str2bool, default=False)
+    parser.add_argument("--return_estimator_mode", type=str, default="default",
+                        help='Allows the use of the reference return estimator (very slow). [default|reference|verify]'
+                        )
 
     # other
     parser.add_argument("--mutex_key", type=str, default='',
@@ -599,6 +603,7 @@ def parse_args(no_env=False, args_override=None):
     assert not (args.erp_source == "both" and args.replay_size == 0), "erp_source=both requires a replay buffer"
 
     assert args.abs_mode in ["off", "on", "shadow"]
+    assert args.return_estimator_mode in ["default", "reference", "verify"]
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

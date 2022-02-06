@@ -891,7 +891,7 @@ class Runner:
             dones=None,
             tvf_mode=None,
             tvf_n_step=None,
-            sqrt_m2: bool = False,
+            include_second_moment: bool = False,
     ):
         """
         Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
@@ -901,7 +901,7 @@ class Runner:
         value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
         required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
         head: which head to use for estimate, i.e. ext_value, int_value, ext_value_square etc
-        sqrt_second_moment: returns the sqrt of the second moment (instead of the first moment)
+        sqrt_m2: returns a tuple containing (first moment, sqrt second moment)
         """
 
         assert utils.is_sorted(required_horizons), "Required horizons must be sorted"
@@ -939,7 +939,7 @@ class Runner:
             head=f"{head}_value",
         )
 
-        if sqrt_m2:
+        if include_second_moment:
             sqrt_m2_value_samples = self.get_value_estimates(
                 obs=obs,
                 time=time,
@@ -953,6 +953,7 @@ class Runner:
 
         # step 2: calculate the returns
         start_time = clock.time()
+
         returns = get_return_estimate(
             mode=tvf_mode,
             gamma=args.tvf_gamma,
@@ -964,9 +965,36 @@ class Runner:
             value_samples_m2=value_samples_m2,
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
+            force_reference=args.return_estimator_mode == "reference",
         )
-        if sqrt_m2:
-            returns = np.maximum(returns, 0) ** 0.5
+
+        if include_second_moment:
+            # we always return the sqrt of the second moment.
+            m1, m2 = returns
+            returns = (m1, np.maximum(m2, 0) ** 0.5)
+
+            # every now and then double check return estimator is ok
+            # note: this will not be needed once I've verified the fast path is correct.
+            if args.return_estimator_mode == "verify" and self.batch_counter % 32 == 31:
+                verified_m1, verified_m2 = get_return_estimate(
+                    mode=tvf_mode,
+                    gamma=args.tvf_gamma,
+                    rewards=rewards,
+                    dones=dones,
+                    required_horizons=required_horizons,
+                    value_sample_horizons=value_sample_horizons,
+                    value_samples=value_samples,
+                    value_samples_m2=value_samples_m2,
+                    n_step=tvf_n_step,
+                    max_samples=args.tvf_return_samples,
+                    force_reference=True
+                )
+                delta_m1 = np.abs(verified_m1 - m1).max()
+                delta_m2 = np.abs(verified_m2 - m2).max()
+                if delta_m1 > 1e-4 or delta_m2 > 1e-4:
+                    self.log.warn(f"Errors in return estimation {delta_m1:.5f}/{delta_m2:.5f}")
+                else:
+                    self.log.info(f"Errors in return estimation {delta_m1:.5f}/{delta_m2:.5f}")
 
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -1249,7 +1277,7 @@ class Runner:
                     self.all_time.reshape([(N + 1) * A])
                 )
             output = self.detached_batch_forward(
-                utils.merge_first_two_dims(self.all_obs),
+                utils.merge_down(self.all_obs),
                 aux_features,
                 output="full"
             )
@@ -1274,12 +1302,12 @@ class Runner:
                     samples = min(args.erp_samples, len(source))
                     sample = np.random.choice(len(source), [samples], replace=False)
                     internal_distance = self.get_diversity(source[sample], source, reduce_fn).mean()
-                    rollout_distances = self.get_diversity(utils.merge_first_two_dims(self.prev_obs), source, reduce_fn)
+                    rollout_distances = self.get_diversity(utils.merge_down(self.prev_obs), source, reduce_fn)
                     return internal_distance, rollout_distances
 
                 def get_intrinsic_rewards(mode:str):
                     if mode == "rollout" or self.replay_buffer.current_size == 0:
-                        internal_distance, rollout_distances = get_distances(utils.merge_first_two_dims(self.prev_obs))
+                        internal_distance, rollout_distances = get_distances(utils.merge_down(self.prev_obs))
                     elif mode == "replay":
                         internal_distance, rollout_distances = get_distances(self.replay_buffer.data[:self.replay_buffer.current_size])
                     else:
@@ -1341,14 +1369,14 @@ class Runner:
         steps = (np.arange(args.n_steps * args.agents) + self.step)
         if self.replay_buffer is not None:
             self.replay_buffer.add_experience(
-                utils.merge_first_two_dims(self.prev_obs),
-                utils.merge_first_two_dims(self.prev_time),
+                utils.merge_down(self.prev_obs),
+                utils.merge_down(self.prev_time),
                 steps,
             )
         for replay in self.debug_replay_buffers:
             replay.add_experience(
-                utils.merge_first_two_dims(self.prev_obs),
-                utils.merge_first_two_dims(self.prev_time),
+                utils.merge_down(self.prev_obs),
+                utils.merge_down(self.prev_time),
                 steps,
             )
 
@@ -1709,121 +1737,120 @@ class Runner:
         np.random.seed(seed_base)
 
     @torch.no_grad()
-    def log_value_quality(self, head="ext_value"):
+    def log_dna_value_quality(self, head="ext_value"):
+        targets = calculate_bootstrapped_returns(
+            self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
+        )
+        values = self.ext_value[:self.N]
+        self.log.watch_mean("ev_ext", utils.explained_variance(values.ravel(), targets.ravel()), history_length=1)
+
+    def log_curve_quality(self, estimates, targets, postfix: str = ''):
+        """
+        Calculates explained variance at each of the debug horizons
+        @param estimates: np array of dims[N,A,K]
+        @param targets: np array of dims[N,A,K]
+        where K is the length of tvf_debug_horizons
+
+        """
+        total_not_explained_var = 0
+        total_var = 0
+        for h_index, h in enumerate(self.tvf_debug_horizons):
+            value = estimates[:, :, h_index].reshape(-1)
+            target = targets[:, :, h_index].reshape(-1)
+
+            this_var = np.var(target)
+            this_not_explained_var = np.var(target - value)
+            total_var += this_var
+            total_not_explained_var += this_not_explained_var
+
+            ev = 0 if (this_var == 0) else np.clip(1 - this_not_explained_var / this_var, -1, 1)
+
+            self.log.watch_mean(
+                f"ev_{h}"+postfix,
+                ev,
+                display_width=8 if (10 <= h <= 30) or h == args.tvf_max_horizon else 0,
+                history_length=1
+            )
+
+            # this is just for debugging sml
+            self.log.watch_mean(
+                f"v_{h}" + postfix,
+                value.mean(),
+                display_width=0,
+                history_length=1
+            )
+
+        self.log.watch_mean(
+            f"ev_average"+postfix,
+            0 if (total_var == 0) else np.clip(1 - total_not_explained_var / total_var, -1, 1),
+            display_width=8,
+            display_name="ev_avg"+postfix,
+            history_length=1
+        )
+
+
+
+    @torch.no_grad()
+    def log_tvf_value_quality(self):
         """
         Writes value quality stats to log
         """
 
-        if args.use_tvf:
+        N, A, *state_shape = self.prev_obs.shape
+        K = len(self.tvf_debug_horizons)
 
-            # first we generate the value estimates, then we calculate the returns required for each debug horizon
-            # because we use sampling it is not guaranteed that these horizons will be included, so we need to
-            # recalculate everything
+        # first we generate the value estimates, then we calculate the returns required for each debug horizon
+        # because we use sampling it is not guaranteed that these horizons will be included, so we need to
+        # recalculate everything
 
-            values = self.get_value_estimates( # [N, A, K]
-                obs=self.prev_obs,
-                time=self.prev_time,
-                horizons=np.asarray(self.tvf_debug_horizons),
-                head=head,
-            )
+        model_out = self.detached_batch_forward(
+            obs=utils.merge_down(self.prev_obs),
+            aux_features=package_aux_features(np.asarray(self.tvf_debug_horizons), utils.merge_down(self.prev_time)),
+            output="value",
+        )
 
-            value_samples = self.generate_horizon_sample(
-                self.current_horizon,
-                args.tvf_value_samples,
-                distribution=args.tvf_value_distribution,
-                force_first_and_last=True,
-            )
+        value_samples = self.generate_horizon_sample(
+            self.current_horizon,
+            args.tvf_value_samples,
+            distribution=args.tvf_value_distribution,
+            force_first_and_last=True,
+        )
 
-            return_head = "ext"
-            if head == "ext_value":
-                return_square = False
-                postfix=''
-            elif head == "ext_value_m2":
-                return_square = True
-                postfix='_m2'
-            else:
-                raise ValueError(f"Value logging does not (yet) support head {head}.")
+        targets = self.calculate_sampled_returns(
+            value_sample_horizons=value_samples,
+            required_horizons=self.tvf_debug_horizons,
+            obs=self.all_obs,
+            time=self.all_time,
+            rewards=self.ext_rewards,
+            dones=self.terminals,
+            tvf_mode="fixed",  # <-- MC is the least bias method we can do...
+            tvf_n_step=args.n_steps,
+            include_second_moment=args.learn_second_moment
+        )
 
-            targets = self.calculate_sampled_returns(
-                value_sample_horizons=value_samples,
-                required_horizons=self.tvf_debug_horizons,
-                obs=self.all_obs,
-                time=self.all_time,
-                rewards=self.ext_rewards,
-                dones=self.terminals,
-                tvf_mode="fixed",  # <-- MC is the least bias method we can do...
-                tvf_n_step=args.n_steps,
-                head=return_head,
-                sqrt_m2=False
-            )
+        if args.learn_second_moment:
 
-            first_moment_targets = targets
+            first_moment_targets, sqrt_second_moment_targets = targets
+            first_moment_estimates = model_out["tvf_ext_value"].reshape(N, A, K).cpu().numpy()
+            sqrt_second_moment_estimates = model_out["tvf_ext_value_m2"].reshape(N, A, K).cpu().numpy()
+            self.log_curve_quality(first_moment_estimates, first_moment_targets)
+            self.log_curve_quality(sqrt_second_moment_estimates, sqrt_second_moment_targets, postfix='m2')
 
-            if return_square:
-                targets = self.calculate_sampled_returns(
-                    value_sample_horizons=value_samples,
-                    required_horizons=self.tvf_debug_horizons,
-                    obs=self.all_obs,
-                    time=self.all_time,
-                    rewards=self.ext_rewards,
-                    dones=self.terminals,
-                    tvf_mode="fixed",  # <-- MC is the least bias method we can do...
-                    tvf_n_step=args.n_steps,
-                    head=return_head,
-                    sqrt_m2=True
-                )
-
-            total_not_explained_var = 0
-            total_var = 0
+            # also log the variance estimates
             for h_index, h in enumerate(self.tvf_debug_horizons):
-                value = values[:, :, h_index].reshape(-1)
-                target = targets[:, :, h_index].reshape(-1)
-
-                this_var = np.var(target)
-                this_not_explained_var = np.var(target - value)
-                total_var += this_var
-                total_not_explained_var += this_not_explained_var
-
-                ev = 0 if (this_var == 0) else np.clip(1 - this_not_explained_var / this_var, -1, 1)
-
+                var_est = sqrt_second_moment_estimates[:, :, h_index] ** 2 - (first_moment_estimates[:, :, h_index] ** 2)
                 self.log.watch_mean(
-                    f"ev_{h:04d}"+postfix,
-                    ev,
-                    display_width=8 if (10 <= h <= 30) or h == args.tvf_max_horizon else 0,
-                    history_length=1
-                )
-
-                # this is just for debugging sml
-                self.log.watch_mean(
-                    f"v_{h}" + postfix,
-                    value.mean(),
+                    f"var_{h}",
+                    var_est.mean(),
                     display_width=0,
                     history_length=1
                 )
-
-                if return_square:
-                    var_est = targets[:, :, h_index]**2 - (first_moment_targets[:, :, h_index]**2)  # [N, A]
-                    self.log.watch_mean(
-                        f"var_{h}",
-                        var_est.mean(),
-                        display_width=0,
-                        history_length=1
-                    )
-
-            self.log.watch_mean(
-                f"ev_average"+postfix,
-                0 if (total_var == 0) else np.clip(1 - total_not_explained_var / total_var, -1, 1),
-                display_width=8,
-                display_name="ev_avg"+postfix,
-                history_length=1
-            )
-
         else:
-            targets = calculate_bootstrapped_returns(
-                self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
-            )
-            values = self.ext_value[:self.N]
-            self.log.watch_mean("ev_ext", utils.explained_variance(values.ravel(), targets.ravel()), history_length=1)
+            first_moment_targets = targets
+            first_moment_estimates = model_out["tvf_ext_value"].reshape(N, A, K).cpu().numpy()
+            self.log_curve_quality(first_moment_estimates, first_moment_targets)
+
+
 
     @property
     def prev_obs(self):
@@ -2044,11 +2071,12 @@ class Runner:
 
         self.log.watch("gamma", self.gamma, display_width=0)
 
-        if not args.disable_ev and self.batch_counter % 2 == 0:
+        if not args.disable_ev and self.batch_counter % 2 == 1:
             # only about 3% slower with this on.
-            self.log_value_quality('ext_value')
-            if args.learn_second_moment:
-                self.log_value_quality('ext_value_m2')
+            if not args.use_tvf:
+                self.log_dna_value_quality()
+            else:
+                self.log_tvf_value_quality()
 
         if args.log_detailed_return_stats and self.batch_counter % args.ldrs_freq == 0:
             self.log_detailed_value_quality()
@@ -2388,12 +2416,12 @@ class Runner:
         )
 
         if sqrt_m2:
-            returns = self.calculate_sampled_returns(
+            _ , returns = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=horizon_samples,
                 tvf_mode=args.sqr_return_mode, # for the moment just use a simple fixed estimate
                 tvf_n_step=args.sqr_return_n_step,
-                sqrt_m2=True
+                include_second_moment=True
             )
         else:
             returns = self.calculate_sampled_returns(
@@ -2847,7 +2875,7 @@ class Runner:
         if args.log_delta_v:
             # we also want the rollout values...
             old_rollout_values = get_value_estimate(
-                utils.merge_first_two_dims(self.prev_obs), utils.merge_first_two_dims(self.prev_time))
+                utils.merge_down(self.prev_obs), utils.merge_down(self.prev_time))
 
         if args.use_tvf:
             # we do this once at the start, generate one returns estimate for each epoch on different horizons then
@@ -2868,7 +2896,6 @@ class Runner:
                 )
                 batch_data["tvf_returns_m2"] = sqrt_m2_returns.reshape([B, -1])
 
-
         # abs
         if self.wants_abs_update:
             self.estimate_critical_batch_size(
@@ -2888,7 +2915,7 @@ class Runner:
         if args.log_delta_v:
             new_replay_values = get_value_estimate(self.replay_buffer.data, self.replay_buffer.time)
             new_rollout_values = get_value_estimate(
-                utils.merge_first_two_dims(self.prev_obs), utils.merge_first_two_dims(self.prev_time)
+                utils.merge_down(self.prev_obs), utils.merge_down(self.prev_time)
             )
             replay_delta_v = np.mean(np.square(new_replay_values - old_replay_values))
             rollout_delta_v = np.mean(np.square(new_rollout_values - old_rollout_values))
@@ -2918,18 +2945,18 @@ class Runner:
                 # use mixture of replay buffer and current batch of data
                 distil_obs = np.concatenate([
                     self.replay_buffer.data,
-                    utils.merge_first_two_dims(self.prev_obs),
+                    utils.merge_down(self.prev_obs),
                 ], axis=0)
                 distil_time = np.concatenate([
                     self.replay_buffer.time,
-                    utils.merge_first_two_dims(self.prev_time),
+                    utils.merge_down(self.prev_time),
                 ], axis=0)
             else:
                 distil_obs = self.replay_buffer.data
                 distil_time = self.replay_buffer.time
         else:
-            distil_obs = utils.merge_first_two_dims(self.prev_obs)
-            distil_time = utils.merge_first_two_dims(self.prev_time)
+            distil_obs = utils.merge_down(self.prev_obs)
+            distil_time = utils.merge_down(self.prev_time)
 
         # filter down to n samples (if needed)
         if samples_wanted < len(distil_obs):
@@ -2967,7 +2994,7 @@ class Runner:
         else:
             target_values = output
 
-        batch_data["value_targets"] = utils.merge_first_two_dims(target_values)
+        batch_data["value_targets"] = utils.merge_down(target_values)
 
         # get old policy
         model_out = self.detached_batch_forward(obs=distil_obs, output="policy")

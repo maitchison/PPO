@@ -1435,7 +1435,7 @@ def second_moment(priority=0):
         }
     )
 
-    # this was very slow
+    # this was very slow, and had a bug
 
     #for env in ["CrazyClimber", "Alien", "Breakout"]:
     for env in []: # broken due to bad estimator
@@ -1466,6 +1466,36 @@ def second_moment(priority=0):
             if n_step > 1:
                 add_job(
                     experiment_name="SML4",
+                    run_name=f"env={env} sml exp={n_step}",
+                    env_name=env,
+                    sqr_return_mode="exponential",
+                    sqr_return_n_step=n_step,
+                    default_params=SML4,
+                )
+
+    SML4['return_estimator_mode'] = 'verify'
+
+    for env in ["Alien"]:
+        add_job(
+            experiment_name="SML5",
+            run_name=f"env={env} (ref)",
+            env_name=env,
+            learn_second_moment=False,
+
+            default_params=SML4,
+        )
+        for n_step in [1, 4, 8, 16]:
+            add_job(
+                experiment_name="SML5",
+                run_name=f"env={env} sml n_step={n_step}",
+                env_name=env,
+                sqr_return_mode="fixed",
+                sqr_return_n_step=n_step,
+                default_params=SML4,
+            )
+            if n_step > 1:
+                add_job(
+                    experiment_name="SML5",
                     run_name=f"env={env} sml exp={n_step}",
                     env_name=env,
                     sqr_return_mode="exponential",

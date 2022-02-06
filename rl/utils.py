@@ -921,7 +921,7 @@ def save_env_state(env):
 # Numpy / torch tools
 # -------------------------------------------------------------
 
-def merge_first_two_dims(x:Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def merge_down(x:Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
     """
     Takes [a,b,*] and returns [a*b,*]
     """
