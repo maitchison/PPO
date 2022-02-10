@@ -3,6 +3,8 @@ import os
 import numpy as np
 import gym
 import scipy.stats
+from tqdm import tqdm
+import blosc
 
 import torch
 import torch.nn as nn
@@ -954,6 +956,11 @@ class Runner:
         # step 2: calculate the returns
         start_time = clock.time()
 
+        # setup return estimator mode, but only verify occasionally.
+        re_mode = args.return_estimator_mode
+        if re_mode == "verify" and self.batch_counter % 31 != 1:
+            re_mode = "default"
+
         returns = get_return_estimate(
             mode=tvf_mode,
             gamma=args.tvf_gamma,
@@ -965,36 +972,14 @@ class Runner:
             value_samples_m2=value_samples_m2,
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
-            force_reference=args.return_estimator_mode == "reference",
+            estimator_mode=re_mode,
+            log=self.log,
         )
 
         if include_second_moment:
             # we always return the sqrt of the second moment.
             m1, m2 = returns
             returns = (m1, np.maximum(m2, 0) ** 0.5)
-
-            # every now and then double check return estimator is ok
-            # note: this will not be needed once I've verified the fast path is correct.
-            if args.return_estimator_mode == "verify" and self.batch_counter % 32 == 31:
-                verified_m1, verified_m2 = get_return_estimate(
-                    mode=tvf_mode,
-                    gamma=args.tvf_gamma,
-                    rewards=rewards,
-                    dones=dones,
-                    required_horizons=required_horizons,
-                    value_sample_horizons=value_sample_horizons,
-                    value_samples=value_samples,
-                    value_samples_m2=value_samples_m2,
-                    n_step=tvf_n_step,
-                    max_samples=args.tvf_return_samples,
-                    force_reference=True
-                )
-                delta_m1 = np.abs(verified_m1 - m1).max()
-                delta_m2 = np.abs(verified_m2 - m2).max()
-                if delta_m1 > 1e-4 or delta_m2 > 1e-4:
-                    self.log.warn(f"Errors in return estimation {delta_m1:.5f}/{delta_m2:.5f}")
-                else:
-                    self.log.info(f"Errors in return estimation {delta_m1:.5f}/{delta_m2:.5f}")
 
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -1573,18 +1558,19 @@ class Runner:
 
         h = 1
         HORIZONS = []
-        while h <= args.ldrs_rollout_length:
+        while h <= args.dvq_rollout_length:
             HORIZONS.append(h)
             h *= 2
-        S = args.ldrs_samples    # number of samples (required number depends on env + agent stochasticity)
-        N = args.ldrs_rollout_length  # N here need not be n_steps
+        S = args.dvq_samples    # number of samples (required number depends on env + agent stochasticity)
+        N = args.dvq_rollout_length  # N here need not be n_steps
         A = args.agents          # agents must be the same as the number of training agents
         K = len(HORIZONS)
 
         # unfortunately we can not get estimates for horizons longer than N, so just generate the return estimates
         # up to N.
         VALUE_SAMPLE_HORIZONS = self.generate_horizon_sample(
-            N, 128, distribution="fixed_geometric", force_first_and_last=True
+            # I really want 128 samples, but need to reduce the space requirements a little.
+            N, 64, distribution="fixed_geometric", force_first_and_last=True
         )
         VALUE_SAMPLE_HORIZONS = list(set(VALUE_SAMPLE_HORIZONS)) # remove any duplicates
         VALUE_SAMPLE_HORIZONS.sort()
@@ -1594,23 +1580,22 @@ class Runner:
         discount = np.ones([A], dtype=np.float32)
 
         # need these for all samples
-        rewards = np.zeros([N, S, A], dtype=np.float32)
-        mask = np.zeros([N, S, A], dtype=np.bool)
-        dones = np.zeros([N, S, A], dtype=np.bool)
-
-        # returns are for the initial state only,
-        # and are the return returns for this seed.
-        returns = np.zeros([S, A, K], dtype=np.float32)
+        rewards = np.zeros([N, A], dtype=np.float32)
+        mask = np.zeros([N, A], dtype=np.bool)
+        dones = np.zeros([N, A], dtype=np.bool)
 
         # value estimates are for each transition in rollout, store in float16 to save some space
         # (otherwise his is 1.3G per save, even with compression)
-        value_estimates = np.zeros([N+1, S, A, V], dtype=np.float16)
-        all_times = np.zeros([N + 1, S, A], dtype=np.uint32)  # not needed, just for debugging
+        value_estimates = np.zeros([N+1, A, V], dtype=np.float16)
+        value_estimates_m2 = np.zeros([N + 1, A, V], dtype=np.float16)
+        all_times = np.zeros([N + 1, A], dtype=np.uint32)  # not needed, just for debugging
 
         # this is required as otherwise when we call .step it will simply overwrite the old self.obs (which we need for later)
         self.obs = self.obs.copy()
 
-        for seed in range(S):
+        print("Generating rollout:")
+
+        for seed in tqdm(range(S)):
 
             seed_base = self.step + (seed * 191)
 
@@ -1649,16 +1634,12 @@ class Runner:
 
                 # book keeping
                 time = np.asarray([info["time"] for info in infos])
-                rewards[t, seed, :] = rews * still_running  # all we need are the rewards, dones, and the value estimates
-                dones[t, seed, :] = done
-                all_times[t, seed, :] = time * still_running
-                mask[t, seed, :] = still_running
-                value_estimates[t, seed, :, :] = model_out["value_tvf_value"].cpu().numpy() * still_running[:, None]
-
-                # update return counts as we go
-                for i, h in enumerate(HORIZONS):
-                    if t < h:
-                        returns[seed, :, i] += rews * discount
+                rewards[t, :] = rews * still_running  # all we need are the rewards, dones, and the value estimates
+                dones[t, :] = done
+                all_times[t, :] = time * still_running
+                mask[t, :] = still_running
+                value_estimates[t, :, :] = model_out["value_tvf_ext_value"].cpu().numpy() * still_running[:, None]
+                value_estimates_m2[t, :, :] = model_out["value_tvf_ext_value_m2"].cpu().numpy() * still_running[:, None]
 
                 # update discount
                 discount *= args.tvf_gamma
@@ -1669,10 +1650,8 @@ class Runner:
                 still_running *= (1-done).astype(np.bool)
 
                 if sum(still_running) == 0:
-                    # this occurs if all agents have died.
+                    # this occurs when all agents have died.
                     break
-
-            print(".", end='', flush=True)
 
             # final value estimate
             time = np.asarray([info["time"] for info in infos])
@@ -1681,52 +1660,36 @@ class Runner:
                 time
             )
             model_out = self.detached_batch_forward(obs, output='full', aux_features=aux_features)
-            value_estimates[steps_completed, seed, :, :] = model_out["value_tvf_value"].cpu().numpy()
-            all_times[steps_completed, seed, :] = time
+            value_estimates[steps_completed, :, :] = model_out["value_tvf_ext_value"].cpu().numpy() * still_running[:, None]
+            value_estimates_m2[steps_completed, :, :] = model_out["value_tvf_ext_value_m2"].cpu().numpy() * still_running[:, None]
+            all_times[steps_completed, :] = time * still_running
 
-        print("")
+            # save the data
+            with open(f"{args.log_folder}/rollouts_{self.step//args.batch_size}_{seed}.dat", "wb") as f:
+                data = {
+                    'seed': seed,
+                    'rewards': rewards,
+                    'dones': dones,
+                    'required_horizons': np.asarray(HORIZONS),
+                    'value_sample_horizons': VALUE_SAMPLE_HORIZONS,
+                    'value_samples': value_estimates,
+                    'value_samples_m2': value_estimates_m2,
+                    'reward_scale': self.reward_scale,
+                    'mask': mask,
+                    'all_times': all_times,
+                    'gamma': args.tvf_gamma,
+                }
 
-        # Generate all n_step estimates
+                # zlip + blosc is the best compression I could find, it should be about 3:1 compared to
+                # gzip which is 2:1 and very slow
+                def compress(x):
+                    return blosc.pack_array(x, cname='zlib', shuffle=blosc.SHUFFLE, clevel=5)
 
-        # actually we will just calculate these on load, generating them takes about 20 seconds, loading
-        # them takes around 60 seconds.
-
-        # n_step_return_estimate = np.zeros([K, N + 1, S, A], dtype=np.float32)
-        # discount = np.ones([S, A], dtype=np.float32)
-        # # rewards are  NSA
-        # # dones are NSA
-        # # value_samples are NSAV
-        #
-        # for t in range(N):
-        #     for i, h in enumerate(HORIZONS):
-        #         if t < h:
-        #             n_step_return_estimate[i, t + 1:] += (rewards[t] * discount)[None, :, :]
-        #     discount *= args.tvf_gamma
-        #     discount *= (1 - dones[t])
-        #     for i, h in enumerate(HORIZONS):
-        #         if h - (t + 1) > 0:
-        #             boot_strap_values = _interpolate(VALUE_SAMPLE_HORIZONS, value_estimates[t + 1].astype('float32'),
-        #                                              h - (t + 1))
-        #             n_step_return_estimate[i, t + 1] += boot_strap_values * discount
-        #
-        # # we calculated the n_step=0 result, which we remove here...
-        # n_step_return_estimate = n_step_return_estimate[:, 1:]
-
-        # save the data
-        with gzip.open(f"{args.log_folder}/rollouts_{self.step//args.batch_size}.gz", "wb") as f:
-            data = {
-                'rewards': rewards,
-                'dones': dones,
-                'returns': returns,
-                'required_horizons': np.asarray(HORIZONS),
-                'value_sample_horizons': VALUE_SAMPLE_HORIZONS,
-                'value_samples': value_estimates,
-                'reward_scale': self.reward_scale,
-                'mask': mask,
-                'all_times': all_times,
-                'gamma': args.tvf_gamma,
-            }
-            pickle.dump(data, f)
+                for k in data.keys():
+                    v = data[k]
+                    if type(v) is np.ndarray:
+                        data[k] = compress(v)
+                pickle.dump(data, f)
 
         # restore final state so training can pick up where we left off.
         # the seeding means that results should be consistent, even if we add additional evaluations
@@ -1735,6 +1698,8 @@ class Runner:
         #self.vec_env.seed([seed_base + i * 7 for i in range(A)])
         torch.manual_seed(seed_base)
         np.random.seed(seed_base)
+
+        print()
 
     @torch.no_grad()
     def log_dna_value_quality(self, head="ext_value"):
@@ -1749,6 +1714,7 @@ class Runner:
         Calculates explained variance at each of the debug horizons
         @param estimates: np array of dims[N,A,K]
         @param targets: np array of dims[N,A,K]
+        @param postfix: postfix to add after the name during logging.
         where K is the length of tvf_debug_horizons
 
         """
@@ -1834,7 +1800,7 @@ class Runner:
             first_moment_estimates = model_out["tvf_ext_value"].reshape(N, A, K).cpu().numpy()
             sqrt_second_moment_estimates = model_out["tvf_ext_value_m2"].reshape(N, A, K).cpu().numpy()
             self.log_curve_quality(first_moment_estimates, first_moment_targets)
-            self.log_curve_quality(sqrt_second_moment_estimates, sqrt_second_moment_targets, postfix='m2')
+            self.log_curve_quality(sqrt_second_moment_estimates, sqrt_second_moment_targets, postfix='_m2')
 
             # also log the variance estimates
             for h_index, h in enumerate(self.tvf_debug_horizons):
@@ -2078,7 +2044,7 @@ class Runner:
             else:
                 self.log_tvf_value_quality()
 
-        if args.log_detailed_return_stats and self.batch_counter % args.ldrs_freq == 0:
+        if args.log_detailed_value_quality and self.batch_counter % args.dvq_freq == 0:
             self.log_detailed_value_quality()
 
         self.log.watch_mean_std("adv_ext", self.ext_advantage, display_width=0)
@@ -2381,7 +2347,7 @@ class Runner:
         return np.rint(samples).astype(int)
 
     @torch.no_grad()
-    def generate_return_sample(self, horizon_samples=None, sqrt_m2: bool=False, force_first_and_last: bool = False):
+    def generate_return_sample(self, force_first_and_last: bool = False):
         """
         Generates return estimates for current batch of data.
 
@@ -2389,10 +2355,11 @@ class Runner:
 
         Note: could roll this into calculate_sampled_returns, and just have it return the horizons aswell?
 
-        @param sqrt_m2: returns the sqrt of the second moment instead of the first moment
+        @param generate_second_moment: returns the sqrt of the second moment instead of the first moment
 
         returns:
             returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
+            returns_m2: ndarray of dims [N,A,K] containing the squared return estimate using tvf_gamma discounting (or None)
             horizon_samples: ndarray of dims [N,A,K] containing the horizons used
         """
 
@@ -2400,13 +2367,12 @@ class Runner:
         H = self.current_horizon
         N, A, *state_shape = self.prev_obs.shape
 
-        if horizon_samples is None:
-            horizon_samples = self.generate_horizon_sample(
-                H,
-                args.tvf_horizon_samples,
-                distribution=args.tvf_horizon_distribution,
-                force_first_and_last=force_first_and_last,
-            )
+        horizon_samples = self.generate_horizon_sample(
+            H,
+            args.tvf_horizon_samples,
+            distribution=args.tvf_horizon_distribution,
+            force_first_and_last=force_first_and_last,
+        )
 
         value_samples = self.generate_horizon_sample(
             H,
@@ -2415,24 +2381,40 @@ class Runner:
             force_first_and_last=True
         )
 
-        if sqrt_m2:
-            _ , returns = self.calculate_sampled_returns(
-                value_sample_horizons=value_samples,
-                required_horizons=horizon_samples,
-                tvf_mode=args.sqr_return_mode, # for the moment just use a simple fixed estimate
-                tvf_n_step=args.sqr_return_n_step,
-                include_second_moment=True
-            )
+        if args.learn_second_moment:
+            if args.sqr_return_mode == "joint":
+                # both first and second moment are calculated together, using the same estimator / sampling etc.
+                returns, returns_m2 = self.calculate_sampled_returns(
+                    value_sample_horizons=value_samples,
+                    required_horizons=horizon_samples,
+                    include_second_moment=True
+                )
+            else:
+                # we are using different estimators for the first and second moment, so run it through twice
+                returns = self.calculate_sampled_returns(
+                    value_sample_horizons=value_samples,
+                    required_horizons=horizon_samples,
+                    include_second_moment=False
+                )
+                _, returns_m2 = self.calculate_sampled_returns(
+                    value_sample_horizons=value_samples,
+                    required_horizons=horizon_samples,
+                    tvf_mode=args.sqr_return_mode,
+                    tvf_n_step=args.sqr_return_n_step,
+                    include_second_moment=True
+                )
         else:
             returns = self.calculate_sampled_returns(
                 value_sample_horizons=value_samples,
                 required_horizons=horizon_samples,
+                include_second_moment=False
             )
+            returns_m2 = None
 
         horizon_samples = horizon_samples[None, None, :]
         horizon_samples = np.repeat(horizon_samples, N, axis=0)
         horizon_samples = np.repeat(horizon_samples, A, axis=1)
-        return returns, horizon_samples
+        return returns, returns_m2, horizon_samples
 
     @property
     def current_entropy_bonus(self):
@@ -2882,19 +2864,13 @@ class Runner:
             # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
             # we don't drift, as the updates will modify our model and change the value estimates.
             # it is possible that instead we should be updating our return estimates as we go though
-            returns, horizons = self.generate_return_sample(force_first_and_last=True)
+            returns, returns_m2, horizons = self.generate_return_sample(force_first_and_last=True)
             batch_data["tvf_returns"] = returns.reshape([B, -1])
             batch_data["tvf_horizons"] = horizons.reshape([B, -1])
             batch_data["tvf_time"] = self.prev_time.reshape([B])
 
             if args.learn_second_moment:
-                # todo: generate these during rollout
-                sqrt_m2_returns, _ = self.generate_return_sample(
-                    horizon_samples=horizons[0, 0, :],
-                    force_first_and_last=True,
-                    sqrt_m2=True
-                )
-                batch_data["tvf_returns_m2"] = sqrt_m2_returns.reshape([B, -1])
+                batch_data["tvf_returns_m2"] = returns_m2.reshape([B, -1])
 
         # abs
         if self.wants_abs_update:

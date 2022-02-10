@@ -132,8 +132,13 @@ ATARI_57 = [
     "Zaxxon"
 ]
 
+################################################################################
+# Old Settings
+################################################################################
+# These make use of some legacy settings and should not be used anymore.
+
 # these are the reference settings, they should not be changed
-TVF_reference_args = {
+__TVF_reference_args = {
     'checkpoint_every': int(5e6),
     'workers': WORKERS,
     'architecture': 'dual',
@@ -196,13 +201,117 @@ TVF_reference_args = {
 }
 
 # at 30k horizon
-DNA_reference_args = TVF_reference_args.copy()
-DNA_reference_args.update({
+__DNA_reference_args = __TVF_reference_args.copy()
+__DNA_reference_args.update({
     'use_tvf': False,
 })
 
 
 # at 30k horizon
+__RP1U_reference_args = __TVF_reference_args.copy()
+__RP1U_reference_args.update({
+    'distil_epochs': 1,
+    'distil_period': 1,
+    'replay_size': 1 * ROLLOUT_SIZE,
+    'distil_batch_size': 1 * ROLLOUT_SIZE,
+    'replay_mode': "uniform",
+})
+
+# at 30k horizon
+__ERP_reference_args = __RP1U_reference_args.copy()
+__ERP_reference_args.update({
+    'use_erp': True,
+    'ir_scale': 0.6,
+    'anneal_target_epoch': 50,
+    "ir_anneal": "linear",
+})
+
+# at 30k horizon
+__PPO_reference_args = __DNA_reference_args.copy()
+__PPO_reference_args.update({
+    'use_tvf': False,
+    'architecture': 'single',
+})
+
+__TVF99_reference_args = __TVF_reference_args.copy()
+__TVF99_reference_args.update({
+    'gamma': 0.99,
+    'tvf_gamma': 0.99,
+    'tvf_max_horizon': 300,
+})
+
+
+################################################################################
+# New settings
+################################################################################
+
+# these are the reference settings, they should not be changed
+TVF_reference_args = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'architecture': 'dual',
+    'export_video': False,
+    'epochs': 50,
+    'use_compression': 'auto',
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+
+    # env parameters
+    'embed_time': True,
+    'embed_action': True,
+    'terminal_on_loss_of_life': False,
+    'reward_clipping': "off",
+    'value_transform': 'identity',
+
+    # parameters found by hyperparameter search...
+    'max_grad_norm': 5.0,
+    'agents': 128,
+    'n_steps': 128,
+    'policy_mini_batch_size': 512,
+    'value_mini_batch_size': 512,
+    'distil_mini_batch_size': 512,
+    'policy_epochs': 3,
+    'value_epochs': 2,
+    'distil_epochs': 1,
+    'distil_beta': 1.0,
+    'target_kl': -1,
+    'ppo_epsilon': 0.1,
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
+    'entropy_bonus': 1e-3,
+    'tvf_force_ext_value_distil': False,
+    'hidden_units': 256,
+    'gae_lambda': 0.95,
+
+    # tvf params
+    'use_tvf': True,
+    'tvf_value_distribution': 'fixed_geometric',
+    'tvf_horizon_distribution': 'fixed_geometric',
+    'tvf_horizon_scale': 'log',
+    'tvf_time_scale': 'log',
+    'tvf_hidden_units': 256,
+    'tvf_value_samples': 128,
+    'tvf_horizon_samples': 32,
+    'tvf_return_mode': 'exponential',
+    'tvf_return_samples': 32,
+    'tvf_return_n_step': 20,  # effective horizon of the return estimator
+    'tvf_coef': 0.5,
+
+    'observation_normalization': True,  # very important for DNA
+
+    # horizon
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+    'tvf_max_horizon': 30000,
+}
+
+DNA_reference_args = TVF_reference_args.copy()
+DNA_reference_args.update({
+    'use_tvf': False,
+})
+
 RP1U_reference_args = TVF_reference_args.copy()
 RP1U_reference_args.update({
     'distil_epochs': 1,
@@ -212,7 +321,6 @@ RP1U_reference_args.update({
     'replay_mode': "uniform",
 })
 
-# at 30k horizon
 ERP_reference_args = RP1U_reference_args.copy()
 ERP_reference_args.update({
     'use_erp': True,
@@ -234,6 +342,7 @@ TVF99_reference_args.update({
     'tvf_gamma': 0.99,
     'tvf_max_horizon': 300,
 })
+
 
 # settings used in the Rainbow DQN paper, but without reward clipping or terminal on loss of life
 # (these are the settings my early tests used)

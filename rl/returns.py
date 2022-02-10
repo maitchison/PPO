@@ -3,6 +3,7 @@ import time as clock
 import bisect
 import math
 from collections import defaultdict
+from .logger import Logger
 
 
 def test_return_estimators(log=None):
@@ -81,7 +82,8 @@ def get_return_estimate(
     value_samples_m3: np.ndarray = None,
     n_step: int = 40,
     max_samples: int = 40,
-    force_reference:bool = False
+    estimator_mode:str = "default",
+    log:Logger = None,
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -97,7 +99,8 @@ def get_return_estimate(
     @param value_samples_m3: float32 ndarray of dims [N+1, A, V] bootstrap third moment estimates
     @param n_step: horizon to use for fixed / exponential estimator
     @param max_samples: maximum number of samples to use for the weighted average estimators
-    @force_reference: forces the use of the reference return estimator (which is quite slow.)
+    @param estimator_mode: default|reference|verify
+    @param log: logger for when verify is used
 
     returns
         E(r),                       (if only value_samples are provided)
@@ -140,10 +143,33 @@ def get_return_estimate(
         probs = weights / weights.sum()
         samples = np.random.choice(range(1, max_n + 1), max_samples, replace=True, p=probs)
 
-    if force_reference:
-        return _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
-    else:
+    if estimator_mode == 'default':
         return _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
+    elif estimator_mode == 'reference':
+        return _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
+    elif estimator_mode == 'verify':
+        assert log is not None
+        if value_samples_m2 is None:
+            m1 = _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
+            verified_m1 = _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
+            delta_m1 = np.abs(verified_m1 - m1).max()
+            if delta_m1 > 1e-4:
+                log.warn(f"Errors in return estimation {delta_m1:.5f}")
+            return m1
+        else:
+            m1, m2 = _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
+            verified_m1,verified_m2 = _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
+            delta_m1 = np.abs(verified_m1 - m1).max()
+            delta_m2 = np.abs(verified_m2 - m2).max()
+            if delta_m1 > 1e-4 or delta_m2 > 1e-4:
+                log.warn(f"Errors in return estimation {delta_m1:.5f}/{delta_m2:.5f}")
+            else:
+                log.info(f"Errors in return estimation {delta_m1:.5f}/{delta_m2:.5f}")
+            return m1, m2
+    else:
+        raise ValueError(f"Invalid estimator_mode {estimator_mode}")
+
+
 
 
 def _get_adaptive_args(mode: str, h:int, c:float):

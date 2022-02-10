@@ -39,10 +39,10 @@ class Config:
         self.replay_duplicate_removal = bool()
 
         # value logging
-        self.log_detailed_return_stats = bool()
-        self.ldrs_freq = int()
-        self.ldrs_samples = int()
-        self.ldrs_rollout_length = int()
+        self.log_detailed_value_quality = bool()
+        self.dvq_freq = int()
+        self.dvq_samples = int()
+        self.dvq_rollout_length = int()
 
         # critical batch_size
         self.abs_mode = str()
@@ -350,15 +350,17 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
 
     parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
-    parser.add_argument("--tvf_return_samples", type=int, default=40, help="Number of n-step samples to use for tvf_lambda calculation")
+    parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
+
     parser.add_argument("--sqr_return_n_step", type=int, default=80, help="n step to use for tvf_return_sqr estimation")
-    parser.add_argument("--sqr_return_mode", type=str, default="fixed", help="[fixed|exponential]")
-    parser.add_argument("--log_detailed_return_stats", type=str2bool, default=False,
+    parser.add_argument("--sqr_return_mode", type=str, default="exponential", help="[fixed|exponential|joint]")
+
+    parser.add_argument("--log_detailed_value_quality", type=str2bool, default=False,
                         help="Enables recording of variance / bias for *all* return estimators durning training. (this is very slow!).")
-    parser.add_argument("--ldrs_samples", type=int, default=64)
-    parser.add_argument("--ldrs_freq", type=int, default=16)
-    parser.add_argument("--ldrs_rollout_length", type=int, default=2048)
+    parser.add_argument("--dvq_samples", type=int, default=64)
+    parser.add_argument("--dvq_freq", type=int, default=64)
+    parser.add_argument("--dvq_rollout_length", type=int, default=1024*16)
 
 
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
@@ -604,6 +606,8 @@ def parse_args(no_env=False, args_override=None):
 
     assert args.abs_mode in ["off", "on", "shadow"]
     assert args.return_estimator_mode in ["default", "reference", "verify"]
+    if args.log_detailed_value_quality:
+        assert args.learn_second_moment, "Logging requires second moment to be enabled."
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

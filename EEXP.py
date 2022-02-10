@@ -4,8 +4,28 @@ Exploration experiments
 """
 
 from runner_tools import WORKERS, add_job, random_search, Categorical
-from runner_tools import PPO_reference_args, DNA_reference_args, TVF_reference_args, TVF99_reference_args, RP1U_reference_args
+from runner_tools import __PPO_reference_args, __DNA_reference_args, __TVF_reference_args, __TVF99_reference_args, __RP1U_reference_args
+from runner_tools import RP1U_reference_args
 from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE
+
+DEFAULT = __RP1U_reference_args.copy()
+DEFAULT.update({
+    'use_compression': False,
+    'replay_size': 16 * 1024,
+    'distil_batch_size': 16 * 1024,
+    'policy_mini_batch_size': 2048,   # makes things more stable
+    'tvf_return_mode': "geometric",   # seems to work well as a default
+    # 'policy_replay_constraint': 1.0,  # also helps with stability
+    'agents': 32,                     # 32 agents is mostly for performance reasons
+    'n_steps': 512,                   # 1024, works better but 512 is better on memory, and 30-seconds seems right.
+})
+
+# remove any obsolete args
+del DEFAULT["time_aware"]
+del DEFAULT["tvf_exp_gamma"]
+del DEFAULT["tvf_mode"]
+del DEFAULT["tvf_exp_mode"]
+del DEFAULT["tvf_n_step"]
 
 def exp1(priority: int = 0):
     """
@@ -37,7 +57,7 @@ def exp1(priority: int = 0):
             # baseline
             add_job(
                 run_name=f"reference ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 **COMMON_ARGS,
             )
@@ -45,7 +65,7 @@ def exp1(priority: int = 0):
             # rnd
             add_job(
                 run_name=f"rnd ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 use_rnd=True,
                 **COMMON_ARGS,
@@ -54,14 +74,14 @@ def exp1(priority: int = 0):
             # by disagreement
             add_job(
                 run_name=f"ebd_full ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 use_ebd=True,
                 **COMMON_ARGS,
             )
             add_job(
                 run_name=f"ebd_simple ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 tvf_force_ext_value_distil=True,
                 priority=priority,
                 use_ebd=True,
@@ -71,7 +91,7 @@ def exp1(priority: int = 0):
             # by replay buffer diversity
             add_job(
                 run_name=f"erp_mean ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority+10,
                 erp_reduce='mean',
                 use_erp=True,
@@ -81,7 +101,7 @@ def exp1(priority: int = 0):
             # by replay buffer diversity
             add_job(
                 run_name=f"erp_min ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority+10,
                 erp_reduce='min',
                 use_erp=True,
@@ -95,7 +115,7 @@ def exp1(priority: int = 0):
                 COMMON_ARGS["epochs"] = 10 if env == "MontezumaRevenge" else 20
                 add_job(
                     run_name=f"erp_min (1)",
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + 30,
                     erp_reduce='min',
                     use_erp=True,
@@ -104,7 +124,7 @@ def exp1(priority: int = 0):
                 COMMON_ARGS["seed"] = 2
                 add_job(
                     run_name=f"erp_min (2)",
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + 30,
                     erp_reduce='min',
                     use_erp=True,
@@ -115,7 +135,7 @@ def exp1(priority: int = 0):
                 COMMON_ARGS["seed"] = 3
                 add_job(
                     run_name=f"erp_min (3)",
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + 30,
                     erp_reduce='min',
                     use_erp=True,
@@ -150,7 +170,7 @@ def exp2(priority: int = 0):
             # baseline
             add_job(
                 run_name=f"reference ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 **COMMON_ARGS,
             )
@@ -158,7 +178,7 @@ def exp2(priority: int = 0):
             # rnd
             add_job(
                 run_name=f"rnd ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 use_rnd=True,
                 **COMMON_ARGS,
@@ -167,7 +187,7 @@ def exp2(priority: int = 0):
             # by replay buffer diversity
             add_job(
                 run_name=f"erp ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10,
                 use_erp=True,
                 **COMMON_ARGS,
@@ -176,7 +196,7 @@ def exp2(priority: int = 0):
             # by replay buffer diversity
             add_job(
                 run_name=f"erp_top5 ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10,
                 use_erp=True,
                 erp_reduce="k5",
@@ -186,7 +206,7 @@ def exp2(priority: int = 0):
             # by replay buffer diversity
             add_job(
                 run_name=f"erp_whiten ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10,
                 erp_reduce='min',
                 use_erp=True,
@@ -222,7 +242,7 @@ def exp3(priority: int = 0):
             # baseline
             add_job(
                 run_name=f"reference ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 **COMMON_ARGS,
             )
@@ -230,7 +250,7 @@ def exp3(priority: int = 0):
             # rnd
             add_job(
                 run_name=f"rnd ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority,
                 use_rnd=True,
                 **COMMON_ARGS,
@@ -241,7 +261,7 @@ def exp3(priority: int = 0):
                 # by replay buffer diversity
                 add_job(
                     run_name=f"erp_{ir_scale} ({seed})",
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     ir_scale=ir_scale,
                     priority=priority + 10,
                     use_erp=True,
@@ -250,7 +270,7 @@ def exp3(priority: int = 0):
 
             add_job(
                 run_name=f"erp_whiten ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 erp_white=True,
                 priority=priority + 10,
                 use_erp=True,
@@ -259,7 +279,7 @@ def exp3(priority: int = 0):
 
             add_job(
                 run_name=f"erp_raw ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 erp_relu=False,
                 priority=priority + 10,
                 use_erp=True,
@@ -268,7 +288,7 @@ def exp3(priority: int = 0):
 
             add_job(
                 run_name=f"erp_top5 ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 erp_reduce="top5",
                 priority=priority + 10,
                 use_erp=True,
@@ -277,7 +297,7 @@ def exp3(priority: int = 0):
 
             add_job(
                 run_name=f"erp_no_distil_ir ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 distil_ir=False,
                 priority=priority + 10,
                 use_erp=True,
@@ -321,7 +341,7 @@ def exp4(priority: int = 0, hostname="desktop"):
 
             add_job(
                 run_name=f"erp_rnd ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10 + (20 if seed == 1 else 0),
                 use_rnd=True,
                 use_erp=True,
@@ -330,7 +350,7 @@ def exp4(priority: int = 0, hostname="desktop"):
 
             add_job(
                 run_name=f"ebd ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 15 + (20 if seed == 1 else 0),
                 use_ebd=True,
                 **COMMON_ARGS,
@@ -338,7 +358,7 @@ def exp4(priority: int = 0, hostname="desktop"):
 
             add_job(
                 run_name=f"erp_rnd rollout ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 20 + (20 if seed == 1 else 0),
                 erp_source="rollout",
                 use_rnd=True,
@@ -348,7 +368,7 @@ def exp4(priority: int = 0, hostname="desktop"):
 
             add_job(
                 run_name=f"erp_rnd_ebd ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10 + (20 if seed == 1 else 0),
                 use_rnd=True,
                 use_erp=True,
@@ -382,14 +402,14 @@ def exp4(priority: int = 0, hostname="desktop"):
 
             add_job(
                 run_name=f"erp [reference] ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10 + (20 if seed == 1 else 0),
                 **COMMON_ARGS,
             )
 
             add_job(
                 run_name=f"rnd [reference] ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10 + (20 if seed == 1 else 0),
                 use_rnd=True,
                 **{k: v for k, v in COMMON_ARGS.items() if k != "use_erp"},
@@ -397,7 +417,7 @@ def exp4(priority: int = 0, hostname="desktop"):
 
             add_job(
                 run_name=f"rp1u [reference] ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10 + (20 if seed == 1 else 0),
                 **{k:v for k,v in COMMON_ARGS.items() if k != "use_erp"},
             )
@@ -414,7 +434,7 @@ def exp4(priority: int = 0, hostname="desktop"):
             # default is off
             add_job(
                 run_name=f"erp distil_ir=True ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + 10 + (20 if seed == 1 else 0),
                 distil_ir=True,
                 **COMMON_ARGS,
@@ -423,7 +443,7 @@ def exp4(priority: int = 0, hostname="desktop"):
             # default is off
             add_job(
                 run_name=f"erp erp_exclude_zero=True ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + (20 if seed == 1 else 0),
                 erp_exclude_zero=True,
                 **COMMON_ARGS,
@@ -432,7 +452,7 @@ def exp4(priority: int = 0, hostname="desktop"):
             # default is true
             add_job(
                 run_name=f"erp erp_relu=False ({seed})",
-                default_params=TVF_reference_args,
+                default_params=__TVF_reference_args,
                 priority=priority + (20 if seed == 1 else 0),
                 erp_relu=False,
                 **COMMON_ARGS,
@@ -442,7 +462,7 @@ def exp4(priority: int = 0, hostname="desktop"):
             for erp_reduce in ["mean", "top5"]:
                 add_job(
                     run_name=f"erp erp_reduce={erp_reduce} ({seed})",
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + (20 if seed == 1 else 0),
                     erp_reduce=erp_reduce,
                     **COMMON_ARGS,
@@ -452,7 +472,7 @@ def exp4(priority: int = 0, hostname="desktop"):
                 add_job(
                     run_name=f"erp anneal={ir_anneal} ({seed})",
                     ir_scale=0.6,
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + (20 if seed == 1 else 0),
                     ir_anneal=ir_anneal,
                     **COMMON_ARGS,
@@ -461,7 +481,7 @@ def exp4(priority: int = 0, hostname="desktop"):
                 add_job(
                     run_name=f"erp ir_scale={ir_scale} ({seed})",
                     ir_scale=ir_scale,
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + 50 + (20 if seed == 1 else 0),
                     **COMMON_ARGS,
                 )
@@ -469,7 +489,7 @@ def exp4(priority: int = 0, hostname="desktop"):
             for erp_source in ["rollout", "both"]:  # default is replay
                 add_job(
                     run_name=f"erp erp_source={erp_source} ({seed})",
-                    default_params=TVF_reference_args,
+                    default_params=__TVF_reference_args,
                     priority=priority + 5 + (20 if seed == 1 else 0),
                     erp_source=erp_source,
                     **COMMON_ARGS,
@@ -504,7 +524,7 @@ def exp4(priority: int = 0, hostname="desktop"):
                 for prop in [True, False]:
                     add_job(
                         run_name=f"erp bias={bias}{' irp ' if prop else ' '}({seed})",
-                        default_params=TVF_reference_args,
+                        default_params=__TVF_reference_args,
                         priority=priority + 25 + (20 if seed == 1 else 0),
                         erp_bias=bias,
                         intrinsic_reward_propagation=prop,
@@ -520,7 +540,7 @@ def rc():
                 run_name=f"env={env} rc={replay_constraint}",
                 env_name=env,
                 seed=1,
-                default_params=RP1U_reference_args,
+                default_params=__RP1U_reference_args,
                 replay_constraint=replay_constraint,
                 epochs=50,
                 priority=100,
@@ -531,7 +551,7 @@ def rc():
             run_name=f"env={env} rc={replay_constraint} (linear_inc)",
             env_name=env,
             seed=1,
-            default_params=RP1U_reference_args,
+            default_params=__RP1U_reference_args,
             replay_constraint=replay_constraint,
             replay_constraint_anneal="linear_inc",
             epochs=50,
@@ -543,7 +563,7 @@ def rc():
             run_name=f"env={env} rc={replay_constraint} (quad_inc)",
             env_name=env,
             seed=1,
-            default_params=RP1U_reference_args,
+            default_params=__RP1U_reference_args,
             replay_constraint=replay_constraint,
             replay_constraint_anneal="quad_inc",
             epochs=50,
@@ -564,7 +584,7 @@ def rc():
                 'priority': 110,
                 'seed': 1,
                 'env_name': env,
-                'default_params': RP1U_reference_args,
+                'default_params': __RP1U_reference_args,
             }
 
             add_job(
@@ -585,7 +605,7 @@ def rc():
                 priority=110,
                 seed=1,
                 env_name=env,
-                default_params=RP1U_reference_args,
+                default_params=__RP1U_reference_args,
             )
             add_job(
                 experiment_name="RC3",
@@ -648,7 +668,7 @@ def rc():
     # entropy will collapse.
     for env in ["CrazyClimber"]:
 
-        RC4 = RP1U_reference_args.copy()
+        RC4 = __RP1U_reference_args.copy()
         RC4.update({
             'use_compression': False,
             'epochs': 10,
@@ -666,7 +686,7 @@ def rc():
         add_job(
             experiment_name="RC4",
             run_name=f"env={env} ppo",
-            default_params=PPO_reference_args,
+            default_params=__PPO_reference_args,
             use_compression= False,
             epochs=10,
             anneal_target_epoch=50,
@@ -1230,7 +1250,7 @@ def abs(priority=50):
                 use_compression=False,
                 priority=priority,
                 hostname='desktop',
-                default_params=RP1U_reference_args,
+                default_params=__RP1U_reference_args,
             )
         # this is just to see if hard coding the found values works better...
         add_job(
@@ -1244,7 +1264,7 @@ def abs(priority=50):
             distil_mini_batch_size=128,
             hostname='desktop',
             epochs=20,
-            default_params=RP1U_reference_args,
+            default_params=__RP1U_reference_args,
         )
         add_job(
             env_name=env,
@@ -1258,7 +1278,7 @@ def abs(priority=50):
             distil_mini_batch_size=128,
             hostname='desktop',
             epochs=20,
-            default_params=RP1U_reference_args,
+            default_params=__RP1U_reference_args,
         )
 
 def re1(priority=50):
@@ -1268,7 +1288,7 @@ def re1(priority=50):
     for env in ["CrazyClimber", "Alien", "Breakout"]:
 
         # this is designed to be fast (both in terms of learning speed, and computation)
-        RE1 = RP1U_reference_args.copy()
+        RE1 = __RP1U_reference_args.copy()
         RE1.update({
             'use_compression': False,
             'epochs': 30,
@@ -1306,30 +1326,45 @@ def re1(priority=50):
                     default_params=RE1,
                 )
 
-    #for env in ["CrazyClimber", "Breakout", "Alien"]:
+def detailed_value_quality(priority: int):
+
+
+    AGENTS = 128
+    NSTEPS = 512
+
+    DVQ = RP1U_reference_args.copy()
+    DVQ.update({
+        'use_compression': True,
+        'warmup_period': 10 * 1000,
+
+        'agents': AGENTS,
+        'n_steps': NSTEPS,
+        'replay_size': AGENTS * NSTEPS,
+        'distil_batch_size': AGENTS * NSTEPS,
+        'policy_mini_batch_size': 2048,  # makes things more stable
+
+        'log_detailed_value_quality': True,
+        'learn_second_moment': True,
+        'dvq_samples': 64,
+        'dvq_freq': 64,
+        'dvq_rollout_length': 1024 * 16,
+
+        'priority': 276,
+        'hostname': "desktop",
+        'workers': 16,  # faster..
+        'seed': 1,
+        'epochs': 50,
+    })
+
+    # V3
+    # increased max rollout length, but decreased frequency by 4x.
+    # blosc+zlib compression
+    # second moment :)
     for env in ["CrazyClimber", "Alien", "Breakout"]:
         # run next one on my machine... in fact, move them all to my machine...
-        AGENTS = 128
-        DVQ = RE1.copy()
-        DVQ.update({
-            'env_name': env,
-            'warmup_period': 10*1000,
-            'log_detailed_return_stats': True,
-            'ldrs_samples': 64,
-            'agents': AGENTS,
-            'n_steps': 512,
-            'replay_size': AGENTS * 512,
-            'distil_batch_size': AGENTS * 512,
-            'priority': 276,
-            'hostname': "desktop",
-            'workers': 16, # faster..
-            'epochs': 50,
-        })
-
-        # run the initial return estimation evaluation script
-        # v2 has mask fixed, and I switched the order to NSAV (from SNAV)
         add_job(
-            experiment_name="RE_DVQ2",
+            experiment_name="DVQ1",
+            env_name=env,
             run_name=f"env={env}",
             default_params=DVQ,
         )
@@ -1340,7 +1375,7 @@ def second_moment(priority=0):
     Also want to know if we can learn this by directly squaring the return.
     """
 
-    SML = RP1U_reference_args.copy()
+    SML = __RP1U_reference_args.copy()
     SML.update(
         {
             # this should be more stable
@@ -1349,149 +1384,68 @@ def second_moment(priority=0):
             'replay_size': 64 * 512,
             'distil_batch_size': 64 * 512,
             'policy_mini_batch_size': 2048,
-            'epochs': 10,
+            'epochs': 20,
             'seed': 1,
             'learn_second_moment': True,
             'hostname': 'desktop',
-            'priority': priority,
+            'return_estimator_mode': 'default',
+            "tvf_return_mode": "exponential", # default
+            "tvf_return_n_step": 80, # default
         }
     )
 
-    #for env in ["CrazyClimber", "Alien", "Breakout"]:
-    for env in ["Alien"]:
-        add_job(
-            experiment_name="SML2",
-            run_name=f"env={env} (ref)",
-            env_name=env,
-            learn_second_moment=False,
-            default_params=SML,
-        )
-        for n_step in [1, 4, 8, 16, 32, 64]:
-            add_job(
-                experiment_name="SML2",
-                run_name=f"env={env} sml n_step={n_step}",
-                env_name=env,
-                sqr_return_n_step=n_step,
-                default_params=SML,
-            )
-
-    SML3 = SML.copy()
-    SML3.update(
-        {
-            # this should be more stable
-            'tvf_max_horizon': 300,
-            'tvf_gamma': 0.99,
-            'gamma': 0.99,
-            'epochs': 10,
-        }
-    )
-
-    # for env in ["CrazyClimber", "Alien", "Breakout"]:
-    #for env in ["Alien"]:
-    for env in []: # broken due to bad estimator
-        add_job(
-            experiment_name="SML3",
-            run_name=f"env={env} (ref)",
-            env_name=env,
-            learn_second_moment=False,
-            default_params=SML3,
-        )
-        add_job(
-            experiment_name="SML3",
-            run_name=f"env={env} (ref) (2)",
-            env_name=env,
-            seed=2,
-            learn_second_moment=False,
-            default_params=SML3,
-        )
-        for n_step in [1, 4, 8, 16]:
-            add_job(
-                experiment_name="SML3",
-                run_name=f"env={env} sml n_step={n_step}",
-                env_name=env,
-                sqr_return_mode="fixed",
-                sqr_return_n_step=n_step,
-                default_params=SML3,
-            )
-            if n_step > 1:
-                add_job(
-                    experiment_name="SML3",
-                    run_name=f"env={env} sml exp={n_step}",
-                    env_name=env,
-                    sqr_return_mode="exponential",
-                    sqr_return_n_step=n_step,
-                    default_params=SML3,
-                )
-
-    SML4 = SML.copy()
-    SML4.update(
-        {
-            # this should be more stable
-            'tvf_max_horizon': 30000,
-            'tvf_gamma': 0.99997,
-            'gamma': 0.99997,
-            'epochs': 20,
-            'priority': 10,
-        }
-    )
-
-    # this was very slow, and had a bug
-
-    #for env in ["CrazyClimber", "Alien", "Breakout"]:
-    for env in []: # broken due to bad estimator
-        add_job(
-            experiment_name="SML4",
-            run_name=f"env={env} (ref)",
-            env_name=env,
-            learn_second_moment=False,
-            default_params=SML4,
-        )
-        add_job(
-            experiment_name="SML4",
-            run_name=f"env={env} (ref) (2)",
-            env_name=env,
-            seed=2,
-            learn_second_moment=False,
-            default_params=SML4,
-        )
-        for n_step in [1, 4, 8, 16]:
-            add_job(
-                experiment_name="SML4",
-                run_name=f"env={env} sml n_step={n_step}",
-                env_name=env,
-                sqr_return_mode="fixed",
-                sqr_return_n_step=n_step,
-                default_params=SML4,
-            )
-            if n_step > 1:
-                add_job(
-                    experiment_name="SML4",
-                    run_name=f"env={env} sml exp={n_step}",
-                    env_name=env,
-                    sqr_return_mode="exponential",
-                    sqr_return_n_step=n_step,
-                    default_params=SML4,
-                )
-
-    SML4['return_estimator_mode'] = 'verify'
-
-    for env in ["Alien"]:
+    for env in ["Alien", "CrazyClimber", "Breakout"]:
         add_job(
             experiment_name="SML5",
             run_name=f"env={env} (ref)",
             env_name=env,
             learn_second_moment=False,
-
-            default_params=SML4,
+            default_params=SML,
+            priority=200,
+            seed=2,
         )
-        for n_step in [1, 4, 8, 16]:
+        add_job(
+            experiment_name="SML5",
+            run_name=f"env={env} sml exp_512",
+            env_name=env,
+            tvf_return_mode="exponential",
+            tvf_return_n_step=512,
+            sqr_return_mode="exponential",
+            sqr_return_n_step=512,
+            priority=100 if env == "Alien" else 50,
+            default_params=SML,
+        )
+        add_job(
+            experiment_name="SML5",
+            run_name=f"env={env} sml exp_256_128",
+            env_name=env,
+            tvf_return_mode="exponential",
+            tvf_return_n_step=256,
+            sqr_return_mode="exponential",
+            sqr_return_n_step=128, # try difference...
+            priority=100 if env == "Alien" else 50,
+            default_params=SML,
+        )
+        add_job(
+            experiment_name="SML5",
+            run_name=f"env={env} sml nstep_512",
+            env_name=env,
+            tvf_return_mode="fixed",
+            tvf_return_n_step=512,
+            sqr_return_mode="fixed",
+            sqr_return_n_step=512,
+            priority=100 if env == "Alien" else 50,
+            default_params=SML,
+        )
+        for n_step in [1, 4, 8, 16, 32, 80]:
             add_job(
                 experiment_name="SML5",
                 run_name=f"env={env} sml n_step={n_step}",
                 env_name=env,
                 sqr_return_mode="fixed",
                 sqr_return_n_step=n_step,
-                default_params=SML4,
+                priority=100 if env == "Alien" else 50,
+                default_params=SML,
             )
             if n_step > 1:
                 add_job(
@@ -1500,18 +1454,69 @@ def second_moment(priority=0):
                     env_name=env,
                     sqr_return_mode="exponential",
                     sqr_return_n_step=n_step,
-                    default_params=SML4,
+                    priority=100 if env == "Alien" else 50,
+                    default_params=SML,
                 )
+
+    #for env in ["Alien", "CrazyClimber", "Breakout"]:
+    for env in ["Alien"]:
+        add_job(
+            experiment_name="SML6",
+            run_name=f"env={env} (ref)",
+            env_name=env,
+            learn_second_moment=False,
+            default_params=SML,
+            priority=200,
+            seed=1,
+        )
+        add_job(
+            experiment_name="SML6",
+            run_name=f"env={env} (ref_64)", # see if the improvement is simply due to the increased effective samples.
+            env_name=env,
+            learn_second_moment=False,
+            tvf_return_samples=64,
+            default_params=SML,
+            priority=200,
+            seed=1,
+        )
+        add_job(
+            experiment_name="SML6",
+            run_name=f"env={env} joint",
+            env_name=env,
+            learn_second_moment=True,
+            sqr_return_mode='joint',
+            default_params=SML,
+            priority=200,
+            seed=1,
+        )
+        add_job(
+            experiment_name="SML6",
+            run_name=f"env={env} matched",
+            env_name=env,
+            learn_second_moment=True,
+            sqr_return_mode="exponential",
+            sqr_return_n_step=80,
+            default_params=SML,
+            priority=200,
+            seed=1,
+        )
+        add_job(
+            experiment_name="SML6",
+            run_name=f"env={env} exp_20",
+            env_name=env,
+            learn_second_moment=True,
+            sqr_return_mode="exponential",
+            sqr_return_n_step=20,
+            default_params=SML,
+            priority=200,
+            seed=1,
+        )
+
+
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
-    exp1(priority=50)
-    exp2(priority=50)
-    exp3(priority=50)
-    exp4(priority=10, hostname="")
-    rc()
-    re1(priority=50)
-    abs(priority=-50)
+    detailed_value_quality(priority=50)
     second_moment(199)
 
 

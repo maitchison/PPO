@@ -1,5 +1,5 @@
 from runner_tools import WORKERS, add_job, random_search, Categorical
-from runner_tools import PPO_reference_args, DNA_reference_args, TVF_reference_args
+from runner_tools import __PPO_reference_args, __DNA_reference_args, __TVF_reference_args
 
 ROLLOUT_SIZE = 128*128
 ATARI_5 = ['Centipede', 'CrazyClimber', 'Krull', 'SpaceInvaders', 'Zaxxon']  # Atari5
@@ -111,7 +111,7 @@ def reference_runs():
             "RP_Reference",
             env_name=env,
             run_name=f"{env} PPO",
-            default_params=PPO_reference_args,
+            default_params=__PPO_reference_args,
             priority=10,
             epochs=10, # enough for now...
             hostname='ML',
@@ -120,7 +120,7 @@ def reference_runs():
             "RP_Reference",
             env_name=env,
             run_name=f"{env} DNA",
-            default_params=DNA_reference_args,
+            default_params=__DNA_reference_args,
             priority=10,
             epochs=10,  # enough for now...
             hostname='ML',
@@ -129,7 +129,7 @@ def reference_runs():
             "RP_Reference",
             env_name=env,
             run_name=f"{env} TVF",
-            default_params=TVF_reference_args,
+            default_params=__TVF_reference_args,
             priority=10,
             epochs=10,  # enough for now...
             hostname='ML',
