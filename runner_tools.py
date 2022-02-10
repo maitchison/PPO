@@ -262,7 +262,6 @@ TVF_reference_args = {
     'embed_action': True,
     'terminal_on_loss_of_life': False,
     'reward_clipping': "off",
-    'value_transform': 'identity',
 
     # parameters found by hyperparameter search...
     'max_grad_norm': 5.0,
@@ -296,7 +295,7 @@ TVF_reference_args = {
     'tvf_horizon_samples': 32,
     'tvf_return_mode': 'exponential',
     'tvf_return_samples': 32,
-    'tvf_return_n_step': 20,  # effective horizon of the return estimator
+    'tvf_return_n_step': 80,  # effective horizon of the return estimator
     'tvf_coef': 0.5,
 
     'observation_normalization': True,  # very important for DNA

@@ -112,6 +112,7 @@ def get_return_estimate(
     """
 
     N, A = rewards.shape
+    K = len(required_horizons)
     samples = None
     weights = None
 
@@ -129,12 +130,32 @@ def get_return_estimate(
     # fixed is a special case
     if mode == "fixed":
         samples = [n_step]
+    elif mode == "adaptive":
+        # we do this by repeated calling exponential, which can be a bit slow...
+        result = np.zeros([N, A, K], dtype=np.flaot32)
+        for h_index, h in zip(required_horizons):
+            args_copy = args.copy()
+            args_copy['required_horizons'] = [h]
+            args_copy['max_samples'] = max_samples
+            args_copy['estimator_mode'] = estimator_mode
+            args_copy['log'] = log
+            n_step = int(np.clip(32 + h, 1, N))  # the magic heuristic...
+            result[:, :, h_index] = get_return_estimate(mode="exponential_cap", n_step=n_step, **args_copy)[:, :, 0]
+        return result
     elif mode == "exponential":
         # this just makes things a bit faster for small n_step horizons
         # essentially we ignore the very rare, very long n_steps.
-        eff_h = min(n_step * 3, N)
+        max_h = min(n_step * 3, N)
         lamb = 1-(1/n_step)
-        weights = np.asarray([lamb ** x for x in range(eff_h)], dtype=np.float32)
+        weights = np.asarray([lamb ** x for x in range(max_h)], dtype=np.float32)
+    elif mode == "exponential_cap":
+        # this is exponential where the weight not used all falls on the final n_step estimate.
+        # this can improve performance by demphasising the short n-step return estimators.
+        max_h = min(n_step * 3, N)
+        lamb = 1-(1/n_step)
+        weights = np.asarray([lamb ** x for x in range(max_h)], dtype=np.float32)
+        remaining_weight = (lamb ** max_h) / (1 - lamb)
+        weights[-1] += remaining_weight
     else:
         raise ValueError(f"Invalid returns mode {mode}")
 

@@ -8,9 +8,20 @@ from typing import Union
 
 from . import utils, impala
 
+# AMP does not help much, and may degrade performance
+# JIT isn't that useful but it won't hurt to have it on
+JIT = True
+AMP = False
+
 # ----------------------------------------------------------------------------------------------------------------
 # Heads (feature extractors)
 # ----------------------------------------------------------------------------------------------------------------
+
+def get_memory_format():
+    return torch.channels_last if AMP else torch.contiguous_format
+
+def get_dtype():
+    return torch.float16 if AMP else torch.float32
 
 class Base_Net(nn.Module):
 
@@ -22,7 +33,8 @@ class Base_Net(nn.Module):
 
     def jit(self, device):
         assert self.trace_module is None, "Multiple calls to jit."
-        fake_input = torch.zeros([256, *self.input_dims], device=device)
+        fake_input = torch.zeros([256, *self.input_dims], device=device, dtype=get_dtype())
+        fake_input = fake_input.to(memory_format=get_memory_format())
         self.trace_module = torch.jit.trace(self, example_inputs=fake_input)
 
 class ImpalaCNN_Net(Base_Net):
@@ -101,28 +113,26 @@ class NatureCNN_Net(Base_Net):
             _, c, w, h = x.shape
             self.ln3 = nn.LayerNorm([c, h, w])
 
-
+    @torch.autocast(device_type='cuda', enabled=AMP)
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
 
         D = self.d
 
-        x1 = F.relu(self.conv1(x))
+        x = F.relu(self.conv1(x))
         if self.layer_norm:
-            x1 = self.ln1(x1)
-        x2 = F.relu(self.conv2(x1))
+            x = self.ln1(x)
+        x = F.relu(self.conv2(x))
         if self.layer_norm:
-            x2 = self.ln2(x2)
-        x3 = F.relu(self.conv3(x2))
+            x = self.ln2(x)
+        x = F.relu(self.conv3(x))
         if self.layer_norm:
-            x3 = self.ln3(x3)
+            x = self.ln3(x)
 
-        x4 = torch.reshape(x3, [-1, D])
+        x = torch.reshape(x, [-1, D])
         if self.hidden_units > 0:
-            x5 = self.fc(x4)
-            return x5
-        else:
-            return x4
+            x = self.fc(x)
+        return x
 
 
 class RNDTarget_Net(Base_Net):
@@ -241,7 +251,8 @@ class DualHeadNet(nn.Module):
         self.encoder = construct_network(network, input_dims, hidden_units=hidden_units, **kwargs)
         # jit is in theory a little faster, but can be harder to debug
         self.encoder = self.encoder.to(device)
-        self.encoder.jit(device)
+        if JIT:
+            self.encoder.jit(device)
 
         assert self.encoder.hidden_units == hidden_units
 
@@ -339,6 +350,9 @@ class DualHeadNet(nn.Module):
             features = self.encoder.trace_module(x)
         else:
             features = self.encoder(x)
+
+        # convert back to float32, and also switch to channels first, not that that should matter.
+        features = features.float(memory_format=torch.contiguous_format)
 
         result['raw_features'] = features  # used for debugging sometimes
         features = F.relu(features)
@@ -524,7 +538,7 @@ class TVFModel(nn.Module):
 
         # update normalization constants
         assert type(x) is torch.Tensor, "Input for normalization should be tensor"
-        assert x.dtype == torch.float32
+        assert x.dtype == get_dtype()
 
         B, C, H, W = x.shape
         assert (C, H, W) == self.input_dims
@@ -536,8 +550,8 @@ class TVFModel(nn.Module):
             batch_count = x.shape[0]
             self.obs_rms.update_from_moments(batch_mean, batch_var, batch_count)
 
-        mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device)
-        std = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device)
+        mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device, dtype=get_dtype())
+        std = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device, dtype=get_dtype())
 
         # normalize x
         x = torch.clamp((x - mu) / (std + 1e-5), -5, 5)
@@ -687,19 +701,17 @@ class TVFModel(nn.Module):
             x = torch.from_numpy(x)
 
         # move it to the correct device
+        assert x.dtype in [torch.uint8, torch.float16, torch.float32], Exception("Invalid dtype {}".format(x.dtype))
+        was_uint8 = x.dtype == torch.uint8
+
         x = x.to(self.device, non_blocking=True)
+        x = x.to(dtype=get_dtype(), memory_format=get_memory_format(), non_blocking=True)
 
         # then covert the type (faster to upload uint8 then convert on GPU)
-        if x.dtype == torch.uint8:
-            x = x.to(dtype=self.dtype, non_blocking=True)
-            if scale_int:
-                x = (x / 127.5)-1.0
-        elif x.dtype == self.dtype:
-            pass
-        else:
-            raise Exception("Invalid dtype {}".format(x.dtype))
-        return x
+        if was_uint8 and scale_int:
+            x = (x / 127.5)-1.0
 
+        return x
 
 
 # ----------------------------------------------------------------------------------------------------------------

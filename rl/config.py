@@ -52,7 +52,6 @@ class Config:
         self.value_replay_constraint = float()
         self.policy_replay_constraint_anneal = str()
         self.value_replay_constraint_anneal = str()
-        self.log_delta_v = bool()
 
         self.quite_mode         = bool()
 
@@ -421,7 +420,6 @@ def parse_args(no_env=False, args_override=None):
                         help="[off|linear|cos|cos_linear]")
     parser.add_argument("--policy_replay_constraint_anneal", type=str, default="off",
                         help="[off|linear|cos|cos_linear]")
-    parser.add_argument("--log_delta_v", type=str2bool, default=False)
 
     parser.add_argument("--distil_delay", type=int, default=0, help="Number of steps to wait before starting distillation")
     parser.add_argument("--distil_min_var", type=float, default=0.0,
@@ -621,19 +619,21 @@ def parse_args(no_env=False, args_override=None):
         args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
 
     # legacy settings (for compatability)
-    if args.sticky_actions is not None:
-        if args.sticky_actions:
-            args.repeat_action_probability = 0.25
-        else:
-            args.repeat_action_probability = 0.0
-    if args.time_aware is not None:
-        args.embed_time = args.time_aware
-    if args.tvf_exp_gamma is not None:
-        args.tvf_return_rho = args.tvf_exp_gamma
-    if args.tvf_mode is not None:
-        args.tvf_return_mode = args.tvf_mode
-    if args.tvf_n_step is not None:
-        args.tvf_return_n_step = args.tvf_n_step
+    # having these here just causes bugs as the override the newer settings...
+    # better to simply throw an error
+    # if args.sticky_actions is not None:
+    #     if args.sticky_actions:
+    #         args.repeat_action_probability = 0.25
+    #     else:
+    #         args.repeat_action_probability = 0.0
+    # if args.time_aware is not None:
+    #     args.embed_time = args.time_aware
+    # if args.tvf_exp_gamma is not None:
+    #     args.tvf_return_rho = args.tvf_exp_gamma
+    # if args.tvf_mode is not None:
+    #     args.tvf_return_mode = args.tvf_mode
+    # if args.tvf_n_step is not None:
+    #     args.tvf_return_n_step = args.tvf_n_step
 
     for param in REMOVED_PARAMS:
         if param in vars(args).keys() and vars(args)[param] is not None:

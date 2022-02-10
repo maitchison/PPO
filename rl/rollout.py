@@ -2355,8 +2355,6 @@ class Runner:
 
         Note: could roll this into calculate_sampled_returns, and just have it return the horizons aswell?
 
-        @param generate_second_moment: returns the sqrt of the second moment instead of the first moment
-
         returns:
             returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
             returns_m2: ndarray of dims [N,A,K] containing the squared return estimate using tvf_gamma discounting (or None)
@@ -2699,7 +2697,7 @@ class Runner:
         """
         # these are a bit slow, so do it less frequently (actually it needs to be done more often due to noise)
         # also make sure to update frequently at the beginning as the EMA will be warming up.
-        update_freq = 1 # was 4.
+        update_freq = 4
         return args.abs_mode != "off" and (self.batch_counter % update_freq == 0 or self.batch_counter < 10)
 
 
@@ -2831,16 +2829,13 @@ class Runner:
             batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
 
         def get_value_estimate(prev_states, times):
-            assert args.use_tvf, "log_delta_v and replay_restraint require use_tvf=true (for the moment)"
+            assert args.use_tvf, "replay_restraint require use_tvf=true (for the moment)"
             aux_features = package_aux_features(np.asarray([self.current_horizon]), times)
             return self.detached_batch_forward(
                 prev_states, output="value", aux_features=aux_features
             )["tvf_value"][..., 0].detach().cpu().numpy()
 
-        old_replay_values = None
-        old_rollout_values = None
-
-        if args.value_replay_constraint != 0 or args.log_delta_v:
+        if args.value_replay_constraint != 0:
 
             # we need the replay sample to be the same size as the rollout
             samples = np.arange(self.replay_buffer.current_size)
@@ -2853,11 +2848,6 @@ class Runner:
             batch_data["replay_time"] = times
             old_replay_values = get_value_estimate(prev_states, times)
             batch_data["replay_value_estimate"] = old_replay_values
-
-        if args.log_delta_v:
-            # we also want the rollout values...
-            old_rollout_values = get_value_estimate(
-                utils.merge_down(self.prev_obs), utils.merge_down(self.prev_time))
 
         if args.use_tvf:
             # we do this once at the start, generate one returns estimate for each epoch on different horizons then
@@ -2886,17 +2876,6 @@ class Runner:
                 optimizer=self.value_optimizer,
                 label="value",
             )
-
-        # get delta-v value
-        if args.log_delta_v:
-            new_replay_values = get_value_estimate(self.replay_buffer.data, self.replay_buffer.time)
-            new_rollout_values = get_value_estimate(
-                utils.merge_down(self.prev_obs), utils.merge_down(self.prev_time)
-            )
-            replay_delta_v = np.mean(np.square(new_replay_values - old_replay_values))
-            rollout_delta_v = np.mean(np.square(new_rollout_values - old_rollout_values))
-            self.log.watch("replay_delta_v", replay_delta_v, display_width=0)
-            self.log.watch("rollout_delta_v", rollout_delta_v, display_width=0)
 
         self.log.watch(f"value_mbs", self.value_mini_batch_size, display_width=0)
 

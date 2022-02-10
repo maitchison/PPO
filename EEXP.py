@@ -1375,7 +1375,7 @@ def second_moment(priority=0):
     Also want to know if we can learn this by directly squaring the return.
     """
 
-    SML = __RP1U_reference_args.copy()
+    SML = RP1U_reference_args.copy()
     SML.update(
         {
             # this should be more stable
@@ -1401,64 +1401,53 @@ def second_moment(priority=0):
             env_name=env,
             learn_second_moment=False,
             default_params=SML,
-            priority=200,
+            priority=0,
             seed=2,
         )
         add_job(
             experiment_name="SML5",
-            run_name=f"env={env} sml exp_512",
+            run_name=f"env={env} sml exp=512",
             env_name=env,
             tvf_return_mode="exponential",
             tvf_return_n_step=512,
             sqr_return_mode="exponential",
             sqr_return_n_step=512,
-            priority=100 if env == "Alien" else 50,
+            priority=10 if env == "Alien" else 0,
             default_params=SML,
         )
         add_job(
             experiment_name="SML5",
-            run_name=f"env={env} sml exp_256_128",
+            run_name=f"env={env} sml exp=256_128",
             env_name=env,
             tvf_return_mode="exponential",
             tvf_return_n_step=256,
             sqr_return_mode="exponential",
             sqr_return_n_step=128, # try difference...
-            priority=100 if env == "Alien" else 50,
+            priority=10 if env == "Alien" else 0,
             default_params=SML,
         )
         add_job(
             experiment_name="SML5",
-            run_name=f"env={env} sml nstep_512",
+            run_name=f"env={env} sml n_step=512",
             env_name=env,
             tvf_return_mode="fixed",
             tvf_return_n_step=512,
             sqr_return_mode="fixed",
             sqr_return_n_step=512,
-            priority=100 if env == "Alien" else 50,
+            priority=10 if env == "Alien" else 0,
             default_params=SML,
         )
-        for n_step in [1, 4, 8, 16, 32, 80]:
+        for n_step in [4, 8, 16, 32, 80]:
             add_job(
                 experiment_name="SML5",
-                run_name=f"env={env} sml n_step={n_step}",
+                run_name=f"env={env} sml sqr_exp={n_step}",
                 env_name=env,
-                sqr_return_mode="fixed",
+                sqr_return_mode="exponential",
                 sqr_return_n_step=n_step,
-                priority=100 if env == "Alien" else 50,
+                priority=10 if env == "Alien" else 0,
                 default_params=SML,
             )
-            if n_step > 1:
-                add_job(
-                    experiment_name="SML5",
-                    run_name=f"env={env} sml exp={n_step}",
-                    env_name=env,
-                    sqr_return_mode="exponential",
-                    sqr_return_n_step=n_step,
-                    priority=100 if env == "Alien" else 50,
-                    default_params=SML,
-                )
 
-    #for env in ["Alien", "CrazyClimber", "Breakout"]:
     for env in ["Alien"]:
         add_job(
             experiment_name="SML6",
@@ -1466,7 +1455,7 @@ def second_moment(priority=0):
             env_name=env,
             learn_second_moment=False,
             default_params=SML,
-            priority=200,
+            priority=0,
             seed=1,
         )
         add_job(
@@ -1476,7 +1465,7 @@ def second_moment(priority=0):
             learn_second_moment=False,
             tvf_return_samples=64,
             default_params=SML,
-            priority=200,
+            priority=0,
             seed=1,
         )
         add_job(
@@ -1486,7 +1475,7 @@ def second_moment(priority=0):
             learn_second_moment=True,
             sqr_return_mode='joint',
             default_params=SML,
-            priority=200,
+            priority=0,
             seed=1,
         )
         add_job(
@@ -1497,7 +1486,7 @@ def second_moment(priority=0):
             sqr_return_mode="exponential",
             sqr_return_n_step=80,
             default_params=SML,
-            priority=200,
+            priority=0,
             seed=1,
         )
         add_job(
@@ -1508,15 +1497,56 @@ def second_moment(priority=0):
             sqr_return_mode="exponential",
             sqr_return_n_step=20,
             default_params=SML,
-            priority=200,
+            priority=0,
             seed=1,
         )
 
+
+def adaptive(priority=0):
+    """
+    See if we get better results using an adaptive approach to return estimation.
+    """
+
+    AVE = RP1U_reference_args.copy()
+    AVE.update(
+        {
+            # this should be more stable
+            'agents': 128,
+            'n_steps': 512,
+            'replay_size': 64 * 512,
+            'distil_batch_size': 64 * 512,
+            'policy_mini_batch_size': 2048,
+            'epochs': 20,
+            'seed': 1,
+            'learn_second_moment': False, # might try this later
+            'hostname': '',
+            'return_estimator_mode': 'default',
+            "tvf_return_mode": "exponential", # default
+            "tvf_return_n_step": 80, # default
+            "max_micro_batch_size": 256, # needed now for some reason... maybe it's ABS?
+            "use_compression": True,
+            "abs_mode": "shadow", # will be useful later, just to see if we can control the variancew.
+            "priority": 50,
+        }
+    )
+
+    for env in ["Alien", "Breakout", "CrazyClimber"]:
+        for tvf_return_mode in ['exponential', 'exponential_cap', 'adaptive']:
+            add_job(
+                experiment_name="AVE1",
+                run_name=f"env={env} mode={tvf_return_mode}",
+                tvf_return_mode=tvf_return_mode,
+                env_name=env,
+                default_params=AVE,
+                priority=0,
+                seed=1,
+            )
 
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
     detailed_value_quality(priority=50)
     second_moment(199)
+    adaptive(20)
 
 
