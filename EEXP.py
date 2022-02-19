@@ -6,7 +6,7 @@ Exploration experiments
 from runner_tools import WORKERS, add_job, random_search, Categorical
 from runner_tools import __PPO_reference_args, __DNA_reference_args, __TVF_reference_args, __TVF99_reference_args, __RP1U_reference_args
 from runner_tools import RP1U_reference_args
-from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE
+from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE, ATARI_57
 
 DEFAULT = __RP1U_reference_args.copy()
 DEFAULT.update({
@@ -1401,7 +1401,7 @@ def second_moment(priority=0):
             env_name=env,
             learn_second_moment=False,
             default_params=SML,
-            priority=0,
+            priority=-100,
             seed=2,
         )
         add_job(
@@ -1412,7 +1412,7 @@ def second_moment(priority=0):
             tvf_return_n_step=512,
             sqr_return_mode="exponential",
             sqr_return_n_step=512,
-            priority=10 if env == "Alien" else 0,
+            priority=10 if env == "Alien" else -100,
             default_params=SML,
         )
         add_job(
@@ -1423,7 +1423,7 @@ def second_moment(priority=0):
             tvf_return_n_step=256,
             sqr_return_mode="exponential",
             sqr_return_n_step=128, # try difference...
-            priority=10 if env == "Alien" else 0,
+            priority=10 if env == "Alien" else -100,
             default_params=SML,
         )
         add_job(
@@ -1434,17 +1434,17 @@ def second_moment(priority=0):
             tvf_return_n_step=512,
             sqr_return_mode="fixed",
             sqr_return_n_step=512,
-            priority=10 if env == "Alien" else 0,
+            priority=10 if env == "Alien" else -100,
             default_params=SML,
         )
-        for n_step in [4, 8, 16, 32, 80]:
+        for n_step in [16, 32, 80]:
             add_job(
                 experiment_name="SML5",
                 run_name=f"env={env} sml sqr_exp={n_step}",
                 env_name=env,
                 sqr_return_mode="exponential",
                 sqr_return_n_step=n_step,
-                priority=10 if env == "Alien" else 0,
+                priority=10 if env == "Alien" else -100,
                 default_params=SML,
             )
 
@@ -1526,7 +1526,6 @@ def adaptive(priority=0):
             "max_micro_batch_size": 256, # needed now for some reason... maybe it's ABS?
             "use_compression": True,
             "abs_mode": "shadow", # will be useful later, just to see if we can control the variancew.
-            "priority": 50,
         }
     )
 
@@ -1542,11 +1541,152 @@ def adaptive(priority=0):
                 seed=1,
             )
 
+    for env in ["CrazyClimber"]:
+        for seed in (1, 2, 3):
+            for tvf_return_mode in ['exponential', 'exponential_cap', 'adaptive', 'adaptive_cap']:
+                add_job(
+                    experiment_name="AVE2",
+                    run_name=f"env={env} mode={tvf_return_mode} ({seed})",
+                    tvf_return_mode=tvf_return_mode,
+                    epochs=30,
+                    seed=seed,
+                    learn_second_moment=True,  # might try this later
+                    env_name=env,
+                    default_params=AVE,
+                    priority=30 if seed == 1 else -30,
+                )
+
+    # see if we can tune adaptive a bit more
+    for env in ["CrazyClimber", "Alien"]:
+        for seed in (1, 2):
+            for n_step in [8, 16, 32, 64, 128]:
+                for tvf_return_mode in ['adaptive', "exponential"]:
+                    add_job(
+                        experiment_name="AVE3",
+                        run_name=f"env={env} mode={tvf_return_mode} n_step={n_step} ({seed})",
+                        tvf_return_mode=tvf_return_mode,
+                        tvf_return_n_step=n_step,
+                        epochs=30,
+                        seed=seed,
+                        learn_second_moment=True,
+                        env_name=env,
+                        default_params=AVE,
+                        priority=30 if seed == 1 else -30,
+                    )
+
+    # see if saturated works (and also random sampling)
+    for env in ["CrazyClimber"]:
+        for seed in (1, 2):
+            for samples in [4, 8, 16, 32, 64, 128]:
+                for distribution in ['fixed_geometric', 'geometric', 'saturated_fixed_geometric', 'saturated_geometric']:
+                    add_job(
+                        experiment_name="AVE4",
+                        run_name=f"env={env} distribution={distribution} samples={samples} ({seed})",
+                        tvf_horizon_samples=samples,
+                        tvf_horizon_distribution=distribution,
+                        epochs=30,
+                        seed=seed,
+                        env_name=env,
+                        default_params=AVE,
+                        priority=30 if seed == 1 else -30,
+                    )
+
+    # quick check of log interpolation (doesn't really belong here...)
+    # see if saturated works (and also random sampling)
+    for env in ["CrazyClimber", "Alien"]:
+        for seed in (1,):
+            for samples in [4, 64]:
+                for log_interpolation in [True, False]:
+                    add_job(
+                        experiment_name="AVE_LO",
+                        run_name=f"env={env} samples={samples} log_interpolation={log_interpolation} ({seed})",
+                        tvf_horizon_samples=samples,
+                        tvf_horizon_distribution="saturated_geometric",
+                        epochs=20,
+                        seed=seed,
+                        env_name=env,
+                        default_params=AVE,
+                        tvf_return_use_log_interpolation=log_interpolation,
+                        priority=30 if seed == 1 else -30,
+                    )
+
+
+def adaptive_gae(priority=0):
+
+    GAE = RP1U_reference_args.copy()
+    GAE.update(
+        {
+            # this should be more stable
+            'agents': 128,
+            'n_steps': 512,
+            'replay_size': 64 * 512,
+            'distil_batch_size': 64 * 512,
+            'policy_mini_batch_size': 2048,
+            'epochs': 20,
+            'seed': 1,
+            'learn_second_moment': False,  # might try this later
+            'hostname': 'ML',
+            'return_estimator_mode': 'default',
+            "tvf_return_mode": "exponential",  # default
+            "tvf_return_n_step": 80,  # default
+            "max_micro_batch_size": 256,  # needed now for some reason... maybe it's ABS?
+            "use_compression": True,
+            "abs_mode": "shadow",  # will be useful later, just to see if we can control the variancew.
+        }
+    )
+
+    # first look into adaptive GAE, want to get an handle on metrics that indicate what GAE lambda should be (and see if it makes a difference)
+    # asterix should need short horizon, tennis a long one.
+    for env in ["CrazyClimber", "Alien", "Asterix", "Tennis"]:
+        for seed in (1,):
+            for inv_lamb in [1.125, 2.5, 5, 10, 20, 40]:
+                add_job(
+                    experiment_name="AGAE_1",
+                    run_name=f"env={env} gae_horizon={inv_lamb} ({seed})",
+                    gae_lambda=1-(1/inv_lamb),
+                    epochs=20,
+                    seed=seed,
+                    env_name=env,
+                    default_params=GAE,
+                    priority=(30 if seed == 1 else -30)+(30 if env == "CrazyClimber" else -30),
+                )
+
+    # quick look to see early variance for each game
+    for env in ATARI_57:
+        add_job(
+            experiment_name="AGAE_NOISE",
+            run_name=f"env={env}",
+            epochs=5,
+            seed=1,
+            env_name=env,
+            default_params=GAE,
+            priority=200,
+        )
+
+    # investigation into entropy scaling
+    for env in ["CrazyClimber"]:
+        for seed in (1,):
+            for inv_lamb in [2.5, 5, 10, 20, 40, 80]:
+                add_job(
+                    experiment_name="AGAE_2",
+                    run_name=f"env={env} gae_horizon={inv_lamb} ({seed})",
+                    gae_lambda=1 - (1 / inv_lamb),
+                    epochs=20,
+                    seed=seed,
+                    entropy_scaling=True,
+                    env_name=env,
+                    default_params=GAE,
+                    priority=250,
+                )
+
+
+
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
     detailed_value_quality(priority=50)
-    second_moment(199)
+    second_moment(0)
     adaptive(20)
+    adaptive_gae()
 
 

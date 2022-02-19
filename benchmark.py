@@ -162,8 +162,8 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats=False, **p
             params['env_name'] = "Pong"
 
         p = execute_job(
-            BENCHMARK_FOLDER,
-            job_name,
+            folder=BENCHMARK_FOLDER,
+            run_name=job_name,
             seed=seed,
             device=f'cuda:{seed % GPUS}',
             numa_id=args.numa[seed % len(args.numa)] if args.numa is not None else None,
@@ -230,11 +230,12 @@ def run_regressions():
 
     print("Running regression.")
 
-    for seed in [0, 1, 2, 4]:
+    for seed in [0, 1, 2, 3]:
         job_name = f"pong_{seed}"
         p = execute_job(
-            REGRESSION_FOLDER,
-            job_name,
+            folder=REGRESSION_FOLDER,
+            run_name=job_name,
+            env_name="Pong",
             seed=seed,
             device=f'cuda:{seed % GPUS}',
             quiet_mode=not args.verbose

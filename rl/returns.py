@@ -84,6 +84,7 @@ def get_return_estimate(
     max_samples: int = 40,
     estimator_mode:str = "default",
     log:Logger = None,
+    use_log_interpolation: bool=False,
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -125,6 +126,7 @@ def get_return_estimate(
         'value_samples': value_samples,
         'value_samples_m2': value_samples_m2,
         'value_samples_m3': value_samples_m3,
+        'use_log_interpolation': use_log_interpolation,
     }
 
     # fixed is a special case
@@ -132,14 +134,28 @@ def get_return_estimate(
         samples = [n_step]
     elif mode == "adaptive":
         # we do this by repeated calling exponential, which can be a bit slow...
-        result = np.zeros([N, A, K], dtype=np.flaot32)
-        for h_index, h in zip(required_horizons):
+        result = np.zeros([N, A, K], dtype=np.float32)
+        target_n_step = n_step
+        for h_index, h in enumerate(required_horizons):
             args_copy = args.copy()
             args_copy['required_horizons'] = [h]
             args_copy['max_samples'] = max_samples
             args_copy['estimator_mode'] = estimator_mode
             args_copy['log'] = log
-            n_step = int(np.clip(32 + h, 1, N))  # the magic heuristic...
+            n_step = int(np.clip(h, 1, target_n_step))  # the magic heuristic...
+            result[:, :, h_index] = get_return_estimate(mode="exponential", n_step=n_step, **args_copy)[:, :, 0]
+        return result
+    elif mode == "adaptive_cap":
+        # we do this by repeated calling exponential, which can be a bit slow...
+        result = np.zeros([N, A, K], dtype=np.float32)
+        target_n_step = n_step
+        for h_index, h in enumerate(required_horizons):
+            args_copy = args.copy()
+            args_copy['required_horizons'] = [h]
+            args_copy['max_samples'] = max_samples
+            args_copy['estimator_mode'] = estimator_mode
+            args_copy['log'] = log
+            n_step = int(np.clip(h, 1, target_n_step))  # the magic heuristic...
             result[:, :, h_index] = get_return_estimate(mode="exponential_cap", n_step=n_step, **args_copy)[:, :, 0]
         return result
     elif mode == "exponential":
@@ -207,7 +223,7 @@ def _get_adaptive_args(mode: str, h:int, c:float):
         return {'lamb': 1-(1/math.ceil(h / c))}
 
 
-def _interpolate(horizons, values, target_horizon: int):
+def _interpolate(horizons, values, target_horizon: float):
     """
     Returns linearly interpolated value from source_values
 
@@ -259,6 +275,7 @@ def _calculate_sampled_return_multi(
     value_samples_m2: np.ndarray, # ignored
     n_step_weights: list = None,
     masked=False,
+    use_log_interpolation: bool=False # ignored
 ):
     """
     Calculate returns for a list of n_steps values and weightings
@@ -540,7 +557,8 @@ def _calculate_sampled_return_multi_reference(
     value_samples: np.ndarray,
     value_samples_m2: np.ndarray=None,
     value_samples_m3: np.ndarray=None,
-    n_step_weights: list = None
+    n_step_weights: list = None,
+    use_log_interpolation: bool=False # ignored
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -644,6 +662,7 @@ def _calculate_sampled_return_multi_fast(
     value_samples_m2: np.ndarray = None,
     value_samples_m3: np.ndarray = None,
     n_step_weights: list = None,
+    use_log_interpolation: bool = False,
 ):
     """
         Fast version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -674,11 +693,11 @@ def _calculate_sampled_return_multi_fast(
     # many of the horizon updates once we get into the high n_steps.
 
     # if we have n_step requests that exceed the longest horizon we can cap these to the longest horizon.
-    # todo: add this back in, it probably helps...
-    # max_h = max(required_horizons)
-    # max_n = len(rewards)
-    # n_step_list = np.clip(n_step_list, 1, max_h)
-    # n_step_list = np.clip(n_step_list, 1, max_n)
+    max_h = max(required_horizons)
+    max_n = len(rewards)
+    n_step_list = np.clip(n_step_list, 1, max_h)
+    n_step_list = np.clip(n_step_list, 1, max_n)
+    n_step_list = list(n_step_list)
 
     # calculate the weight for each n_step
     n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights)
@@ -695,6 +714,8 @@ def _calculate_sampled_return_multi_fast(
 
     N, A = rewards.shape
     K = len(required_horizons)
+
+    log_value_sample_horizons = np.log10(10+value_sample_horizons.astype('float32'))-1
 
     total_weight = sum(n_step_weights.values())
     remaining_weight = 1.0
@@ -718,6 +739,14 @@ def _calculate_sampled_return_multi_fast(
     discount = np.ones_like(rewards)
 
     current_n_step = 0
+
+    def interpolate_linear(value_estimates:np.ndarray, horizon: int):
+        return _interpolate(value_sample_horizons, value_estimates, horizon)
+
+    def interpolate_log(value_estimates:np.ndarray, horizon: int):
+        return _interpolate(log_value_sample_horizons, value_estimates, np.log10(10+horizon)-1)
+
+    interpolate = interpolate_log if use_log_interpolation else interpolate_linear
 
     # S [N, A, K], sum_{i=0}^{current_n_step} [ gamma^i r_{t+i} ]
 
@@ -765,15 +794,13 @@ def _calculate_sampled_return_multi_fast(
         for h_index, h in enumerate(required_horizons):
             if h - steps_made <= 0:
                 continue
-            interpolated_value = _interpolate(
-                value_sample_horizons,
+            interpolated_value = interpolate(
                 value_samples[steps_made:block_size + steps_made],
                 h - steps_made
             )
             returns_m1[:block_size, :, h_index] += interpolated_value * (discount[:block_size]) * weight
             if moment >= 2:
-                interpolated_value_m2 = _interpolate(
-                    value_sample_horizons,
+                interpolated_value_m2 = interpolate(
                     value_samples_m2[steps_made:block_size + steps_made],
                     h - steps_made
                 )
@@ -789,10 +816,10 @@ def _calculate_sampled_return_multi_fast(
                 continue
             for h_index, h in enumerate(required_horizons):
                 if h - steps_made > 0:
-                    interpolated_value = _interpolate(value_sample_horizons, value_samples[t + steps_made], h - steps_made)
+                    interpolated_value = interpolate(value_samples[t + steps_made], h - steps_made)
                     returns_m1[t, :, h_index] += interpolated_value * (discount[t]) * weight
                     if moment >= 2:
-                        interpolated_value_m2 = _interpolate(value_sample_horizons, value_samples_m2[t + steps_made], h - steps_made)
+                        interpolated_value_m2 = interpolate(value_samples_m2[t + steps_made], h - steps_made)
                         returns_m2[t, :, h_index] += interpolated_value_m2 * (discount[t]**2) * weight
 
         # -----------------------------------
@@ -806,8 +833,7 @@ def _calculate_sampled_return_multi_fast(
             for h_index, h in enumerate(required_horizons):
                 if h - steps_made <= 0:
                     continue
-                interpolated_value = _interpolate(
-                    value_sample_horizons,
+                interpolated_value = interpolate(
                     value_samples[steps_made:block_size + steps_made],
                     h - steps_made
                 )
@@ -828,8 +854,7 @@ def _calculate_sampled_return_multi_fast(
             for h_index, h in enumerate(required_horizons):
                 if h - steps_made <= 0:
                     continue
-                interpolated_value = _interpolate(
-                    value_sample_horizons,
+                interpolated_value = interpolate(
                     value_samples[t + steps_made],
                     h - steps_made
                 )

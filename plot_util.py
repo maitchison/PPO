@@ -335,6 +335,7 @@ def compare_runs(
         reference_run=None,
         x_axis_name=None,
         y_axis_name=None,
+        ref_level=None,
         hold=False,
         jitter=0.0,
         figsize=(16,4),
@@ -396,6 +397,9 @@ def compare_runs(
             # problem with data...
             print(f"Warning, skipping {run_name}.")
             continue
+
+        if ref_level is not None:
+            plt.hlines(ref_level, xs[0], xs[-1], color='gray')
 
         # filter
         if x_lim:
@@ -493,7 +497,6 @@ def compare_runs(
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle="-", zorder=zorder)
 
-
     standard_grid()
 
     if show_legend is not False:
@@ -530,7 +533,7 @@ def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=Fa
             title_args["title"] = y_axis
         compare_runs(runs, y_axis=y_axis, **{**kwargs, **title_args})
 
-def table_runs(runs, run_filter=None, epochs=None):
+def table_runs(runs, run_filter=None, epochs=None, metric=compute_score):
 
     if epochs is None:
         epochs = [50]
@@ -540,7 +543,7 @@ def table_runs(runs, run_filter=None, epochs=None):
             " run", *["score @"+str(epoch)+"M " for epoch in epochs], "steps ", "id "))
     print("|"+'-'*50+("|"+'-'*16)*len(epochs)+"|"+'-'*16+"|"+'-'*16+"|")
 
-    runs = sorted(runs, key=lambda x: compute_score(x[1]), reverse=True)
+    runs = sorted(runs, key=lambda x: metric(x[1]), reverse=True)
 
     for run_name, run_data, run_params in runs:
 
@@ -553,7 +556,7 @@ def table_runs(runs, run_filter=None, epochs=None):
 
         scores = {}
         for epoch in epochs:
-            scores[epoch] = compute_score(run_data, epoch)
+            scores[epoch] = metric(run_data, epoch)
 
         steps = min(run_data["env_step"][-1] / 1000 / 1000, max(epochs))
 

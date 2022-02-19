@@ -13,9 +13,10 @@ if __name__ == "__main__":
     import EA57
     import EEXP
 
+    # shutdown for move
     #ERP.setup()
     #EPGG.setup()
-    EA57.setup()
+    EA57.setup(-200)
     EEXP.setup()
 
     if len(sys.argv) == 1:

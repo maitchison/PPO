@@ -11,7 +11,7 @@ from . import utils, impala
 # AMP does not help much, and may degrade performance
 # JIT isn't that useful but it won't hurt to have it on
 JIT = True
-AMP = False
+AMP = False # not helpful, and disabled for the moment
 
 # ----------------------------------------------------------------------------------------------------------------
 # Heads (feature extractors)
@@ -113,21 +113,24 @@ class NatureCNN_Net(Base_Net):
             _, c, w, h = x.shape
             self.ln3 = nn.LayerNorm([c, h, w])
 
-    @torch.autocast(device_type='cuda', enabled=AMP)
+    # this causes everything to be on cuda:1... hmm... even when it's disabled...
+    #@torch.autocast(device_type='cuda', enabled=AMP)
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
 
         D = self.d
 
-        x = F.relu(self.conv1(x))
         if self.layer_norm:
+            x = F.relu(self.conv1(x))
             x = self.ln1(x)
-        x = F.relu(self.conv2(x))
-        if self.layer_norm:
+            x = F.relu(self.conv2(x))
             x = self.ln2(x)
-        x = F.relu(self.conv3(x))
-        if self.layer_norm:
+            x = F.relu(self.conv3(x))
             x = self.ln3(x)
+        else:
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
 
         x = torch.reshape(x, [-1, D])
         if self.hidden_units > 0:
@@ -337,7 +340,7 @@ class DualHeadNet(nn.Module):
 
     def forward(
             self, x, aux_features=None, policy_temperature=1.0,
-            exclude_value=False, exclude_policy=False,
+            exclude_value=False, exclude_policy=False, include_features: bool = False
         ):
         """
         x is [B, *state_shape]
@@ -354,9 +357,13 @@ class DualHeadNet(nn.Module):
         # convert back to float32, and also switch to channels first, not that that should matter.
         features = features.float(memory_format=torch.contiguous_format)
 
-        result['raw_features'] = features  # used for debugging sometimes
-        features = F.relu(features)
-        result['features'] = features  # used for debugging sometimes
+        if include_features:
+            # used for debugging sometimes
+            result['raw_features'] = features
+            features = F.relu(features)
+            result['features'] = features
+        else:
+            features = F.relu(features)
 
         if self.use_policy_head and not exclude_policy:
             unscaled_policy = self.policy_head(features)
@@ -408,7 +415,6 @@ class DualHeadNet(nn.Module):
                 values = self.tvf_head(tvf_h)
                 values = self.apply_value_scale(values, horizon_in)
                 result['tvf_value'] = values[..., 0]  # old alise for tvf_ext_value
-                result['tvf_values'] = values  # helpful sometimes to just have all the values together
                 result['tvf_ext_value'] = values[..., 0]
                 result['tvf_int_value'] = values[..., 1]
                 result['tvf_ext_value_m2'] = values[..., 2]  # second moment estimates...
@@ -523,6 +529,10 @@ class TVFModel(nn.Module):
 
         self.set_device_and_dtype(device, dtype)
 
+    def model_size(self, trainable_only: bool = True):
+        model_parameters = filter(lambda p: p.requires_grad, self.parameters()) if trainable_only else self.parameters()
+        return sum([np.prod(p.size()) for p in model_parameters])
+
     def log_policy(self, x, state=None):
         """ Returns detached log_policy for given input. """
         return self.forward(x, state, output="policy")["log_policy"].detach().cpu().numpy()
@@ -613,6 +623,7 @@ class TVFModel(nn.Module):
             output: str = "default",
             policy_temperature: float = 1.0,
             include_rnd=False,
+            include_features=False,
             update_normalization=False,
         ):
         """
@@ -640,6 +651,12 @@ class TVFModel(nn.Module):
 
         assert output in ["default", "full", "policy", "value"]
 
+        args = {
+            'include_features': include_features,
+            'aux_features': aux_features,
+            'policy_temperature': policy_temperature,
+        }
+
         result = {}
         x = self.prep_for_model(x)
         if self.observation_normalization:
@@ -650,7 +667,7 @@ class TVFModel(nn.Module):
 
         # special case for single model version (faster)
         if self.architecture == "single":
-            network_output = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
+            network_output = self.policy_net(x, **args)
             for k, v in network_output.items():
                 result["policy_" + k] = v
                 result["value_" + k] = v
@@ -660,8 +677,8 @@ class TVFModel(nn.Module):
         if output == "full":
             # this is a special case where we return all heads from both networks
             # required for distillation.
-            policy_part = self.policy_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
-            value_part = self.value_net(x, aux_features=aux_features, policy_temperature=policy_temperature)
+            policy_part = self.policy_net(x, **args)
+            value_part = self.value_net(x, **args)
             for k,v in policy_part.items():
                 result["policy_" + k] = v
             for k, v in value_part.items():
@@ -671,15 +688,13 @@ class TVFModel(nn.Module):
         if output in ["default", "policy"]:
             result.update(self.policy_net(
                 x,
-                aux_features=aux_features,
-                policy_temperature=policy_temperature,
+                **args,
                 exclude_value=output == 'default',
             ))
         if output in ["default", "value"]:
             result.update(self.value_net(
                 x,
-                aux_features=aux_features,
-                policy_temperature=policy_temperature,
+                **args,
                 exclude_policy=output == 'default',
                 ))
 

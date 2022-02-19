@@ -102,6 +102,7 @@ class Config:
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
         self.tvf_return_n_step = int()
+        self.tvf_return_use_log_interpolation = bool()
         self.sqr_return_mode = str()
         self.sqr_return_n_step = int()
 
@@ -131,7 +132,8 @@ class Config:
         self.policy_epochs = int()                            
         self.value_epochs = int()
         self.distil_epochs = int()
-        self.target_kl = float()                            
+        self.target_kl = float()
+        self.entropy_scaling = bool()
         self.ppo_epsilon =float()
         self.agents = int()
         self.n_steps = int()
@@ -351,6 +353,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
     parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
+    parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
 
     parser.add_argument("--sqr_return_n_step", type=int, default=80, help="n step to use for tvf_return_sqr estimation")
     parser.add_argument("--sqr_return_mode", type=str, default="exponential", help="[fixed|exponential|joint]")
@@ -432,6 +435,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--dna_dual_constraint", type=float, default=0,
                         help="Policy updates are constrained by value prediction.")
 
+    parser.add_argument("--entropy_scaling", type=str2bool, default=False,
+                        help="Scales entropy bonus by 1/|std(adv)|.")
     parser.add_argument("--target_kl", type=float, default=-1, help="Approximate divergence before early stopping on policy.")
     parser.add_argument("--policy_mini_batch_size", type=int, default=2048)
     parser.add_argument("--value_mini_batch_size", type=int, default=256)

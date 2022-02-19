@@ -16,7 +16,7 @@ def atari57(priority: int = 0):
             'priority': priority,
             'seed': 1,
             'hostname': "ML",
-            'epochs': 40,
+            'epochs': 50,
         }
 
         COMMON_ARGS.update(RAINBOW_MODE)

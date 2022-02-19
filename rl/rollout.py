@@ -1,3 +1,4 @@
+import logging
 import os
 
 import numpy as np
@@ -520,7 +521,7 @@ class Runner:
         self.actions = np.zeros([N, A], dtype=np.int64)
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
-        self.ext_advantage = np.zeros([N, A], dtype=np.float32)
+        self.ext_advantage = np.zeros([N, A], dtype=np.float32) # unnormalized extrinsic reward advantages
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
 
         self.replay_value_estimates = np.zeros([N, A], dtype=np.float32)
@@ -703,9 +704,11 @@ class Runner:
             )
 
         if verbose:
-            self.log.important("Generated {} agents ({}) using {} ({}) model.".
+            model_trainable_size = self.model.model_size(trainable_only=True)/1e6
+            model_total_size = self.model.model_size(trainable_only=False)/1e6
+            self.log.important("Generated {} agents ({}) using {} ({:.1f}M params) {} model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
-                                  self.model.dtype))
+                                  model_total_size, self.model.dtype))
 
     def save_checkpoint(self, filename, step):
 
@@ -728,6 +731,9 @@ class Runner:
 
         if args.use_erp:
             data['erp_stats'] = self.erp_stats
+
+        if args.abs_mode != "off":
+            data['abs_stats'] = self.abs_stats
 
         if self.replay_buffer is not None:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
@@ -805,6 +811,8 @@ class Runner:
         if args.use_erp:
             self.erp_stats = checkpoint['erp_stats']
 
+        self.abs_stats = checkpoint.get('abs_stats', {})
+
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
 
@@ -841,23 +849,25 @@ class Runner:
         self.episode_length_buffer.append(1000)
 
     @torch.no_grad()
-    def detached_batch_forward(self, obs:np.ndarray, aux_features=None, max_batch_size=None, **kwargs):
+    def detached_batch_forward(self, obs:np.ndarray, aux_features=None, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
             obs: np array of dims [B, *state_shape]
 
             Large inputs will be batched.
             Never computes gradients
+
+            Output is always a tensor on the cpu.
         """
-        max_batch_size = max_batch_size or args.max_micro_batch_size
 
         # state_shape will be empty_list if compression is enabled
         B, *state_shape = obs.shape
         assert type(obs) == np.ndarray, f"Obs was of type {type(obs)}, expecting np.ndarray"
         assert tuple(state_shape) in [tuple(), tuple(self.state_shape)]
 
-        # break large forwards into batches (note: would be better to just run multiple max_size batches + one last
-        # small one than to subdivide)
+        max_batch_size = args.max_micro_batch_size
+
+        # break large forwards into batches
         if B > max_batch_size:
 
             batches = math.ceil(B / max_batch_size)
@@ -868,7 +878,6 @@ class Runner:
                 batch_result = self.detached_batch_forward(
                     obs[batch_start:batch_end],
                     aux_features=aux_features[batch_start:batch_end] if aux_features is not None else None,
-                    max_batch_size=max_batch_size,
                     **kwargs
                 )
                 batch_results.append(batch_result)
@@ -880,7 +889,8 @@ class Runner:
         else:
             if obs.dtype == np.object:
                 obs = np.asarray([obs[i].decompress() for i in range(len(obs))])
-            return self.model.forward(obs, aux_features=aux_features, **kwargs)
+            results = self.model.forward(obs, aux_features=aux_features, **kwargs)
+            return results
 
     def calculate_sampled_returns(
             self,
@@ -974,6 +984,7 @@ class Runner:
             max_samples=args.tvf_return_samples,
             estimator_mode=re_mode,
             log=self.log,
+            use_log_interpolation=args.tvf_return_use_log_interpolation,
         )
 
         if include_second_moment:
@@ -1003,12 +1014,14 @@ class Runner:
 
         buffer_output = self.detached_batch_forward(
             buffer[replay_sample],
-            output="value"
+            output="value",
+            include_features=True,
         )
 
         obs_output = self.detached_batch_forward(
             obs,
-            output="value"
+            output="value",
+            include_features = True,
         )
 
         features_code = "features" if args.erp_relu else "raw_features"
@@ -1412,7 +1425,8 @@ class Runner:
                     if p.grad is not None:
                         parameters.append(p)
 
-            result['grad_magnitude'] = nn.utils.clip_grad_norm_(parameters, 100)
+            result['grad_magnitude'] = nn.utils.clip_grad_norm_(parameters, 99999)
+            optimizer.zero_grad(set_to_none=True)
             return True  # make sure to not apply the gradient!
 
         hook = {'after_mini_batch': process_gradient}
@@ -1436,8 +1450,8 @@ class Runner:
         s = (g_b_small_squared - g_b_big_squared) / (1/b_small - 1/b_big)
         self.log.mute = False
 
-        self.abs_stats[f'{label}_s'] = 0.95 * self.abs_stats.get(f'{label}_s', s) + 0.05 * s
-        self.abs_stats[f'{label}_g2'] = 0.95 * self.abs_stats.get(f'{label}_g2', g2) + 0.05 * g2
+        self.abs_stats[f'{label}_s'] = 0.9 * self.abs_stats.get(f'{label}_s', s) + 0.1 * s
+        self.abs_stats[f'{label}_g2'] = 0.9 * self.abs_stats.get(f'{label}_g2', g2) + 0.1 * g2
 
         # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
         # to avoid this we clip the *smoothed* g2 to epsilon.
@@ -1445,9 +1459,9 @@ class Runner:
         epsilon = 1e-4
         target_smooth_ratio = self.abs_stats[f'{label}_s'] / np.clip(self.abs_stats[f'{label}_g2'], epsilon, float('inf'))
 
-        # a second lager of EMA makes sure that mini-batch size doesn't flick between 8k, and 32 every other update.
+        # a second layer of EMA makes sure that mini-batch size doesn't flick between 8k, and 32 every other update.
         # slow changes in the ratio will come through quickly, but large flucations will be averaged out.
-        self.abs_stats[f'{label}_ratio'] = self.abs_stats.get(f'{label}_ratio', target_smooth_ratio) * 0.95 + target_smooth_ratio * 0.05
+        self.abs_stats[f'{label}_ratio'] = self.abs_stats.get(f'{label}_ratio', target_smooth_ratio) * 0.9 + target_smooth_ratio * 0.1
 
         self.log.watch(f'abs_{label}_s', s, display_precision=0, display_width=0)
         self.log.watch(f'abs_{label}_g2', g2, display_precision=0, display_width=0)
@@ -1805,6 +1819,7 @@ class Runner:
             # also log the variance estimates
             for h_index, h in enumerate(self.tvf_debug_horizons):
                 var_est = sqrt_second_moment_estimates[:, :, h_index] ** 2 - (first_moment_estimates[:, :, h_index] ** 2)
+                var_est = np.clip(var_est, 0, float('inf'))
                 self.log.watch_mean(
                     f"var_{h}",
                     var_est.mean(),
@@ -1845,6 +1860,7 @@ class Runner:
         """
         return self.all_time[-1]
 
+    @torch.no_grad()
     def get_tvf_rediscounted_value_estimates(self, rollout, new_gamma:float):
         """
         Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
@@ -1852,11 +1868,18 @@ class Runner:
 
         N, A, *state_shape = rollout.all_obs[:-1].shape
 
+        if (abs(new_gamma - args.tvf_gamma) < 1e-8):
+            # no rediscounting is required...
+            return self.get_value_estimates(
+                obs=rollout.all_obs,
+                time=rollout.all_time
+            )
+
         # these makes sure error is less than 1%
         c_1 = 7
         c_2 = 400
 
-        # work out a range and skip to use so that we never use more than around 100 samples and we don't waste
+        # work out a range and skip to use so that we never use more than around 400 samples and we don't waste
         # samples on heavily discounted rewards
         if new_gamma >= 1:
             effective_horizon = round(rollout.current_horizon)
@@ -1969,7 +1992,7 @@ class Runner:
                 args.gae_lambda
             )
 
-        # calculate ext_returns for PPO targets
+        # calculate ext_returns for PPO targets, and for debugging
         self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
 
         if args.use_intrinsic_rewards:
@@ -2065,6 +2088,8 @@ class Runner:
 
         if args.normalize_intrinsic_rewards:
             self.log.watch_mean("reward_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
+
+        self.flags = {}
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -2240,7 +2265,7 @@ class Runner:
                 data["tvf_time"]
             )
 
-        model_out = self.model.forward(data["prev_state"], output="value", **kwargs)
+        model_out = self.model.forward(data["prev_state"], output="value", include_features=True, **kwargs)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value_function_horizons
@@ -2253,11 +2278,23 @@ class Runner:
             targets = data["tvf_returns"]
             value_predictions = model_out["tvf_ext_value"]
             tvf_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
+            per_horizon_loss = tvf_loss.detach().mean(dim=0).cpu().numpy()
             tvf_loss = tvf_loss.mean(dim=-1)
             tvf_loss = 0.5 * args.tvf_coef * tvf_loss.mean()
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_name="ls_tvf", display_width=8)
+            horizons = data["tvf_horizons"].float()
+            horizons_mu = horizons.mean(axis=0).cpu().numpy().astype('uint32')
+            horizons_var = horizons.var(axis=0).cpu().numpy().mean()
+            if horizons_var < 1e-6:
+                # log per horizon loss
+                for h_index, h in enumerate(horizons_mu):
+                    self.log.watch_mean(f"loss_tvf_{h}", per_horizon_loss[h_index], history_length=64 * args.value_epochs, display_width=0)
+            else:
+                if 'horizon_missmatch' not in self.flags:
+                    self.log.warn("Horizon missmatch, logging of TVF error disabled.")
+                    self.flags['horizon_missmatch'] = True
 
         if args.use_tvf and args.learn_second_moment:
             targets = data["tvf_returns_m2"]
@@ -2330,20 +2367,27 @@ class Runner:
         if distribution == "fixed_linear":
             samples = np.linspace(0, max_value, num=samples, endpoint=True)
         elif distribution == "fixed_geometric":
-            # note: round is needed here otherwise last value will sometimes be off by 1.
             samples = np.geomspace(1, 1+max_value, num=samples, endpoint=True)-1
         elif distribution == "linear":
             samples = np.random.choice(range(1, max_value), size=samples, replace=False)
         elif distribution == "geometric":
             samples = np.random.uniform(np.log(1), np.log(max_value+1), size=samples)
             samples = np.exp(samples)-1
+        elif distribution == "saturated_geometric":
+            samples1 = np.random.uniform(np.log(1), np.log(self.N + 1), size=samples//2)
+            samples2 = np.random.uniform(np.log(1), np.log(max_value + 1), size=samples//2)
+            samples = np.exp(np.concatenate([samples1, samples2])) - 1
+        elif distribution == "saturated_fixed_geometric":
+            samples1 = np.geomspace(1, self.N+max_value, num=samples//2, endpoint=False)-1
+            samples2 = np.geomspace(1, 1+max_value, num=samples//2, endpoint=True)-1
+            samples = np.concatenate([samples1, samples2])
         else:
             raise Exception(f"Invalid distribution {distribution}")
 
+        samples.sort()
         if force_first_and_last:
             samples[0] = 0
             samples[-1] = max_value
-        samples.sort()
         return np.rint(samples).astype(int)
 
     @torch.no_grad()
@@ -2416,8 +2460,14 @@ class Runner:
 
     @property
     def current_entropy_bonus(self):
-        t = self.step / 10e6
-        return args.entropy_bonus * 10 ** (args.eb_alpha * -math.cos(args.eb_theta*t*math.pi*2) + args.eb_beta * t)
+        if args.entropy_scaling:
+            # this is just so that entropy_bonus parameter can be left roughly the same when entropy scaling is enabled.
+            typical_advantage_std = 0.05
+            return args.entropy_bonus / ((self.ext_advantage.std()/typical_advantage_std) + args.advantage_epsilon)
+        else:
+            # standard anneal...
+            t = self.step / 10e6
+            return args.entropy_bonus * 10 ** (args.eb_alpha * -math.cos(args.eb_theta*t*math.pi*2) + args.eb_beta * t)
 
     def train_value_heads(self, model_out, data):
         """
@@ -2697,7 +2747,7 @@ class Runner:
         """
         # these are a bit slow, so do it less frequently (actually it needs to be done more often due to noise)
         # also make sure to update frequently at the beginning as the EMA will be warming up.
-        update_freq = 4
+        update_freq = 2  # needs to be fairly frequent otherwise s/g2 are too noisy, and ema lags too much.
         return args.abs_mode != "off" and (self.batch_counter % update_freq == 0 or self.batch_counter < 10)
 
 
