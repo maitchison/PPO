@@ -365,7 +365,8 @@ HARD_MODE = {
     "terminal_on_loss_of_life": False,
     "reward_clipping": "off",
     "full_action_space": True,
-    "sticky_actions": True,
+    "repeat_action_probability": 0.25,
+
 }
 
 

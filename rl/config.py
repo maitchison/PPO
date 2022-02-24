@@ -1,14 +1,16 @@
+import ast
 import logging
 import uuid
 import socket
 import argparse
 import random
+from typing import Union
 
 class Config:
 
     def __init__(self, **kwargs):
         # put these here just so IDE can detect common parameters...
-        self.environment        = str()
+        self.environment: Union[str, list, None] = None
         self.experiment_name    = str()
         self.run_name           = str()
         self.filter             = str()
@@ -193,6 +195,7 @@ class Config:
         self.advantage_clipping = float()
 
         self.per_step_reward_noise = float()
+        self.per_step_termination_probability = float()
         self.debug_terminal_logging = bool()
         self.debug_value_logging = bool()
         self.seed = int()
@@ -236,6 +239,17 @@ class Config:
                     self.debug_replay_shadow_buffers
             else:
                 self.use_compression = str2bool(str(self.use_compression))
+
+    def get_env_name(self, n: int=0):
+        """
+        environment name for the nth environment
+        """
+        if type(self.environment) is str:
+            return self.environment
+        if type(self.environment) is list:
+            return self.environment[n % len(self.environment)]
+        raise ValueError(f"Invalid type for environment {type(self.environment)} expecting str or list.")
+
 
     @property
     def reward_normalization_gamma(self):
@@ -312,14 +326,14 @@ def parse_args(no_env=False, args_override=None):
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
     if not no_env:
-        parser.add_argument("environment")
+        parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
 
     parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
 
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
-    parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash tempalte generator size.")
+    parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash template generator size.")
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model or raises error. If set to false and new run will be started.")
 
@@ -363,7 +377,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--dvq_samples", type=int, default=64)
     parser.add_argument("--dvq_freq", type=int, default=64)
     parser.add_argument("--dvq_rollout_length", type=int, default=1024*16)
-
 
     parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
     parser.add_argument("--auto_horizon", type=str2bool, default=False, help="Automatically adjust max_horizon to clip(mean episode length + 3std, max(horizon samples, value samples), max_horizon)")
@@ -497,6 +510,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--guid", type=str, default=None)
     parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
     parser.add_argument("--per_step_reward_noise", type=float, default=0.0, help="Standard deviation of noise added to (normalized) reward each step.")
+    parser.add_argument("--per_step_termination_probability", type=float, default=0.0,
+                        help="Probability that each step will result in unexpected termination (used to add noise to value).")
     parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
     parser.add_argument("--reward_normalization", type=str2bool, default=True)
     parser.add_argument("--reward_scale", type=float, default=1.0)
@@ -587,17 +602,25 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
 
     # legacy
-    parser.add_argument("--time_aware", type=str2bool, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--sticky_actions", type=str2bool, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--tvf_exp_gamma", type=float, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--tvf_mode", type=str, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--tvf_n_step", type=int, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--time_aware", type=str2bool, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--sticky_actions", type=str2bool, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--tvf_exp_gamma", type=float, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--tvf_mode", type=str, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--tvf_n_step", type=int, default=None, help=argparse.SUPPRESS)
 
     for param in REMOVED_PARAMS:
         parser.add_argument(f"--{param}", type=str, default=None, help=argparse.SUPPRESS)
 
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
+
+    # conversions
+    try:
+        # handle environment as an array.
+        args.environment = ast.literal_eval(args.environment)
+    except:
+        # just assume this is a normal unformatted string.
+        args.environment = args.environment
 
     # checks
     assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"

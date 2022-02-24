@@ -471,6 +471,51 @@ class RewardScaleWrapper(gym.Wrapper):
         obs, reward, done, info = self.env.step(action)
         return obs, reward*self.scale, done, info
 
+class RandomTerminationWrapper(gym.Wrapper):
+
+    def __init__(self, env:gym.Env, p: float):
+        """
+        Terminates environment with per step probability p.
+        This can be used to create an environment with very stochastic value functions.
+        """
+        super().__init__(env)
+        self.p = p
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        done = done or (np.random.rand() < self.p)
+        return obs, reward*self.scale, done, info
+
+class LabelEnvWrapper(gym.Wrapper):
+    def __init__(self, env:gym.Env, label:str):
+        super().__init__(env)
+        self.label = label
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        info['env_id'] = self.label
+        return obs, reward, done, info
+
+class ReturnTracker():
+    """
+    Tracks returns for normalization accross a (masked) vector of environmentst
+    """
+    def __init__(self, num_envs: int, gamma: float):
+        self.ret_rms = utils.RunningMeanStd(shape=())
+        self.current_returns = np.zeros([num_envs], dtype=np.float32)
+        self.gamma = gamma
+
+    def reset(self):
+        self.current_returns *= 0
+
+    def update(self, rewards:np.ndarray, dones:np.ndarray, mask:np.ndarray):
+        if sum(mask) == 0:
+            return
+        # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
+        # but it is what OpenAI does...
+        self.current_returns[mask] = rewards[mask] + self.gamma * self.current_returns[mask] * (1 - dones[mask])
+        self.ret_rms.update(self.current_returns[mask])
+
 class VecNormalizeRewardWrapper(gym.Wrapper):
     """
     Normalizes rewards such that returns are unit normal.
@@ -481,11 +526,9 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     def __init__(
             self,
             env: VectorEnv,
-            initial_state=None,
             gamma: float = 1.0,
             clip: float = 10.0,
             scale: float = 1.0,
-            returns_transform=lambda x: x,
     ):
         """
         Normalizes returns
@@ -495,27 +538,35 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.clip = clip
         self.epsilon = 1e-8
         self.current_returns = np.zeros([env.num_envs], dtype=np.float32)
-        self.ret_rms = utils.RunningMeanStd(shape=())
+        self.normalizers = {'default': ReturnTracker(env.num_envs, gamma)}
         self.gamma = gamma
         self.scale = scale
-        self.returns_transform = returns_transform
-        if initial_state is not None:
-            self.ret_rms.restore_state(initial_state)
+
 
     def reset(self):
-        self.current_returns *= 0
+        for k, v in self.normalizers.items():
+            v.reset()
         return self.env.reset()
 
     def step(self, actions):
         obs, rewards, dones, infos = self.env.step(actions)
 
-        # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
-        # but it is what OpenAI does...
-        self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
+        env_ids = []
+        for info in infos:
+            env_ids.append(info.get("env_id", "default"))
 
-        self.ret_rms.update(self.returns_transform(self.current_returns))
+        scaled_rewards = rewards.copy()
 
-        scaled_rewards = rewards / self.std
+        # multi-env support
+        for env_id in set(env_ids):
+            if env_id not in self.normalizers:
+                self.normalizers[env_id] = ReturnTracker(self.env.num_envs, self.gamma)
+            mask = [id == env_id for id in env_ids]
+
+            self.normalizers[env_id].update(rewards, dones, mask)
+            scaled_rewards[mask] /= math.sqrt(self.normalizers[env_id].ret_rms.var + self.epsilon)
+
+        # clip rewards, and monitor for clipping
         if self.clip is not None:
             rewards_copy = scaled_rewards.copy()
             scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
@@ -530,19 +581,17 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
 
     @property
     def mean(self):
-        return self.ret_rms.mean
+        return self.normalizers["default"].ret_rms.mean
 
     @property
     def std(self):
-        return math.sqrt(self.ret_rms.var + self.epsilon)
+        return math.sqrt(self.normalizers["default"].ret_rms.var + self.epsilon)
 
     def save_state(self, buffer):
-        buffer["ret_rms"] = self.ret_rms.save_state()
-        buffer["current_returns"] = self.current_returns
+        buffer["normalizers"] = self.normalizers
 
     def restore_state(self, buffer):
-        self.ret_rms.restore_state(buffer["ret_rms"])
-        self.current_returns = buffer["current_returns"]
+        self.normalizers = buffer["normalizers"]
 
 
 class VecNormalizeObservationsWrapper(gym.Wrapper):

@@ -684,7 +684,7 @@ class Runner:
         base_seed = args.seed
         if base_seed is None or base_seed < 0:
             base_seed = np.random.randint(0, 9999)
-        env_fns = [lambda i=i: atari.make(args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
+        env_fns = [lambda i=i: atari.make(env_id=args.get_env_name(i), args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
@@ -704,7 +704,6 @@ class Runner:
             )
 
         if verbose:
-            model_trainable_size = self.model.model_size(trainable_only=True)/1e6
             model_total_size = self.model.model_size(trainable_only=False)/1e6
             self.log.important("Generated {} agents ({}) using {} ({:.1f}M params) {} model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
@@ -1040,93 +1039,6 @@ class Runner:
             self.log.warn("NaNs found in diversity calculation. Setting to zero.")
             reduced_values[is_nan] = 0
         return reduced_values
-
-
-    @torch.no_grad()
-    def export_movie(self, filename, include_rollout=False, include_video=True, max_frames=60 * 60 * 15):
-        """ Exports a movie of agent playing game.
-            include_rollout: save a copy of the rollout (may as well include policy, actions, value etc)
-        """
-
-        scale = 2
-
-        env = atari.make(monitor_video=True)
-        _ = env.reset()
-        action = 0
-        state, reward, done, info = env.step(0)
-        rendered_frame = info.get("monitor_obs", state)
-
-        # work out our height
-        first_frame = utils.compose_frame(state, rendered_frame)
-        height, width, channels = first_frame.shape
-        width = (width * scale) // 4 * 4  # make sure these are multiples of 4
-        height = (height * scale) // 4 * 4
-
-        # create video recorder, note that this ends up being 2x speed when frameskip=4 is used.
-        if include_video:
-            video_out = cv2.VideoWriter(filename + ".mp4", cv2.VideoWriter_fourcc(*'mp4v'), 30, (width, height),
-                                        isColor=True)
-        else:
-            video_out = None
-
-        state = env.reset()
-
-        frame_count = 0
-
-        history = defaultdict(list)
-
-        # play the game...
-        while not done:
-
-            additional_params = {}
-
-            model_out = self.model.forward(state[np.newaxis], **additional_params)
-
-            log_probs = model_out["log_policy"][0].detach().cpu().numpy()
-
-            if np.any(np.isnan(log_probs)):
-                self.log.important("Nans found in policy, halting...")
-                raise Exception("Nans found in policy, halting...")
-
-            action = utils.sample_action_from_logp(log_probs)
-
-            if include_rollout:
-                history["logprobs"].append(log_probs)
-                history["actions"].append(action)
-                history["states"].append(state)
-
-            state, reward, done, info = env.step(action)
-
-            channels = info.get("channels", None)
-            rendered_frame = info.get("monitor_obs", state)
-
-            agent_layers = state.copy()
-
-            frame = utils.compose_frame(agent_layers, rendered_frame, channels)
-
-            if frame.shape[0] != width or frame.shape[1] != height:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
-
-            # show current state
-            assert frame.shape[1] == width and frame.shape[0] == height, "Frame should be {} but is {}".format(
-                (width, height, 3), frame.shape)
-
-            if video_out is not None:
-                video_out.write(frame)
-
-            frame_count += 1
-
-            if frame_count >= max_frames:
-                break
-
-        if video_out is not None:
-            video_out.release()
-
-        if include_rollout:
-            np_history = {}
-            for k, v in history.items():
-                np_history[k] = np.asarray(v)
-            pickle.dump(np_history, gzip.open(filename + ".hst.gz", "wb", compresslevel=9))
 
     def export_debug_frames(self, filename, obs, marker=None):
         # obs will be [N, 4, 84, 84]

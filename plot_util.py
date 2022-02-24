@@ -735,6 +735,9 @@ def plot_experiment(
 
 class AtariScoreNormalizer:
 
+    ATARI_5 = ('alien', 'breakout', 'bankheist', 'beamrider', 'amidar', 'assault', 'gravitar')
+    ATARI_5_WEIGHTS = np.asarray([0.02613128, 0.02736333, 0.06886954, 0.1872575, 0.34361425, 0.01568461, 0.7149319])
+
     def __init__(self):
         self._normalization_scores = self._load_scores("./Atari-Human.csv")
 
@@ -774,6 +777,18 @@ class AtariScoreNormalizer:
             return score * 0
         random, human = self._normalization_scores[key]
         return 100 * (score - random) / (human - random)
+
+    def atari5(self, scores: dict):
+        """
+        Input is dictionary mapping from the 5 required games to their unnormalized scores.
+        """
+        total = 0
+        for game_name, weight in zip(self.ATARI_5, self.ATARI_5_WEIGHTS):
+            norm_score = self.normalize(game_name, scores[game_name])
+            total += np.sqrt(np.clip(norm_score, 0, float('inf'))) * weight
+        return (total ** 2)
+
+
 
 
 def get_subset_games_and_weights(subset):

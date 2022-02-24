@@ -16,7 +16,7 @@ if __name__ == "__main__":
     # shutdown for move
     #ERP.setup()
     #EPGG.setup()
-    EA57.setup(-200)
+    EA57.setup(0)
     EEXP.setup()
 
     if len(sys.argv) == 1:

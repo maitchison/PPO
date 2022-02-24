@@ -116,14 +116,16 @@ ec3beb6d8b5689e867bafb5d5f507491 word_zapper.bin
 c5930d0e8cdae3e037349bfa08e871be yars_revenge.bin
 eea0da9b987d661264cce69a7c13c3bd zaxxon.bin""".split("\n")]}
 
-def make(non_determinism=None, monitor_video=False, seed=None, args=None):
-    """ Construct environment of given name, including any required wrappers."""
+def make(env_id:str, monitor_video=False, seed=None, args=None):
+    """
+    Construct environment of given name, including any required wrappers.
+    """
 
     # this global reference will not work on windows when we spawn instead of fork,
     # so make sure to pass args in as an argument.
     args = args or config.args
 
-    env_name = f"ALE/{args.environment}-v5"
+    env_name = f"ALE/{env_id}-v5"
 
     env = gym.make(
         env_name,
@@ -133,14 +135,14 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
         repeat_action_probability=args.repeat_action_probability,
         full_action_space=args.full_action_space,
     )
-    if args.atari_rom_check and args.environment not in IGNORE_ROMS_LIST:
+    if args.atari_rom_check and env_id not in IGNORE_ROMS_LIST:
         try:
             # this is the atari-py method
             path = env.unwrapped.game_path
         except:
             # use the ale-py method
             import ale_py.roms as roms
-            path = str(getattr(roms, args.environment))
+            path = str(getattr(roms, env_id))
 
         rom_file_name = os.path.split(path)[-1].lower()
         file_md5 = hashlib.md5(open(path, 'rb').read()).hexdigest()
@@ -149,6 +151,8 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
         ale_md5 = ALE_ROM_MD5[rom_file_name]
         if ale_md5 != file_md5:
             raise Exception(f"Expecting ROM {rom_file_name} to have MD5 {ale_md5} but it was {file_md5}")
+
+    env = wrappers.LabelEnvWrapper(env, env_id)
 
     if seed is not None:
         np.random.seed(seed)
@@ -205,6 +209,9 @@ def make(non_determinism=None, monitor_video=False, seed=None, args=None):
 
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
+
+    if args.per_step_termination_probability > 0:
+        env = wrappers.RandomTerminationWrapper(env)
 
     if args.deferred_rewards != 0:
         env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)

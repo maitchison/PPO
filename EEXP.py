@@ -6,7 +6,7 @@ Exploration experiments
 from runner_tools import WORKERS, add_job, random_search, Categorical
 from runner_tools import __PPO_reference_args, __DNA_reference_args, __TVF_reference_args, __TVF99_reference_args, __RP1U_reference_args
 from runner_tools import RP1U_reference_args
-from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE, ATARI_57
+from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE, ATARI_57, PPO_reference_args, TVF_reference_args
 
 DEFAULT = __RP1U_reference_args.copy()
 DEFAULT.update({
@@ -1680,6 +1680,69 @@ def adaptive_gae(priority=0):
                 )
 
 
+def noise(priority:int=0):
+
+    ATARI_5_VAL = ['KungFuMaster', 'Qbert', 'BattleZone', 'Frostbite', 'IceHockey']
+
+    N_STEPS = 512  # helps with stability
+    AGENTS = 128
+    ROLLOUT_SIZE = N_STEPS * AGENTS
+
+    UPGRADED_ARGS = {
+        'n_steps': 512,
+        'agents': 128,
+        'policy_mini_batch_size': 2048,  # helps with stability
+        'entropy_scaling': True,  # handles changes in stocasticity better.
+        'tvf_value_distribution': 'saturated_geometric',
+        'tvf_horizon_distribution': 'saturated_geometric',  # pay more attention to short horizons
+        'tvf_horizon_samples': 64,  # more samples gives better ev
+        'tvf_return_n_step': 20,  # this is much lower than I expected
+
+        'anneal_target_epoch': 50,
+
+        # new replay setting for larger buffer...
+        'distil_epochs': 1,
+        'distil_period': 1,
+        'replay_size': 1 * ROLLOUT_SIZE,
+        'distil_batch_size': 1 * ROLLOUT_SIZE,
+        'replay_mode': "uniform",
+
+    }
+
+    # just want to see how well new TVF handles noise compared to PPO
+    for env in ATARI_5_VAL:
+
+        COMMON_ARGS = {
+            'env_name': env,
+            'seed': 1,
+            'hostname': "desktop",
+            'epochs': 30,
+        }
+
+        COMMON_ARGS.update(HARD_MODE)
+        COMMON_ARGS.update(UPGRADED_ARGS)
+        del COMMON_ARGS['repeat_action_probability']
+
+        for repeat_probability in [0, 0.125, 0.25, 0.5]:
+            add_job(
+                f"NOISE",
+                run_name=f"game={env} ppo rap={repeat_probability} (1)",
+                default_params=PPO_reference_args,
+                priority=priority,
+                repeat_action_probability=repeat_probability,
+                **COMMON_ARGS,
+            )
+
+            add_job(
+                f"NOISE",
+                run_name=f"game={env} tvf rap={repeat_probability} (1)",
+                default_params=RP1U_reference_args,
+                priority=priority,
+                repeat_action_probability=repeat_probability,
+                **COMMON_ARGS,
+            )
+
+
 
 
 def setup(priority_modifier=0):
@@ -1688,5 +1751,6 @@ def setup(priority_modifier=0):
     second_moment(0)
     adaptive(20)
     adaptive_gae()
+    noise()
 
 

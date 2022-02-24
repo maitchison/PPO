@@ -740,10 +740,10 @@ def _calculate_sampled_return_multi_fast(
 
     current_n_step = 0
 
-    def interpolate_linear(value_estimates:np.ndarray, horizon: int):
+    def interpolate_linear(value_estimates: np.ndarray, horizon: int):
         return _interpolate(value_sample_horizons, value_estimates, horizon)
 
-    def interpolate_log(value_estimates:np.ndarray, horizon: int):
+    def interpolate_log(value_estimates: np.ndarray, horizon: int):
         return _interpolate(log_value_sample_horizons, value_estimates, np.log10(10+horizon)-1)
 
     interpolate = interpolate_log if use_log_interpolation else interpolate_linear

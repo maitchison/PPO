@@ -108,7 +108,7 @@ def main():
     os.makedirs(args.log_folder, exist_ok=True)
 
     """ Runs experiment specified by config.args """
-    fake_env = atari.make()
+    fake_env = atari.make(args.get_env_name())
     n_actions = fake_env.action_space.n
     obs_space = fake_env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
