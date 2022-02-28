@@ -522,6 +522,7 @@ class Runner:
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.ext_advantage = np.zeros([N, A], dtype=np.float32) # unnormalized extrinsic reward advantages
+        self.raw_advantage = np.zeros([N, A], dtype=np.float32) # advantages before normalization
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
 
         self.replay_value_estimates = np.zeros([N, A], dtype=np.float32)
@@ -551,8 +552,12 @@ class Runner:
         # outputs tensors when clip loss is very high.
         self.log_high_grad_norm = True
 
-        self.game_crashes = 0
-        self.reward_clips = 0
+        self.stats = {
+            'reward_clips': 0,
+            'game_crashes': 0,
+            'action_repeats': 0,
+            'batch_action_repeats': 0,
+        }
         self.ep_count = 0
         self.episode_length_buffer = collections.deque(maxlen=1000)
 
@@ -565,6 +570,7 @@ class Runner:
                 obs_dtype=self.prev_obs.dtype,
                 mode=args.replay_mode,
                 filter_duplicates=args.replay_duplicate_removal,
+                thinning=args.replay_thinning,
             )
 
         self.debug_replay_buffers = []
@@ -606,7 +612,6 @@ class Runner:
             factor *= (1 + math.cos(math.pi * 2 * self.step / 20e6)) / 2
 
         return x * factor
-
 
     @property
     def value_lr(self):
@@ -703,6 +708,9 @@ class Runner:
                 scale=args.reward_scale,
             )
 
+        if args.max_repeated_actions > 0:
+            self.vec_env = wrappers.VecRepeatedActionPenalty(self.vec_env, args.max_repeated_actions, args.repeated_action_penalty)
+
         if verbose:
             model_total_size = self.model.model_size(trainable_only=False)/1e6
             self.log.important("Generated {} agents ({}) using {} ({:.1f}M params) {} model.".
@@ -716,7 +724,7 @@ class Runner:
         data = {
             'step': step,
             'ep_count': self.ep_count,
-            'episode_length_buffer' : self.episode_length_buffer,
+            'episode_length_buffer': self.episode_length_buffer,
             'current_horizon': self.current_horizon,
             'model_state_dict': self.model.state_dict(),
             'logs': self.log,
@@ -724,8 +732,7 @@ class Runner:
             'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
             'value_optimizer_state_dict': self.value_optimizer.state_dict(),
             'batch_counter': self.batch_counter,
-            'reward_clips': self.reward_clips,
-            'game_crashes': self.game_crashes,
+            'stats': self.stats,
         }
 
         if args.use_erp:
@@ -804,8 +811,7 @@ class Runner:
         self.ep_count = checkpoint.get('ep_count', 0)
         self.episode_length_buffer = checkpoint['episode_length_buffer']
         self.batch_counter = checkpoint.get('batch_counter', 0)
-        self.reward_clips = checkpoint.get('reward_clips', 0)
-        self.game_crashes = checkpoint.get('game_crashes', 0)
+        self.stats = checkpoint.get('stats', 0)
 
         if args.use_erp:
             self.erp_stats = checkpoint['erp_stats']
@@ -840,9 +846,15 @@ class Runner:
         self.episode_score *= 0
         self.episode_len *= 0
         self.step = 0
-        self.game_crashes = 0
-        self.reward_clips = 0
+
+        # reset stats
+        for k in list(self.stats.keys()):
+            v = self.stats[k]
+            if type(v) in [float, int]:
+                self.stats[k] *= 0
+
         self.batch_counter = 0
+
         self.episode_length_buffer.clear()
         # so that there is something in the buffer to start with.
         self.episode_length_buffer.append(1000)
@@ -915,7 +927,7 @@ class Runner:
         sqrt_m2: returns a tuple containing (first moment, sqrt second moment)
         """
 
-        assert utils.is_sorted(required_horizons), "Required horizons must be sorted"
+        assert utils.is_sorted(required_horizons), f"Required horizons must be sorted but found {required_horizons}"
 
         if type(value_sample_horizons) is list:
             value_sample_horizons = np.asarray(value_sample_horizons)
@@ -1001,18 +1013,23 @@ class Runner:
         return returns
 
     @torch.no_grad()
-    def get_diversity(self, obs, buffer:np.ndarray, reduce_fn=np.nanmean):
+    def get_diversity(self, obs, buffer:np.ndarray, reduce_fn=np.nanmean, mask=None):
         """
-        Returns an estimate of the feature-wise distance between input obs, and the current replay buffer.
+        Returns an estimate of the feature-wise distance between input obs, and the given buffer.
+        Only a sample of buffer is used.
+        @param mask: list of indexes where obs[i] should not match with buffer[mask[i]]
         """
 
         samples = min(args.erp_samples, len(buffer))
+        sample = np.random.choice(len(buffer), [samples], replace=False)
+        sample.sort()
 
-        replay_sample = np.random.choice(len(buffer), [samples], replace=False)
-        replay_sample.sort()
+        if mask is not None:
+            assert len(mask) == len(obs)
+            assert max(mask) < len(buffer)
 
         buffer_output = self.detached_batch_forward(
-            buffer[replay_sample],
+            buffer[sample],
             output="value",
             include_features=True,
         )
@@ -1020,7 +1037,7 @@ class Runner:
         obs_output = self.detached_batch_forward(
             obs,
             output="value",
-            include_features = True,
+            include_features=True,
         )
 
         features_code = "features" if args.erp_relu else "raw_features"
@@ -1030,8 +1047,12 @@ class Runner:
         distances = torch.cdist(replay_features[None, :, :], obs_features[None, :, :], p=2)
         distances = distances[0, :, :].cpu().numpy()
 
-        if args.erp_exclude_zero:
-            distances[distances == 0] = np.nan
+        # mask out any distances where buffer matches obs
+        index_lookup = {index: i for i, index in enumerate(sample)}
+        if mask is not None:
+            for i, idx in enumerate(mask):
+                if idx in index_lookup:
+                    distances[index_lookup[idx], i] = float('NaN')
 
         reduced_values = reduce_fn(distances, axis=0)
         is_nan = np.isnan(reduced_values)
@@ -1080,6 +1101,7 @@ class Runner:
         # everything else should be minimal.
 
         self.int_rewards *= 0
+        self.stats['batch_action_repeats'] = 0
 
         for t in range(self.N):
 
@@ -1122,9 +1144,13 @@ class Runner:
 
             for i, (done, info) in enumerate(zip(dones, infos)):
                 if "reward_clips" in info:
-                    self.reward_clips += info["reward_clips"]
+                    self.stats['reward_clips'] += info["reward_clips"]
                 if "game_freeze" in info:
-                    self.game_crashes += 1
+                    self.stats['game_crashes'] += 1
+                if "repeated_action" in info:
+                    self.stats['action_repeats'] += 1
+                if "repeated_action" in info:
+                    self.stats['batch_action_repeats'] += 1
 
                 if done:
                     # this should be always updated, even if it's just a loss of life terminal
@@ -1191,6 +1217,8 @@ class Runner:
                 aux_features,
                 output="full"
             )
+
+            # note: in single mode value_int_value = policy_int_value
             self.int_value[:, :] = output["value_int_value"].reshape([(N + 1), A]).detach().cpu().numpy()
 
             if args.use_erp:
@@ -1208,27 +1236,27 @@ class Runner:
                 else:
                     raise ValueError(f"Invalid erp_reduce {args.erp_reduce}")
 
-                def get_distances(source):
-                    samples = min(args.erp_samples, len(source))
-                    sample = np.random.choice(len(source), [samples], replace=False)
-                    internal_distance = self.get_diversity(source[sample], source, reduce_fn).mean()
-                    rollout_distances = self.get_diversity(utils.merge_down(self.prev_obs), source, reduce_fn)
-                    return internal_distance, rollout_distances
+                def get_distances(target: np.ndarray, enable_mask=False):
+                    samples = min(args.erp_samples, len(target))
+                    samples = np.random.choice(len(target), [samples], replace=False)
+                    internal_distance = self.get_diversity(target[samples], target, reduce_fn, mask=samples).mean()
+                    target_distances = self.get_diversity(
+                        utils.merge_down(self.prev_obs), target, reduce_fn,
+                        mask=np.arange(len(target)) if enable_mask else None
+                    )
+                    return internal_distance, target_distances
 
                 def get_intrinsic_rewards(mode:str):
                     if mode == "rollout" or self.replay_buffer.current_size == 0:
-                        internal_distance, rollout_distances = get_distances(utils.merge_down(self.prev_obs))
+                        internal_distance, rollout_distances = get_distances(utils.merge_down(self.prev_obs), enable_mask=True)
                     elif mode == "replay":
                         internal_distance, rollout_distances = get_distances(self.replay_buffer.data[:self.replay_buffer.current_size])
                     else:
                         raise ValueError(f"Invalid mode {mode}")
 
-                    # ema to smooth out noisy on replay internal distance
                     id_code = f"{mode}_internal_distance"
-                    if id_code not in self.erp_stats:
-                        self.erp_stats[id_code] = internal_distance
-                    else:
-                        self.erp_stats[id_code] = 0.95 * self.erp_stats[id_code] + 0.05 * internal_distance
+                    self.erp_stats[id_code] = internal_distance
+
                     self.log.watch_mean(f"{mode}_internal_distance", internal_distance, display_width=0)
 
                     # calculate intrinsic reward
@@ -1905,7 +1933,16 @@ class Runner:
             )
 
         # calculate ext_returns for PPO targets, and for debugging
-        self.ext_returns = self.ext_advantage + ext_value_estimates[:N]
+        # note, we use a different lambda for these.
+        advantage_estimate = calculate_gae(
+            self.ext_rewards,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
+            self.terminals,
+            self.gamma,
+            args.td_lambda,
+        )
+        self.ext_returns = advantage_estimate + ext_value_estimates[:N]
 
         if args.use_intrinsic_rewards:
 
@@ -1955,8 +1992,8 @@ class Runner:
         self.log.watch_mean_std("return_ext", self.ext_returns, display_name="ret_ext")
         self.log.watch_mean_std("value_ext", self.ext_value, display_name="est_v_ext", display_width=0)
 
-        self.log.watch("game_crashes", self.game_crashes, display_width=0 if self.game_crashes == 0 else 8)
-        self.log.watch("reward_clips", self.reward_clips, display_width=0 if self.reward_clips == 0 else 8)
+        for k, v in self.stats.items():
+            self.log.watch(k, v, display_width=0 if v == 0 else 8)
 
         if args.use_tvf:
             self.log.watch("tvf_horizon", self.current_horizon)
@@ -1988,7 +2025,11 @@ class Runner:
             self.log.watch_mean_std("reward_int", self.int_rewards, display_name="rew_int", display_width=0)
             self.log.watch_mean_std("return_int", self.int_returns, display_name="ret_int", display_width=0)
             self.log.watch_mean_std("value_int", self.int_value, display_name="est_v_int", display_width=0)
-            self.log.watch_mean("ev_int", utils.explained_variance(self.int_value[:-1].ravel(), self.int_returns.ravel()))
+            ev_int = utils.explained_variance(self.int_value[:-1].ravel(), self.int_returns.ravel())
+            self.log.watch_mean("ev_int", ev_int)
+            if ev_int <= 0:
+                pass
+
             self.log.watch_mean_std("adv_int", self.int_advantage, display_width=0)
             self.log.watch_mean("ir_scale", self.intrinsic_reward_scale, display_width=0)
             self.log.watch_mean(
@@ -2286,11 +2327,11 @@ class Runner:
             samples = np.random.uniform(np.log(1), np.log(max_value+1), size=samples)
             samples = np.exp(samples)-1
         elif distribution == "saturated_geometric":
-            samples1 = np.random.uniform(np.log(1), np.log(self.N + 1), size=samples//2)
+            samples1 = np.random.uniform(np.log(1), np.log(min(self.N, max_value) + 1), size=samples//2)
             samples2 = np.random.uniform(np.log(1), np.log(max_value + 1), size=samples//2)
             samples = np.exp(np.concatenate([samples1, samples2])) - 1
         elif distribution == "saturated_fixed_geometric":
-            samples1 = np.geomspace(1, self.N+max_value, num=samples//2, endpoint=False)-1
+            samples1 = np.geomspace(1, min(self.N, max_value) + 1, num=samples//2, endpoint=False)-1
             samples2 = np.geomspace(1, 1+max_value, num=samples//2, endpoint=True)-1
             samples = np.concatenate([samples1, samples2])
         else:
@@ -2375,7 +2416,7 @@ class Runner:
         if args.entropy_scaling:
             # this is just so that entropy_bonus parameter can be left roughly the same when entropy scaling is enabled.
             typical_advantage_std = 0.05
-            return args.entropy_bonus / ((self.ext_advantage.std()/typical_advantage_std) + args.advantage_epsilon)
+            return args.entropy_bonus / ((self.advantage.std()/typical_advantage_std) + args.advantage_epsilon)
         else:
             # standard anneal...
             t = self.step / 10e6
@@ -2535,6 +2576,7 @@ class Runner:
         self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("entropy", entropy)
+        self.log.watch_mean("entropy_bits", entropy*(1/math.log(2)))
         self.log.watch_mean("loss_ent", loss_entropy, display_name=f"ls_ent", display_width=8)
         self.log.watch_mean("loss_policy", gain, display_name=f"ls_policy")
 
@@ -2668,6 +2710,9 @@ class Runner:
         # ----------------------------------------------------
         # policy phase
 
+        if args.policy_epochs == 0:
+            return
+
         batch_data = {}
         B = args.batch_size
         N, A, *state_shape = self.prev_obs.shape
@@ -2681,8 +2726,8 @@ class Runner:
             batch_data["ext_returns"] = self.ext_returns.reshape([B])
 
         # sort out advantages
-        advantages = self.advantage.reshape(B)
-        self.log.watch_stats("advantages_raw", advantages, display_width=0)
+        advantages = self.advantage.reshape(B).copy()
+        self.log.watch_stats("advantages_raw", advantages, display_width=0, history_length=1)
 
         if args.normalize_advantages != "off":
             # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
@@ -2692,13 +2737,13 @@ class Runner:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + args.advantage_epsilon)
             else:
                 raise ValueError(f"Invalid normalize_advantages mode {args.normalize_advantages}")
-            self.log.watch_stats("advantages_norm", advantages, display_width=0)
+            self.log.watch_stats("advantages_norm", advantages, display_width=0, history_length=1)
 
         if args.advantage_clipping is not None:
             advantages = np.clip(advantages, -args.advantage_clipping, +args.advantage_clipping)
-            self.log.watch_stats("advantages_clipped", advantages, display_width=0)
+            self.log.watch_stats("advantages_clipped", advantages, display_width=0, history_length=1)
 
-        self.log.watch_stats("advantages", advantages, display_width=0)
+        self.log.watch_stats("advantages", advantages, display_width=0, history_length=1)
         batch_data["advantages"] = advantages
 
         if args.use_intrinsic_rewards:
@@ -2774,6 +2819,9 @@ class Runner:
 
         # ----------------------------------------------------
         # value phase
+
+        if args.value_epochs == 0:
+            return
 
         batch_data = {}
         B = args.batch_size

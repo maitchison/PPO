@@ -735,8 +735,15 @@ def plot_experiment(
 
 class AtariScoreNormalizer:
 
-    ATARI_5 = ('alien', 'breakout', 'bankheist', 'beamrider', 'amidar', 'assault', 'gravitar')
-    ATARI_5_WEIGHTS = np.asarray([0.02613128, 0.02736333, 0.06886954, 0.1872575, 0.34361425, 0.01568461, 0.7149319])
+    SUBSETS = {
+        'Atari_1': (['zaxxon'], [0.7361104013236862], 32.1),
+        'Atari_2': (['battlezone', 'namethisgame'], [0.3710712282605567, 0.6454953598106956], 21.2),
+        'Atari_3': (['battlezone', 'namethisgame', 'upndown'], [0.3223504230411684, 0.5675104493851542, 0.10601972957924621], 18.0),
+        'Atari_5': (['bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09355820685103215, 0.00021248297862930254, 0.33524848247535244, 0.4677328326407763, 0.10203002089200311], 15.5),
+        'Atari_7': (['beamrider', 'kungfumaster', 'bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09060641687077026, 0.12202782601137774, 0.08982327174630528, 0.008034433762979576, 0.28968403952214133, 0.33044208972707934, 0.0823538854612863], 13.6),
+        'Atari_3_Val': (['berzerk', 'boxing', 'zaxxon'], [0.18128771881834643, 0.23099736700126283, 0.5511012606596132], 24.8),
+        'Atari_5_Val': (['bowling', 'qbert', 'berzerk', 'boxing', 'zaxxon'], [0.10826840522123751, 0.09981087743817191, 0.15619612520585538, 0.20017493755002025, 0.44371420800910644], 19.3)
+    }
 
     def __init__(self):
         self._normalization_scores = self._load_scores("./Atari-Human.csv")
@@ -760,11 +767,11 @@ class AtariScoreNormalizer:
 
     @property
     def random(self):
-        return {k:v[0] for k, v in self._normalization_scores.items()}
+        return {k: v[0] for k, v in self._normalization_scores.items()}
 
     @property
     def human(self):
-        return {k:v[1] for k, v in self._normalization_scores.items()}
+        return {k: v[1] for k, v in self._normalization_scores.items()}
 
     def normalize(self, game, score, count=1):
         if count is None or count == "" or count == 0:
@@ -778,66 +785,34 @@ class AtariScoreNormalizer:
         random, human = self._normalization_scores[key]
         return 100 * (score - random) / (human - random)
 
-    def atari5(self, scores: dict):
+    def subset(self, subset_name: str):
+        return self.SUBSETS[subset_name][0].copy()
+
+    def subset_score(self, subset_name: str, scores: dict):
         """
-        Input is dictionary mapping from the 5 required games to their unnormalized scores.
+        Calculates the subset score, which is an estimate of the Median atari-57 score from some subset of log scores.
+        scores: dictionary mapping from env_name to raw (unnormalized) score on that game.
+        returns: float, estimate of median score.
         """
+        assert subset_name in self.SUBSETS
+        games, weights, rel_error = self.SUBSETS[subset_name]
+
+        # because montezuma's revenge often gets 0, and has such low weighting, I often don't test on it and just
+        # assume we would have gotten 0.
+        if 'montezumarevenge' not in scores:
+            scores['montezumarevenge'] = 0.0
+
+        def transform(x):
+            return np.log10(1 + np.clip(x, 0, float('inf')))
+
+        def inv_transform(x):
+            return (10 ** x) - 1
+
         total = 0
-        for game_name, weight in zip(self.ATARI_5, self.ATARI_5_WEIGHTS):
+        for game_name, weight in zip(games, weights):
             norm_score = self.normalize(game_name, scores[game_name])
-            total += np.sqrt(np.clip(norm_score, 0, float('inf'))) * weight
-        return (total ** 2)
-
-
-
-
-def get_subset_games_and_weights(subset):
-
-    subset = subset.lower()
-
-    if subset in asn.games:
-        game_list = [subset]
-        game_weights = [1.0]
-        c = 0.0
-    elif subset == 'default':
-        # this was the old validation set from before
-        game_list = ['Amidar', 'BattleZone', 'DemonAttack']
-        game_weights = [0.35144866, 0.55116459, 0.01343885]
-        c = 20.78141750170289
-    elif subset == "atari-3":
-        game_list = ['BattleZone', 'Gopher', 'TimePilot']
-        game_weights = [0.4669, 0.0229, 0.0252]
-        c = 44.8205
-    elif subset == "atari-6":
-        # this is an average of the validation and atari-3 score.
-        game_list = ['BattleZone', 'Gopher', 'TimePilot', 'Krull', 'KungFuMaster', 'Seaquest']
-        game_weights = np.asarray([0.4669, 0.0229, 0.0252] + [0.04573467, 0.61623311, 0.14444]) / 2
-        c = (44.8205 + 1.7093517175190982) / 2
-    elif subset == "atari-val":
-        # game_list = ['Amidar', 'BankHeist', 'Centipede']
-        # game_weights = [0.6795, 0.0780, 0.0711]
-        # c = 68.17
-        # game_list = ['DemonAttack', 'IceHockey', 'Krull']
-        # game_weights = [0.0174, 0.6230, 0.0625]
-        # c = 0.00
-        # c = 0.00
-        # game_list = ['BattleZone', 'CrazyClimber', 'TimePilot']
-        # game_weights = [0.38186622, 0.19303045, 0.02880996]
-        game_list = ['Krull', 'KungFuMaster', 'Seaquest']
-        game_weights = [0.04573467, 0.61623311, 0.14444]
-        c = 1.7093517175190982
-    elif subset == "atari-val2":
-        game_list = ['Krull', 'KungFuMaster']
-        game_weights = [0.04573467, 0.61623311]
-        c = 0
-    elif subset == "atari-val1":
-        game_list = ['KungFuMaster']
-        game_weights = [0.61623311*6/5] # real rough estimate here, but should be fine...
-        c = 0
-    else:
-        raise Exception("invalid subset")
-
-    return game_list, game_weights+[c],
+            total += transform(norm_score) * weight
+        return inv_transform(total)
 
 
 def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'atari-3', subset_weights=None, c=None):

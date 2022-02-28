@@ -6,7 +6,8 @@ Exploration experiments
 from runner_tools import WORKERS, add_job, random_search, Categorical
 from runner_tools import __PPO_reference_args, __DNA_reference_args, __TVF_reference_args, __TVF99_reference_args, __RP1U_reference_args
 from runner_tools import RP1U_reference_args
-from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE, ATARI_57, PPO_reference_args, TVF_reference_args
+from runner_tools import ROLLOUT_SIZE, ATARI_57, HARD_MODE, EASY_MODE, RAINBOW_MODE, ATARI_57, PPO_reference_args, \
+    TVF_reference_args, DNA_reference_args
 
 DEFAULT = __RP1U_reference_args.copy()
 DEFAULT.update({
@@ -1680,9 +1681,10 @@ def adaptive_gae(priority=0):
                 )
 
 
-def noise(priority:int=0):
+def noise(priority: int = 0):
 
-    ATARI_5_VAL = ['KungFuMaster', 'Qbert', 'BattleZone', 'Frostbite', 'IceHockey']
+    # note: we drop montezuma, and just assume it's zero
+    ATARI_5 = ['BankHeist', 'BattleZone', 'NameThisGame', 'UpNDown']
 
     N_STEPS = 512  # helps with stability
     AGENTS = 128
@@ -1709,32 +1711,33 @@ def noise(priority:int=0):
 
     }
 
-    # just want to see how well new TVF handles noise compared to PPO
-    for env in ATARI_5_VAL:
+    # just want to see how well new TVF handles noise compared to DNA
+    for env in ATARI_5:
 
         COMMON_ARGS = {
             'env_name': env,
             'seed': 1,
-            'hostname': "desktop",
-            'epochs': 30,
+            'hostname': "",
+            'epochs': 10,
+            'abs_mode': 'shadow',  # just to monitor noise levels for value / policy
         }
 
         COMMON_ARGS.update(HARD_MODE)
         COMMON_ARGS.update(UPGRADED_ARGS)
         del COMMON_ARGS['repeat_action_probability']
 
-        for repeat_probability in [0, 0.125, 0.25, 0.5]:
+        for repeat_probability in [0, 0.25, 0.5, 0.75]:
             add_job(
-                f"NOISE",
-                run_name=f"game={env} ppo rap={repeat_probability} (1)",
-                default_params=PPO_reference_args,
+                f"NOISE_1",
+                run_name=f"game={env} dna rap={repeat_probability} (1)",
+                default_params=DNA_reference_args,
                 priority=priority,
                 repeat_action_probability=repeat_probability,
                 **COMMON_ARGS,
             )
 
             add_job(
-                f"NOISE",
+                f"NOISE_1",
                 run_name=f"game={env} tvf rap={repeat_probability} (1)",
                 default_params=RP1U_reference_args,
                 priority=priority,
@@ -1742,15 +1745,527 @@ def noise(priority:int=0):
                 **COMMON_ARGS,
             )
 
+        for per_step_termination_probability in [0.002]:
+            # tuning
+            COMMON_ARGS['tvf_max_horizon'] = round(3/per_step_termination_probability)
+            COMMON_ARGS['tvf_gamma'] = 1 - per_step_termination_probability
+            COMMON_ARGS['gamma'] = 1 - per_step_termination_probability
+            COMMON_ARGS['abs_mode'] = "shadow"
+            COMMON_ARGS['epochs'] = 10 # 10 is enough for the short games, but with 0.001 we might need 20...
+            add_job(
+                f"NOISE_2",
+                run_name=f"game={env} dna pstp={per_step_termination_probability} (1)",
+                default_params=DNA_reference_args,
+                priority=priority,
+                per_step_termination_probability=per_step_termination_probability/4,
+                **COMMON_ARGS,
+            )
+            add_job(
+                f"NOISE_2",
+                run_name=f"game={env} tvf pstp={per_step_termination_probability} (1)",
+                default_params=RP1U_reference_args,
+                priority=priority,
+                per_step_termination_probability=per_step_termination_probability/4,
+                **COMMON_ARGS,
+            )
+
+            add_job(
+                f"NOISE_2",
+                run_name=f"game={env} dna tl={per_step_termination_probability} (1)",
+                default_params=DNA_reference_args,
+                priority=priority,
+                timeout=round(4/per_step_termination_probability),
+                **COMMON_ARGS,
+            )
+            add_job(
+                f"NOISE_2",
+                run_name=f"game={env} tvf tl={per_step_termination_probability} (1)",
+                default_params=RP1U_reference_args,
+                priority=priority,
+                timeout=round(4/per_step_termination_probability),
+                **COMMON_ARGS,
+            )
+
+    # check if we can improve ev/ score on battlesize with repeat horizon of 4.
+    env = "BattleZone"
+
+    COMMON_ARGS = RP1U_reference_args.copy()
+
+    COMMON_ARGS.update({
+        'env_name': env,
+        'seed': 1,
+        'hostname': "",
+        'epochs': 10,
+        'abs_mode': 'shadow',  # just to monitor noise levels for value / policy
+    })
+
+    COMMON_ARGS.update(HARD_MODE)
+    COMMON_ARGS.update(UPGRADED_ARGS)
+    COMMON_ARGS['repeat_action_probability'] = 0.75
+    COMMON_ARGS['n_steps'] = 128
+    COMMON_ARGS['replay_size'] = 128*128
+    COMMON_ARGS['distil_batch_size'] = 128*128
+    COMMON_ARGS['tvf_value_distribution'] = 'saturated_fixed_geometric'
+    COMMON_ARGS['tvf_horizon_distribution'] = 'saturated_fixed_geometric'
+
+    for samples in [32, 64, 128, 256]:
+        add_job(
+            f"NOISE_3",
+            run_name=f"game={env} tvf samples={samples} (1)",
+
+            # see if this helps with the noise
+            gamma=0.999,
+            tvf_gamma=0.999,
+            tvf_max_horizon=3000,
+
+            tvf_horizon_samples=samples,
+            tvf_value_samples=samples,  # the idea is we use the sample horizons we learn...
+
+            default_params=COMMON_ARGS,
+            priority=-20,
+        )
+
+def breakout(priority: int = 0):
+
+    N_STEPS = 512  # helps with stability
+    AGENTS = 128
+    ROLLOUT_SIZE = N_STEPS * AGENTS
+
+    UPGRADED_ARGS = {
+        'n_steps': N_STEPS,
+        'agents': AGENTS,
+        'policy_mini_batch_size': 2048,  # helps with stability
+        'entropy_scaling': True,  # handles changes in stocasticity better.
+        'tvf_value_distribution': 'saturated_geometric',
+        'tvf_horizon_distribution': 'saturated_geometric',  # pay more attention to short horizons
+        'tvf_horizon_samples': 64,  # more samples gives better ev
+        'tvf_return_n_step': 20,  # this is much lower than I expected
+
+        'anneal_target_epoch': 50,
+
+        # new replay setting for larger buffer...
+        'distil_epochs': 1,
+        'distil_period': 1,
+        'replay_size': 1 * ROLLOUT_SIZE,
+        'distil_batch_size': 1 * ROLLOUT_SIZE,
+        'replay_mode': "uniform",
+
+    }
+
+    seed = 1
+
+    COMMON_ARGS = {
+        'env_name': 'Breakout',
+        'seed': seed,
+        'hostname': "",
+        'epochs': 30,
+        'priority': priority,
+    }
+
+    PPO_ARGS = COMMON_ARGS
+    PPO_ARGS.update(PPO_reference_args)
+    PPO_ARGS.update(HARD_MODE)
+    PPO_ARGS.update(UPGRADED_ARGS)
+
+    DNA_ARGS = COMMON_ARGS
+    DNA_ARGS.update(DNA_reference_args)
+    DNA_ARGS.update(HARD_MODE)
+    DNA_ARGS.update(UPGRADED_ARGS)
+
+    TVF_ARGS = COMMON_ARGS.copy()
+    TVF_ARGS.update(RP1U_reference_args)
+    TVF_ARGS.update(HARD_MODE)
+    TVF_ARGS.update(UPGRADED_ARGS)
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf default ({seed})",
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"ppo default ({seed})",
+        default_params=PPO_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"dna default ({seed})",
+        default_params=DNA_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf no_replay ({seed})",
+        default_params=TVF_ARGS,
+        replay_size=0,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf mixed_replay ({seed})",
+        default_params=TVF_ARGS,
+        replay_mixing=True,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf simple_distil ({seed})",
+        tvf_force_ext_value_distil=True,
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf exp=80 ({seed})",
+        tvf_return_n_step=80,
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf exp=40 ({seed})",
+        tvf_return_n_step=40,
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf no_entropy_scaling ({seed})",
+        entropy_scaling=False,
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT",
+        run_name=f"tvf n_step=128 ({seed})",
+        n_steps=128,
+        replay_size=128*128,
+        distil_batch_size=128*128,
+        default_params=TVF_ARGS,
+    )
+
+    for gvm in [0, 0.5, 0.9]:
+        add_job(
+            experiment_name="BREAKOUT_2",
+            run_name=f"tvf gvm={gvm} ({seed})",
+            gae_value_multiplier=gvm,
+            default_params=TVF_ARGS,
+        )
+
+    for distribution in ['saturated_geometric', 'geometric', 'fixed_geometric', 'saturated_fixed_geometric']:
+        add_job(
+            experiment_name="BREAKOUT",
+            run_name=f"tvf distribution={distribution} ({seed})",
+            tvf_value_distribution=distribution,
+            tvf_horizon_distribution=distribution,
+            default_params=TVF_ARGS,
+        )
+
+    for samples in [16, 64, 128, 256, 512]:
+        add_job(
+            experiment_name="BREAKOUT",
+            run_name=f"tvf samples={samples} ({seed})",
+            tvf_horizon_samples=samples,
+            # value samples should be fixed to 128...
+            default_params=TVF_ARGS,
+        )
+
+    add_job(
+            experiment_name="BREAKOUT",
+            run_name=f"tvf matched_128 ({seed})",
+            tvf_horizon_samples=128,
+            tvf_value_samples=128, # the idea is we use the sample horizons we learn...
+            tvf_value_distribution='saturated_fixed_geometric',
+            tvf_horizon_distribution='saturated_fixed_geometric',
+            default_params=TVF_ARGS,
+        )
+
+    # quick check kof new code
+    add_job(
+        experiment_name="CHECK",
+        run_name=f"tvf default ({seed})",
+        resolution="nature",
+        max_repeated_actions=0,
+        priority=200,
+        hostname="ML",
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="CHECK",
+        run_name=f"tvf mra ({seed})",
+        resolution="nature",
+        max_repeated_actions=100,
+        priority=200,
+        hostname="ML",
+        default_params=TVF_ARGS,
+    )
+
+    #for rap in [0, 0.1, 0.5, 1.0]:
+    for rap in [1.0]: # others can copy and paste from 30M
+        add_job(
+            experiment_name="CHECK",
+            run_name=f"tvf rap={rap} ({seed})",
+            resolution="half",
+            repeated_action_penalty=rap,
+            epochs=30,
+            priority=200,
+            hostname="",
+            default_params=TVF_ARGS,
+        )
+
+    add_job(
+        experiment_name="CHECK",
+        run_name=f"tvf half ({seed})",
+        resolution="half",
+        priority=200,
+        hostname="ML",
+        default_params=TVF_ARGS,
+    )
+
+
+def stable(priority:int = 0):
+    # see if we can find stable settings for breakout, crazyclimber, and alien
+
+    AGENTS = 128
+    N_STEPS = 128
+
+    UPGRADED_ARGS = {
+        'n_steps': N_STEPS,
+        'agents': AGENTS,
+        'policy_mini_batch_size': 2048,  # helps with stability
+        'entropy_scaling': True,  # handles changes in stocasticity better.
+        'tvf_value_distribution': 'saturated_fixed_geometric',
+        'tvf_horizon_distribution': 'saturated_fixed_geometric',  # pay more attention to short horizons
+        'tvf_horizon_samples': 256,  # more samples gives better ev
+        'tvf_value_samples': 256,  # best to match these when using fixed mode.
+        'tvf_return_n_step': 20,  # this is much lower than I expected
+        'resolution': "half",
+        'repeated_action_penalty': 0.5,
+
+        'anneal_target_epoch': 50,
+
+        # new replay setting for larger buffer...
+        'distil_epochs': 1,
+        'distil_period': 1,
+        'replay_size': 1 * ROLLOUT_SIZE,
+        'distil_batch_size': 1 * ROLLOUT_SIZE,
+        'replay_mode': "uniform",
+
+    }
+
+    seed = 1
+
+    COMMON_ARGS = {
+        'env_name': 'Breakout',
+        'seed': seed,
+        'hostname': "",
+        'epochs': 20, # stub 30
+        'priority': priority,
+    }
+
+    TVF_ARGS = COMMON_ARGS.copy()
+    TVF_ARGS.update(RP1U_reference_args)
+    TVF_ARGS.update(HARD_MODE)
+    TVF_ARGS.update(UPGRADED_ARGS)
+
+    for env in ['Breakout', 'Alien', 'CrazyClimber']:
+        add_job(
+            experiment_name="STABLE",
+            run_name=f"game={env} tvf new ({seed})",
+            env_name=env,
+            default_params=TVF_ARGS,
+        )
+
+        if env == 'CrazyClimber':
+            # see if we can solve the repeated action problem... usually happens with 10M
+
+            CC_ARGS = {
+                'repeated_action_penalty': 0,  # < so that I can catch it happening...
+                'epochs': 10,
+                'env_name': env,
+            }
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf default ({seed})",
+                **CC_ARGS,
+                default_params=TVF_ARGS,
+            )
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf entropy=high ({seed})",
+                entropy_bonus=3e-3,
+                **CC_ARGS,
+                default_params=TVF_ARGS,
+            )
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf entropy=low ({seed})", # see if we can make things worse...
+                entropy_bonus=3e-4,
+                **CC_ARGS,
+                default_params=TVF_ARGS,
+            )
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf reduced_actions ({seed})",  # see if we can make things worse...
+                full_action_space=False,
+                **CC_ARGS,
+                default_params=TVF_ARGS,
+            )
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf no_entropy_scaling ({seed})",  # see if we can make things worse...
+                entropy_scaling=False,
+                **CC_ARGS,
+                default_params=TVF_ARGS,
+            )
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf no_repeat_prob ({seed})",  # see if we can make things worse...
+                repeat_action_probability=0.0,
+                **CC_ARGS,
+                default_params=TVF_ARGS,
+            )
+
+        if env == 'Breakout':
+            # just a bit of a search on breakout first
+            # n_step=1 is just to make sure this actually changes something
+            for n_step in [1, 20, 40, 80]:
+                if n_step != 20:
+                    add_job(
+                        experiment_name="STABLE",
+                        run_name=f"game={env} tvf tvf_return_n_step={n_step} ({seed})",
+                        env_name=env,
+                        tvf_return_n_step=n_step,
+                        default_params=TVF_ARGS,
+                    )
+                add_job(
+                    experiment_name="BREAKOUT_99",
+                    run_name=f"game={env} tvf tvf_return_n_step={n_step} ({seed})",
+                    gamma=0.99,
+                    tvf_gamma=0.99,
+                    tvf_max_horizon=300,
+                    env_name=env,
+                    tvf_return_n_step=n_step,
+                    default_params=TVF_ARGS,
+                )
+            add_job(
+                experiment_name="STABLE",
+                run_name=f"game={env} tvf best ({seed})",
+                env_name=env,
+                tvf_return_n_step=40,
+                tvf_horizon_samples=256,
+                tvf_value_samples=256,  # the idea is we use the sample horizons we learn...
+                tvf_value_distribution='saturated_fixed_geometric',
+                tvf_horizon_distribution='saturated_fixed_geometric',
+                replay_size=0,
+                default_params=TVF_ARGS,
+            )
+    env='Breakout'
+    add_job(
+        experiment_name="BREAKOUT_EASY", # these settings were known to work well before
+        run_name=f"game={env} tvf 9999 ({seed})",
+        gamma=0.9999,
+        tvf_gamma=0.9999,
+        tvf_max_horizon=30000,
+
+        # easy mode
+        full_action_space=False,
+        repeat_action_probability=0.0,
+        priority=300,
+
+        env_name=env,
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT_EASY",  # these settings were known to work well before
+        run_name=f"game={env} tvf default ({seed})",
+
+        # easy mode
+        full_action_space=False,
+        repeat_action_probability=0.0,
+        priority=300,
+
+        env_name=env,
+        default_params=TVF_ARGS,
+    )
+
+    add_job(
+        experiment_name="BREAKOUT_EASY",  # these settings were known to work well before
+        run_name=f"game={env} tvf default rap ({seed})",
+
+        # easy mode
+        full_action_space=False,
+        repeat_action_probability=0.25,
+        priority=300,
+
+        env_name=env,
+        default_params=TVF_ARGS,
+    )
+
+
+def dna(priority:int=0):
+    AGENTS = 128
+    N_STEPS = 128
+
+    UPGRADED_ARGS = {
+        'n_steps': N_STEPS,
+        'agents': AGENTS,
+        'policy_mini_batch_size': 2048,  # helps with stability
+        'entropy_scaling': True,  # handles changes in stocasticity better.
+        'tvf_value_distribution': 'saturated_fixed_geometric',
+        'tvf_horizon_distribution': 'saturated_fixed_geometric',  # pay more attention to short horizons
+        'tvf_horizon_samples': 256,  # more samples gives better ev
+        'tvf_value_samples': 256,  # best to match these when using fixed mode.
+        'tvf_return_n_step': 20,  # this is much lower than I expected
+        'resolution': "half",
+        'repeated_action_penalty': 0.5,
+
+        'anneal_target_epoch': 50,
+
+    }
+
+    seed = 1
+
+    COMMON_ARGS = {
+        'env_name': 'Breakout',
+        'seed': seed,
+        'hostname': "",
+        'epochs': 20,
+        'priority': priority,
+    }
+
+    DNA_ARGS = COMMON_ARGS.copy()
+    DNA_ARGS.update(DNA_reference_args)
+    DNA_ARGS.update(HARD_MODE)
+    DNA_ARGS.update(UPGRADED_ARGS)
+
+    for env in ['Qbert']:
+        for gae in [10, 20, 40, 80]:
+            for value in [10, 20, 40, 80]:
+                add_job(
+                    experiment_name="TDLAMBDA",
+                    run_name=f"game={env} dna gae={gae} value={value}  ({seed})",
+                    gae_lambda=1-(1 / gae),
+                    td_lambda=1-(1 / value),
+                    env_name=env,
+                    default_params=DNA_ARGS,
+                )
 
 
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
-    detailed_value_quality(priority=50)
-    second_moment(0)
-    adaptive(20)
-    adaptive_gae()
-    noise()
+    # detailed_value_quality(priority=50)
+    # second_moment(0)
+    # adaptive(20)
+    # adaptive_gae()
+    noise(-10)
+    stable(200)
+    breakout(50)
+    dna(-10)
 
 

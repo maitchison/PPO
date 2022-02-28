@@ -366,7 +366,6 @@ HARD_MODE = {
     "reward_clipping": "off",
     "full_action_space": True,
     "repeat_action_probability": 0.25,
-
 }
 
 

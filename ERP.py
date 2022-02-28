@@ -75,6 +75,60 @@ ERP1_args = {
     'hostname': '',
 }
 
+NEW_DNA_ARGS = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'architecture': 'dual',
+    'export_video': False,
+    'epochs': 50,
+    'use_compression': False,
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+    'mutex_key': "DEVICE",
+
+    'entropy_scaling': True,
+    'resolution': "half",
+
+    'max_grad_norm': 5.0,
+    'agents': 128,
+    'n_steps': 128,
+    'policy_mini_batch_size': 2048,
+    'value_mini_batch_size': 512,
+    'distil_mini_batch_size': 512,
+    'policy_epochs': 3,
+    'value_epochs': 2,
+    'distil_epochs': 1,
+    'ppo_epsilon': 0.1,
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'entropy_bonus': 1e-3,
+    'hidden_units': 256,
+    'gae_lambda': 0.95,
+
+    # distil / replay buffer (This would have been called h11 before
+    'replay_size':   1*ROLLOUT_SIZE,
+    'distil_period': 1,
+    'distil_batch_size': 1 * ROLLOUT_SIZE,
+    'replay_mode': "uniform",
+
+    # hard mode
+    "terminal_on_loss_of_life": False,
+    "reward_clipping": "off",
+    "full_action_space": True,
+    "repeat_action_probability": 0.25,
+
+    # horizon
+    'gamma': 0.997,
+    'tvf_gamma': 0.997,
+
+    # other
+    'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
+
+    'hostname': '',
+}
+
+
 # with 16x replay (needs compression though... so a little slower)
 ERP16_args = ERP1_args.copy()
 ERP16_args.update({
@@ -250,10 +304,219 @@ def extended_hyperparameter_search(priority=0):
         priority=priority,
     )
 
+def thinning(priority:int = 0):
+    # second attempt at exploration by replay diversity...
+    for seed in [1]:
+        NEW_DNA_ARGS["seed"] = seed
+        NEW_DNA_ARGS["epochs"] = 10
+        NEW_DNA_ARGS["priority"] = priority
+        NEW_DNA_ARGS["env_name"] = "MontezumaRevenge"
+        add_job(
+            "ERP_1",
+            run_name=f'ppo [default] ({seed})',
+            default_params=NEW_DNA_ARGS,
+        )
+        add_job(
+            "ERP_1",
+            run_name=f'ppo rnd ({seed})',
+            use_rnd=True,
+            default_params=NEW_DNA_ARGS,
+        )
+        add_job(
+            "ERP_1",
+            run_name=f'ppo rnd no_scaling ({seed})',
+            entropy_scaling=False,
+            use_rnd=True,
+            default_params=NEW_DNA_ARGS,
+        )
+        add_job(
+            "ERP_1",
+            run_name=f'ppo erp ({seed})',
+            use_erp=True,
+            default_params=NEW_DNA_ARGS,
+        )
+        add_job(
+            "ERP_1", # includes new no self matching code
+            run_name=f'ppo erp_best ({seed})',
+            use_erp=True,
+            default_params=NEW_DNA_ARGS,
+            ir_scale=0.15,
+            erp_relu=False, # better with this off
+            erp_source="both", # better to combine both...
+        )
+
+
+        # to try...
+        # larger replay size,
+        # uniform vs sequential vs sequentail + thinning...
+        # 'replay_size': 1 * ROLLOUT_SIZE,
+        # 'replay_mode': "uniform",
+
+        NEW_DNA_ARGS["priority"] = 0
+
+        # throw the kitchen sink at it...
+        # broken due to EMA smoothing, but will try again.
+        # for erp_source in ['both', 'rollout', 'replay']:
+        #     for replay_size in [1, 8]:
+        #         for replay_mode in ['sequential', 'uniform', 'overwrite']:
+        #             add_job(
+        #                 "ERP_2",  # includes new no self matching code
+        #                 run_name=f'dna {erp_source} {replay_size} {replay_mode} ({seed})',
+        #                 use_erp=True,
+        #                 default_params=NEW_DNA_ARGS,
+        #                 ir_scale=0.15,
+        #                 erp_relu=False,  # better with this off
+        #                 distil_ir=0,  # turn this off, if we get a result try turning it back on..
+        #                 erp_source=erp_source,
+        #                 replay_size=replay_size * ROLLOUT_SIZE,
+        #                 distil_batch_size=1 * ROLLOUT_SIZE,
+        #                 replay_mode=replay_mode,
+        #                 priority=0,
+        #                 epochs=10,
+        #             )
+        #             if replay_size in [1, 8] and erp_source=="both" and replay_mode=="overwrite":
+        #                 add_job(
+        #                     "ERP_2",  # includes new no self matching code
+        #                     run_name=f'dna {erp_source} {replay_size} {replay_mode} centered ({seed})',
+        #                     use_erp=True,
+        #                     default_params=NEW_DNA_ARGS,
+        #                     erp_bias="centered", # see if this fixes ossilation
+        #                     ir_scale=0.15,
+        #                     erp_relu=False,  # better with this off
+        #                     distil_ir=0,  # turn this off, if we get a result try turning it back on..
+        #                     erp_source=erp_source,
+        #                     replay_size=replay_size * ROLLOUT_SIZE,
+        #                     distil_batch_size=1 * ROLLOUT_SIZE,
+        #                     replay_mode=replay_mode,
+        #                     priority=210,
+        #                     epochs=10,
+        #                 )
+        #                 add_job(
+        #                     "ERP_2",  # includes new no self matching code
+        #                     run_name=f'dna {erp_source} {replay_size} {replay_mode} no_scaling ({seed})',
+        #                     use_erp=True,
+        #                     default_params=NEW_DNA_ARGS,
+        #                     ir_scale=0.15,
+        #                     erp_relu=False,  # better with this off
+        #                     entropy_scaling=False,
+        #                     distil_ir=0,  # turn this off, if we get a result try turning it back on..
+        #                     erp_source=erp_source,
+        #                     replay_size=replay_size * ROLLOUT_SIZE,
+        #                     distil_batch_size=1 * ROLLOUT_SIZE,
+        #                     replay_mode=replay_mode,
+        #                     priority=210,
+        #                     epochs=10,
+        #                 )
+
+    NEW_DNA_ARGS['priority'] = 255
+
+    # try to fix the cyclic problem
+    add_job(
+        "ERP_3",  # includes new no self matching code
+        run_name=f'tvf test ({seed})',
+        use_erp=True,
+        use_tvf=True, # just to see,
+        default_params=NEW_DNA_ARGS,
+        ir_scale=0.15,
+        erp_relu=True,  # better with this off
+        entropy_scaling=False,
+        distil_ir=0.25,  # turn this off, if we get a result try turning it back on..
+        erp_source="both",
+        replay_size=1 * ROLLOUT_SIZE,
+        distil_batch_size=1 * ROLLOUT_SIZE,
+        replay_mode="uniform",
+        priority=225,
+        epochs=10,
+    )
+    add_job(
+        "ERP_3",  # includes new no self matching code
+        run_name=f'dna test ({seed})',
+        use_erp=True,
+        default_params=NEW_DNA_ARGS,
+        ir_scale=0.15,
+        erp_relu=True,  # better with this off
+        entropy_scaling=False,
+        distil_ir=0.25,  # turn this off, if we get a result try turning it back on..
+        erp_source="both",
+        replay_size=1 * ROLLOUT_SIZE,
+        distil_batch_size=1 * ROLLOUT_SIZE,
+        replay_mode="uniform",
+        priority=225,
+        epochs=10,
+    )
+    add_job(
+        "ERP_3",  # includes new no self matching code
+        run_name=f'dna more_entropy ({seed})',
+        use_erp=True,
+        default_params=NEW_DNA_ARGS,
+        ir_scale=0.15,
+        entropy_bonus=3e-3,
+        erp_relu=True,  # better with this off
+        entropy_scaling=False,
+        distil_ir=0.25,  # turn this off, if we get a result try turning it back on..
+        erp_source="both",
+        replay_size=1 * ROLLOUT_SIZE,
+        distil_batch_size=1 * ROLLOUT_SIZE,
+        replay_mode="uniform",
+        priority=225,
+        epochs=10,
+    )
+    add_job(
+        "ERP_3",  # includes new no self matching code
+        run_name=f'dna even_more_entropy ({seed})',
+        use_erp=True,
+        default_params=NEW_DNA_ARGS,
+        ir_scale=0.15,
+        entropy_bonus=1e-2,
+        erp_relu=True,  # better with this off
+        entropy_scaling=False,
+        distil_ir=0.25,  # turn this off, if we get a result try turning it back on..
+        erp_source="both",
+        replay_size=1 * ROLLOUT_SIZE,
+        distil_batch_size=1 * ROLLOUT_SIZE,
+        replay_mode="uniform",
+        priority=225,
+        epochs=10,
+    )
+    add_job(
+        "ERP_3",  # just to see confirm it was EMA
+        run_name=f'dna bad ({seed})',
+        use_erp=True,
+        default_params=NEW_DNA_ARGS,
+        ir_scale=0.15,
+        erp_relu=False,  # better with this off
+        entropy_scaling=True,
+        distil_ir=0.0,  # turn this off, if we get a result try turning it back on..
+        erp_source="both",
+        replay_size=1 * ROLLOUT_SIZE,
+        distil_batch_size=1 * ROLLOUT_SIZE,
+        replay_mode="uniform",
+        priority=225,
+        epochs=10,
+    )
+    add_job(
+        "ERP_3",  # includes new no self matching code
+        run_name=f'dna centered ({seed})',
+        use_erp=True,
+        default_params=NEW_DNA_ARGS,
+        ir_scale=0.15,
+        erp_relu=True,  # better with this off
+        entropy_scaling=False,
+        erp_bias="centered",  # see if this fixes ossilation
+        distil_ir=0.25,  # turn this off, if we get a result try turning it back on..
+        erp_source="both",
+        replay_size=1 * ROLLOUT_SIZE,
+        distil_batch_size=1 * ROLLOUT_SIZE,
+        replay_mode="uniform",
+        priority=225,
+        epochs=10,
+    )
+
 
 def setup(priority_modifier=0):
     # Initial experiments to make sure code it working, and find reasonable range for the hyperparameters.
-    initial_random_search(priority=priority_modifier-5)
-    extended_hyperparameter_search(priority=-100)
-    reference_runs()
-    replay_shadow(priority=priority_modifier+10, hostname="ML")
+    # initial_random_search(priority=priority_modifier-5)
+    # extended_hyperparameter_search(priority=-100)
+    # reference_runs()
+    # replay_shadow(priority=priority_modifier+10, hostname="ML")
+    thinning(250)

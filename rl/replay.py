@@ -37,7 +37,8 @@ class ExperienceReplayBuffer:
                  obs_dtype,
                  filter_duplicates: bool = False,
                  mode="uniform",
-                 name="replay"
+                 name="replay",
+                 thinning:float=1.0,
                  ):
         """
         @param max_size Size of replay
@@ -60,6 +61,7 @@ class ExperienceReplayBuffer:
         self.stats_last_entries_added: int = 0
         self.stats_last_entries_submitted: int = 0
         self.name = name
+        self.thinning = thinning
 
     def save_state(self, force_copy=True):
         return {
@@ -72,6 +74,7 @@ class ExperienceReplayBuffer:
             'hashes': self.hashes.copy() if force_copy else self.hashes,
             'stats_total_duplicates_removed': self.stats_total_duplicates_removed,
             'name': self.name,
+            'thinning': self.thinning
         }
 
     def load_state(self, state_dict: dict):
@@ -83,6 +86,7 @@ class ExperienceReplayBuffer:
         self.step = state_dict["step"].copy()
         self.hashes = state_dict["hashes"].copy()
         self.stats_total_duplicates_removed = self.stats_total_duplicates_removed
+        self.thinning = state_dict["thinning"]
 
     @torch.no_grad()
     def estimate_replay_diversity(self, max_samples=32):
@@ -141,7 +145,7 @@ class ExperienceReplayBuffer:
             log.watch_mean(f"{self.name}_current_duplicates_frac", self.count_duplicates() / len(self.data), display_width=0)
         log.watch_mean(f"{self.name}_total_duplicates_removed", self.stats_total_duplicates_removed, display_width=0)
         log.watch_mean(f"{self.name}_last_duplicates_removed", self.stats_last_duplicates_removed, display_width=0)
-        log.watch_mean(f"{self.name}_last_entries_added", self.stats_last_entries_added, display_width=0)
+        log.watch_mean(f"{self.name}_last_entries_added", self.stats_last_entries_added, display_width=0, history_length=1)
         log.watch_mean(f"{self.name}_last_duplicates_removed_frac", self.stats_last_duplicate_frac, display_width=0)
         log.watch_mean(f"{self.name}_size", len(self.data), display_width=0)
 
@@ -217,7 +221,6 @@ class ExperienceReplayBuffer:
 
         return data, time, step, hashes
 
-
     def add_experience(self, new_experience: np.ndarray, new_time: np.ndarray, new_step: np.ndarray):
         """
         Adds new experience to the experience replay
@@ -241,6 +244,14 @@ class ExperienceReplayBuffer:
             new_experience, new_time, new_step, new_hashes = self._remove_duplicates(new_experience, new_time, new_step, new_hashes)
         else:
             new_hashes = None
+
+        # implement experience thinning
+        if self.thinning < 1:
+            N = len(new_experience)
+            mask = np.random.choice(N, size=round(self.thinning*N))
+            new_experience = new_experience[mask]
+            new_time = new_time[mask]
+            new_step = new_step[mask]
 
         # 2. work out how many new entries we want to use, and resample them
         new_entry_count = len(new_experience)

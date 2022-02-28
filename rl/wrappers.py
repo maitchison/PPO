@@ -128,7 +128,7 @@ class ActionAwareWrapper(gym.Wrapper):
 
         BLOCK_SIZE = 4
 
-        if action > 0:
+        if action >= 0:
             x = action * BLOCK_SIZE
             y = 0
             obs[x:x+BLOCK_SIZE, y:y+BLOCK_SIZE, :] = 255
@@ -484,7 +484,7 @@ class RandomTerminationWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         done = done or (np.random.rand() < self.p)
-        return obs, reward*self.scale, done, info
+        return obs, reward, done, info
 
 class LabelEnvWrapper(gym.Wrapper):
     def __init__(self, env:gym.Env, label:str):
@@ -515,6 +515,42 @@ class ReturnTracker():
         # but it is what OpenAI does...
         self.current_returns[mask] = rewards[mask] + self.gamma * self.current_returns[mask] * (1 - dones[mask])
         self.ret_rms.update(self.current_returns[mask])
+
+
+class VecRepeatedActionPenalty(gym.Wrapper):
+
+    def __init__(self, env: VectorEnv, max_repeated_actions: int, penalty: float = 1):
+        super().__init__(env)
+        self.max_repeated_actions = max_repeated_actions
+        self.penalty = penalty
+        self.prev_actions = np.zeros([env.num_envs], dtype=np.int32)
+        self.duplicate_counter = np.zeros([env.num_envs], dtype=np.int32)
+
+    def reset(self, **kwargs):
+        self.prev_actions *= 0
+        self.duplicate_counter *= 0
+        return self.env.reset()
+
+    def step(self, actions):
+
+        obs, rewards, dones, infos = self.env.step(actions)
+
+        mask = (actions == self.prev_actions)
+        self.duplicate_counter += mask
+        self.duplicate_counter *= mask
+
+        too_many_repeated_actions = (self.duplicate_counter > self.max_repeated_actions)
+
+        if np.sum(too_many_repeated_actions) > 0:
+            for i, repeated_action in enumerate(too_many_repeated_actions):
+                if repeated_action:
+                    infos[i]['repeated_action'] = actions[i]
+
+        self.prev_actions[:] = actions[:]
+
+        return obs, rewards - (too_many_repeated_actions * self.penalty), dones, infos
+
+
 
 class VecNormalizeRewardWrapper(gym.Wrapper):
     """
@@ -735,11 +771,12 @@ class AtariWrapper(gym.Wrapper):
 
     """
 
-    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84, interpolation=cv2.INTER_AREA):
+    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84, interpolation=None):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
         Output is a stack of shape (nstacks, width, height)
+        @param stuck_limit: int, number of repeated frames before forced reset.
         """
 
         super().__init__(env)
@@ -747,8 +784,16 @@ class AtariWrapper(gym.Wrapper):
         self._width, self._height = width, height
 
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
+        assert env.observation_space.shape in [(210,160), (210, 160, 3)], "Invalid shape {}".format(env.observation_space.shape)
 
-        assert env.observation_space.shape in [(210,160), (210,160,3)], "Invalid shape {}".format(env.observation_space.shape)
+        if interpolation is None:
+            # sort out default interpolation
+            if (width, height) == (210, 160):
+                interpolation = cv2.INTER_NEAREST  # this doesn't matter as no interpolation will be done.
+            elif (width, height) == (105, 80):
+                interpolation = cv2.INTER_LINEAR   # faster and better with a clean scaling
+            else:
+                interpolation = cv2.INTER_AREA     # safest option for general resizing.
 
         self.grayscale = grayscale
         self.n_channels = 1 if self.grayscale else 3

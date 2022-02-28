@@ -466,6 +466,7 @@ class TVFModel(nn.Module):
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
             observation_normalization=False,
+            freeze_observation_normalization=False,
             layer_norm: bool=False,
             network_args:Union[dict, None] = None,
     ):
@@ -483,6 +484,7 @@ class TVFModel(nn.Module):
         self.name = "PPG-" + network
         single_channel_input_dims = (1, *input_dims[1:])
         self.use_rnd = use_rnd
+        self.freeze_observation_normalization = freeze_observation_normalization
 
         make_net = lambda : DualHeadNet(
             network=network,
@@ -553,7 +555,7 @@ class TVFModel(nn.Module):
         B, C, H, W = x.shape
         assert (C, H, W) == self.input_dims
 
-        if update_normalization:
+        if update_normalization and not self.freeze_observation_normalization:
             batch_mean = torch.mean(x, dim=0).detach().cpu().numpy()
             # unbiased=False to match numpy
             batch_var = torch.var(x, dim=0, unbiased=False).detach().cpu().numpy()

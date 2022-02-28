@@ -21,6 +21,7 @@ class Config:
         self.gamma              = float()
         self.gamma_int          = float()
         self.gae_lambda         = float()
+        self.gae_value_multiplier = float()
         self.ppo_epsilon        = float()
         self.vf_coef            = float()
         self.max_grad_norm      = float()
@@ -38,6 +39,7 @@ class Config:
         self.replay_size        = int()
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
+        self.replay_thinning = float()
         self.replay_duplicate_removal = bool()
 
         # value logging
@@ -58,6 +60,7 @@ class Config:
         self.quite_mode         = bool()
 
         self.observation_normalization = bool()
+        self.freeze_observation_normalization = bool()
         self.ir_scale = float()
         self.er_scale = float()
 
@@ -67,6 +70,8 @@ class Config:
 
         self.sync_envs          = bool()
         self.resolution         = str()
+        self.max_repeated_actions = int()
+        self.repeated_action_penalty = float()
         self.color              = bool()
         self.entropy_bonus      = float()
         self.threads            = int()
@@ -104,6 +109,7 @@ class Config:
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
         self.tvf_return_n_step = int()
+        self.td_lambda = float()
         self.tvf_return_use_log_interpolation = bool()
         self.sqr_return_mode = str()
         self.sqr_return_n_step = int()
@@ -186,7 +192,6 @@ class Config:
         self.erp_relu           = bool()
         self.erp_bias           = bool()
         self.erp_source         = str()
-        self.erp_exclude_zero   = bool()
         self.warmup_period      = int()
         self.rnd_lr             = float()
         self.rnd_experience_proportion = float()
@@ -205,6 +210,7 @@ class Config:
         self.full_action_space = bool()
         self.terminal_on_loss_of_life = bool()
         self.force_restore = bool()
+        self.reference_policy = str()
 
         self.learn_second_moment = bool()
 
@@ -337,12 +343,16 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model or raises error. If set to false and new run will be started.")
 
+    parser.add_argument("--reference_policy", type=str, default=None,
+                        help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
+
 
     parser.add_argument("--network", type=str, default="nature", help="Encoder used, [nature|impala]")
     parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
 
     parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
+    parser.add_argument("--gae_value_multiplier", type=float, default=1.0, help="Modifies value before going into GAE. Used to see how bad value estimates affect performance.")
     parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clip gradients during training to this.")
 
     parser.add_argument("--input_crop", type=str2bool, default=False, help="Enables atari input cropping.")
@@ -367,6 +377,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
     parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
+    parser.add_argument("--td_lambda", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
     parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
 
     parser.add_argument("--sqr_return_n_step", type=int, default=80, help="n step to use for tvf_return_sqr estimation")
@@ -427,6 +438,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
+    parser.add_argument("--replay_thinning", type=float, default=1.0, help="Adds this fraction of experience to replay buffer.")
     parser.add_argument("--replay_duplicate_removal", type=str2bool, default=False)
     parser.add_argument("--policy_replay_constraint", type=float, default=0.0,
                         help="How much to constrain policy on historical data when making updates.")
@@ -487,6 +499,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
+    parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False, help="Disables updates to observation normalization constants.")
     parser.add_argument("--er_scale", type=float, default=1.0, help="Extrinsic reward scale.")
     parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
     parser.add_argument("--ir_anneal", type=str, default="off",
@@ -495,8 +508,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--max_micro_batch_size", type=int, default=512)
     parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                         help="Enables synchronous environments (slower).")
-    parser.add_argument("--resolution", type=str, default="standard", help="['full', 'standard', 'half']")
+    parser.add_argument("--resolution", type=str, default="nature", help="['full', 'nature', 'half']")
     parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
+    parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
+    parser.add_argument("--repeated_action_penalty", type=float, default=0.0,
+                        help="Penalty if agent repeats the same action more than this many times.")
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--export_video", type=str2bool, default=True)
@@ -562,7 +578,6 @@ def parse_args(no_env=False, args_override=None):
                         help="reduce function for exploration by replay diversity [mean|min|top5]")
     parser.add_argument("--erp_relu", type=str2bool, default=True)
     parser.add_argument("--erp_bias", type=str, default="internal", help="[centered|none|internal]")
-    parser.add_argument("--erp_exclude_zero", type=str2bool, default=False)
 
     parser.add_argument("--normalize_advantages", type=str, default="norm")
     parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None,
@@ -623,6 +638,8 @@ def parse_args(no_env=False, args_override=None):
         args.environment = args.environment
 
     # checks
+    if args.reference_policy is not None:
+        assert args.architecture == "dual", "Reference policy loading requires a dual network."
     assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."

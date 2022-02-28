@@ -5,8 +5,8 @@ import multiprocessing
 
 resolution_map = {
     "full": (210, 160),
-    "standard": (84, 84),
-    "half": (42, 42)
+    "nature": (84, 84),
+    "half": (105, 80)     # this may produce cleaner resampling
 }
 
 def get_previous_experiment_guid(experiment_path, run_name):
@@ -136,8 +136,19 @@ def main():
         tvf_activation=args.tvf_activation,
         shared_initialization=args.dna_shared_initialization,
         observation_normalization=args.observation_normalization,
+        freeze_observation_normalization=args.freeze_observation_normalization,
         layer_norm=args.layer_norm,
     )
+
+    if args.reference_policy is not None:
+        assert args.architecture == "dual"
+        # load only the policy parameters, and the normalization constants
+        # "Run/TVF_EV1/game=Zaxxon samples=4 (1) [6bf5f217]/checkpoint-001M-params.pt.gz"
+        checkpoint = rollout._open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
+        policy_checkpoint = {k[len('policy_net.'):]: v for k, v in checkpoint["model_state_dict"].items() if k.startswith("policy_net.")}
+        actor_critic_model.policy_net.load_state_dict(policy_checkpoint)
+        actor_critic_model.obs_rms = checkpoint['obs_rms']
+        log.info(f"Loaded reference policy {args.reference_policy}.")
 
     ppo.train(actor_critic_model, log)
 

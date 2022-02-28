@@ -161,6 +161,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None):
     if args.timeout > 0:
         env = wrappers.TimeLimitWrapper(env, args.timeout)
 
+    if args.per_step_termination_probability > 0:
+        env = wrappers.RandomTerminationWrapper(env, args.per_step_termination_probability)
+
     env = wrappers.SaveEnvStateWrapper(env)
 
     if args.noop_start:
@@ -209,9 +212,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None):
 
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
-
-    if args.per_step_termination_probability > 0:
-        env = wrappers.RandomTerminationWrapper(env)
 
     if args.deferred_rewards != 0:
         env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)

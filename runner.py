@@ -9,15 +9,17 @@ if __name__ == "__main__":
 
     # load in the jobs...
     import ERP
+    import ETVF
     import EPGG
     import EA57
     import EEXP
 
     # shutdown for move
+    ETVF.setup()
     #ERP.setup()
     #EPGG.setup()
-    EA57.setup(0)
-    EEXP.setup()
+    #EA57.setup(0)
+    #EEXP.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

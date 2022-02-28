@@ -143,15 +143,13 @@ def load_checkpoint(checkpoint_path, device=None):
 
     load_args(checkpoint_path)
 
-    args.res_x, args.res_y = (84, 84)
-
     args.experiment_name = Path(os.path.join(os.path.join(os.getcwd(), checkpoint_path))).parts[-3]
 
     # fix up frameskip, this happens for older versions of the code.
     if args.frame_skip == 0:
         args.frame_skip = 4
 
-    env = atari.make(monitor_video=True)
+    env = atari.make(env_id=args.get_env_name(), monitor_video=True)
 
     model = make_model(env)
 
@@ -172,7 +170,16 @@ def load_checkpoint(checkpoint_path, device=None):
 
     if "VecNormalizeRewardWrapper" in env_state:
         # the new way
-        REWARD_SCALE = env_state['VecNormalizeRewardWrapper']['ret_rms'][1] ** 0.5
+        try:
+            REWARD_SCALE = env_state['VecNormalizeRewardWrapper']['ret_rms'][1] ** 0.5
+        except:
+            # the even newer way...
+            # note: this is off by epsilon ..,
+            normalizers = env_state['VecNormalizeRewardWrapper']['normalizers']
+            print("Reward normalizers are:")
+            for k, v in normalizers.items():
+                print(f"  -{k:<30} {v.ret_rms.mean:<10.3f} {v.ret_rms.var**0.5:<10.3f} {v.ret_rms.count:<10.0f}")
+            REWARD_SCALE = normalizers[args.get_env_name()].ret_rms.var ** 0.5
     else:
         # the old way
         atari.ENV_STATE = env_state
@@ -256,7 +263,7 @@ def make_model(env):
             actions=env.action_space.n,
             device=DEVICE,
             dtype=torch.float32,
-            **{k:v for k,v in additional_args.items() if k in allowed_args},
+            **{k:v for k, v in additional_args.items() if k in allowed_args},
         )
 
 
@@ -444,7 +451,7 @@ def generate_fake_rollout(num_frames = 30*60):
 
 def make_envs(include_video:bool=False, seed_base:int=0, num_envs:int=1, force_hybrid_async:bool=False):
     # create environment(s) if not already given
-    env_fns = [lambda i=i: atari.make(monitor_video=include_video, seed=(i * 997) + seed_base) for i in
+    env_fns = [lambda i=i: atari.make(env_id=args.get_env_name(), monitor_video=include_video, seed=(i * 997) + seed_base) for i in
                range(num_envs)]
     if num_envs > 16 or force_hybrid_async:
         envs = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
@@ -922,7 +929,7 @@ def export_movie(
 
     scale = 4
 
-    env = atari.make(monitor_video=True, seed=1)
+    env = atari.make(env_id=args.get_env_name(), monitor_video=True, seed=1)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)

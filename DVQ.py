@@ -534,6 +534,9 @@ class Checkpoint():
         if metric.startswith("1m_"):
             result = self.calc_metric(metric[3:], mode, n_step, h, samples, agent)
             return 1 - result
+        if metric.startswith("1p_"):
+            result = self.calc_metric(metric[3:], mode, n_step, h, samples, agent)
+            return 1 + result
 
         if metric.startswith("mean_"):
             result = 0
