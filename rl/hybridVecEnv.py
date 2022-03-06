@@ -54,41 +54,29 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
     """
 
     def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True):
+        # create sequential envs for each worker
+        assert len(env_fns) % max_cpus == 0, "Number of environments ({}) must be a multiple of the CPU count ({}).".format(len(env_fns), max_cpus)
+        self.n_sequential = len(env_fns) // max_cpus
+        self.n_parallel = max_cpus
+        vec_functions = []
+        for i in range(self.n_parallel):
+            # I prefer the lambda, but it won't work with pickle, and I want to multiprocessor this...
+            # Note: thread vector env is a lot faster than gym.vector.sync_vector_env
+            # but I'm not 100% sure ALE is thread safe (I think it is ...), but just in case...
+            constructor = functools.partial(ThreadVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
+            vec_functions.append(constructor)
 
-        if len(env_fns) <= max_cpus:
-            # this is just a standard vec env
-            super().__init__(env_fns, copy=copy, shared_memory=True, worker=_worker_shared_memory)
-            self.is_batched = False
-            self.n_sequential = 1
-            self.n_parallel = len(env_fns)
-        else:
-            # create sequential envs for each worker
-            assert len(env_fns) % max_cpus == 0, "Number of environments ({}) must be a multiple of the CPU count ({}).".format(len(env_fns), max_cpus)
-            self.n_sequential = len(env_fns) // max_cpus
-            self.n_parallel = max_cpus
-            vec_functions = []
-            for i in range(self.n_parallel):
-                # I prefer the lambda, but it won't work with pickle, and I want to multiprocessor this...
-                # Note: thread vector env is a lot faster than gym.vector.sync_vector_env
-                # but I'm not 100% sure ALE is thread safe (I think it is ...), but just in case...
-                constructor = functools.partial(ThreadVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
-                vec_functions.append(constructor)
+        if verbose:
+            print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
 
-            if verbose:
-                print("Creating {} cpu workers with {} environments each.".format(self.n_parallel, self.n_sequential))
+        super().__init__(vec_functions, copy=copy, shared_memory=True, worker=_worker_shared_memory)
 
-            super().__init__(vec_functions, copy=copy, shared_memory=True, worker=_worker_shared_memory)
-
-            self.is_batched = True
-            # super will set num_envs to number of workers, so we fix it here.
-            self.num_envs = len(env_fns)
+        # super will set num_envs to number of workers, so we fix it here.
+        self.num_envs = len(env_fns)
 
     def reset(self):
-        if self.is_batched:
-            obs = super().reset()
-            return np.reshape(obs, [-1, *obs.shape[2:]])
-        else:
-            return super().reset()
+        obs = super().reset()
+        return np.reshape(obs, [-1, *obs.shape[2:]])
 
     def save_state(self, buffer):
         # note we might be able to do this more easily by having a fetch for envs, then iterating over them.
@@ -104,17 +92,14 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
                 counter += 1
 
     def seed(self, seeds=None):
-        if self.is_batched:
-            # put seeds into 2d python array.
-            seeds = np.reshape(seeds, [self.n_parallel, self.n_sequential])
-            seeds = [list(seeds[i]) for i in range(len(seeds))]
+        # put seeds into 2d python array.
+        seeds = np.reshape(seeds, [self.n_parallel, self.n_sequential])
+        seeds = [list(seeds[i]) for i in range(len(seeds))]
 
-            for pipe, seed in zip(self.parent_pipes, seeds):
-                pipe.send(('seed', [int(x) for x in seed]))
-            _, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
-            self._raise_if_errors(successes)
-        else:
-            super().seed(seeds)
+        for pipe, seed in zip(self.parent_pipes, seeds):
+            pipe.send(('seed', [int(x) for x in seed]))
+        _, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
+        self._raise_if_errors(successes)
 
     def restore_env_state(self, env_index:int, buffer: dict):
         """
@@ -140,29 +125,23 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
         """
         mask: (optional) boolean nd array of shape [A] indicating which environments should accept this input.
         """
-        if self.is_batched:
-
-            # put actions into 2d python array.
-            if type(actions[0]) is tuple:
-                n = len(actions[0])
-                actions = np.reshape(actions, [self.n_parallel, self.n_sequential, n])
-                actions = [list(actions[i]) for i in range(len(actions))]
-            else:
-                actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
-                actions = [list(actions[i]) for i in range(len(actions))]
-
-            observations_list, rewards, dones, infos = super().step(actions)
-
-            return (
-                np.reshape(observations_list, [-1, *observations_list.shape[2:]]),
-                np.reshape(rewards, [-1]),
-                np.reshape(dones, [-1]),
-                np.reshape(infos, [-1])
-            )
+        # put actions into 2d python array.
+        if type(actions[0]) is tuple:
+            n = len(actions[0])
+            actions = np.reshape(actions, [self.n_parallel, self.n_sequential, n])
+            actions = [list(actions[i]) for i in range(len(actions))]
         else:
-            # info's comes back as tuple, change it to a list here so we are the same as above.
-            obs, rews, dones, infos = super().step(actions)
-            return obs, rews, dones, list(infos)
+            actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
+            actions = [list(actions[i]) for i in range(len(actions))]
+
+        observations_list, rewards, dones, infos = super().step(actions)
+
+        return (
+            np.reshape(observations_list, [-1, *observations_list.shape[2:]]),
+            np.reshape(rewards, [-1]),
+            np.reshape(dones, [-1]),
+            np.reshape(infos, [-1])
+        )
 
 def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
 
@@ -176,6 +155,9 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
     try:
         while True:
             command, data = pipe.recv()
+
+            # print(f"received command {command}")
+
             if command == 'reset':
                 observation = env.reset()
                 write_to_shared_memory(index, observation, shared_memory,

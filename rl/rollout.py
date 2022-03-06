@@ -2237,17 +2237,18 @@ class Runner:
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss, history_length=64*args.value_epochs, display_name="ls_tvf", display_width=8)
-            horizons = data["tvf_horizons"].float()
-            horizons_mu = horizons.mean(axis=0).cpu().numpy().astype('uint32')
-            horizons_var = horizons.var(axis=0).cpu().numpy().mean()
-            if horizons_var < 1e-6:
-                # log per horizon loss
-                for h_index, h in enumerate(horizons_mu):
-                    self.log.watch_mean(f"loss_tvf_{h}", per_horizon_loss[h_index], history_length=64 * args.value_epochs, display_width=0)
-            else:
-                if 'horizon_missmatch' not in self.flags:
-                    self.log.warn("Horizon missmatch, logging of TVF error disabled.")
-                    self.flags['horizon_missmatch'] = True
+            # horizons = data["tvf_horizons"].float()
+            # horizons_mu = horizons.mean(axis=0).cpu().numpy().astype('uint32')
+            # horizons_var = horizons.var(axis=0).cpu().numpy().mean()
+            # per horizon loss does not work yet with randomized distributions
+            # if horizons_var < 1e-6:
+            #     # log per horizon loss
+            #     for h_index, h in enumerate(horizons_mu):
+            #         self.log.watch_mean(f"loss_tvf_{h}", per_horizon_loss[h_index], history_length=64 * args.value_epochs, display_width=0)
+            # else:
+            #     if 'horizon_missmatch' not in self.flags:
+            #         self.log.warn("Horizon missmatch, logging of TVF error disabled.")
+            #         self.flags['horizon_missmatch'] = True
 
         if args.use_tvf and args.learn_second_moment:
             targets = data["tvf_returns_m2"]

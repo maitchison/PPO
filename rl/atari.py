@@ -116,9 +116,11 @@ ec3beb6d8b5689e867bafb5d5f507491 word_zapper.bin
 c5930d0e8cdae3e037349bfa08e871be yars_revenge.bin
 eea0da9b987d661264cce69a7c13c3bd zaxxon.bin""".split("\n")]}
 
-def make(env_id:str, monitor_video=False, seed=None, args=None):
+def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_saving=True):
     """
     Construct environment of given name, including any required wrappers.
+    @determanistic_saving: When true RND is saved with the environment, so restoring will always produce the same
+        results. When false RNG is not persisted through saving, which can be helpful when generating return samples.
     """
 
     # this global reference will not work on windows when we spawn instead of fork,
@@ -164,7 +166,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None):
     if args.per_step_termination_probability > 0:
         env = wrappers.RandomTerminationWrapper(env, args.per_step_termination_probability)
 
-    env = wrappers.SaveEnvStateWrapper(env)
+    env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
 
     if args.noop_start:
         env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)

@@ -114,6 +114,33 @@ def read_params(file_path):
     return result
 
 
+class RunMetric:
+
+    def __init__(self, name):
+        self.name = name
+
+    def score(self, run, x_lim=None):
+        return 0
+
+
+class ScoreMetric(RunMetric):
+
+    def __init__(self):
+        super().__init__("score")
+
+    def score(self, run, x_lim=None):
+        return compute_score(run, x_lim)
+
+
+class MeanMetric(RunMetric):
+
+    def __init__(self, name: str, field: str):
+        super().__init__(name)
+        self.field = field
+
+    def score(self, run, x_lim=None):
+        return run[self.field].mean()
+
 def compute_score(result, x_lim=None):
     if x_lim is None:
         data = result["ep_score_mean"]
@@ -517,33 +544,39 @@ def standard_grid():
     ax.spines['top'].set_visible(False)
 
 
-def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, table_epochs=None, **kwargs):
+def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, table_epochs=None, table_metric=None, **kwargs):
 
     title_args = {}
 
     if include_table:
-        table_runs(runs, run_filter=kwargs.get("run_filter", None), epochs=table_epochs)
+        if table_metric is not None:
+            args = {
+                'metric': table_metric
+            }
+        else:
+            args = {}
+        table_runs(runs, run_filter=kwargs.get("run_filter", None), epochs=table_epochs, **args)
 
     if type(y_axes) is str:
         y_axes = (y_axes,)
-
 
     for y_axis in y_axes:
         if 'title' not in kwargs:
             title_args["title"] = y_axis
         compare_runs(runs, y_axis=y_axis, **{**kwargs, **title_args})
 
-def table_runs(runs, run_filter=None, epochs=None, metric=compute_score):
+
+def table_runs(runs, run_filter=None, epochs=None, metric:RunMetric=ScoreMetric()):
 
     if epochs is None:
         epochs = [50]
 
 
     print(("|{:<50}|{:>16}|"+"{:>16}|"*len(epochs)+"{:>16}|").format(
-            " run", *["score @"+str(epoch)+"M " for epoch in epochs], "steps ", "id "))
+            " run", *[metric.name+" @"+str(epoch)+"M " for epoch in epochs], "steps ", "id "))
     print("|"+'-'*50+("|"+'-'*16)*len(epochs)+"|"+'-'*16+"|"+'-'*16+"|")
 
-    runs = sorted(runs, key=lambda x: metric(x[1]), reverse=True)
+    runs = sorted(runs, key=lambda x: metric.score(x[1]), reverse=True)
 
     for run_name, run_data, run_params in runs:
 
@@ -556,7 +589,7 @@ def table_runs(runs, run_filter=None, epochs=None, metric=compute_score):
 
         scores = {}
         for epoch in epochs:
-            scores[epoch] = metric(run_data, epoch)
+            scores[epoch] = metric.score(run_data, epoch)
 
         steps = min(run_data["env_step"][-1] / 1000 / 1000, max(epochs))
 

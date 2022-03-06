@@ -12,7 +12,6 @@ import random
 
 from shutil import copyfile
 
-DEVICE = "cpu"
 REWARD_SCALE = float()
 PARALLEL_ENVS = 64 # number of environments to run in parallel
 
@@ -68,8 +67,7 @@ def run_evaluation_script(
 
     # set device
     args.append('--device')
-    #args.append('cuda:'+str(random.randint(0, 1)))
-    args.append(DEVICE)
+    args.append(eval_args.device)
 
     old_path = os.getcwd()
     try:
@@ -109,7 +107,7 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epo
         checkpoint_name = os.path.join(run_path, f"checkpoint-{epoch:03d}M-params.pt.gz")
         checkpoint_movie_base = f"checkpoint-{epoch:03d}M-eval{postfix}"
         checkpoint_eval_file = os.path.join(os.path.split(run_path)[-1], f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
-        checkpoint_full_path_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{postfix}.dat")
+        checkpoint_full_path_eval_file = os.path.join(run_path, f"checkpoint-{epoch:03d}M-eval{postfix}.summary.dat")
 
         if os.path.exists(checkpoint_name):
 
@@ -150,7 +148,8 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epo
                     output_file=checkpoint_eval_file,
                     temperature=temperature,
                     seed=seed,
-                    samples=eval_args.samples
+                    samples=eval_args.samples,
+                    eval_horizons=eval_args.eval_horizons,
                     **kwargs,
                 )
 
@@ -195,7 +194,10 @@ if __name__ == "__main__":
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
     parser.add_argument("--max_frames", type=int, default=30*60*15, help="Max number of frames in evaluation or video.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed to use.")
+    parser.add_argument("--device", type=str, default="cpu", help="Which device to run on")
     parser.add_argument("--samples", type=int, default=100, help="Number of samples to generate in eval mode.")
+    parser.add_argument("--eval_horizons", type=str, default="debug",
+                        help="Which horizons to include when evaluating model, [last|debug|full]. For multiverse use debug.")
     eval_args = parser.parse_args()
 
     assert eval_args.mode in ["video", "video_nt", "eval"]

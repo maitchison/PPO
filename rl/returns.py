@@ -164,6 +164,17 @@ def get_return_estimate(
         max_h = min(n_step * 3, N)
         lamb = 1-(1/n_step)
         weights = np.asarray([lamb ** x for x in range(max_h)], dtype=np.float32)
+    elif mode == "hyperbolic":
+        max_h = N
+        k = n_step / 10
+        weights = np.asarray([1 / (1 + k * (x / max_h)) for x in range(max_h)], dtype=np.float32)
+    elif mode == "quadratic":
+        max_h = N
+        k = n_step / 10
+        weights = np.asarray([1 / (1 + k * (x / max_h)**2) for x in range(max_h)], dtype=np.float32)
+    elif mode == "uniform":
+        max_h = N
+        weights = np.asarray([1.0 for _ in range(max_h)], dtype=np.float32)
     elif mode == "exponential_cap":
         # this is exponential where the weight not used all falls on the final n_step estimate.
         # this can improve performance by demphasising the short n-step return estimators.

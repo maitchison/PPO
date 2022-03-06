@@ -8,18 +8,15 @@ if __name__ == "__main__":
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     # load in the jobs...
-    import ERP
-    import ETVF
-    import EPGG
-    import EA57
-    import EEXP
+    import EXP_RP
+    import EXP_TVF
+    import EXP_PGG
+    import EXP_A57
+    import EXP_EXP
+    import EXP_STUCK
 
-    # shutdown for move
-    ETVF.setup()
-    #ERP.setup()
-    #EPGG.setup()
-    #EA57.setup(0)
-    #EEXP.setup()
+    EXP_STUCK.setup(200)
+    EXP_TVF.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

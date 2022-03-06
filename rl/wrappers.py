@@ -397,12 +397,13 @@ class SaveEnvStateWrapper(gym.Wrapper):
     Only support atari at the moment.
     """
 
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, determanistic:bool = True):
         super().__init__(env)
+        self.determanistic = determanistic
 
     def save_state(self, buffer):
         assert type(self.unwrapped) == AtariEnv, "Only Atari is supported for state saving/loading"
-        buffer["atari"] = self.unwrapped.clone_state(include_rng=True)
+        buffer["atari"] = self.unwrapped.clone_state(include_rng=self.determanistic)
 
     def restore_state(self, buffer):
         assert type(self.unwrapped) == AtariEnv, "Only Atari is supported for state saving/loading"
