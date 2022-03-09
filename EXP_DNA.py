@@ -2,8 +2,9 @@ from runner_tools import WORKERS, add_job, random_search, Categorical
 from runner_tools import TVF_reference_args, DNA_reference_args
 
 ROLLOUT_SIZE = 128*128
-ATARI_3_VAL = ['berzerk', 'boxing', 'zaxxon']
-ATARI_5_VAL = ['Bowling', 'Qbert', 'Berzerk', 'Boxing', 'Zaxxon']
+ATARI_3_VAL = ['Breakout', 'WizardOfWor', 'YarsRevenge']
+# ATARI_3_VAL = ['berzerk', 'boxing', 'zaxxon']
+# ATARI_5_VAL = ['Bowling', 'Qbert', 'Berzerk', 'Boxing', 'Zaxxon']
 
 # updated args tuned for hard mode
 DNA_HARD_ARGS = {
@@ -57,8 +58,6 @@ DNA_HARD_ARGS = {
 
     # horizon
     'gamma': 0.99997,
-    'tvf_gamma': 0.99997,
-    'tvf_max_horizon': 30000,
 
     # other
     'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
@@ -66,143 +65,68 @@ DNA_HARD_ARGS = {
     'hostname': '',
 }
 
+def dna_hps(priority: int = 0):
 
-def tvf_ev(priority: int = 0):
+    search_params = {
+        # ppo params
+        'entropy_bonus':     Categorical(3e-2, 1e-2, 3e-3),
+        'agents':            Categorical(64, 128, 256),
+        'n_steps':           Categorical(64, 128, 256),
+        'gamma':             Categorical(0.99, 0.997, 0.999, 0.9997),
+        'gae_lambda':        Categorical(0.9, 0.95, 0.975, 0.9875),
+        # dna params
+        'policy_lr':         Categorical(1e-4, 2.5e-4, 5e-4),
+        'distil_lr':         Categorical(1e-4, 2.5e-4, 5e-4),
+        'value_lr':          Categorical(1e-4, 2.5e-4, 5e-4),
+        'td_lambda':         Categorical(0.9, 0.95, 0.975, 0.9875),
+        'policy_epochs':     Categorical(1, 2, 3),
+        'value_epochs':      Categorical(1, 2, 3),
+        'distil_epochs':     Categorical(1, 2, 3),
+        'policy_mini_batch_size': Categorical(512, 1024, 2048),
+        'value_mini_batch_size': Categorical(512, 1024, 2048),
+        'distil_mini_batch_size': Categorical(512, 1024, 2048),
+        'replay_size':       Categorical(*[x * ROLLOUT_SIZE for x in [1, 2, 4]]),
+        'distil_batch_size': Categorical(*[round(x * ROLLOUT_SIZE) for x in [0.5, 1, 2]]),
+        'repeated_action_penalty': Categorical(0, 0.25, 1.0),
+        'entropy_scaling':   Categorical(True, False),
 
-    TVF_HARD_ARGS['hostname'] = "ML"
+        # replay params
+        'replay_mode':       Categorical("overwrite", "sequential", "uniform", "off"),
+    }
 
-    # experiment 1: initial training
-    env = "Zaxxon"
-    for seed in [1]:
-        for samples in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
-            add_job(
-                "TVF_EV1",
-                run_name=f"game={env} samples={samples} ({seed})",
-                env_name=env,
-                seed=seed,
-                epochs=50,
-                tvf_value_samples=samples,
-                tvf_horizon_samples=samples,
-                tvf_value_distribution='fixed_geometric',
-                tvf_horizon_distribution='fixed_geometric',
-                priority=priority,
-                default_params=TVF_HARD_ARGS,
-            )
+    main_params = DNA_HARD_ARGS.copy()
 
-    # experiment 2: value learning (sampling and sample distribution)
-    for seed in [1]:
-        for distribution in ['fixed_geometric', 'geometric', 'fixed_linear', 'linear', 'saturated_fixed_geometric', 'saturated_geometric']:
-            for samples in [2, 4, 8, 16, 32, 64, 128, 256, 512]:
-                add_job(
-                    "TVF_EV2",
-                    run_name=f"game={env} distribution={distribution} samples={samples} ({seed})",
-                    env_name=env,
-                    seed=seed,
-                    epochs=10,
-                    policy_epochs=0,
-                    distil_epochs=0,
-                    freeze_observation_normalization=True,
-                    abs_mode="shadow", # so I can track noise
-                    tvf_value_samples=samples,
-                    tvf_horizon_samples=samples,
-                    reference_policy="../reference.pt.gz",
-                    warmup_period=0,            # not needed and will skew scores early on...
-                    checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
+    main_params["epochs"] = 50
+    main_params["hostname"] = ''
 
-                    tvf_value_distribution=distribution,
-                    tvf_horizon_distribution=distribution,
-                    priority=priority,
-                    default_params=TVF_HARD_ARGS,
-                )
+    def fixup_params(params):
 
-    # experiment 3: value learning (influence of return estimator)
-    for n_step in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
-        for return_mode in ['exponential', 'fixed', 'adaptive', 'hyperbolic', 'quadratic']:
-            add_job(
-                "TVF_EV3",
-                run_name=f"game={env} return_mode={return_mode} n_step={n_step} ({seed})",
-                env_name=env,
-                seed=seed,
-                epochs=10,
-                policy_epochs=0,
-                distil_epochs=0,
-                freeze_observation_normalization=True,
-                abs_mode="shadow",  # so I can track noise
-                tvf_value_samples=128,
-                tvf_horizon_samples=128,
-                reference_policy="../reference.pt.gz",
-                warmup_period=0,  # not needed and will skew scores early on...
-                checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
+        # 1. make sure distil_batch_size does not exceed the replay buffer size.
+        using_replay = params["replay_size"] > 0
+        if using_replay:
+            # cap batch size to replay size
+            max_batch_size = params["replay_size"]
+        else:
+            # cap batch size to rollout size
+            max_batch_size = ROLLOUT_SIZE
+        params["distil_batch_size"] = min(params["distil_batch_size"], max_batch_size)
 
-                tvf_value_distribution="fixed_geometric",
-                tvf_horizon_distribution="fixed_geometric",
+        params["use_compression"] = True
 
-                tvf_return_mode=return_mode,
-                tvf_return_n_step=n_step,
 
-                priority=priority,
-                default_params=TVF_HARD_ARGS,
-            )
+    random_search(
+        "DNA_SEARCH",
+        main_params,
+        search_params,
+        count=64,
+        process_up_to=16,
+        envs=['Breakout', 'WizardOfWor', 'YarsRevenge'],
+        hook=fixup_params,
+        priority=priority,
+    )
 
-    # check others
-    # log vs linear interpolation (doesn't matter I don't think)
-    # for log_interpolation in [True, False]:
-    #     add_job(
-    #         "TVF_EV3",
-    #         run_name=f"game={env} log_interpolation={log_interpolation} ({seed})",
-    #         env_name=env,
-    #         seed=seed,
-    #         epochs=10,
-    #         policy_epochs=0,
-    #         distil_epochs=0,
-    #         freeze_observation_normalization=True,
-    #         abs_mode="shadow",  # so I can track noise
-    #         tvf_value_samples=128,
-    #         tvf_horizon_samples=128,
-    #         reference_policy="../reference.pt.gz",
-    #         warmup_period=0,  # not needed and will skew scores early on...
-    #         checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
-    #
-    #         tvf_value_distribution="fixed_geometric",
-    #         tvf_horizon_distribution="fixed_geometric",
-    #
-    #         tvf_return_use_log_interpolation=log_interpolation,
-    #
-    #         priority=priority,
-    #         default_params=TVF_HARD_ARGS,
-    #     )
-    #
-    # # effect of shorter horizon
-    # for max_horizon in [30, 300, 3000, 30000]:
-    #     add_job(
-    #         "TVF_EV3",
-    #         run_name=f"game={env} max_horizon={max_horizon} ({seed})",
-    #         env_name=env,
-    #         seed=seed,
-    #         epochs=10,
-    #         policy_epochs=0,
-    #         distil_epochs=0,
-    #         freeze_observation_normalization=True,
-    #         abs_mode="shadow",  # so I can track noise
-    #         tvf_value_samples=128,
-    #         tvf_horizon_samples=128,
-    #         reference_policy="../reference.pt.gz",
-    #         warmup_period=0,  # not needed and will skew scores early on...
-    #         checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
-    #
-    #         tvf_value_distribution="fixed_geometric",
-    #         tvf_horizon_distribution="fixed_geometric",
-    #
-    #         tvf_max_horizon=max_horizon,
-    #
-    #         priority=priority,
-    #         default_params=TVF_HARD_ARGS,
-    #     )
-
-    # sampling impact on training time
-    # just benchmark for this..
 
 
 
 def setup(priority_modifier=0):
-    tvf_ev(300)
+    dna_hps(priority_modifier)

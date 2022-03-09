@@ -13,10 +13,12 @@ if __name__ == "__main__":
     import EXP_PGG
     import EXP_A57
     import EXP_EXP
+    import EXP_DNA
     import EXP_STUCK
 
     EXP_STUCK.setup(200)
     EXP_TVF.setup()
+    EXP_DNA.setup(0)
 
     if len(sys.argv) == 1:
         experiment_name = "show"

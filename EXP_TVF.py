@@ -2,8 +2,9 @@ from runner_tools import WORKERS, add_job, random_search, Categorical
 from runner_tools import TVF_reference_args
 
 ROLLOUT_SIZE = 128*128
-ATARI_3_VAL = ['berzerk', 'boxing', 'zaxxon']
-ATARI_5_VAL = ['Bowling', 'Qbert', 'Berzerk', 'Boxing', 'Zaxxon']
+ATARI_3_VAL = ['Breakout', 'WizardOfWor', 'YarsRevenge']
+#ATARI_3_VAL = ['Berzerk', 'Boxing', 'Zaxxon']
+#ATARI_5_VAL = ['Bowling', 'Qbert', 'Berzerk', 'Boxing', 'Zaxxon']
 
 # updated args tuned for hard mode
 TVF_HARD_ARGS = {
@@ -49,9 +50,9 @@ TVF_HARD_ARGS = {
     'tvf_time_scale': 'log',
     'tvf_hidden_units': 256,
     'tvf_value_samples': 128,
-    'tvf_horizon_samples': 32,
+    'tvf_horizon_samples': 128,
     'tvf_return_mode': 'exponential',
-    'tvf_return_n_step': 20,
+    'tvf_return_n_step': 40,
     'tvf_coef': 0.5,
 
     # distil / replay buffer (This would have been called h11 before
@@ -79,182 +80,85 @@ TVF_HARD_ARGS = {
 
 def tvf_ev(priority: int = 0):
 
-    TVF_HARD_ARGS['hostname'] = "ML"
 
-    # experiment 1: generate a reference policy
+    EV_SETTINGS = TVF_HARD_ARGS.copy()
+    EV_SETTINGS['hostname'] = "ML"
+    EV_SETTINGS['priority'] = priority
 
+    # step 1: generate a reference policy for each game in the validation set
+    for env in ATARI_3_VAL + ["CrazyClimber"]: # cc is just to look into timeout...
+        add_job(
+            "TVF_EV1",
+            run_name=f"game={env} reference",
+            env_name=env,
+            seed=1,
+            epochs=50,
+            priority=1000,
+            default_params=EV_SETTINGS,
+        )
 
-    # experiment 2: value learning (sampling and sample distribution)
-    for seed in [1]:
-        for distribution in ['fixed_geometric', 'geometric', 'fixed_linear', 'linear', 'saturated_fixed_geometric', 'saturated_geometric']:
-            for samples in [2, 4, 8, 16, 32, 64, 128, 256, 512]:
-                add_job(
-                    "TVF_EV2",
-                    run_name=f"game={env} distribution={distribution} samples={samples} ({seed})",
-                    env_name=env,
-                    seed=seed,
-                    epochs=10,
-                    policy_epochs=0,
-                    distil_epochs=0,
-                    freeze_observation_normalization=True,
-                    abs_mode="shadow", # so I can track noise
-                    tvf_value_samples=samples,
-                    tvf_horizon_samples=samples,
-                    reference_policy="../reference.pt.gz",
-                    warmup_period=0,            # not needed and will skew scores early on...
-                    checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
+    return
 
-                    tvf_value_distribution=distribution,
-                    tvf_horizon_distribution=distribution,
-                    priority=priority,
-                    default_params=TVF_HARD_ARGS,
-                )
-
-    EXP3_SETTINGS = {
-        'env_name': env,
-        'seed': seed,
+    EV2_SETTINGS = EV_SETTINGS.copy()
+    EV2_SETTINGS.update({
         'epochs': 10,
         'policy_epochs': 0,
         'distil_epochs': 0,
         'freeze_observation_normalization': True,
         'abs_mode': "shadow",  # so I can track noise
-        'tvf_value_samples': 128,
-        'tvf_horizon_samples': 128,
-        'reference_policy': "../reference.pt.gz",
-        'checkpoint_every': int(1e6), # this will allow me to take true value ev estimates.
-        'tvf_value_distribution': "fixed_geometric",
-        'tvf_horizon_distribution': "fixed_geometric",
+        'checkpoint_every': int(1e6),  # this will allow me to take true value ev estimates.
         'warmup_period': 0,  # not needed and will skew scores early on...
-        'priority': priority,
-    }
+    })
+
+    # experiment 2: value learning (sampling and sample distribution)
+    # for env in ATARI_3_VAL:
+    #     for seed in [1, 2, 3]:
+    #         for distribution in ['fixed_geometric', 'geometric', 'fixed_linear', 'linear', 'saturated_fixed_geometric', 'saturated_geometric']:
+    #             for samples in [2, 4, 8, 16, 32, 64, 128, 256, 512]:
+    #                 add_job(
+    #                     "TVF_EV2",
+    #                     run_name=f"game={env} distribution={distribution} samples={samples} ({seed})",
+    #                     reference_policy=f"../game={env} reference.pt.gz",
+    #                     env_name=env,
+    #                     seed=seed,
+    #
+    #                     tvf_value_samples=samples,
+    #                     tvf_horizon_samples=samples,
+    #                     tvf_value_distribution=distribution,
+    #                     tvf_horizon_distribution=distribution,
+    #
+    #                     default_params=EV2_SETTINGS,
+    #                 )
 
     # experiment 3: value learning (influence of return estimator)
-    for n_step in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
-        for return_mode in ['exponential', 'fixed', 'adaptive', 'hyperbolic', 'quadratic']:
+    for env in ATARI_3_VAL:
+        for seed in [1]:
+            for return_mode in ['exponential', 'fixed', 'adaptive', 'hyperbolic', 'quadratic']:
+                for n_step in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
+                    add_job(
+                        "TVF_EV3",
+                        run_name=f"game={env} return_mode={return_mode} n_step={n_step} ({seed})",
+                        reference_policy=f"../game={env}.pt.gz",
+                        env_name=env,
+                        seed=seed,
+
+                        tvf_return_mode=return_mode,
+                        tvf_return_n_step=n_step,
+
+                        default_params=EV2_SETTINGS,
+                    )
+            # special case of uniform
             add_job(
                 "TVF_EV3",
-                run_name=f"game={env} return_mode={return_mode} n_step={n_step} ({seed})",
-                tvf_return_mode=return_mode,
-                tvf_return_n_step=n_step,
-                **EXP3_SETTINGS,
-                default_params=TVF_HARD_ARGS,
+                run_name=f"game={env} return_mode=uniform ({seed})",
+
+                tvf_return_mode='uniform',
+                tvf_return_n_step=1,
+
+                default_params=EV2_SETTINGS,
             )
-
-    add_job(
-        "TVF_EV3",
-        run_name=f"game={env} return_mode=uniform ({seed})",
-
-        tvf_return_mode='uniform',
-        tvf_return_n_step=1,
-        **EXP3_SETTINGS,
-
-        default_params=TVF_HARD_ARGS,
-    )
-
-    add_job(
-        "TVF_EV3",
-        run_name=f"game={env} return_mode=td ({seed})",
-
-        tvf_return_mode='fixed',
-        tvf_return_n_step=1,
-        **EXP3_SETTINGS,
-
-        default_params=TVF_HARD_ARGS,
-    )
-
-    add_job(
-        "TVF_EV3",
-        run_name=f"game={env} return_mode=mc ({seed})",
-
-        tvf_return_mode='fixed',
-        tvf_return_n_step=128,
-
-        **EXP3_SETTINGS,
-        default_params=TVF_HARD_ARGS,
-    )
-
-    # repeat experiment on Validation set
-    for env in ATARI_3_VAL:
-        seed = 1
-        samples = 32
-
-        # generate reference policy
-
-        add_job(
-            "TVF_EV4",
-            run_name=f"game={env} reference ({seed})",
-            env_name=env,
-            seed=seed,
-            epochs=50,
-            tvf_value_samples=samples,
-            tvf_horizon_samples=samples,
-            tvf_value_distribution='fixed_geometric',
-            tvf_horizon_distribution='fixed_geometric',
-            priority=priority,
-            default_params=TVF_HARD_ARGS,
-        )
-
-
-    # check others
-    # log vs linear interpolation (doesn't matter I don't think)
-    # for log_interpolation in [True, False]:
-    #     add_job(
-    #         "TVF_EV3",
-    #         run_name=f"game={env} log_interpolation={log_interpolation} ({seed})",
-    #         env_name=env,
-    #         seed=seed,
-    #         epochs=10,
-    #         policy_epochs=0,
-    #         distil_epochs=0,
-    #         freeze_observation_normalization=True,
-    #         abs_mode="shadow",  # so I can track noise
-    #         tvf_value_samples=128,
-    #         tvf_horizon_samples=128,
-    #         reference_policy="../reference.pt.gz",
-    #         warmup_period=0,  # not needed and will skew scores early on...
-    #         checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
-    #
-    #         tvf_value_distribution="fixed_geometric",
-    #         tvf_horizon_distribution="fixed_geometric",
-    #
-    #         tvf_return_use_log_interpolation=log_interpolation,
-    #
-    #         priority=priority,
-    #         default_params=TVF_HARD_ARGS,
-    #     )
-    #
-    # # effect of shorter horizon
-    # for max_horizon in [30, 300, 3000, 30000]:
-    #     add_job(
-    #         "TVF_EV3",
-    #         run_name=f"game={env} max_horizon={max_horizon} ({seed})",
-    #         env_name=env,
-    #         seed=seed,
-    #         epochs=10,
-    #         policy_epochs=0,
-    #         distil_epochs=0,
-    #         freeze_observation_normalization=True,
-    #         abs_mode="shadow",  # so I can track noise
-    #         tvf_value_samples=128,
-    #         tvf_horizon_samples=128,
-    #         reference_policy="../reference.pt.gz",
-    #         warmup_period=0,  # not needed and will skew scores early on...
-    #         checkpoint_every=int(1e6),  # this will allow me to take true value ev estimates.
-    #
-    #         tvf_value_distribution="fixed_geometric",
-    #         tvf_horizon_distribution="fixed_geometric",
-    #
-    #         tvf_max_horizon=max_horizon,
-    #
-    #         priority=priority,
-    #         default_params=TVF_HARD_ARGS,
-    #     )
-
-    # sampling impact on training time
-    # just benchmark for this..
-
 
 
 def setup(priority_modifier=0):
-    #tvf_ev(300)
+    tvf_ev(500)
     pass

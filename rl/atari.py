@@ -137,6 +137,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         repeat_action_probability=args.repeat_action_probability,
         full_action_space=args.full_action_space,
     )
+
+    env = env.unwrapped
+
     if args.atari_rom_check and env_id not in IGNORE_ROMS_LIST:
         try:
             # this is the atari-py method

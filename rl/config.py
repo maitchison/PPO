@@ -435,7 +435,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_batch_size_ratio", type=float, default=None,
                         help="Sets distil_batch_size to replay_size * distil_batch_size_ratio")
 
-    parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform]")
+    parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform|off]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
     parser.add_argument("--replay_thinning", type=float, default=1.0, help="Adds this fraction of experience to replay buffer.")
@@ -710,6 +710,9 @@ def parse_args(no_env=False, args_override=None):
             args.distil_period *= 2
             args.distil_epochs *= 2
         args.distil_period = round(args.distil_period)
+
+    if args.replay_mode == "off":
+        args.replay_size = 0
 
     # no longer required
     # assert args.tvf_value_samples <= args.tvf_max_horizon, "tvf_value_samples must be <= tvf_max_horizon."
