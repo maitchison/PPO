@@ -16,9 +16,8 @@ if __name__ == "__main__":
     import EXP_DNA
     import EXP_STUCK
 
-    EXP_STUCK.setup(200)
-    EXP_TVF.setup()
-    EXP_DNA.setup(0)
+    #EXP_TVF.setup(-100)
+    EXP_DNA.setup(50)
 
     if len(sys.argv) == 1:
         experiment_name = "show"
@@ -29,6 +28,8 @@ if __name__ == "__main__":
         show_experiments(all=True)
     elif experiment_name == "show":
         show_experiments()
+    elif experiment_name == "clash":
+        fix_clashes()
     elif experiment_name == "fps":
         show_fps()
     elif experiment_name == "auto":

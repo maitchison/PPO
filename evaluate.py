@@ -187,17 +187,13 @@ if __name__ == "__main__":
                         help="Only epochs where epoch mod every_epoch==0 will be processed.")
     parser.add_argument("--temperatures", type=str, default="[None]",
                         help="Temperatures to generate. e.g. [0.1, 0.5, 1.0] (lower temperature has higher entropy)")
-    parser.add_argument("--multiverse_samples", type=int, default=0,
-                        help="if > 0 enables multiverse return estimation.")
-    parser.add_argument("--multiverse_period", type=int, default=100,
-                        help="number of steps between multiverse return sampling")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
     parser.add_argument("--max_frames", type=int, default=30*60*15, help="Max number of frames in evaluation or video.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed to use.")
     parser.add_argument("--device", type=str, default="cpu", help="Which device to run on")
     parser.add_argument("--samples", type=int, default=100, help="Number of samples to generate in eval mode.")
     parser.add_argument("--eval_horizons", type=str, default="debug",
-                        help="Which horizons to include when evaluating model, [last|debug|full]. For multiverse use debug.")
+                        help="Which horizons to include when evaluating model, [last|debug|full].")
     eval_args = parser.parse_args()
 
     assert eval_args.mode in ["video", "video_nt", "eval"]
@@ -225,7 +221,5 @@ if __name__ == "__main__":
                     max_epoch=max_epoch,
                     seed=eval_args.seed,
                     eval_epoch=eval_args.epoch,
-                    multiverse_samples=eval_args.multiverse_samples,
-                    multiverse_period=eval_args.multiverse_period,
                     max_frames=eval_args.max_frames,
                 )

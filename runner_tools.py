@@ -784,6 +784,16 @@ def comma(x):
     else:
         return str(x)
 
+def fix_clashes():
+    """
+    Find any clashes, and stop them running.
+    """
+    for job in job_list:
+        status = job.get_status()
+        if status == "clash":
+            print(f"Clash on {job}")
+
+
 def show_experiments(filter_jobs=None, all=False):
 
     epochs, hours, ips = get_eta_stats()

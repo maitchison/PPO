@@ -2,6 +2,21 @@
 import os
 import typing
 
+# IPS: (for samples=1, mv_samples=100
+# on my PC with cuda:0
+
+# start: (false/false/false)
+# 3.8 / 17.6 / 13.7
+
+# step is the slowest part...
+# why is processing so slow?
+
+# no mask on forward, but with efficent forward gives
+# 2.5 all the way through
+
+# null action gives step of ...
+# 16 - > 2.5
+
 os.environ["MKL_NUM_THREADS"] = "4"
 import torch
 torch.set_num_threads(4)
@@ -19,6 +34,7 @@ import time as clock
 import sys
 import socket
 import gzip
+import math
 from tqdm import tqdm
 
 from typing import Union, List, Dict
@@ -169,22 +185,17 @@ def load_checkpoint(checkpoint_path, device=None):
     if "obs_rms" in checkpoint:
         model.obs_rms = checkpoint["obs_rms"]
 
-    if "VecNormalizeRewardWrapper" in env_state:
-        # the new way
-        try:
-            REWARD_SCALE = env_state['VecNormalizeRewardWrapper']['ret_rms'][1] ** 0.5
-        except:
-            # the even newer way...
-            # note: this is off by epsilon ..,
-            normalizers = env_state['VecNormalizeRewardWrapper']['normalizers']
-            print("Reward normalizers are:")
-            for k, v in normalizers.items():
-                print(f"  -{k:<30} {v.ret_rms.mean:<10.3f} {v.ret_rms.var**0.5:<10.3f} {v.ret_rms.count:<10.0f}")
-            REWARD_SCALE = normalizers[args.get_env_name()].ret_rms.var ** 0.5
+    if "reward_scale" in checkpoint:
+        REWARD_SCALE = checkpoint["reward_scale"]
     else:
-        # the old way
-        atari.ENV_STATE = env_state
-        REWARD_SCALE = env_state['returns_norm_state'][1] ** 0.5
+        # old method...
+        normalizers = env_state['VecNormalizeRewardWrapper']['normalizers']
+        # print("Reward normalizers are:")
+        # for k, v in normalizers.items():
+        #     print(f"  -{k:<30}: {v.ret_rms.mean:<10.3f} {v.ret_rms.var ** 0.5:<10.3f} {v.ret_rms.count:<10.0f}")
+        REWARD_SCALE = (normalizers[args.get_env_name()].ret_rms.var + 1e-8) ** 0.5
+        print(f"Reward scale set to {REWARD_SCALE:.2f}")
+
 
     return model
 
@@ -395,8 +406,8 @@ def evaluate_model(model, filename, samples=16, max_frames = 30*60*15, temperatu
             num_rollouts=batch_samples,
             temperature=temperature,
             include_horizons=eval_args.eval_horizons,
-            multiverse_samples=eval_args.multiverse_samples,
-            multiverse_period=eval_args.multiverse_period,
+            mv_return_samples=eval_args.mv_return_samples,
+            mv_samples=eval_args.mv_samples,
             seed_base=eval_args.seed+(counter*17)
         )
 
@@ -472,12 +483,10 @@ def make_envs(
     ) for i in
                range(num_envs)]
     if num_envs > 1 or force_hybrid_async:
-        envs = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS)
+        envs = hybridVecEnv.HybridAsyncVectorEnv(env_fns, max_cpus=WORKERS, copy=False)
     else:
         envs = sync_vector_env.SyncVectorEnv(env_fns)
     return envs
-
-# todo: make a proper buffer class
 
 @torch.no_grad()
 def generate_rollouts(
@@ -488,13 +497,15 @@ def generate_rollouts(
         temperature=1.0,
         include_horizons:Union[bool, str] = True,
         zero_time = False,
-        multiverse_samples:int=0,
-        multiverse_period:int=100,
+        mv_return_samples:int=0,
+        mv_samples:int=100,
         rewards_only:bool=False,
         venvs=None,
         env_states:np.ndarray=None,
         env_times:np.ndarray=None,
         seed_base=None,
+        print_depth=0,
+        verbose=True,
     ):
     """
     Generates rollouts
@@ -505,6 +516,12 @@ def generate_rollouts(
     """
 
     start_time = clock.time()
+
+    step_timer = utils.Timer('step', 1000)
+    forward_timer = utils.Timer('forward', 1000)
+    process_timer = utils.Timer('process', 1000)
+    hash_timer = utils.Timer('hash', 1000)
+    total_timer = utils.Timer('total', 1000)
 
     model.test_mode = True
     seed_base = seed_base or eval_args.seed
@@ -519,25 +536,26 @@ def generate_rollouts(
 
     infos = None
     is_running = [True] * num_rollouts
-    frame_count = 0
+    t = 0
     buffers:List[Dict[str, Union[bool, list, np.ndarray, CompressedStack]]] = []
 
     for i in range(num_rollouts):
         if rewards_only:
-            buffers.append({'rewards':[], 'raw_rewards':[]})
+            buffers.append({'prev_state_hash':[], 'is_running':[], 'rewards':[], 'raw_rewards':[]})
         else:
             buffers.append({
-                'values': [],   # values for each horizon of dims [K]
+                'values': [],   # (scaled) values for each horizon of dims [K]
                 'tvf_discounted_values': [],  # values for each horizon discounted with TVF_gamma instead of gamma, [K]
                 'times': [],  # normalized time step
-                'raw_values': [],  # values for each horizon of dims [K] (unscaled)
+                'raw_values': [],  # values for each horizon of dims [K]
                 'std': [],   # estimated std of return for each horizon of dims [K]
                 'sqrt_m2': [],  # estimated sqrt of second moment of return for each horizon of dims [K]
                 'model_values': [], # (policy) models predicted value (float)
                 'rewards': [],   # normalized reward (which value predicts), might be clipped, episodic discounted etc
                 'raw_rewards': [], # raw unscaled reward from the atari environment
-                'mv_return_sample': [], # return samples for each horizon
+                'mv_return_sample': [], # return samples for each horizon, specifically the discounted sum of (unscaled) rewards
                 'prev_state_hash': [],  # hash for each prev_state , used to verify that runs are identical
+                'is_running': [], # bool, True if agent is still alive, false otherwise.
                 'actions': [],
                 'probs': [],
                 'noops': 0,
@@ -568,24 +586,68 @@ def generate_rollouts(
         times = env_times
 
     # generate multiverse envs
-    if multiverse_samples > 0:
+    if mv_return_samples > 0:
+        print("") # start on new line
         multi_envs = make_envs(
             seed_base=seed_base,
-            num_envs=multiverse_samples,
+            num_envs=mv_return_samples,
             force_hybrid_async=True,
             determanistic_saving=False, # means that when we restore, RNG will be different.
         )
         multi_envs.reset()
+
+        # do a first pass to get episode lengths, then use these to generate checkpoint locations.
+        prerun_buffer = generate_rollouts(
+            model,
+            max_frames=max_frames,
+            num_rollouts=num_rollouts,
+            include_video=False,
+            temperature=temperature,
+            include_horizons=False,
+            zero_time=zero_time,
+            rewards_only=True,
+            mv_return_samples=0,
+            mv_samples=0,
+            seed_base=seed_base,
+        )
+
+        ep_lengths = [sum(prerun_buffer[i]['is_running']) for i in range(num_rollouts)]
+
+        # generate samples
+        # ideally num_rollouts divides mv_samples, if not we generate more and sample down.
+        mv_sample = np.zeros([num_rollouts, max(ep_lengths)+1], dtype=bool) # +1 because we process the last frame
+        samples_per_run = int(math.ceil(mv_samples / num_rollouts))
+        sample_list = []
+        for i in range(num_rollouts):
+            run_length = sum(prerun_buffer[i]['is_running'])
+            run_samples = np.random.choice(run_length, samples_per_run, replace=False)
+            sample_list.extend((i, j) for j in run_samples)
+        np.random.shuffle(sample_list)
+        for i, j in sample_list[:mv_samples]:
+            mv_sample[i, j] = True
+        print(f"Generating {np.sum(mv_sample)} samples...")
+
     else:
         multi_envs = None
+        prerun_buffer = None
+        mv_sample = None
+
+    mv_samples_generated = 0
 
     # set seeds
     torch.manual_seed(seed_base)
     np.random.seed(seed_base)
 
-    while any(is_running) and frame_count < max_frames:
+    while any(is_running) and t < max_frames:
+
+        total_timer.start()
 
         kwargs = {}
+
+        if eval_args.verbose and t % 100 == 0:
+            print(f" - step: {t:05d}/{max_frames} with {np.mean(is_running)*100:<3.0f}% running: ", end='')
+
+        forward_timer.start()
 
         # not sure how best to do this
         try:
@@ -601,6 +663,10 @@ def generate_rollouts(
             # new method
             kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
 
+        if rewards_only:
+            kwargs['output'] = "policy"
+            del kwargs['aux_features']
+
         with torch.no_grad():
             model_out = model.forward(
                 states,
@@ -608,11 +674,17 @@ def generate_rollouts(
                 **({'policy_temperature': temperature} if temperature is not None else {})
             )
 
+        log_probs = model_out["log_policy"].detach().cpu().numpy()
+        forward_timer.stop()
+
+        if eval_args.verbose and t % 100 == 0:
+            print(f"forward: {forward_timer.time*1000:<10.1f}", end='')
+
         if temperature == 0:
             probs = model_out["argmax_policy"].detach().cpu().numpy()
             actions = np.asarray([np.argmax(prob) for prob in probs], dtype=np.int32)
         else:
-            log_probs = model_out["log_policy"].detach().cpu().numpy()
+
             probs = np.exp(log_probs)
             if np.isnan(log_probs).any():
                 raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
@@ -628,50 +700,74 @@ def generate_rollouts(
         # this can speed things up a lot by ignoring completed envs
         actions = np.asarray([(a if running else -1) for a, running in zip(actions, is_running)], dtype=np.int32)
 
+        step_timer.start()
+
         states, rewards, dones, infos = venvs.step(actions)
+
+        step_timer.stop()
+        if eval_args.verbose and t % 100 == 0:
+            print(f"step: {step_timer.time * 1000:<10.1f}", end='')
 
         # this happens on the first frame, prev_infos is set to None as reset does not generate an info
         # so we use the next info to get the rendered frame... what a pain...
         if prev_infos is None:
             prev_infos = infos.copy()
 
+        process_timer.start()
+
+        def append_buffer(key, value):
+            if key in buffers[i]:
+                if type(value) is np.ndarray:
+                    value = value.copy()
+                buffers[i][key].append(value)
+            else:
+                pass
+
+        def set_buffer(key, value):
+            if key in buffers[i]:
+                buffers[i][key] = value
+            else:
+                pass
+
         # go though each agent...
         for i in range(len(states)):
 
-            def append_buffer(key, value):
-                if key in buffers[i]:
-                    if type(value) is np.ndarray:
-                        value = value.copy()
-                    buffers[i][key].append(value)
-                else:
-                    pass
+            if not is_running[i]:
+                continue
 
-            def set_buffer(key, value):
-                if key in buffers[i]:
-                    buffers[i][key] = value
-                else:
-                    pass
+            if dones[i]:
+                is_running[i] = False
 
-            # save a hash of the states for verification
-            state_hash = int(hashlib.sha256(prev_states[i].tobytes()).hexdigest(), 16) % (2 ** 16)
+            # 1. first do the simple stuff... rewards etc
+            append_buffer('is_running', is_running[i])
+            raw_reward = infos[i].get("raw_reward", rewards[i])
+            append_buffer('rewards', rewards[i])
+            append_buffer('raw_rewards', raw_reward)
+
+            # 2. save a hash of the states for verification
+            # first channel is enough.
+            hash_timer.start()
+            state_hash = int(hashlib.sha256(prev_states[i][0].tobytes()).hexdigest(), 16) % (2 ** 16)
             append_buffer('prev_state_hash', state_hash)
+            hash_timer.stop()
 
-            # stub: print hashes
-            # if i == 0 and not rewards_only and frame_count % 25 == 0:
-            #     print(f"{frame_count}: {hex(state_hash)}")
+            # if we did a pre-run make sure we are identical on our second pass.
+            if prerun_buffer is not None:
+                assert state_hash == prerun_buffer[i]['prev_state_hash'][
+                    t], 'Second pass did not match. Check determanism'
 
-            # save randomness before potential multiverse
-            rng_state = (np.random.get_state(), torch.get_rng_state())
+            # next do the slower stuff, but only if needed.
+            if rewards_only:
+                continue
 
             # handle multiverse
             # round robin
             # the idea is to generate a sample from env_0, wait multiverse_period steps, then generate the next
             # sample on env_1, etc.
-            if (multi_envs is not None) and \
-                    (frame_count % multiverse_period == 0) and \
-                    ((frame_count // multiverse_period) % len(states) == i) and \
-                    (frame_count != 0) and \
-                    is_running[i]:
+            if (multi_envs is not None) and (mv_sample[i, t]):
+
+                # save randomness before potential multiverse
+                rng_state = (np.random.get_state(), torch.get_rng_state())
 
                 # prep multiverse envs...
                 if type(venvs) is sync_vector_env.SyncVectorEnv:
@@ -686,77 +782,66 @@ def generate_rollouts(
                 for j in range(multi_envs.n_sequential):
                     buffer[f"vec_{j:03d}"] = root_env_state
                 for j in range(multi_envs.n_parallel):
-
-                    # old_state = utils.save_env_state(multi_envs)["HybridAsyncVectorEnv"][f"vec_{j:03d}"]
-
                     pipe = multi_envs.parent_pipes[j]
                     pipe.send(('load', buffer))
                     error, ok = pipe.recv()
                     assert ok, "Failed env load with error:" + str(error)
 
-                    # confirm it worked
-                    # new_state = utils.save_env_state(multi_envs)["HybridAsyncVectorEnv"][f"vec_{j:03d}"]
-                    # print(
-                    #     i,
-                    #     old_state["EpisodeScoreWrapper"]["ep_score"],
-                    #     old_state["EpisodeScoreWrapper"]["ep_length"],
-                    #     new_state["EpisodeScoreWrapper"]["ep_score"],
-                    #     new_state["EpisodeScoreWrapper"]["ep_length"],
-                    # )
-
-                initial_states = np.asarray([states[i] for _ in range(multiverse_samples)])
-                initial_times = np.asarray([times[i] for _ in range(multiverse_samples)])
+                initial_states = np.asarray([states[i] for _ in range(mv_return_samples)])
+                initial_times = np.asarray([times[i] for _ in range(mv_return_samples)])
+                print(f"    - [t:{t:<5} i:{i:<4}]:", end='')
+                mv_start_time = clock.time()
                 multiverse_buffer = generate_rollouts(
                     model,
-                    max_frames=max_frames-frame_count,
-                    num_rollouts=multiverse_samples,
+                    max_frames=max_frames-t,
+                    num_rollouts=mv_return_samples,
                     include_video=False,
                     temperature=temperature,
                     include_horizons=False,
                     zero_time=zero_time,
                     rewards_only=True,
-                    multiverse_samples=0,
-                    multiverse_period=0,
+                    mv_return_samples=0,
+                    mv_samples=0,
                     venvs=multi_envs,
                     env_states=initial_states,
                     env_times=initial_times,
-                    seed_base=i*59+frame_count*1013+6673,
+                    seed_base=i*59+t*1013+6673,
+                    verbose=False,
                 )
                 # calculate the returns at each horizon
-                all_rewards = np.zeros([multiverse_samples, max_frames], dtype=np.float32)
-                for j in range(multiverse_samples):
+                all_rewards = np.zeros([mv_return_samples, max_frames], dtype=np.float32)
+                for j in range(mv_return_samples):
                     sample_rewards = multiverse_buffer[j]['raw_rewards']
                     all_rewards[j, :len(sample_rewards)] = sample_rewards
                 discounts = np.asarray([args.gamma ** t for t in range(max_frames)], dtype=np.float32)
                 discounted_rewards = all_rewards * discounts[None, :]
                 discounted_returns = np.cumsum(discounted_rewards, axis=1)
                 append_buffer('mv_return_sample', discounted_returns)
-                # stub: debug print
-                # print(f"(discounted) returns at t={frame_count} are {discounted_returns[:, -1]}")
-                # print(f"reward lengths are {[len(multiverse_buffer[j]['raw_rewards']) for j in range(multiverse_samples)]}")
-                # print(" returns are :")
-                # for j in range(multiverse_samples):
-                #     print(" -"+str(j)+":", np.cumsum(multiverse_buffer[j]['raw_rewards']))
 
+                mv_samples_generated += 1
+
+                # show progress
+                time_taken = clock.time() - mv_start_time
+                ep_lengths = [sum(multiverse_buffer[i]['is_running']) for i in range(mv_return_samples)]
+                fps = max(ep_lengths) * len(ep_lengths) / time_taken
+
+                eta_hr = ((mv_samples - mv_samples_generated) * time_taken) / 60 / 60
+
+                print(f" {mv_samples_generated:03d}/{mv_samples}", end=' ')
+                print(f"length {int(np.mean(ep_lengths))} ({min(ep_lengths)}-{max(ep_lengths)})", end=', ')
+                print(f"ips: {fps:.0f}", end=', ')
+                print(f"took {time_taken/60:.1f}m eta: {eta_hr:.1f}h")
+
+                np.random.set_state(rng_state[0])
+                torch.set_rng_state(rng_state[1])
             else:
                 append_buffer('mv_return_sample', None)
-
-            np.random.set_state(rng_state[0])
-            torch.set_rng_state(rng_state[1])
-
-            if not is_running[i]:
-                continue
-
-            # make sure to include last state
-            if dones[i]:
-                is_running[i] = False
 
             # check for infos
             if "noop_start" in infos[i]:
                 set_buffer("noops", infos[i]["noop_start"])
 
             model_value = model_out["ext_value"][i].detach().cpu().numpy()
-            raw_reward = infos[i].get("raw_reward", rewards[i])
 
             # old versions accidentally used time_frac... if time is there we use that instead
             time = 0.0
@@ -795,18 +880,19 @@ def generate_rollouts(
                     append_buffer('raw_values', raw_values)
 
             append_buffer('model_values', model_value)
-
-            append_buffer('rewards', rewards[i])
             append_buffer('times', prev_times[i])
-            append_buffer('raw_rewards', raw_reward)
 
-        frame_count += 1
 
-    multiplier = "" if num_rollouts == 1 else f" (x{num_rollouts})"
+        process_timer.stop()
+        total_timer.stop()
 
-    time_taken = clock.time() - start_time
-    fps = frame_count / time_taken
-    print(f" (length {frame_count}, fps: {fps:.1f}){multiplier}")
+        if eval_args.verbose and t % 100 == 0:
+            print(f"processing: {process_timer.time * 1000:<10.1f}", end='')
+            print(f"hash: {sum(is_running) * hash_timer.time * 1000:<10.1f}", end='')
+            print(f"total: {total_timer.time * 1000:<10.1f}", end='')
+            print()
+
+        t += 1
 
     # turn lists into np arrays
     for buffer in buffers:
@@ -823,6 +909,13 @@ def generate_rollouts(
                     buffer[key] = np.asarray(buffer[key], dtype=object)
                 else:
                     buffer[key] = np.asarray(buffer[key])
+
+    # output debugging
+    if verbose:
+        time_taken = clock.time() - start_time
+        fps = t / time_taken
+        ep_lengths = [sum(buffers[i]['is_running']) for i in range(num_rollouts)]
+        print(" " * print_depth + f" length {int(np.mean(ep_lengths))} ({min(ep_lengths)}-{max(ep_lengths)}) ips: {fps*num_rollouts:.0f}")
 
     return buffers
 
@@ -1028,8 +1121,8 @@ def export_movie(
         max_frames=max_frames,
         include_video=True,
         temperature=temperature,
-        multiverse_samples=eval_args.multiverse_samples,
-        multiverse_period=eval_args.multiverse_period,
+        mv_return_samples=eval_args.mv_return_samples,
+        mv_samples=eval_args.mv_samples,
         zero_time=zero_time
     )
     rewards = buffer["rewards"]
@@ -1058,8 +1151,8 @@ def export_movie(
             if sample is not None:
                 max_return_sample = max(max_return_sample, sample.max())
 
-    max_value_estimate = np.max(buffer["values"]) * REWARD_SCALE
-    min_value_estimate = np.min(buffer["values"]) * REWARD_SCALE
+    max_value_estimate = np.max(buffer["values"]) / REWARD_SCALE
+    min_value_estimate = np.min(buffer["values"]) / REWARD_SCALE
     y_max = max(max_true_return, max_value_estimate, max_return_sample)
     y_min = min(min_true_return, min_value_estimate)
 
@@ -1123,15 +1216,15 @@ def export_movie(
             # show 1 standard deviations
             xs = list(range(len(buffer["values"][t])))
             err = buffer["std"][t] * 1
-            ys_min = (buffer["values"][t] - err) * REWARD_SCALE  # model learned scaled rewards
-            ys_max = (buffer["values"][t] + err) * REWARD_SCALE  # model learned scaled rewards
+            ys_min = (buffer["values"][t] - err) / REWARD_SCALE  # model learned scaled rewards
+            ys_max = (buffer["values"][t] + err) / REWARD_SCALE  # model learned scaled rewards
             color = (0.1, 0.1, 0.2)
             fig.plot_between(xs, ys_min, ys_max, color)
 
             color = (0.4, 0.4, 0.4)
             fig.plot_between(xs, ys_min, ys_max, color, edges_only=True)
 
-            sqrt_square = buffer["sqrt_m2"][t] * REWARD_SCALE
+            sqrt_square = buffer["sqrt_m2"][t] / REWARD_SCALE
             fig.plot(xs, sqrt_square, (0.6, 0.3, 0.1))
 
         if return_sample is not None:
@@ -1166,19 +1259,19 @@ def export_movie(
         # plot predicted values
         if args.use_tvf:
             xs = list(range(len(buffer["values"][t])))
-            ys = buffer["values"][t] * REWARD_SCALE  # model learned scaled rewards
+            ys = buffer["values"][t] / REWARD_SCALE  # model learned scaled rewards
             fig.plot(xs, ys, 'greenyellow')
         else:
             # white dot representing value estimate
             xs = [args.tvf_max_horizon-10, args.tvf_max_horizon]
-            y = buffer["model_values"][t] * REWARD_SCALE
+            y = buffer["model_values"][t] / REWARD_SCALE
             ys = [y, y]
             fig.plot(xs, ys, 'white')
 
         if needs_rediscount():
             # plot originally predicted values (without rediscounting)
             xs = list(range(len(buffer["tvf_discounted_values"][t])))
-            ys = buffer["tvf_discounted_values"][t] * REWARD_SCALE  # model learned scaled rewards
+            ys = buffer["tvf_discounted_values"][t] / REWARD_SCALE  # model learned scaled rewards
             fig.plot(xs, ys, 'green')
             # also plot true score (with tvf_gamma)
             xs = list(range(len(true_tvf_discounted_returns)))
@@ -1242,11 +1335,14 @@ if __name__ == "__main__":
     parser.add_argument("--samples", type=int, default=64, help="Number of samples to use during evaluation.")
     parser.add_argument("--seed", type=int, default=1, help="Random Seed")
     parser.add_argument("--max_frames", type=int, default=30*60*15, help="maximum number of frames to generate for videos.")
+    parser.add_argument("--verbose", type=config.str2bool, default=False,
+                        help="Enables extra logging.")
     parser.add_argument("--eval_horizons", type=str, default="debug",
                         help="Which horizons to include when evaluating model, [last|debug|full]. For multiverse use debug.")
-    parser.add_argument("--multiverse_samples", type=int, default=0, help="if > 0 enables multiverse return estimation.")
-    parser.add_argument("--multiverse_period", type=int, default=100,
-                        help="number of steps between multiverse return sampling")
+    parser.add_argument("--mv_return_samples", type=int, default=0,
+                        help="Number samples in a multiverse return distribution. If > 0 enables multiverse return estimation.")
+    parser.add_argument("--mv_samples", type=int, default=100,
+                        help="Number of checkpoints to generate return samples from.")
     parser.add_argument("--device", type=str, default=None, help="device to train on")
 
     eval_args = parser.parse_args()

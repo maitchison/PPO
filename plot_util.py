@@ -260,6 +260,7 @@ class RunLog():
             'neg_': lambda x: -x,
             'exp_': lambda x: np.exp(x),
             '1m_': lambda x: 1 - x,
+            '1p_': lambda x: 1 + x,
         }
 
         self._fields = {}
@@ -769,13 +770,24 @@ def plot_experiment(
 class AtariScoreNormalizer:
 
     SUBSETS = {
-        'Atari_1': (['zaxxon'], [0.7361104013236862], 32.1),
-        'Atari_2': (['battlezone', 'namethisgame'], [0.3710712282605567, 0.6454953598106956], 21.2),
-        'Atari_3': (['battlezone', 'namethisgame', 'upndown'], [0.3223504230411684, 0.5675104493851542, 0.10601972957924621], 18.0),
-        'Atari_5': (['bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09355820685103215, 0.00021248297862930254, 0.33524848247535244, 0.4677328326407763, 0.10203002089200311], 15.5),
-        'Atari_7': (['beamrider', 'kungfumaster', 'bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09060641687077026, 0.12202782601137774, 0.08982327174630528, 0.008034433762979576, 0.28968403952214133, 0.33044208972707934, 0.0823538854612863], 13.6),
-        'Atari_3_Val': (['berzerk', 'boxing', 'zaxxon'], [0.18128771881834643, 0.23099736700126283, 0.5511012606596132], 24.8),
-        'Atari_5_Val': (['bowling', 'qbert', 'berzerk', 'boxing', 'zaxxon'], [0.10826840522123751, 0.09981087743817191, 0.15619612520585538, 0.20017493755002025, 0.44371420800910644], 19.3)
+
+        'Atari_3_Val': (
+            ['namethisgame', 'wizardofwor', 'yarsrevenge'],
+            [0.5950201890191499, 0.16600450543984996, 0.24604362521443113],
+            20.8),
+        'Atari_5': (
+            ['asterix', 'battlezone', 'doubledunk', 'phoenix', 'riverraid'],
+            [0.10862274012311582, 0.4750679595329031, 0.12574619901533546, 0.09984215092938016, 0.14777099454470263],
+            13.2),
+
+        # these are the old subsets
+        # 'Atari_1': (['zaxxon'], [0.7361104013236862], 32.1),
+        # 'Atari_2': (['battlezone', 'namethisgame'], [0.3710712282605567, 0.6454953598106956], 21.2),
+        # 'Atari_3': (['battlezone', 'namethisgame', 'upndown'], [0.3223504230411684, 0.5675104493851542, 0.10601972957924621], 18.0),
+        # 'Atari_5': (['bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09355820685103215, 0.00021248297862930254, 0.33524848247535244, 0.4677328326407763, 0.10203002089200311], 15.5),
+        # 'Atari_7': (['beamrider', 'kungfumaster', 'bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09060641687077026, 0.12202782601137774, 0.08982327174630528, 0.008034433762979576, 0.28968403952214133, 0.33044208972707934, 0.0823538854612863], 13.6),
+        # 'Atari_3_Val': (['berzerk', 'boxing', 'zaxxon'], [0.18128771881834643, 0.23099736700126283, 0.5511012606596132], 24.8),
+        # 'Atari_5_Val': (['bowling', 'qbert', 'berzerk', 'boxing', 'zaxxon'], [0.10826840522123751, 0.09981087743817191, 0.15619612520585538, 0.20017493755002025, 0.44371420800910644], 19.3)
     }
 
     def __init__(self):
@@ -848,15 +860,14 @@ class AtariScoreNormalizer:
         return inv_transform(total)
 
 
-def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'atari-3', subset_weights=None, c=None):
+def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'Atari_3', subset_weights=None, c=None):
     """
     Load multiple games and average their scores
     """
 
     if type(subset) is str:
-        game_list, game_weights = get_subset_games_and_weights(subset)
-        game_weights, c = game_weights  # tail(c)
-
+        game_list, game_weights, _ = AtariScoreNormalizer.SUBSETS[subset]
+        c = 0.0 # no intercept for these
     else:
         game_list = subset
         game_weights = subset_weights if subset_weights is not None else [1.0] * len(game_list)
@@ -870,7 +881,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'at
     game_log = None
 
     for folder in folders:
-        if folder in ["rl"]:
+        if folder in ["rl", "roms"]:
             continue
         game_log = read_log(os.path.join(path, folder))
         if game_log is None:
@@ -956,9 +967,9 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'at
 
     return result
 
-def plot_validation(path, keys, hold=False, color=None, label=None, subset="atari-val"):
+def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atari_3_Val"):
     if not hold:
-        plt.figure(figsize=(12,4))
+        plt.figure(figsize=(12, 4))
     cmap = plt.cm.get_cmap('tab10')
     for key in keys:
         result = read_combined_log(path, key, subset=subset)

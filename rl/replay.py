@@ -301,7 +301,8 @@ class ExperienceReplayBuffer:
                 new_spots = np.asarray(range(self.ring_buffer_location, self.ring_buffer_location + len(ids)))
                 new_spots = np.mod(new_spots, new_buffer_size)
             else:
-                new_spots = np.random.choice(range(new_buffer_size), size=[len(ids)], replace=False)
+                num_new_slots = min(len(ids), new_buffer_size)
+                new_spots = np.random.choice(range(new_buffer_size), size=[num_new_slots], replace=False)
 
             for source, destination in zip(ids, new_spots):
                 # add new entry

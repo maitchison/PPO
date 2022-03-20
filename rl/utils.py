@@ -17,6 +17,7 @@ from .config import args
 import gym
 
 from typing import List, Union
+from collections import deque
 
 NATS_TO_BITS = 1.0/math.log(2)
 
@@ -928,3 +929,28 @@ def merge_down(x:Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Ten
     assert len(x.shape) >= 2, f"Can not merge down array of dims {x.shape}, as it needs atleast two dims."
     a, b, *remainder = x.shape
     return x.reshape([a * b, *remainder])
+
+# -------------------------------------------------------------
+# Timer
+# -------------------------------------------------------------
+
+class Timer:
+
+    def __init__(self, name='timer', n=100):
+        self.name = name
+        self.start_time = 0
+        self.times = deque(maxlen=n)
+
+    def start(self):
+        self.start_time = time.time()
+
+    def stop(self):
+        time_taken = time.time() - self.start_time
+        self.times.append(time_taken)
+
+    @property
+    def time(self):
+        if len(self.times) == 0:
+            return 0.0
+        else:
+            return np.mean(self.times)

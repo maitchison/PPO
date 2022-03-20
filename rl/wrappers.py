@@ -563,6 +563,81 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     def __init__(
             self,
             env: VectorEnv,
+            initial_state=None,
+            gamma: float = 1.0,
+            clip: float = 10.0,
+            scale: float = 1.0,
+            returns_transform=lambda x: x,
+    ):
+        """
+        Normalizes returns
+        """
+        super().__init__(env)
+
+        self.clip = clip
+        self.epsilon = 1e-8
+        self.current_returns = np.zeros([env.num_envs], dtype=np.float32)
+        self.ret_rms = utils.RunningMeanStd(shape=())
+        self.gamma = gamma
+        self.scale = scale
+        self.returns_transform = returns_transform
+        if initial_state is not None:
+            self.ret_rms.restore_state(initial_state)
+
+    def reset(self):
+        self.current_returns *= 0
+        return self.env.reset()
+
+    def step(self, actions):
+        obs, rewards, dones, infos = self.env.step(actions)
+
+        # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
+        # but it is what OpenAI does...
+        self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
+
+        self.ret_rms.update(self.returns_transform(self.current_returns))
+
+        scaled_rewards = rewards / self.std
+        if self.clip is not None:
+            rewards_copy = scaled_rewards.copy()
+            scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
+            clips = np.sum(rewards_copy != scaled_rewards)
+            if clips > 0:
+                # log if clipping occurred.
+                infos[0]["reward_clips"] = clips
+
+        scaled_rewards *= self.scale
+
+        return obs, scaled_rewards, dones, infos
+
+    @property
+    def mean(self):
+        return self.ret_rms.mean
+
+    @property
+    def std(self):
+        return math.sqrt(self.ret_rms.var + self.epsilon)
+
+    def save_state(self, buffer):
+        buffer["ret_rms"] = self.ret_rms.save_state()
+        buffer["current_returns"] = self.current_returns
+
+    def restore_state(self, buffer):
+        self.ret_rms.restore_state(buffer["ret_rms"])
+        self.current_returns = buffer["current_returns"]
+
+
+class MultiEnvVecNormalizeRewardWrapper(gym.Wrapper):
+    """
+    Normalizes rewards such that returns are unit normal.
+    Supports normalization for multiple environment types.
+    Vectorized version.
+    Also clips rewards
+    """
+
+    def __init__(
+            self,
+            env: VectorEnv,
             gamma: float = 1.0,
             clip: float = 10.0,
             scale: float = 1.0,

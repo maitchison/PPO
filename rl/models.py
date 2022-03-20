@@ -138,6 +138,70 @@ class NatureCNN_Net(Base_Net):
         return x
 
 
+
+class NatureFatCNN_Net(Base_Net):
+    """ Takes stacked frames as input, and outputs features.
+        Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
+        All parameters doubled...
+    """
+
+    def __init__(self, input_dims, hidden_units=512, layer_norm=False):
+
+        super().__init__(input_dims, hidden_units)
+
+        input_channels = input_dims[0]
+
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=(8, 8), stride=(4, 4))
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=(4, 4), stride=(2, 2))
+        self.conv3 = nn.Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1))
+
+        fake_input = torch.zeros((1, *input_dims))
+        _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
+
+        self.out_shape = (c, w, h)
+        self.d = utils.prod(self.out_shape)
+        self.hidden_units = hidden_units
+        if self.hidden_units > 0:
+            self.fc = nn.Linear(self.d, hidden_units)
+
+        self.layer_norm = layer_norm
+        if layer_norm:
+            # just on the convolutions... less parameters... less over fitting...
+            x = self.conv1(fake_input)
+            _, c, w, h = x.shape
+            self.ln1 = nn.LayerNorm([c, h, w])
+            x = self.conv2(x)
+            _, c, w, h = x.shape
+            self.ln2 = nn.LayerNorm([c, h, w])
+            x = self.conv3(x)
+            _, c, w, h = x.shape
+            self.ln3 = nn.LayerNorm([c, h, w])
+
+    # this causes everything to be on cuda:1... hmm... even when it's disabled...
+    #@torch.autocast(device_type='cuda', enabled=AMP)
+    def forward(self, x):
+        """ forwards input through model, returns features (without relu) """
+
+        D = self.d
+
+        if self.layer_norm:
+            x = F.relu(self.conv1(x))
+            x = self.ln1(x)
+            x = F.relu(self.conv2(x))
+            x = self.ln2(x)
+            x = F.relu(self.conv3(x))
+            x = self.ln3(x)
+        else:
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
+
+        x = torch.reshape(x, [-1, D])
+        if self.hidden_units > 0:
+            x = self.fc(x)
+        return x
+
+
 class RNDTarget_Net(Base_Net):
     """ Used to predict output of random network.
         see https://github.com/openai/random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
@@ -739,6 +803,8 @@ def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
     head_name = head_name.lower()
     if head_name == "nature":
         return NatureCNN_Net(input_dims, **kwargs)
+    if head_name == "nature_fat":
+        return NatureFatCNN_Net(input_dims, **kwargs)
     if head_name == "impala":
         return ImpalaCNN_Net(input_dims, **kwargs)
     else:

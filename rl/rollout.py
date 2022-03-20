@@ -717,7 +717,7 @@ class Runner:
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
                                   model_total_size, self.model.dtype))
 
-    def save_checkpoint(self, filename, step):
+    def save_checkpoint(self, filename, step, disable_replay=False, disable_optimizer=False, disable_log=False, disable_env_state=False):
 
         # todo: would be better to serialize the rollout automatically I think (maybe use opt_out for serialization?)
 
@@ -727,13 +727,18 @@ class Runner:
             'episode_length_buffer': self.episode_length_buffer,
             'current_horizon': self.current_horizon,
             'model_state_dict': self.model.state_dict(),
-            'logs': self.log,
-            'env_state': utils.save_env_state(self.vec_env),
-            'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
-            'value_optimizer_state_dict': self.value_optimizer.state_dict(),
             'batch_counter': self.batch_counter,
+            'reward_scale': self.reward_scale,
             'stats': self.stats,
         }
+
+        if not disable_optimizer:
+            data['policy_optimizer_state_dict'] = self.policy_optimizer.state_dict()
+            data['value_optimizer_state_dict'] = self.value_optimizer.state_dict()
+        if not disable_log:
+            data['logs'] = self.log
+        if not disable_env_state:
+            data['env_state'] = utils.save_env_state(self.vec_env)
 
         if args.use_erp:
             data['erp_stats'] = self.erp_stats
@@ -741,10 +746,10 @@ class Runner:
         if args.abs_mode != "off":
             data['abs_stats'] = self.abs_stats
 
-        if self.replay_buffer is not None:
+        if self.replay_buffer is not None and not disable_replay:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
-        if len(self.debug_replay_buffers) > 0:
-            data["debug_replay_buffers"] = [replay.save_state(force_copy=False) for replay in self.debug_replay_buffers]
+            if len(self.debug_replay_buffers) > 0:
+                data["debug_replay_buffers"] = [replay.save_state(force_copy=False) for replay in self.debug_replay_buffers]
 
         if args.auto_strategy[:2] == "sa":
             data['horizon_sa'] = self.horizon_sa
@@ -1985,7 +1990,7 @@ class Runner:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
-        self.log.watch_mean("reward_scale", self.reward_scale, display_width=0)
+        self.log.watch_mean("reward_scale", self.reward_scale, display_width=0, history_length=1)
         self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)
 
         self.log.watch_mean_std("reward_ext", self.ext_rewards, display_name="rew_ext", display_width=0)
@@ -2577,7 +2582,7 @@ class Runner:
         self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("entropy", entropy)
-        self.log.watch_mean("entropy_bits", entropy*(1/math.log(2)))
+        self.log.watch_mean("entropy_bits", entropy*(1/math.log(2)), display_width=0)
         self.log.watch_mean("loss_ent", loss_entropy, display_name=f"ls_ent", display_width=8)
         self.log.watch_mean("loss_policy", gain, display_name=f"ls_policy")
 
@@ -2651,12 +2656,12 @@ class Runner:
 
     @property
     def reward_scale(self):
-        """ The amount rewards have been scaled by. """
+        """ The amount rewards have been multiplied by. """
         if args.reward_normalization:
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
-            return norm_wrapper.std
+            return args.reward_scale / norm_wrapper.std
         else:
-            return 1.0
+            return args.reward_scale
 
     def train_rnd_minibatch(self, data, loss_scale: float = 1.0):
 

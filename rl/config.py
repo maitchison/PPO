@@ -50,6 +50,7 @@ class Config:
 
         # critical batch_size
         self.abs_mode = str()
+        self.save_model_interval = bool()
 
         # replay constraint
         self.policy_replay_constraint = float()
@@ -406,6 +407,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
     parser.add_argument("--abs_mode", type=str, default="off", help="Enables adaptive batch size. [off|on|shadow]")
+    parser.add_argument("--save_model_interval", type=int, default=0, help="Period for which to saves model history during training (uses a lot of space!). 0 = off.")
 
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|log|zero]")

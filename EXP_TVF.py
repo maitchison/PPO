@@ -2,9 +2,7 @@ from runner_tools import WORKERS, add_job, random_search, Categorical
 from runner_tools import TVF_reference_args
 
 ROLLOUT_SIZE = 128*128
-ATARI_3_VAL = ['Breakout', 'WizardOfWor', 'YarsRevenge']
-#ATARI_3_VAL = ['Berzerk', 'Boxing', 'Zaxxon']
-#ATARI_5_VAL = ['Bowling', 'Qbert', 'Berzerk', 'Boxing', 'Zaxxon']
+ATARI_3_VAL = ['NameThisGame', 'WizardOfWor', 'YarsRevenge']
 
 # updated args tuned for hard mode
 TVF_HARD_ARGS = {
@@ -86,18 +84,17 @@ def tvf_ev(priority: int = 0):
     EV_SETTINGS['priority'] = priority
 
     # step 1: generate a reference policy for each game in the validation set
-    for env in ATARI_3_VAL + ["CrazyClimber"]: # cc is just to look into timeout...
+    # zaxxon is just to make sure we did not regress
+    for env in ATARI_3_VAL + ['Zaxxon']:
         add_job(
-            "TVF_EV1",
+            "TVF_EV1_DYNAMIC",
             run_name=f"game={env} reference",
             env_name=env,
             seed=1,
             epochs=50,
-            priority=1000,
+            save_model_interval=1,
             default_params=EV_SETTINGS,
         )
-
-    return
 
     EV2_SETTINGS = EV_SETTINGS.copy()
     EV2_SETTINGS.update({
@@ -108,7 +105,20 @@ def tvf_ev(priority: int = 0):
         'abs_mode': "shadow",  # so I can track noise
         'checkpoint_every': int(1e6),  # this will allow me to take true value ev estimates.
         'warmup_period': 0,  # not needed and will skew scores early on...
+        'priority': 100,
     })
+
+    # use fixed reward scales rather than renormalizing. If we renormalize we could be off by 20% or so and would
+    # have to adjust for that. This way we can just use the normalized value estimates, and should be able to combine
+    # them more easily too. (although normalizing the error sounds like a good idea).
+    fixed_reward_scale = {
+        # taken from reference runs
+        #'Breakout': 1/90.872, # <- change to name this game
+        'Zaxxon': 1/5362.42,
+        'NameThisGame': 1/3082.216567427429,
+        'WizardOfWor': 1/4307.944,
+        'YarsRevenge': 1/23021.322,
+    }
 
     # experiment 2: value learning (sampling and sample distribution)
     # for env in ATARI_3_VAL:
@@ -119,6 +129,7 @@ def tvf_ev(priority: int = 0):
     #                     "TVF_EV2",
     #                     run_name=f"game={env} distribution={distribution} samples={samples} ({seed})",
     #                     reference_policy=f"../game={env} reference.pt.gz",
+    #                     fixed_reward_scale=...
     #                     env_name=env,
     #                     seed=seed,
     #
@@ -131,14 +142,19 @@ def tvf_ev(priority: int = 0):
     #                 )
 
     # experiment 3: value learning (influence of return estimator)
-    for env in ATARI_3_VAL:
-        for seed in [1]:
-            for return_mode in ['exponential', 'fixed', 'adaptive', 'hyperbolic', 'quadratic']:
-                for n_step in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
+    for env in ATARI_3_VAL + ['Zaxxon']:
+        if env not in fixed_reward_scale:
+            continue
+        for seed in [1, 2, 3]:
+            for return_mode in ['exponential', 'fixed', 'hyperbolic']: #, 'quadratic']:
+                for n_step in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
                     add_job(
                         "TVF_EV3",
                         run_name=f"game={env} return_mode={return_mode} n_step={n_step} ({seed})",
-                        reference_policy=f"../game={env}.pt.gz",
+                        n_steps=max(n_step, 128) if return_mode in ["fixed", "exponential"] else 128, # extend n_steps for long n_steps
+                        reward_scale=fixed_reward_scale[env],
+                        reward_normalization=False,
+                        reference_policy=f"../{env}.pt.gz",
                         env_name=env,
                         seed=seed,
 
@@ -151,6 +167,10 @@ def tvf_ev(priority: int = 0):
             add_job(
                 "TVF_EV3",
                 run_name=f"game={env} return_mode=uniform ({seed})",
+                reference_policy=f"../{env}.pt.gz",
+                reward_scale=fixed_reward_scale[env],
+                reward_normalization=False,
+                env_name=env,
 
                 tvf_return_mode='uniform',
                 tvf_return_n_step=1,

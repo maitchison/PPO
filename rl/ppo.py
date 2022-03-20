@@ -173,6 +173,16 @@ def train(model: models.TVFModel, log: Logger):
 
         runner.step = iteration*batch_size
 
+        if args.save_model_interval > 0 and iteration % args.save_model_interval == 0:
+            runner.save_checkpoint(
+                utils.get_checkpoint_path(env_step, f"{iteration:05d}.pt"),
+                runner.step,
+                disable_replay=True,
+                disable_optimizer=True,
+                disable_log=True,
+                disable_env_state=True
+            )
+
         step_start_time = time.time()
 
         rollout_start_time = time.time()
