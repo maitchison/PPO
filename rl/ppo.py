@@ -169,6 +169,8 @@ def train(model: models.TVFModel, log: Logger):
     if args.return_estimator_mode == "verify":
         test_return_estimators(runner.log)
 
+    old_header = None
+
     for _ in range(start_iteration, end_iteration):
 
         runner.step = iteration*batch_size
@@ -232,7 +234,9 @@ def train(model: models.TVFModel, log: Logger):
         # periodically print and save progress
         if time.time() - last_print_time >= args.debug_print_freq:
             save_progress(log)
-            log.print_variables(include_header=print_counter % 10 == 0)
+            header_changed = old_header is None or log.header != old_header
+            log.print_variables(include_header=print_counter % 10 == 0 or header_changed)
+            old_header = log.header
             last_print_time = time.time()
             print_counter += 1
 

@@ -217,20 +217,27 @@ class Logger():
         for k, v in mapping.items():
             self.watch(key + "_"+k, v(value), history_length=history_length, **kwargs)
 
+    @property
+    def header(self):
+        # returns string containing header
+        sorted_vars = sorted(self._vars.values())
+        output_string = ""
+        for var in sorted_vars:
+            if var.display_width == 0:
+                continue
+            output_string = output_string + (var.display_name.rjust(var.display_width - 1, " ") + " ")[
+                                            :var.display_width]
+        return output_string
+
     def print_variables(self, include_header=False):
         """ Prints current value of all logged variables."""
 
         sorted_vars = sorted(self._vars.values())
 
         if include_header:
-            output_string = ""
-            for var in sorted_vars:
-                if var.display_width == 0:
-                    continue
-                output_string = output_string + (var.display_name.rjust(var.display_width-1, " ")+" ")[:var.display_width]
-            self.log("-" * len(output_string))
-            self.log(output_string)
-            self.log("-"*len(output_string))
+            self.log("-" * len(self.header))
+            self.log(self.header)
+            self.log("-"*len(self.header))
 
         output_string = ""
         for var in sorted_vars:

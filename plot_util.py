@@ -770,15 +770,15 @@ def plot_experiment(
 class AtariScoreNormalizer:
 
     SUBSETS = {
+            'Atari_3_Val': (
+            ['Assault', 'MsPacman', 'YarsRevenge'],
+            [0.33525298, 0.42363799, 0.19161846],
+            17.1),
 
-        'Atari_3_Val': (
-            ['namethisgame', 'wizardofwor', 'yarsrevenge'],
-            [0.5950201890191499, 0.16600450543984996, 0.24604362521443113],
-            20.8),
         'Atari_5': (
-            ['asterix', 'battlezone', 'doubledunk', 'phoenix', 'riverraid'],
-            [0.10862274012311582, 0.4750679595329031, 0.12574619901533546, 0.09984215092938016, 0.14777099454470263],
-            13.2),
+            ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert'],
+            [0.38197512, 0.06790995, 0.31080415, 0.12412619, 0.08048518],
+            10.4),
 
         # these are the old subsets
         # 'Atari_1': (['zaxxon'], [0.7361104013236862], 32.1),
@@ -917,7 +917,8 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
             norm_score = np.mean(es[game])
             #result[f"{game.lower()}_score"].append(score)
             result[f"{game}_norm"].append(norm_score)
-            weighted_score += weight * norm_score
+            weighted_score += weight * np.log10(1 + max(norm_score, 0))
+        weighted_score = 10 ** weighted_score - 1
         result["score"].append(weighted_score)
         result["env_step"].append(epoch * 1e6)
         result["epoch"].append(epoch)

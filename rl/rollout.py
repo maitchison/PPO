@@ -2716,6 +2716,8 @@ class Runner:
         # ----------------------------------------------------
         # policy phase
 
+        start_time = clock.time()
+
         if args.policy_epochs == 0:
             return
 
@@ -2819,12 +2821,16 @@ class Runner:
                             display_name="epochs_p"
                             )
 
+        self.log.watch(f"time_train_policy", (clock.time() - start_time) * 1000,
+                       display_width=8, display_name='t_policy', display_precision=1)
         self.log.watch(f'policy_mbs', self.policy_mini_batch_size, display_width=0)
 
     def train_value(self):
 
         # ----------------------------------------------------
         # value phase
+
+        start_time = clock.time()
 
         if args.value_epochs == 0:
             return
@@ -2893,6 +2899,8 @@ class Runner:
                 label="value",
             )
 
+        self.log.watch(f"time_train_value", (clock.time() - start_time) * 1000,
+                       display_width=8, display_name='t_value', display_precision=1)
         self.log.watch(f"value_mbs", self.value_mini_batch_size, display_width=0)
 
     def get_distil_batch(self, samples_wanted:int):
@@ -3016,6 +3024,11 @@ class Runner:
         # ----------------------------------------------------
         # distil phase
 
+        # slows things down a bit, but can be useful for debuging low variance value estimates.
+        DETAILED_DISIL_LOGGING = False
+
+        start_time = clock.time()
+
         if args.distil_epochs == 0:
             return
 
@@ -3055,16 +3068,19 @@ class Runner:
                 mini_batch_size=self.distil_mini_batch_size,
                 optimizer=self.distil_optimizer,
                 hooks={
-                    'after_mini_batch': log_specific_losses
-                },
+                     'after_mini_batch': log_specific_losses
+                } if DETAILED_DISIL_LOGGING else None,
                 label="distil",
             )
 
-            # print(f"Epoch {distil_epoch} (kl/value) (targ/pred var)")
-            # for kl, value, targ, pred in zip(kl_losses, value_losses, targ_var, pred_var):
-            #     print(f" -> {kl:<10.6f} {value:<10.6f} {targ:<10.6f} {pred:<10.6f}")
-            # print()
+            if DETAILED_DISIL_LOGGING:
+                print(f"Epoch {distil_epoch} (kl/value) (targ/pred var)")
+                for kl, value, targ, pred in zip(kl_losses, value_losses, targ_var, pred_var):
+                    print(f" -> {kl:<10.6f} {value:<10.6f} {targ:<10.6f} {pred:<10.6f}")
+                print()
 
+        self.log.watch(f"time_train_distil", (clock.time() - start_time) * 1000,
+                       display_width=8, display_name='t_distil', display_precision=1)
         self.log.watch(f"distil_mbs", self.distil_mini_batch_size, display_width=0)
 
     def train(self):
@@ -3107,6 +3123,8 @@ class Runner:
             'outputs' output from each mini_batch update
             'did_break'=True (only if training terminated early)
         """
+
+        start_time = clock.time()
 
         assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"
         batch_size, *state_shape = batch_data["prev_state"].shape
@@ -3165,6 +3183,10 @@ class Runner:
 
         # free up memory by releasing grads.
         optimizer.zero_grad(set_to_none=True)
+
+        time_per_example = (clock.time() - start_time) / batch_size * 1000
+
+        self.log.watch_mean(f"time_train_{label}_bms", time_per_example, display_width=0, display_name=f"t_{label}")
 
         return context
 

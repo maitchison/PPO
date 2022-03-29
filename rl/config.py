@@ -149,6 +149,7 @@ class Config:
         self.value_lr = float()
         self.policy_lr = float()
         self.distil_lr = float()
+        self.aux_lr = float()
         self.distil_delay = int()
         self.architecture = str()
         self.dna_shared_initialization = bool()
@@ -426,16 +427,20 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
     parser.add_argument("--value_epochs", type=int, default=2, help="Number of value training epochs per training batch.")
 
+    # optional aux phase
+    parser.add_argument("--aux_epochs", type=int, default=0, help="Number of auxiliary epochs")
+    parser.add_argument("--aux_task", type=str, default='average_value', help="[reward|average_value]")
+
     # distil / replay
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
     parser.add_argument("--distil_ir", type=float, default=0.25, help="Uses intrinsic reward distillation (if available)")
-    parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to replay_size (or rollout batch size if replay is disabled).")
+    parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
 
     parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
     parser.add_argument("--distil_batch_size_ratio", type=float, default=None,
-                        help="Sets distil_batch_size to replay_size * distil_batch_size_ratio")
+                        help="Sets distil_batch_size to rollout_size * distil_batch_size_ratio")
 
     parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform|off]")
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
@@ -476,6 +481,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--value_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--policy_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--distil_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
+    parser.add_argument("--aux_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--rnd_lr", type=float, default=2.5e-4, help="Learning rate for Adam optimizer")
     parser.add_argument("--advantage_epsilon", type=float, default=1e-8, help="Epsilon used when normalizing advantages.")
     parser.add_argument("--advantage_clipping", type=float, default=None,
@@ -662,8 +668,8 @@ def parse_args(no_env=False, args_override=None):
         args.intrinsic_reward_propagation = (args.use_rnd or args.use_ebd or args.use_erp)
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
-    if args.distil_batch_size is None or args.distil_batch_size < 0:
-        args.distil_batch_size = args.replay_size if args.replay_size > 0 else args.batch_size
+    if args.distil_batch_size is None:
+        args.distil_batch_size = args.batch_size
 
     # legacy settings (for compatability)
     # having these here just causes bugs as the override the newer settings...
@@ -686,24 +692,11 @@ def parse_args(no_env=False, args_override=None):
         if param in vars(args).keys() and vars(args)[param] is not None:
             print(f"Warning, {param} has been removed, and is being ignored.")
 
-
-    # legacy settings
-    # if cmd_args.get("use_mutex", False):
-    #     print("warning, use_mutex is deprecated, use mutex_key instead.")
-    #     args.mutex_key = "DEVICE"
-
-    # if args.extrinsic_reward_scale is not None:
-    #     args.er_scale = args.extrinsic_reward_scale
-    # if args.intrinsic_reward_scale is not None:
-    #     args.ir_scale = args.intrinsic_reward_scale
-
     # smart config
     buffer_size = args.replay_size if args.replay_size > 0 else args.batch_size
+    rollout_size = args.agents * args.n_steps
     if args.distil_batch_size_ratio is not None:
-        args.distil_batch_size = round(buffer_size * args.distil_batch_size_ratio)
-        while args.distil_batch_size > buffer_size:
-            args.distil_batch_size //= 2
-            args.distil_epochs *= 2
+        args.distil_batch_size = round(rollout_size * args.distil_batch_size_ratio)
 
     if args.distil_freq_ratio is not None:
         # for period faster than 1 per epoch just up the epochs.
@@ -716,6 +709,3 @@ def parse_args(no_env=False, args_override=None):
     if args.replay_mode == "off":
         args.replay_size = 0
 
-    # no longer required
-    # assert args.tvf_value_samples <= args.tvf_max_horizon, "tvf_value_samples must be <= tvf_max_horizon."
-    # assert args.tvf_horizon_samples <= args.tvf_max_horizon, "tvf_horizon_samples must be <= tvf_max_horizon."

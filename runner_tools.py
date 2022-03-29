@@ -428,7 +428,7 @@ def get_run_folders(experiment_name, run_name):
     for file in os.listdir(path):
         name = os.path.split(file)[-1]
         this_run_name = name[:-(8+3)]  # crop off the id code.
-        if this_run_name == run_name:
+        if this_run_name == run_name and '(clash)' not in name:
             result.append(os.path.join(path, name))
     return result
 
@@ -788,10 +788,14 @@ def fix_clashes():
     """
     Find any clashes, and stop them running.
     """
+    # note: renaming the path will cause the currently runnihng job to terminate.
+    # someone must then go in and delete these clashed paths.
     for job in job_list:
         status = job.get_status()
         if status == "clash":
-            print(f"Clash on {job}")
+            first_path = job.get_paths()[0]
+            print(f"Clash on {first_path}")
+            os.rename(first_path, first_path+" (clash)")
 
 
 def show_experiments(filter_jobs=None, all=False):
@@ -910,6 +914,7 @@ def random_search(
         base_seed=0,
         hook=None,
         priority=0,
+        run_seed_lookup=None,
 ):
     """
     Improved random search:
@@ -996,12 +1001,21 @@ def random_search(
         for j in range(len(envs)):
             env_name = envs[j]
             main_params['env_name'] = env_name
-            add_job(
-                run,
-                run_name=f"{i:04d}_{env_name}",
-                chunk_size=10,
-                score_threshold=score_thresholds[j] if score_thresholds is not None else None,
-                default_params=main_params,
-                priority=priority,
-                **sample_params,
-            )
+
+            if run_seed_lookup is not None:
+                seeds_to_run = run_seed_lookup.get(i, 1)
+            else:
+                seeds_to_run = 1
+
+            for run_seed in range(seeds_to_run):
+                main_params['seed'] = run_seed
+                run_code = f"{(i + run_seed*1000) :04d}"
+                add_job(
+                    run,
+                    run_name=f"{run_code}_{env_name}",
+                    chunk_size=10,
+                    score_threshold=score_thresholds[j] if score_thresholds is not None else None,
+                    default_params=main_params,
+                    priority=priority if run_seed == 0 else priority - 50,
+                    **sample_params,
+                )
