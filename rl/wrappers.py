@@ -113,6 +113,7 @@ class ActionAwareWrapper(gym.Wrapper):
     """
     Includes previous on frame.
     input should be [H, W, C] of dtype np.unit8
+    The action used to arrive in this state is marked onto the frame.
     """
 
     def __init__(self, env: gym.Env):
@@ -124,7 +125,6 @@ class ActionAwareWrapper(gym.Wrapper):
 
     def _process_obs(self, obs, action: int):
         assert obs.dtype == np.uint8
-        H, W, C = obs.shape
 
         BLOCK_SIZE = 4
 

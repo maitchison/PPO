@@ -361,10 +361,33 @@ def dna_noise(priority=0):
                 default_params=DNA_HARD_ARGS_HPS,
             )
 
+def dna_aux(priority=0):
+    # quick check to see if reward prediction as aux task helps at all...
+    HOST = ''
+    for seed in [1]:
+        for env in ATARI_3_VAL:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority,
+                'seed': seed,
+                'disable_ev': True,
+            }
+            for aux_epochs in [0, 1, 2]:
+                add_job(
+                    "DNA_AUX",
+                    run_name=f"game={env} aux_epochs={aux_epochs} ({seed})",
+                    replay_size=64*1024,
+                    aux_epochs=aux_epochs,
+                    **args,
+                    default_params=DNA_HARD_ARGS_HPS,
+                )
+
 def setup(priority_modifier=0):
     dna_hps(50) # fill in the gaps
     dna_epochs(0)
+    dna_aux(100)
     #dna_noise(-100)
     #dna_replay(0) (save for replay paper)
     #dna_gae(+100)
-    dna_final(0)
+    dna_final(200)

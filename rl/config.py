@@ -40,7 +40,6 @@ class Config:
         self.distil_batch_size  = int()
         self.replay_mixing      = bool()
         self.replay_thinning = float()
-        self.replay_duplicate_removal = bool()
 
         # value logging
         self.log_detailed_value_quality = bool()
@@ -141,6 +140,7 @@ class Config:
         self.policy_epochs = int()                            
         self.value_epochs = int()
         self.distil_epochs = int()
+        self.aux_epochs = int()
         self.target_kl = float()
         self.entropy_scaling = bool()
         self.ppo_epsilon =float()
@@ -207,7 +207,6 @@ class Config:
         self.debug_value_logging = bool()
         self.seed = int()
         self.atari_rom_check = bool()
-        self.debug_replay_shadow_buffers = bool()
 
         self.full_action_space = bool()
         self.terminal_on_loss_of_life = bool()
@@ -429,7 +428,6 @@ def parse_args(no_env=False, args_override=None):
 
     # optional aux phase
     parser.add_argument("--aux_epochs", type=int, default=0, help="Number of auxiliary epochs")
-    parser.add_argument("--aux_task", type=str, default='average_value', help="[reward|average_value]")
 
     # distil / replay
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
@@ -446,7 +444,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
     parser.add_argument("--replay_thinning", type=float, default=1.0, help="Adds this fraction of experience to replay buffer.")
-    parser.add_argument("--replay_duplicate_removal", type=str2bool, default=False)
     parser.add_argument("--policy_replay_constraint", type=float, default=0.0,
                         help="How much to constrain policy on historical data when making updates.")
     parser.add_argument("--value_replay_constraint", type=float, default=0.0,
@@ -605,8 +602,6 @@ def parse_args(no_env=False, args_override=None):
                         help="Log information around terminals.")
     parser.add_argument("--debug_value_logging", type=str2bool, default=False,
                         help="Log information around terminals.")
-    parser.add_argument("--debug_replay_shadow_buffers", type=str2bool, default=False,
-                        help="Creates shadow buffers, used only for testing, and which take a lot of memory.")
     parser.add_argument("--checkpoint_every", type=int, default=int(5e6),
                         help="Number of environment steps between checkpoints.")
     parser.add_argument("--quiet_mode", type=str2bool, default=False)

@@ -473,6 +473,10 @@ class Runner:
                                               **optimizer_params)
         else:
             self.distil_optimizer = None
+        if args.aux_epochs > 0:
+            self.aux_optimizer = optimizer(model.parameters(), lr=self.distil_lr, **optimizer_params)
+        else:
+            self.aux_optimizer = None
 
         if args.use_rnd:
             self.rnd_optimizer = optimizer(model.prediction_net.parameters(), lr=self.rnd_lr, **optimizer_params)
@@ -569,27 +573,9 @@ class Runner:
                 obs_shape=self.prev_obs.shape[2:],
                 obs_dtype=self.prev_obs.dtype,
                 mode=args.replay_mode,
-                filter_duplicates=args.replay_duplicate_removal,
                 thinning=args.replay_thinning,
             )
 
-        self.debug_replay_buffers = []
-        if args.debug_replay_shadow_buffers:
-            # create a selection of replay buffers...
-            for replay_size in [1, 2, 4, 8, 16]:
-                for hashing in [True, False]:
-                    for mode in ["sequential", "uniform", "overwrite"]:
-                        code = f"{replay_size}{mode[0]}{'h' if hashing else ''}"
-                        self.debug_replay_buffers.append(
-                            ExperienceReplayBuffer(
-                                name=code,
-                                max_size=replay_size * args.batch_size,
-                                obs_shape=self.prev_obs.shape[2:],
-                                obs_dtype=self.prev_obs.dtype,
-                                mode=mode,
-                                filter_duplicates=hashing,
-                            )
-                        )
 
         #  these horizons will always be generated and their scores logged.
         self.tvf_debug_horizons = [0] + self.get_standard_horizon_sample(args.tvf_max_horizon)
@@ -719,8 +705,6 @@ class Runner:
 
     def save_checkpoint(self, filename, step, disable_replay=False, disable_optimizer=False, disable_log=False, disable_env_state=False):
 
-        # todo: would be better to serialize the rollout automatically I think (maybe use opt_out for serialization?)
-
         data = {
             'step': step,
             'ep_count': self.ep_count,
@@ -735,6 +719,13 @@ class Runner:
         if not disable_optimizer:
             data['policy_optimizer_state_dict'] = self.policy_optimizer.state_dict()
             data['value_optimizer_state_dict'] = self.value_optimizer.state_dict()
+            if args.use_rnd:
+                data['rnd_optimizer_state_dict'] = self.rnd_optimizer.state_dict()
+            if args.distil_epochs > 0:
+                data['distil_optimizer_state_dict'] = self.distil_optimizer.state_dict()
+            if args.aux_epochs > 0:
+                data['aux_optimizer_state_dict'] = self.aux_optimizer.state_dict()
+
         if not disable_log:
             data['logs'] = self.log
         if not disable_env_state:
@@ -748,14 +739,9 @@ class Runner:
 
         if self.replay_buffer is not None and not disable_replay:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
-            if len(self.debug_replay_buffers) > 0:
-                data["debug_replay_buffers"] = [replay.save_state(force_copy=False) for replay in self.debug_replay_buffers]
 
         if args.auto_strategy[:2] == "sa":
             data['horizon_sa'] = self.horizon_sa
-
-        if args.use_rnd:
-            data['rnd_optimizer_state_dict'] = self.rnd_optimizer.state_dict()
 
         if args.use_intrinsic_rewards:
             data['ems_norm'] = self.ems_norm
@@ -804,8 +790,12 @@ class Runner:
 
         self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
         self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
-        if "rnd_optimizer_state_dict" in checkpoint:
+        if args.use_rnd:
             self.rnd_optimizer.load_state_dict(checkpoint['rnd_optimizer_state_dict'])
+        if args.distil_epochs > 0:
+            self.distil_optimizer.load_state_dict(checkpoint['distil_optimizer_state_dict'])
+        if args.aux_epochs > 0:
+            self.aux_optimizer.load_state_dict(checkpoint['aux_optimizer_state_dict'])
 
         if args.auto_strategy[:2] == "sa":
             self.horizon_sa = checkpoint['horizon_sa']
@@ -825,9 +815,6 @@ class Runner:
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
-
-        for replay, data in zip(self.debug_replay_buffers, checkpoint.get("debug_replay_buffers", [])):
-            replay.load_state(data)
 
         if args.use_intrinsic_rewards:
             self.ems_norm = checkpoint['ems_norm']
@@ -1313,14 +1300,13 @@ class Runner:
         if self.replay_buffer is not None:
             self.replay_buffer.add_experience(
                 utils.merge_down(self.prev_obs),
-                utils.merge_down(self.prev_time),
-                steps,
-            )
-        for replay in self.debug_replay_buffers:
-            replay.add_experience(
-                utils.merge_down(self.prev_obs),
-                utils.merge_down(self.prev_time),
-                steps,
+                self.replay_buffer.create_aux_buffer(
+                    len(steps),
+                    time=utils.merge_down(self.prev_time),
+                    reward=utils.merge_down(self.ext_rewards),
+                    action=utils.merge_down(self.actions),
+                    step=steps,
+                )
             )
 
         # log the expected return, and expected squared return for each horizon
@@ -1421,8 +1407,6 @@ class Runner:
         )
 
         return self.abs_stats[f'{label}_ratio']
-
-
 
     @torch.no_grad()
     def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
@@ -2009,8 +1993,6 @@ class Runner:
             # so under normal conditions we do it every other update.
             if args.replay_size > 0:
                 self.replay_buffer.log_stats(self.log)
-            for replay in self.debug_replay_buffers:
-                replay.log_stats(self.log)
 
         self.log.watch("gamma", self.gamma, display_width=0)
 
@@ -2079,13 +2061,17 @@ class Runner:
         """
         Calculate loss between predicted value and actual value
 
-        targets: tensor of dims [N, A, H]
-        predictions: tensor of dims [N, A, H]
-        horizons: tensor of dims [N, A, H] of type int (optional)
+        targets: tensor of dims [N, A, H] or [N, A] or [N]
+        predictions: tensor of dims matching target
+        horizons: tensor of dims matching targets of type int (optional)
 
         returns: loss as a tensor of dims [N, A]
 
         """
+
+        assert predictions.shape == targets.shape
+        if horizons is not None:
+            assert horizons.shape == targets.shape
 
         if args.tvf_loss_fn == "MSE":
             # MSE loss, sum across samples
@@ -2102,7 +2088,6 @@ class Runner:
                 )
             return loss
         elif args.tvf_loss_fn == "h_weighted":
-
             if horizons is None:
                 # assume h = args.tvf_max_horizon for all elements.
                 return torch.square(targets - predictions) / args.tvf_max_horizon
@@ -2197,6 +2182,34 @@ class Runner:
         self.log.watch_mean("loss_distil_kl", loss_kl, history_length=64 * args.distil_epochs, display_width=0)
         self.log.watch_mean("loss_distil_value", loss_value, history_length=64 * args.distil_epochs, display_width=0)
         self.log.watch_mean("loss_distil", loss, history_length=64*args.distil_epochs, display_name="ls_distil", display_width=8)
+
+    def train_aux_minibatch(self, data, loss_scale=1.0):
+
+        targets = data["aux_reward"]
+        model_out = self.model.forward(data["prev_state"], output="full")
+
+        value_predictions = model_out["value_aux"]
+        policy_predictions = model_out["policy_aux"]
+
+        value_loss = self.calculate_value_loss(targets, value_predictions).mean()
+        policy_loss = self.calculate_value_loss(targets, policy_predictions).mean()
+
+        value_constraint = 1.0 * torch.square(model_out["value_ext_value"] - data['old_value']).mean() # todo find good constant
+        policy_constraint = 1.0 * (F.kl_div(data['old_log_policy'], model_out["policy_log_policy"], log_target=True, reduction="batchmean")) # todo find good constant
+
+        loss = value_loss + policy_loss + value_constraint + policy_constraint
+
+        # -------------------------------------------------------------------------
+        # Generate Gradient
+        # -------------------------------------------------------------------------
+
+        opt_loss = loss * loss_scale
+        opt_loss.backward()
+
+        self.log.watch_mean("loss_aux_value", value_loss , history_length=64 * args.aux_epochs, display_width=8)
+        self.log.watch_mean("loss_aux_policy", policy_loss, history_length=64 * args.distil_epochs, display_width=8)
+        self.log.watch_mean("loss_aux_value_constraint", value_constraint, history_length=64 * args.aux_epochs, display_width=8)
+        self.log.watch_mean("loss_aux_policy_constraint", policy_constraint, history_length=64 * args.distil_epochs, display_width=8)
 
     @property
     def value_heads(self):
@@ -2865,7 +2878,7 @@ class Runner:
                 samples = np.random.choice(samples, B, replace=len(samples) < B)
 
             prev_states = self.replay_buffer.data[samples]
-            times = self.replay_buffer.time[samples]
+            times = self.replay_buffer.aux[samples, ExperienceReplayBuffer.AUX_TIME]
             batch_data["replay_prev_state"] = prev_states
             batch_data["replay_time"] = times
             old_replay_values = get_value_estimate(prev_states, times)
@@ -2903,6 +2916,48 @@ class Runner:
                        display_width=8, display_name='t_value', display_precision=1)
         self.log.watch(f"value_mbs", self.value_mini_batch_size, display_width=0)
 
+    def generate_aux_buffer(self):
+        return ExperienceReplayBuffer.create_aux_buffer(
+            N=len(self.prev_time),
+            time=utils.merge_down(self.prev_time),
+            reward=utils.merge_down(self.ext_rewards),
+            action=utils.merge_down(self.actions),
+        )
+
+    def get_replay_sample(self, samples_wanted:int):
+        """
+        Samples from our replay buffer. If no buffer is present samples from rollout. Also supports mixing...
+        """
+        # work out what to use to train distil on
+        if self.replay_buffer is not None and len(self.replay_buffer.data) > 0:
+            # buffer is 1D, need to reshape to 2D
+            _, *state_shape = self.replay_buffer.data.shape
+
+            if args.replay_mixing:
+                # use mixture of replay buffer and current batch of data
+                obs = np.concatenate([
+                    self.replay_buffer.data,
+                    utils.merge_down(self.prev_obs),
+                ], axis=0)
+                aux = np.concatenate([
+                    self.replay_buffer.aux,
+                    self.generate_aux_buffer(),
+                ], axis=0)
+            else:
+                obs = self.replay_buffer.data
+                aux = self.replay_buffer.aux
+        else:
+            obs = utils.merge_down(self.prev_obs)
+            aux = utils.merge_down(self.generate_aux_buffer())
+
+        # filter down to n samples (if needed)
+        if samples_wanted < len(obs):
+            sample = np.random.choice(len(obs), samples_wanted, replace=False)
+            obs = obs[sample]
+            aux = aux[sample]
+
+        return obs, aux
+
     def get_distil_batch(self, samples_wanted:int):
         """
         Creates a batch of data to train on during distil phase.
@@ -2915,33 +2970,8 @@ class Runner:
 
         """
 
-        # work out what to use to train distil on
-        if self.replay_buffer is not None and len(self.replay_buffer.data) > 0:
-            # buffer is 1D, need to reshape to 2D
-            _, *state_shape = self.replay_buffer.data.shape
-
-            if args.replay_mixing:
-                # use mixture of replay buffer and current batch of data
-                distil_obs = np.concatenate([
-                    self.replay_buffer.data,
-                    utils.merge_down(self.prev_obs),
-                ], axis=0)
-                distil_time = np.concatenate([
-                    self.replay_buffer.time,
-                    utils.merge_down(self.prev_time),
-                ], axis=0)
-            else:
-                distil_obs = self.replay_buffer.data
-                distil_time = self.replay_buffer.time
-        else:
-            distil_obs = utils.merge_down(self.prev_obs)
-            distil_time = utils.merge_down(self.prev_time)
-
-        # filter down to n samples (if needed)
-        if samples_wanted < len(distil_obs):
-            sample = np.random.choice(len(distil_obs), samples_wanted, replace=False)
-            distil_obs = distil_obs[sample]
-            distil_time = distil_time[sample]
+        distil_obs, distil_aux = self.get_replay_sample(samples_wanted)
+        distil_time = distil_aux[:, ExperienceReplayBuffer.AUX_TIME]
 
         batch_data = {}
         B, *state_shape = distil_obs.shape
@@ -3083,6 +3113,48 @@ class Runner:
                        display_width=8, display_name='t_distil', display_precision=1)
         self.log.watch(f"distil_mbs", self.distil_mini_batch_size, display_width=0)
 
+    def train_aux(self):
+
+        # ----------------------------------------------------
+        # aux phase
+        # borrows a lot of hyperparmeters from distil
+
+        start_time = clock.time()
+
+        if args.aux_epochs == 0:
+            return
+
+        # we could train on terminals, or reward.
+        # time would be policy dependant, and is aliased.
+
+        replay_obs, replay_aux = self.get_replay_sample(args.distil_batch_size)
+        batch_data = {}
+        batch_data['prev_state'] = replay_obs
+        batch_data['aux_reward'] = replay_aux[:, ExperienceReplayBuffer.AUX_REWARD].astype(np.float32)
+        batch_data['aux_action'] = replay_aux[:, ExperienceReplayBuffer.AUX_ACTION].astype(np.float32)
+
+        # calculate value required for constraints
+        model_out = self.detached_batch_forward(
+            replay_obs,
+            output='full',
+        )
+
+        batch_data['old_value'] = model_out['value_ext_value'].cpu().numpy()
+        batch_data['old_log_policy'] = model_out['policy_log_policy'].cpu().numpy()
+
+        for aux_epoch in range(args.aux_epochs):
+
+            self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_aux_minibatch,
+                mini_batch_size=self.distil_mini_batch_size,
+                optimizer=self.aux_optimizer,
+                label="aux",
+            )
+
+        self.log.watch(f"time_train_aux", (clock.time() - start_time) * 1000,
+                       display_width=8, display_name='t_distil', display_precision=1)
+
     def train(self):
 
         self.update_learning_rates()
@@ -3101,6 +3173,9 @@ class Runner:
             if args.distil_epochs > 0 and self.batch_counter % args.distil_period == 0 and \
                     self.step > args.distil_delay:
                 self.train_distil()
+
+        if args.aux_epochs > 0:
+            self.train_aux()
 
         if args.use_rnd:
             self.train_rnd()
@@ -3159,7 +3234,12 @@ class Runner:
                 sample.sort()
                 micro_batch_counter += 1
 
+                # context for the minibatch.
                 micro_batch_data = {}
+                micro_batch_data['context'] = {
+                    'epoch': j
+                }
+
                 for var_name, var_value in batch_data.items():
                     data = var_value[sample]
                     if data.dtype == np.object:

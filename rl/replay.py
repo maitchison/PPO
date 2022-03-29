@@ -31,11 +31,17 @@ class ExperienceReplayBuffer:
             process_replay_experience(buffer.data)
     """
 
+    N_AUX = 16
+    AUX_HASH = 0
+    AUX_TIME = 1
+    AUX_REWARD = 2
+    AUX_ACTION = 3
+    AUX_STEP = 4
+
     def __init__(self,
                  max_size:int,
                  obs_shape: tuple,
                  obs_dtype,
-                 filter_duplicates: bool = False,
                  mode="uniform",
                  name="replay",
                  thinning:float=1.0,
@@ -43,21 +49,13 @@ class ExperienceReplayBuffer:
         """
         @param max_size Size of replay
         @param state_shape Shape of states
-        @param filter_duplicates Hashes input and filters out any entries that already exist in the replay buffer.
         """
         self.max_size = max_size # N is the maximum size of the buffer.
         self.experience_seen = 0
         self.ring_buffer_location = 0
         self.data = np.zeros([0, *obs_shape], dtype=obs_dtype)
-        self.time = np.zeros([0], dtype=np.float32) # this is annoying, maybe there's a better way?
-        self.step = np.zeros([0], dtype=np.uint64)
-        self.hashes = np.zeros([0], dtype=np.uint64)
-        self.filter_duplicates = filter_duplicates
+        self.aux = np.zeros([0, self.N_AUX], dtype=np.float64)
         self.mode = mode
-        self.stats_total_duplicates_removed: int = 0
-        # how many (submitted) entries where removed as duplicates last update.
-        self.stats_last_duplicates_removed: int = 0
-        # how many entries where added to replay buffer last update.
         self.stats_last_entries_added: int = 0
         self.stats_last_entries_submitted: int = 0
         self.name = name
@@ -69,10 +67,7 @@ class ExperienceReplayBuffer:
             'experience_seen': self.experience_seen,
             'ring_buffer_location': self.ring_buffer_location,
             'data': self.data.copy() if force_copy else self.data,
-            'time': self.time.copy() if force_copy else self.time,
-            'step': self.step.copy() if force_copy else self.step,
-            'hashes': self.hashes.copy() if force_copy else self.hashes,
-            'stats_total_duplicates_removed': self.stats_total_duplicates_removed,
+            'aux': self.aux.copy() if force_copy else self.aux,
             'name': self.name,
             'thinning': self.thinning
         }
@@ -82,10 +77,7 @@ class ExperienceReplayBuffer:
         self.experience_seen = state_dict["experience_seen"]
         self.ring_buffer_location = state_dict['ring_buffer_location']
         self.data = state_dict["data"].copy()
-        self.time = state_dict["time"].copy()
-        self.step = state_dict["step"].copy()
-        self.hashes = state_dict["hashes"].copy()
-        self.stats_total_duplicates_removed = self.stats_total_duplicates_removed
+        self.aux = state_dict["aux"].copy()
         self.thinning = state_dict["thinning"]
 
     @torch.no_grad()
@@ -139,14 +131,7 @@ class ExperienceReplayBuffer:
         log.watch_mean(f"{self.name}_density", diversity_results["k1"], display_width=0)
         for k, v in diversity_results.items():
             log.watch_mean(f"{self.name}_diversity_{k}", v, display_width=0)
-        if self.data.dtype == np.object:
-            # duplicate counting is far too slow unless compression is enabled.
-            log.watch_mean(f"{self.name}_duplicates", self.count_duplicates(), display_width=0)
-            log.watch_mean(f"{self.name}_current_duplicates_frac", self.count_duplicates() / len(self.data), display_width=0)
-        log.watch_mean(f"{self.name}_total_duplicates_removed", self.stats_total_duplicates_removed, display_width=0)
-        log.watch_mean(f"{self.name}_last_duplicates_removed", self.stats_last_duplicates_removed, display_width=0)
         log.watch_mean(f"{self.name}_last_entries_added", self.stats_last_entries_added, display_width=0, history_length=1)
-        log.watch_mean(f"{self.name}_last_duplicates_removed_frac", self.stats_last_duplicate_frac, display_width=0)
         log.watch_mean(f"{self.name}_size", len(self.data), display_width=0)
 
         # measure how uniform replay is
@@ -157,26 +142,17 @@ class ExperienceReplayBuffer:
         replay_log_time = time.time() - start_time
         log.watch_mean(f"{self.name}_log_time", replay_log_time, display_width=0)
 
-    def count_duplicates(self):
-        """
-        Counts the number of duplicates in the replay buffer (a bit slow, especially if compression is not used).
-        """
-        hashes = np.asarray(
-            [ExperienceReplayBuffer.get_observation_hash(x) for x in self.data],
-            dtype=np.uint64
-        )
-        return len(hashes) - len(set(hashes))
-
     @property
     def current_size(self):
         return len(self.data)
 
     @property
-    def stats_last_duplicate_frac(self):
-        if self.stats_last_entries_submitted > 0:
-            return self.stats_last_duplicates_removed / self.stats_last_entries_submitted
-        else:
-            return 0
+    def step(self):
+        return self.aux[:, self.AUX_STEP]
+
+    @property
+    def time(self):
+        return self.aux[:, self.AUX_TIME]
 
     @staticmethod
     def get_observation_hash(x: typing.Union[np.ndarray, BufferSlot]) -> np.uint64:
@@ -192,41 +168,30 @@ class ExperienceReplayBuffer:
         else:
             raise ValueError("Invalid type for hashing {type(x)}")
 
-    def _remove_duplicates(self, data, time, step, hashes):
-        """
-        Returns a new data, time with duplicates removed.
-        Duplicates are either duplicates within the data or duplicates that are already in the replay
-        """
+    @staticmethod
+    def create_aux_buffer(N:int, hash=None, time=None, reward=None, action=None, step=None):
 
-        old_hashes = set(self.hashes)
-        mask = []
-        seen_hashes = set()
-        for i in range(len(data)):
-            # remove duplicates that are in the buffer already, or which occur multiple times in new experience.
-            this_hash = hashes[i]
-            is_duplicate = False
-            if this_hash in old_hashes or this_hash in seen_hashes:
-                is_duplicate = True
-            seen_hashes.add(this_hash)
-            mask.append(not is_duplicate)
+        buffer = np.zeros([N, ExperienceReplayBuffer.N_AUX], dtype=np.float64)
 
-        data = data[mask]
-        time = time[mask]
-        step = step[mask]
-        hashes = hashes[mask]
+        if hash is not None:
+            buffer[:, ExperienceReplayBuffer.AUX_HASH] = hash
+        if time is not None:
+            buffer[:, ExperienceReplayBuffer.AUX_TIME] = time
+        if reward is not None:
+            buffer[:, ExperienceReplayBuffer.AUX_REWARD] = reward
+        if action is not None:
+            buffer[:, ExperienceReplayBuffer.AUX_ACTION] = action
+        if step is not None:
+            buffer[:, ExperienceReplayBuffer.AUX_STEP] = step
 
-        self.stats_last_duplicates_removed = len(mask) - sum(mask)
-        self.stats_total_duplicates_removed += self.stats_last_duplicates_removed
-        self.stats_last_entries_added = sum(mask)
+        return buffer
 
-        return data, time, step, hashes
-
-    def add_experience(self, new_experience: np.ndarray, new_time: np.ndarray, new_step: np.ndarray):
+    def add_experience(self, new_experience: np.ndarray, new_aux: np.ndarray):
         """
         Adds new experience to the experience replay
 
         @param new_experience: ndarray of dims [N, *state_shape]
-        @param new_time: times for states.
+        @param new_aux: auxillary information
         """
 
         assert new_experience.shape[1:] == self.data.shape[1:], \
@@ -236,22 +201,12 @@ class ExperienceReplayBuffer:
 
         self.stats_last_entries_submitted = len(new_experience)
 
-        if self.filter_duplicates:
-            new_hashes = np.asarray(
-                [ExperienceReplayBuffer.get_observation_hash(x) for x in new_experience],
-                dtype=np.uint64
-            )
-            new_experience, new_time, new_step, new_hashes = self._remove_duplicates(new_experience, new_time, new_step, new_hashes)
-        else:
-            new_hashes = None
-
         # implement experience thinning
         if self.thinning < 1:
             N = len(new_experience)
             mask = np.random.choice(N, size=round(self.thinning*N))
             new_experience = new_experience[mask]
-            new_time = new_time[mask]
-            new_step = new_step[mask]
+            new_aux = new_aux[mask]
 
         # 2. work out how many new entries we want to use, and resample them
         new_entry_count = len(new_experience)
@@ -282,15 +237,10 @@ class ExperienceReplayBuffer:
         if len(self.data) != new_buffer_size:
             old_n, *obs_shape = self.data.shape
             self.data.resize([new_buffer_size, *obs_shape], refcheck=False)
-            self.time.resize([new_buffer_size], refcheck=False)
-            self.step.resize([new_buffer_size], refcheck=False)
-            self.hashes.resize([new_buffer_size], refcheck=False)
+            self.aux.resize([new_buffer_size, self.N_AUX], refcheck=False)
             new_slots = new_buffer_size - old_n
             self.data[old_n:] = new_experience[ids[:new_slots]]
-            self.time[old_n:] = new_time[ids[:new_slots]]
-            self.step[old_n:] = new_step[ids[:new_slots]]
-            if new_hashes is not None:
-                self.hashes[old_n:] = new_hashes[ids[:new_slots]]
+            self.aux[old_n:] = new_aux[ids[:new_slots]]
             ids = ids[new_slots:]
             self.ring_buffer_location += new_slots
             self.stats_last_entries_added += new_slots
@@ -307,10 +257,7 @@ class ExperienceReplayBuffer:
             for source, destination in zip(ids, new_spots):
                 # add new entry
                 self.data[destination] = new_experience[source]
-                if new_hashes is not None:
-                    self.hashes[destination] = new_hashes[source]
-                self.time[destination] = new_time[source]
-                self.step[destination] = new_step[source]
+                self.aux[destination] = new_aux[source]
 
             self.ring_buffer_location += len(ids)
             self.stats_last_entries_added += len(ids)
