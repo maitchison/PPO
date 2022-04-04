@@ -521,6 +521,10 @@ class Runner:
             else:
                 self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
 
+        if args.upload_batch and not args.use_compression:
+            # in batch upload mode we can just keep all_obs on the GPU
+            self.all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8, device=self.model.device)
+
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         self.actions = np.zeros([N, A], dtype=np.int64)
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
@@ -865,7 +869,7 @@ class Runner:
 
         # state_shape will be empty_list if compression is enabled
         B, *state_shape = obs.shape
-        assert type(obs) == np.ndarray, f"Obs was of type {type(obs)}, expecting np.ndarray"
+        assert type(obs) in [np.ndarray, torch.Tensor], f"Obs was of type {type(obs)}, expecting np.ndarray"
         assert tuple(state_shape) in [tuple(), tuple(self.state_shape)]
 
         max_batch_size = args.max_micro_batch_size
@@ -1086,6 +1090,11 @@ class Runner:
 
         assert self.vec_env is not None, "Please call create_envs first."
 
+        def upload_if_needed(x):
+            if type(self.all_obs) is torch.Tensor:
+                x = torch.from_numpy(x).to(self.all_obs.device)
+            return x
+
         # times are...
         # Forward: 1.1ms
         # Step: 33ms
@@ -1165,7 +1174,7 @@ class Runner:
             if args.use_compression:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
 
-            self.all_obs[t] = prev_obs
+            self.all_obs[t] = upload_if_needed(prev_obs)
             self.done = dones
 
             self.all_time[t] = prev_time
@@ -1180,7 +1189,7 @@ class Runner:
             last_obs = np.asarray([compression.BufferSlot(self.obs[i]) for i in range(len(self.obs))])
         else:
             last_obs = self.obs
-        self.all_obs[-1] = last_obs
+        self.all_obs[-1] = upload_if_needed(last_obs)
         self.all_time[-1] = self.time
 
         # work out final value if needed
@@ -1292,7 +1301,6 @@ class Runner:
                 int_rewards = torch.square(errors).reshape([N+1, A])
                 self.int_rewards += int_rewards[:N].cpu().numpy()
 
-
         self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
         # add data to replay buffer if needed
@@ -1301,7 +1309,7 @@ class Runner:
             self.replay_buffer.add_experience(
                 utils.merge_down(self.prev_obs),
                 self.replay_buffer.create_aux_buffer(
-                    len(steps),
+                    (len(steps),),
                     time=utils.merge_down(self.prev_time),
                     reward=utils.merge_down(self.ext_rewards),
                     action=utils.merge_down(self.actions),
@@ -1345,7 +1353,7 @@ class Runner:
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
 
-        self.log.mute = True
+        self.log.mode = self.log.LM_MUTE
         result = {}
 
         def process_gradient(context):
@@ -1379,7 +1387,7 @@ class Runner:
 
         g2 = (b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small)
         s = (g_b_small_squared - g_b_big_squared) / (1/b_small - 1/b_big)
-        self.log.mute = False
+        self.log.mode = self.log.LM_DEFAULT
 
         self.abs_stats[f'{label}_s'] = 0.9 * self.abs_stats.get(f'{label}_s', s) + 0.1 * s
         self.abs_stats[f'{label}_g2'] = 0.9 * self.abs_stats.get(f'{label}_g2', g2) + 0.1 * g2
@@ -1409,7 +1417,7 @@ class Runner:
         return self.abs_stats[f'{label}_ratio']
 
     @torch.no_grad()
-    def get_value_estimates(self, obs: np.ndarray, time: Union[None, np.ndarray]=None,
+    def get_value_estimates(self, obs: Union[np.ndarray, torch.Tensor], time: Union[None, np.ndarray]=None,
                             horizons: Union[None, np.ndarray, int] = None,
                             include_model_out: bool = False,
                             head: str = "ext_value",
@@ -1789,6 +1797,37 @@ class Runner:
         """
         return self.all_time[-1]
 
+    def generate_sampled_return_targets(self, ext_value_estimates: np.ndarray):
+        """
+        Generates targets for value function, used only in PPO and DNA.
+        """
+        assert not args.use_tvf
+
+        N_plus_one, A = ext_value_estimates.shape
+        N = N_plus_one - 1
+
+        SAMPLES = 10
+
+        # really trying to make samples be different between runs here.
+        h = 1/(1-args.td_lambda)
+        lambdas = [1 - (1 / (factor * h)) for factor in np.geomspace(0.25, 4.0, SAMPLES)]
+
+        advantage_estimate = np.zeros([SAMPLES, N, A], dtype=np.float32)
+
+        for i, lamb in enumerate(lambdas):
+            advantage_estimate[i] = calculate_gae(
+                self.ext_rewards,
+                ext_value_estimates[:N],
+                ext_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                lamb,
+            )
+
+        sample = np.random.randint(size=[N, A], low=0, high=SAMPLES)
+        values = (advantage_estimate + ext_value_estimates[:N])
+        return np.take_along_axis(values, sample[None, :, :], axis=0)
+
     @torch.no_grad()
     def get_tvf_rediscounted_value_estimates(self, rollout, new_gamma:float):
         """
@@ -2105,44 +2144,53 @@ class Runner:
         else:
             raise ValueError(f"Invalid tvf_loss_fn {args.tvf_loss_fn}")
 
+    def get_distil_targets(self, model_out):
+        if args.distil_mode == "value":
+            return model_out['value_ext_value']
+        elif args.distil_mode == "projection":
+            return model_out['value_aux']
+        elif args.distil_mode == "features":
+            return model_out['value_raw_features']
+        else:
+            raise ValueError(f"Invalid distil mode {args.distil_mode}")
+
     def train_distil_minibatch(self, data, loss_scale=1.0):
 
         loss: torch.Tensor = torch.tensor(0, dtype=torch.float32, device=self.model.device)
 
-        if not args.use_tvf or args.tvf_force_ext_value_distil:
-            # method 1. just learn the final value
-            model_out = self.model.forward(data["prev_state"], output="policy")
-            targets = data["value_targets"]
-            predictions = model_out["ext_value"]
-            loss_value = 0.5 * self.calculate_value_loss(targets, predictions).mean()
-        else:
-            # method 2. try to learn the entire curve...
-            aux_features = package_aux_features(
-                data["tvf_horizons"],
-                data["tvf_time"]
-            )
-            model_out = self.model.forward(data["prev_state"], output="policy", aux_features=aux_features)
-            targets = data["value_targets"]
-            predictions = model_out["tvf_value"]
-            loss_value = 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
+        # method 1. just learn the final value
+        model_out = self.model.forward(data["prev_state"], output="policy")
+        targets = data["distil_targets"]
+        predictions = self.get_distil_targets(model_out)
+        loss_value = 0.5 * self.calculate_value_loss(targets, predictions).mean()
 
-        # do intrinsic reward distil (maybe needed if env has very few rewards)
-        if args.use_intrinsic_rewards and args.distil_ir:
-            targets = data["int_value_targets"]
-            predictions = model_out["int_value"]
-            loss_int = 0.5 * args.distil_ir * self.calculate_value_loss(targets, predictions).mean()
-        else:
-            loss_int = 0
+        # if not args.use_tvf or args.tvf_force_ext_value_distil:
+        #     # method 1. just learn the final value
+        #     model_out = self.model.forward(data["prev_state"], output="policy")
+        #     targets = data["distil_targets"]
+        #     predictions = self.get_distil_targets(model_out)
+        #     loss_value = 0.5 * self.calculate_value_loss(targets, predictions).mean()
+        # else:
+        #     # method 2. try to learn the entire curve...
+        #     aux_features = package_aux_features(
+        #         data["tvf_horizons"],
+        #         data["tvf_time"]
+        #     )
+        #     model_out = self.model.forward(data["prev_state"], output="policy", aux_features=aux_features)
+        #     targets = data["value_targets"]
+        #     predictions = model_out["tvf_value"]
+        #     loss_value = 0.5 * self.calculate_value_loss(targets, predictions, data["tvf_horizons"]).mean()
 
-        loss = loss + loss_value + loss_int
+        loss = loss + loss_value
 
-        old_policy_logprobs = data["old_log_policy"]
-        logps = model_out["log_policy"]
+        # MSE loss on the logits...
+        loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_raw_policy"], model_out["raw_policy"]).mean()
+        loss = loss + loss_policy
 
         # KL loss
-        kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
-        loss_kl = args.distil_beta * kl_true
-        loss = loss + loss_kl
+        # kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
+        # loss_kl = args.distil_beta * kl_true
+        # loss = loss + loss_kl
 
         pred_var = torch.var(predictions)
         targ_var = torch.var(targets)
@@ -2179,7 +2227,7 @@ class Runner:
         opt_loss = loss * loss_scale
         opt_loss.backward()
 
-        self.log.watch_mean("loss_distil_kl", loss_kl, history_length=64 * args.distil_epochs, display_width=0)
+        self.log.watch_mean("loss_distil_policy", loss_policy, history_length=64 * args.distil_epochs, display_width=0)
         self.log.watch_mean("loss_distil_value", loss_value, history_length=64 * args.distil_epochs, display_width=0)
         self.log.watch_mean("loss_distil", loss, history_length=64*args.distil_epochs, display_name="ls_distil", display_width=8)
 
@@ -2369,7 +2417,7 @@ class Runner:
 
         force_first_and_last: if true always includes first and last horizon
 
-        Note: could roll this into calculate_sampled_returns, and just have it return the horizons aswell?
+        Note: could roll this into calculate_sampled_returns, and just have it return the horizons as well?
 
         returns:
             returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
@@ -2713,6 +2761,16 @@ class Runner:
                 label="rnd",
             )
 
+    def upload_batch(self, batch_data):
+        """
+        Uploads entire batch to GPU.
+        """
+        for k, v in batch_data.items():
+            if type(v) is np.ndarray:
+                v = torch.from_numpy(v)
+            v.to(device=self.model.device, non_blocking=True)
+            batch_data[k] = v
+
     @property
     def wants_abs_update(self):
         """
@@ -2722,7 +2780,6 @@ class Runner:
         # also make sure to update frequently at the beginning as the EMA will be warming up.
         update_freq = 2  # needs to be fairly frequent otherwise s/g2 are too noisy, and ema lags too much.
         return args.abs_mode != "off" and (self.batch_counter % update_freq == 0 or self.batch_counter < 10)
-
 
     def train_policy(self):
 
@@ -2805,12 +2862,14 @@ class Runner:
                 model_out = self.detached_batch_forward(obs=batch_data["prev_state"], output="policy")
                 batch_data["old_value"] = model_out["ext_value"].detach().cpu().numpy()
 
-
         # abs
         if self.wants_abs_update:
             self.estimate_critical_batch_size(
                 batch_data, self.train_policy_minibatch, self.policy_optimizer, "policy"
             )
+
+        if args.upload_batch:
+            self.upload_batch(batch_data)
 
         policy_epochs = 0
         for _ in range(args.policy_epochs):
@@ -2878,7 +2937,7 @@ class Runner:
                 samples = np.random.choice(samples, B, replace=len(samples) < B)
 
             prev_states = self.replay_buffer.data[samples]
-            times = self.replay_buffer.aux[samples, ExperienceReplayBuffer.AUX_TIME]
+            times = self.replay_buffer.aux[samples, ExperienceReplayBuffer.AUX_TIME].astype(np.float32)
             batch_data["replay_prev_state"] = prev_states
             batch_data["replay_time"] = times
             old_replay_values = get_value_estimate(prev_states, times)
@@ -2903,13 +2962,33 @@ class Runner:
                 batch_data, self.train_value_minibatch, self.value_optimizer, "value"
             )
 
+        if args.upload_batch:
+            self.upload_batch(batch_data)
+
+        N, A = self.prev_time.shape
+        B = N * A
+
+        if args.value_resampling:
+            # generate the return estimates all at once, should be quick
+            ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
+        else:
+            ext_value_estimates = None
+
         for value_epoch in range(args.value_epochs):
+
+            if args.value_resampling:
+                assert not args.learn_second_moment, "second moment not supported with value resampling."
+                assert not args.use_tvf, "tvf not supported with value resampling."
+                # each time we call this we will get different estimates.
+                batch_data["ext_returns"] = self.generate_sampled_return_targets(ext_value_estimates).reshape(B)
+
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
                 mini_batch_size=self.value_mini_batch_size,
                 optimizer=self.value_optimizer,
                 label="value",
+                thinning=args.value_thinning,
             )
 
         self.log.watch(f"time_train_value", (clock.time() - start_time) * 1000,
@@ -2917,11 +2996,14 @@ class Runner:
         self.log.watch(f"value_mbs", self.value_mini_batch_size, display_width=0)
 
     def generate_aux_buffer(self):
+        """
+        Output will be [N, A, 16] of type float64
+        """
         return ExperienceReplayBuffer.create_aux_buffer(
-            N=len(self.prev_time),
-            time=utils.merge_down(self.prev_time),
-            reward=utils.merge_down(self.ext_rewards),
-            action=utils.merge_down(self.actions),
+            shape=self.prev_time.shape,
+            time=self.prev_time,
+            reward=self.ext_rewards,
+            action=self.actions,
         )
 
     def get_replay_sample(self, samples_wanted:int):
@@ -2941,7 +3023,7 @@ class Runner:
                 ], axis=0)
                 aux = np.concatenate([
                     self.replay_buffer.aux,
-                    self.generate_aux_buffer(),
+                    utils.merge_down(self.generate_aux_buffer()),
                 ], axis=0)
             else:
                 obs = self.replay_buffer.data
@@ -2970,44 +3052,68 @@ class Runner:
 
         """
 
-        distil_obs, distil_aux = self.get_replay_sample(samples_wanted)
-        distil_time = distil_aux[:, ExperienceReplayBuffer.AUX_TIME]
+        obs, distil_aux = self.get_replay_sample(samples_wanted)
+        time = distil_aux[:, ExperienceReplayBuffer.AUX_TIME].astype(np.float32)
 
         batch_data = {}
-        B, *state_shape = distil_obs.shape
+        B, *state_shape = obs.shape
 
-        batch_data["prev_state"] = distil_obs
+        batch_data["prev_state"] = obs
 
-        if args.use_tvf and not args.tvf_force_ext_value_distil:
-            horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
-                                                    args.tvf_horizon_distribution)
+        if args.use_tvf:
+            # this might not be needed anymore... ?
+            horizons = self.generate_horizon_sample(
+                self.current_horizon, args.tvf_horizon_samples,
+                args.tvf_horizon_distribution
+            )
             H = len(horizons)
-            output = self.get_value_estimates(
-                obs=distil_obs[np.newaxis], # change from [B,*obs_shape] to [1,B,*obs_shape]
-                time=distil_time[np.newaxis],
-                horizons=horizons,
-                include_model_out=args.use_intrinsic_rewards,
-            )
             batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
-            batch_data["tvf_time"] = distil_time.reshape([B])
+            batch_data["tvf_time"] = time.reshape([B])
+            aux_features = package_aux_features(horizons, time)
         else:
-            output = self.get_value_estimates(
-                obs=distil_obs[np.newaxis], time=distil_time[np.newaxis],
-                include_model_out=args.use_intrinsic_rewards,
-            )
+            aux_features = None
 
-        if args.use_intrinsic_rewards:
-            target_values, model_out = output
-            target_int_values = model_out["int_value"].cpu().numpy()
-            batch_data["int_value_targets"] = target_int_values.reshape([B])
-        else:
-            target_values = output
+        assert not args.use_tvf, "tvf not working with distil yet..."
 
-        batch_data["value_targets"] = utils.merge_down(target_values)
+        # if args.use_tvf and not args.tvf_force_ext_value_distil:
+        #     # maybe drop this and just use aux features?
+        #     horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
+        #                                             args.tvf_horizon_distribution)
+        #     H = len(horizons)
+        #     output = self.get_value_estimates(
+        #         obs=distil_obs[np.newaxis], # change from [B,*obs_shape] to [1,B,*obs_shape]
+        #         time=distil_time[np.newaxis],
+        #         horizons=horizons,
+        #         include_model_out=args.use_intrinsic_rewards,
+        #     )
+        #     batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
+        #     batch_data["tvf_time"] = distil_time.reshape([B])
+        # else:
+        #     output = self.get_value_estimates(
+        #         obs=distil_obs[np.newaxis], time=distil_time[np.newaxis],
+        #         include_model_out=args.use_intrinsic_rewards,
+        #     )
+        #
+
+        # if args.use_intrinsic_rewards:
+        #     target_values, model_out = output
+        #     target_int_values = model_out["int_value"].cpu().numpy()
+        #     batch_data["int_value_targets"] = target_int_values.reshape([B])
+        # else:
+        #     target_values = output
+
+        # forward through model to get targets from model
+        model_out = self.detached_batch_forward(
+            obs=obs,
+            aux_features=aux_features,
+            output="full",
+            include_features=args.distil_mode == "features"
+        )
+
+        batch_data["distil_targets"] = self.get_distil_targets(model_out)
 
         # get old policy
-        model_out = self.detached_batch_forward(obs=distil_obs, output="policy")
-        batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+        batch_data["old_raw_policy"] = model_out["policy_raw_policy"].detach().cpu().numpy()
 
         return batch_data
 
@@ -3054,26 +3160,10 @@ class Runner:
         # ----------------------------------------------------
         # distil phase
 
-        # slows things down a bit, but can be useful for debuging low variance value estimates.
-        DETAILED_DISIL_LOGGING = False
-
         start_time = clock.time()
 
         if args.distil_epochs == 0:
             return
-
-        # setup a training hook for debugging
-        kl_losses = []
-        value_losses = []
-        pred_var = []
-        targ_var = []
-
-        def log_specific_losses(context):
-            kl_losses.append(self.log._vars["loss_distil_kl"]._history[-1])
-            value_losses.append(self.log._vars["loss_distil_value"]._history[-1])
-            pred_var.append(self.log._vars["distil_pred_var"]._history[-1])
-            targ_var.append(self.log._vars["distil_targ_var"]._history[-1])
-            return False
 
         batch_data = self.get_distil_batch(args.distil_batch_size)
         if args.distil_min_var > 0 and np.var(batch_data["value_targets"]) < args.distil_min_var:
@@ -3085,29 +3175,18 @@ class Runner:
                 batch_data, self.train_distil_minibatch, self.distil_optimizer, "distil"
             )
 
-        for distil_epoch in range(args.distil_epochs):
+        if args.upload_batch:
+            self.upload_batch(batch_data)
 
-            kl_losses.clear()
-            value_losses.clear()
-            pred_var.clear()
-            targ_var.clear()
+        for distil_epoch in range(args.distil_epochs):
 
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
                 mini_batch_size=self.distil_mini_batch_size,
                 optimizer=self.distil_optimizer,
-                hooks={
-                     'after_mini_batch': log_specific_losses
-                } if DETAILED_DISIL_LOGGING else None,
                 label="distil",
             )
-
-            if DETAILED_DISIL_LOGGING:
-                print(f"Epoch {distil_epoch} (kl/value) (targ/pred var)")
-                for kl, value, targ, pred in zip(kl_losses, value_losses, targ_var, pred_var):
-                    print(f" -> {kl:<10.6f} {value:<10.6f} {targ:<10.6f} {pred:<10.6f}")
-                print()
 
         self.log.watch(f"time_train_distil", (clock.time() - start_time) * 1000,
                        display_width=8, display_name='t_distil', display_precision=1)
@@ -3117,7 +3196,7 @@ class Runner:
 
         # ----------------------------------------------------
         # aux phase
-        # borrows a lot of hyperparmeters from distil
+        # borrows a lot of hyperparameters from distil
 
         start_time = clock.time()
 
@@ -3142,6 +3221,9 @@ class Runner:
         batch_data['old_value'] = model_out['value_ext_value'].cpu().numpy()
         batch_data['old_log_policy'] = model_out['policy_log_policy'].cpu().numpy()
 
+        if args.upload_batch:
+            self.upload_batch(batch_data)
+
         for aux_epoch in range(args.aux_epochs):
 
             self.train_batch(
@@ -3153,9 +3235,12 @@ class Runner:
             )
 
         self.log.watch(f"time_train_aux", (clock.time() - start_time) * 1000,
-                       display_width=8, display_name='t_distil', display_precision=1)
+                       display_width=8, display_name='t_aux', display_precision=1)
 
     def train(self):
+
+        if args.disable_logging:
+            self.log.mode = self.log.LM_MUTE
 
         self.update_learning_rates()
 
@@ -3189,10 +3274,14 @@ class Runner:
             mini_batch_size,
             optimizer: torch.optim.Optimizer,
             label,
-            hooks: Union[dict, None] = None
+            hooks: Union[dict, None] = None,
+            thinning:float = 1.0,
         ) -> dict:
         """
         Trains agent on current batch of experience
+
+        Thinning: uses this proportion of the batch_data.
+
         Returns context with
             'mini_batches' number of mini_batches completed
             'outputs' output from each mini_batch update
@@ -3206,9 +3295,12 @@ class Runner:
 
         for k, v in batch_data.items():
             assert len(v) == batch_size, f"Batch input must all match in entry count. Expecting {batch_size} but found {len(v)} on {k}"
-            assert type(v) is np.ndarray, f"Batch input must be numpy array but {k} was {type(v)}"
-            assert v.dtype in [np.uint8, np.int64, np.float32, np.object], \
-                f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
+            if type(v) is np.ndarray:
+                assert v.dtype in [np.uint8, np.int64, np.float32, np.object], \
+                    f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
+            elif type(v) is torch.Tensor:
+                assert v.dtype in [torch.uint8, torch.int64, torch.float32], \
+                    f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
 
         mini_batches = batch_size // mini_batch_size
         micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
@@ -3242,10 +3334,22 @@ class Runner:
 
                 for var_name, var_value in batch_data.items():
                     data = var_value[sample]
+
+                    if thinning < 1.0:
+                        samples_to_use = int(micro_batch_size * thinning)
+                        data = data[:samples_to_use]
+
                     if data.dtype == np.object:
                         # handle decompression
                         data = np.asarray([data[i].decompress() for i in range(len(data))])
-                    micro_batch_data[var_name] = torch.from_numpy(data).to(self.model.device, non_blocking=True)
+
+                    if type(data) is np.ndarray:
+                         data = torch.from_numpy(data)
+
+                    # upload to gpu
+                    data = data.to(self.model.device, non_blocking=True)
+
+                    micro_batch_data[var_name] = data
 
                 outputs.append(mini_batch_func(micro_batch_data, loss_scale=1 / micro_batches))
 

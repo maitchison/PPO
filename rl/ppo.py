@@ -96,6 +96,9 @@ def train(model: models.TVFModel, log: Logger):
         start_iteration = (restored_step // batch_size) + 1
         walltime = log["walltime"]
         did_restore = True
+        # fixup log path (incase the folder was renamed changed between saves)
+        log.csv_path = os.path.join(args.log_folder, "training_log.csv")
+        log.txt_path = os.path.join(args.log_folder, "log.txt")
     else:
         if args.restore:
             raise Exception(f"Error: no restore point at {args.log_folder} found.")

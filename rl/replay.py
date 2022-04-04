@@ -54,7 +54,7 @@ class ExperienceReplayBuffer:
         self.experience_seen = 0
         self.ring_buffer_location = 0
         self.data = np.zeros([0, *obs_shape], dtype=obs_dtype)
-        self.aux = np.zeros([0, self.N_AUX], dtype=np.float64)
+        self.aux = np.zeros([0, self.N_AUX], dtype=np.float32)
         self.mode = mode
         self.stats_last_entries_added: int = 0
         self.stats_last_entries_submitted: int = 0
@@ -169,20 +169,20 @@ class ExperienceReplayBuffer:
             raise ValueError("Invalid type for hashing {type(x)}")
 
     @staticmethod
-    def create_aux_buffer(N:int, hash=None, time=None, reward=None, action=None, step=None):
+    def create_aux_buffer(shape:tuple, hash=None, time=None, reward=None, action=None, step=None):
 
-        buffer = np.zeros([N, ExperienceReplayBuffer.N_AUX], dtype=np.float64)
+        buffer = np.zeros([*shape, ExperienceReplayBuffer.N_AUX], dtype=np.float64)
 
         if hash is not None:
-            buffer[:, ExperienceReplayBuffer.AUX_HASH] = hash
+            buffer[..., ExperienceReplayBuffer.AUX_HASH] = hash
         if time is not None:
-            buffer[:, ExperienceReplayBuffer.AUX_TIME] = time
+            buffer[..., ExperienceReplayBuffer.AUX_TIME] = time
         if reward is not None:
-            buffer[:, ExperienceReplayBuffer.AUX_REWARD] = reward
+            buffer[..., ExperienceReplayBuffer.AUX_REWARD] = reward
         if action is not None:
-            buffer[:, ExperienceReplayBuffer.AUX_ACTION] = action
+            buffer[..., ExperienceReplayBuffer.AUX_ACTION] = action
         if step is not None:
-            buffer[:, ExperienceReplayBuffer.AUX_STEP] = step
+            buffer[..., ExperienceReplayBuffer.AUX_STEP] = step
 
         return buffer
 

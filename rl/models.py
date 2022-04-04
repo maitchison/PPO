@@ -45,7 +45,7 @@ class ImpalaCNN_Net(Base_Net):
 
     name = "ImpalaCNN"  # put it here to preserve pickle compat
 
-    def __init__(self, input_dims:tuple, hidden_units:int = 256, channels=(16, 32, 32), n_block:int = 2):
+    def __init__(self, input_dims:tuple, hidden_units:int = 256, channels=(16, 32, 32), n_block:int = 2, **ignore_args):
 
         super().__init__(input_dims, hidden_units)
 
@@ -202,6 +202,50 @@ class NatureFatCNN_Net(Base_Net):
         return x
 
 
+class RTG_Net(Base_Net):
+    """ Takes stacked frames as input, and outputs features.
+        Based on model from rescue the general
+    """
+
+    def __init__(self, input_dims, hidden_units=512, **ignore_args):
+
+        super().__init__(input_dims, hidden_units)
+
+        input_channels = input_dims[0]
+
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=4, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+
+        fake_input = torch.zeros((1, *input_dims))
+        _, c, w, h = self.forward(fake_input, ignore_head=True).shape
+        self.out_shape = (c, w, h)
+
+        self.d = utils.prod(self.out_shape)
+        self.hidden_units = hidden_units
+        if self.hidden_units > 0:
+            self.fc = nn.Linear(self.d, hidden_units)
+
+    # this causes everything to be on cuda:1... hmm... even when it's disabled...
+    #@torch.autocast(device_type='cuda', enabled=AMP)
+    def forward(self, x, ignore_head=False):
+        """ forwards input through model, returns features (without relu) """
+
+        N = x.shape[0]
+
+        x = F.relu(torch.max_pool2d(self.conv1(x), 2, 2))
+        x = F.relu(torch.max_pool2d(self.conv2(x), 2, 2))
+        x = F.relu(torch.max_pool2d(self.conv3(x), 2, 2))
+
+        if ignore_head:
+            return x
+
+        x = torch.reshape(x, [N, -1])
+        if self.hidden_units > 0:
+            x = self.fc(x)
+        return x
+
+
 class RNDTarget_Net(Base_Net):
     """ Used to predict output of random network.
         see https://github.com/openai/random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
@@ -330,7 +374,7 @@ class DualHeadNet(nn.Module):
         self.tvf_value_scale_norm = tvf_value_scale_norm
 
         # aux head
-        self.aux_head = nn.Linear(self.encoder.hidden_units, 1)
+        self.aux_head = nn.Linear(self.encoder.hidden_units, 16) # projection to 16 auxilary outputs, defaults to random.
 
         if self.use_policy_head:
             assert actions is not None
@@ -432,7 +476,7 @@ class DualHeadNet(nn.Module):
         else:
             features = F.relu(features)
 
-        result['aux'] = self.aux_head(features)[..., 0]
+        result['aux'] = self.aux_head(features)
 
         if self.use_policy_head and not exclude_policy:
             unscaled_policy = self.policy_head(features)
@@ -730,6 +774,7 @@ class TVFModel(nn.Module):
 
         result = {}
         x = self.prep_for_model(x)
+
         if self.observation_normalization:
             x = self.perform_normalization(x, update_normalization=update_normalization)
 
@@ -812,8 +857,10 @@ def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
         return NatureFatCNN_Net(input_dims, **kwargs)
     if head_name == "impala":
         return ImpalaCNN_Net(input_dims, **kwargs)
-    else:
-        raise Exception("No model head named {}".format(head_name))
+    if head_name == "rtg":
+        return RTG_Net(input_dims, **kwargs)
+
+    raise Exception("No model head named {}".format(head_name))
 
 
 def validate_dims(x, dims, dtype=None):

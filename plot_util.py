@@ -1,3 +1,4 @@
+import bisect
 import types
 
 import numpy as np
@@ -860,9 +861,9 @@ class AtariScoreNormalizer:
         return inv_transform(total)
 
 
-def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'Atari_3', subset_weights=None, c=None):
+def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'Atari_3', subset_weights=None, c=None, seed=None):
     """
-    Load multiple games and average their scores
+    Load multiple games and averages their scores
     """
 
     if type(subset) is str:
@@ -877,6 +878,9 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     epoch_scores = defaultdict(lambda: {x: [] for x in game_list})
 
     folders = [x for x in os.listdir(path) if key in x and os.path.isdir(os.path.join(path, x))]
+
+    if seed is not None:
+        folders = [x for x in folders if f"({seed})" in x]
 
     game_log = None
 
@@ -969,9 +973,10 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     return result
 
 def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atari_3_Val"):
+
     if not hold:
         plt.figure(figsize=(12, 4))
-    cmap = plt.cm.get_cmap('tab10')
+
     for key in keys:
         result = read_combined_log(path, key, subset=subset)
         if result is None:
@@ -979,6 +984,7 @@ def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atar
             continue
         xs = result["env_step"]
         ys = result["score"]
+
         plt.grid(True, alpha=0.2)
         ax=plt.gca()
         ax.spines['right'].set_visible(False)
@@ -988,11 +994,30 @@ def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atar
         else:
             _label = label
         plt.plot(xs, ys, label=_label, color=color)
-    plt.xlim(0,50e6)
-    plt.ylim(0,300)
+    plt.xlim(0, 50e6)
+    plt.ylim(0, 300)
     if not hold:
         plt.legend()
         plt.show()
+
+def plot_seeded_validation(path, key, seeds=3, color=None, label=None, subset="Atari_3_Val"):
+
+    xs = range(50) # epochs
+    y_list = [[] for _ in xs]
+
+    for seed in range(1,seeds+1):
+        result = read_combined_log(path, key, subset=subset, seed=seed)
+        xs = np.asarray(result["env_step"])/1e-6
+
+        for i, x in enumerate(xs):
+            marker = bisect.bisect_left(xs, x)
+            y_list[i].append(result["score"][marker-5:marker])
+
+    y_mean = np.asarray([np.mean(y) if y != [] else None for y in y_list])
+    y_err = np.asarray([np.std(y)/len(y) if y != [] else 0 for y in y_list])
+    plt.plot(xs, y_mean, label=label, color=color, alpha=1.0)
+    plt.fill_between(xs, y_mean-y_err, y_mean+y_err, label=label, color=color, alpha=0.25)
+
 
 def plot_mode(path):
     ref_result = None

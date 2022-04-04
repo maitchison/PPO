@@ -134,6 +134,10 @@ class Logger():
     ERROR = 40
     DISABLED = 50
 
+    LM_DEFAULT = 'default'
+    LM_MUTE = 'mute'
+
+
     def __init__(self):
 
         self.output_log = []
@@ -145,7 +149,7 @@ class Logger():
         self._vars = {}
         self._history = []
 
-        self.mute = False
+        self.mode = self.LM_DEFAULT
 
     def get_level(self, level):
         if level == self.DEBUG:
@@ -166,7 +170,7 @@ class Logger():
 
     def watch(self, key, value, **kwargs):
         """ Logs a value, creates log variable if needed. """
-        if self.mute:
+        if self.mode == self.LM_MUTE:
             return
         if type(value) in [float, np.float] and np.isnan(value):
             # ignore nans
@@ -200,6 +204,9 @@ class Logger():
 
     def watch_stats(self, key, value, history_length=100, **kwargs):
         """ Logs a value, creates full variable if needed. """
+
+        if self.mode == self.LM_MUTE:
+            return
 
         if type(value) is torch.Tensor:
             value = value.detach().cpu().numpy()

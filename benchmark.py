@@ -26,7 +26,8 @@ DEVICE = socket.gethostname()
 BENCHMARK_FOLDER = f"__benchmark_{DEVICE}"
 REGRESSION_FOLDER = f"__regression_{DEVICE}"
 NUMA_GROUPS = utils.detect_numa_groups()
-BENCHMARK_EPOCHS = 4 * ROLLOUT_SIZE / 1e6 # (4 would probably also be ok...)
+BENCHMARK_EPOCHS = 4 * ROLLOUT_SIZE / 1e6 # (4 should probably be enough)
+BENCHMARK_ENV = 'Zaxxon' # a bit of a better test for compression.
 
 regression_args = {
     'checkpoint_every': 0,
@@ -41,7 +42,7 @@ regression_args = {
     'benchmark_mode': True,
 
     # env parameters
-    'time_aware': True,
+    'embed_time': True,
     'terminal_on_loss_of_life': False,
     'reward_clipping': "off",
     'value_transform': 'identity',
@@ -83,9 +84,7 @@ regression_args = {
     'tvf_hidden_units': 256,
     'tvf_value_samples': 128,
     'tvf_horizon_samples': 32,
-    'tvf_mode': 'exponential',
-    'tvf_n_step': 80,  # makes no difference...
-    'tvf_exp_gamma': 2.0,  # 2.0 would be faster, but 1.5 tested slightly better.
+    'tvf_return_mode': 'exponential',
     'tvf_coef': 0.5,
     'tvf_soft_anchor': 0,
     'tvf_exp_mode': "transformed",
@@ -123,7 +122,7 @@ def execute_job(folder:str, run_name: str, numa_id: int = None, **params):
     else:
         preamble = ""
 
-    p = job.run(run_async=True, force_no_restore=True, preamble=preamble)
+    p = job.run(run_async=True, force_no_restore=True, preamble=preamble, verbose=args.verbose)
     return p
 
 def print_outputs(outs, errs):
@@ -136,7 +135,7 @@ def print_outputs(outs, errs):
         print(Color.FAIL + line + Color.ENDC)
 
 
-def generate_benchmark_result(parallel_jobs=0, show_compression_stats=False, **params):
+def generate_benchmark_result(parallel_jobs=0, show_compression_stats=False, device='AUTO', **params):
     """
     Runs pong for 10M three times and checks the results.
 
@@ -152,20 +151,20 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats=False, **p
         is_scalar = False
 
     for seed in range(parallel_jobs):
-        job_name = f"pong_{seed}"
+        job_name = f"{BENCHMARK_ENV}_{seed}"
 
         # set default parameters
         params["use_compression"] = params.get("use_compression", args.use_compression)
         params["observation_normalization"] = params.get("observation_normalization", args.observation_normalization)
 
         if "env_name" not in params:
-            params['env_name'] = "Pong"
+            params['env_name'] = BENCHMARK_ENV
 
         p = execute_job(
             folder=BENCHMARK_FOLDER,
             run_name=job_name,
             seed=seed,
-            device=f'cuda:{seed % GPUS}',
+            device=f'cuda:{seed % GPUS}' if device == 'AUTO' else device,
             numa_id=args.numa[seed % len(args.numa)] if args.numa is not None else None,
             epochs=BENCHMARK_EPOCHS,
             quiet_mode=not args.verbose,
@@ -198,13 +197,62 @@ def generate_benchmark_result(parallel_jobs=0, show_compression_stats=False, **p
 
     return results[0] if is_scalar else results
 
+def run_suite():
+    """
+    Runs a suite of tests on a specific GPU
+    """
+
+    import os
+
+    # for device in ['cuda:0', 'cuda:1']:
+    #     for mbs in [128, 256, 512, 1024]:
+    #         custom_args = {
+    #             'device': device,
+    #             'max_micro_batch_size': mbs,
+    #         }
+    #         cmd = f'python benchmark.py quick --parallel_jobs=2 --use_compression=False ' \
+    #               f'--custom_args="{custom_args}" --verbose=False'
+    #         print(cmd)
+    #         os.system(cmd)
+
+    # for device in ['cuda:0', 'cuda:1']:
+    #     for use_compression in [True, False]:
+    #         print("-"*60)
+    #         print(f" device:{device:<10} compression:{use_compression:<10}")
+    #         print("-" * 60)
+    #
+    #         custom_args = {
+    #             'device': device,
+    #         }
+    #
+    #         for jobs in [1, 2, 3, 4]:
+    #             cmd = f'python benchmark.py quick --parallel_jobs={jobs} --use_compression={use_compression} ' \
+    #                   f'--custom_args="{custom_args}" --verbose=False'
+    #             print(cmd)
+    #             os.system(cmd)
+
+    for device in ['cuda:0', 'cuda:1']:
+        for mutex_key in ['']:
+
+            custom_args = {
+                'device': device,
+                'mutex_key': mutex_key,
+            }
+
+            for jobs in [1, 2, 3]:
+                cmd = f'python benchmark.py quick --parallel_jobs={jobs} --use_compression=False ' \
+                      f'--custom_args="{custom_args}" --verbose=False'
+                print(cmd)
+                os.system(cmd)
+
 
 def run_benchmark(description: str, job_counts: list, **kwargs):
 
     # clean start
     os.system(f'rm -r ./Run/{BENCHMARK_FOLDER}')
 
-    print(f"Running {description} benchmark on {DEVICE} with {GPUS} GPUS...")
+    if args.verbose:
+        print(f"Running {description} benchmark on {DEVICE} with {GPUS} GPUS...")
 
     baseline_ips = None
 
@@ -289,9 +337,10 @@ if __name__ == "__main__":
         # see https://github.com/pytorch/pytorch/issues/37377 :(
         os.environ["MKL_THREADING_LAYER"] = "GNU"
 
-        parser = argparse.ArgumentParser(description="Trainer for PPO2")
-        parser.add_argument("mode", type=str, help="[full|quick|ppo|regression|show]")
+        parser = argparse.ArgumentParser(description="Benchmarker")
+        parser.add_argument("mode", type=str, help="[full|quick|ppo|regression|show|suite]")
         parser.add_argument("--verbose", type=str2bool, default=False)
+        parser.add_argument("--parallel_jobs", type=int, default=1)
         parser.add_argument("--use_compression", type=str2bool, default=True)
         parser.add_argument("--observation_normalization", type=str2bool, default=True)
         parser.add_argument("--numa", type=str, default=None, help='e.g. [0,1]')
@@ -312,7 +361,7 @@ if __name__ == "__main__":
             else:
                 run_benchmark("full", [1, 1 * GPUS, 2 * GPUS])
         elif mode == "quick":
-            run_benchmark("quick", [1])
+            run_benchmark("quick", [args.parallel_jobs])
         elif mode == "ppo":
             run_benchmark(
                 "ppo",
@@ -322,6 +371,8 @@ if __name__ == "__main__":
             )
         elif mode == "regression":
             run_regressions()
+        elif mode == "suite":
+            run_suite()
         elif mode == "show":
             show_regression_results()
         else:

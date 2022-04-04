@@ -10,6 +10,9 @@ ATARI_5_v1 = ['Asterix', 'BattleZone', 'DoubleDunk', 'Phoenix', 'RiverRaid']
 ATARI_3_VAL = ['Assault', 'MsPacman', 'YarsRevenge']
 ATARI_5 = ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert']
 
+# proposed changes:
+# repeat action penality = 0.25
+
 # These are the best settings from the HPS, but not from the axis search performed later.
 DNA_HARD_ARGS_HPS = {
     'checkpoint_every': int(5e6),
@@ -42,11 +45,11 @@ DNA_HARD_ARGS_HPS = {
     'policy_lr': 2.5e-4,
     'value_lr': 2.5e-4,
     'distil_lr': 2.5e-4,
-    'entropy_bonus': 1e-2,          # standard
-    'hidden_units': 512,            # standard
-    'gae_lambda': 0.95,             # standard
-    'td_lambda': 0.95,              # standard
-    'repeated_action_penalty': 0.1, # HPS says 0, but I think we need this..
+    'entropy_bonus': 1e-2,           # standard
+    'hidden_units': 512,             # standard
+    'gae_lambda': 0.95,              # standard
+    'td_lambda': 0.95,               # standard
+    'repeated_action_penalty': 0.25, # HPS says 0, but I think we need this..
 
     # tvf params
     'use_tvf': False,
@@ -247,40 +250,49 @@ def dna_hps(priority: int = 0):
 #             )
 
 
-# def dna_gae(priority=0):
-#     """
-#     Demonstrate that GAE for advantages and for return values can be different.
-#     """
-#     HOST = ''
-#     for seed in [1]: # this will need 3 seeds (results are close)
-#         for env in ATARI_3_VAL:
-#             args = {
-#                 'env_name': env,
-#                 'hostname': HOST,
-#                 'priority': priority + (0 if seed == 1 else -50),
-#                 'seed': seed,
-#                 'use_compression': True,
-#             }
-#             for gae_lambda in [0.9, 0.95, 0.975]:
-#                 for td_lambda in [0.9, 0.95, 0.975]:
-#                     add_job(
-#                         "DNA_GAE",
-#                         run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
-#                         gae_lambda=gae_lambda,
-#                         td_lambda=td_lambda,
-#                         abs_mode='shadow',
-#                         **args,
-#                         default_params=DNA_HARD_ARGS,
-#                     )
-#                     add_job(
-#                         "PPO_GAE",
-#                         run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
-#                         gae_lambda=gae_lambda,
-#                         td_lambda=td_lambda,
-#                         architecture='single',
-#                         **args,
-#                         default_params=DNA_HARD_ARGS,
-#                     )
+def dna_gae(priority=0):
+    """
+    Demonstrate that GAE for advantages and for return values can be different.
+    """
+
+    # would be nice to check noise levels too..., but maybe do that later?
+
+    HOST = ''
+    for seed in [1, 2, 3]: # this will need 3 seeds (results are close)
+        for env in ATARI_3_VAL:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed - 1) * 55,
+                'seed': seed,
+                'use_compression': False,
+                'upload_batch': True,  # much faster
+                'disable_ev': seed != 3, # need to know this on one seed at least
+                'distil_beta': 1.0,
+                'abs_mode': 'off',
+            }
+            for gae_lambda in [0.8, 0.9, 0.95]: # guessing GAE wants lower...
+                for td_lambda in [0.9, 0.95, 0.975]: # and td wants higher...
+                    add_job(
+                        "DNA_GAE",
+                        run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
+                        gae_lambda=gae_lambda,
+                        td_lambda=td_lambda,
+                        policy_epochs=2,
+                        value_epochs=1,
+                        distil_epochs=2,
+                        **args,
+                        default_params=DNA_HARD_ARGS_HPS,
+                    )
+                    # add_job(
+                    #     "PPO_GAE",
+                    #     run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
+                    #     gae_lambda=gae_lambda,
+                    #     td_lambda=td_lambda,
+                    #     architecture='single',
+                    #     **args,
+                    #     default_params=DNA_HARD_ARGS_HPS,
+                    # )
 
 
 def dna_final(priority=0):
@@ -289,8 +301,7 @@ def dna_final(priority=0):
     """
 
     # these are the 'good' settings now...
-
-    HOST = 'ML'
+    HOST = '' # ML
     for seed in [1]:
         for env in ATARI_5:
             args = {
@@ -319,28 +330,120 @@ def dna_final(priority=0):
             )
 
 
-def dna_epochs(priority=0):
+def dna_beta(priority=0):
     HOST = ''
-    for seed in [1, 2, 3]: # three seeds is needed for an accurate results.
+    for seed in [1, 2, 3]:
         for env in ATARI_3_VAL:
             args = {
                 'env_name': env,
                 'hostname': HOST,
-                'priority': priority,
+                'priority': priority - (seed-1) * 10,
                 'seed': seed,
+                'use_compression': False,
+                'upload_batch': True,
                 'disable_ev': True,
             }
-            for value_epochs in [1, 2, 3, 4]:
+            for beta in [0.5, 1.0, 2.0]:
+                args['priority'] = priority - (seed-1) * 10 - int(beta)
                 add_job(
-                    "DNA_EPOCHS",
+                    "DNA_BETA",
+                    run_name=f"game={env} beta={beta} ({seed})",
+                    distil_beta=beta,
+                    policy_epochs=2,
+                    value_epochs=1,
+                    distil_epochs=2,
+                    **args,
+                    default_params=DNA_HARD_ARGS_HPS,
+                )
+    for seed in [1]: # three seeds is needed for an accurate results (but just do one for now...)
+        for env in ATARI_3_VAL:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed-1) * 10,
+                'seed': seed,
+                'disable_ev': seed == 3, # only ev on seed 3...
+            }
+            for value_epochs in [1, 2, 3, 4]:
+                if value_epochs == 0:
+                    if seed != 1:
+                        continue
+                add_job(
+                    "DNA_VALUE_EPOCHS",
                     run_name=f"game={env} value_epochs={value_epochs} ({seed})",
                     value_epochs=value_epochs,
                     **args,
                     default_params=DNA_HARD_ARGS_HPS,
                 )
 
+
+def dna_epochs(priority=0):
+
+    # these value epochs where done early, but should probably be redone (with new codebase, and with beta=0.5)
+    # HOST = ''
+    # for seed in [1, 2, 3]: # three seeds is needed for an accurate results (but just do one for now...)
+    #     for env in ATARI_3_VAL:
+    #         args = {
+    #             'env_name': env,
+    #             'hostname': HOST,
+    #             'priority': priority - (seed-1) * 10,
+    #             'seed': seed,
+    #             'disable_ev': seed == 3, # only ev on seed 3...
+    #         }
+    #         for value_epochs in [1, 2, 3, 4]:
+    #             if value_epochs == 0:
+    #                 if seed != 1:
+    #                     continue
+    #             add_job(
+    #                 "DNA_EPOCHS",
+    #                 run_name=f"game={env} value_epochs={value_epochs} ({seed})",
+    #                 value_epochs=value_epochs,
+    #                 **args,
+    #                 default_params=DNA_HARD_ARGS_HPS,
+    #             )
+
+    # one value epoch was, indeed, best...
+    PATH = f"DNA_EPOCHS (beta={1.0})"
+    for seed in [1, 2, 3]:  # three seeds is needed for an accurate results
+        for env in ATARI_3_VAL:
+            args = {
+                'env_name': env,
+                'hostname': '',
+                'priority': priority - (seed - 1) * 10,
+                'seed': seed,
+                'use_compression': False,
+                'upload_batch': True, # much faster
+                'disable_ev': True,
+                'distil_beta': 1.0,
+            }
+            for policy_epochs in [1, 2, 3, 4]: # please add 3,4
+                args['priority'] = priority - (seed - 1) * 10 + policy_epochs - 100
+                distil_epochs = 2
+                add_job(
+                    PATH,
+                    run_name=f"game={env} epochs={policy_epochs}{1}{distil_epochs} ({seed})",
+                    policy_epochs=policy_epochs,
+                    value_epochs=1,
+                    distil_epochs=distil_epochs,
+                    **args,
+                    default_params=DNA_HARD_ARGS_HPS,
+                )
+            for distil_epochs in [0, 1, 2, 3, 4]: # please add 3, 4
+                args['priority'] = priority - (seed - 1) * 10 + distil_epochs
+                policy_epochs = 2
+                add_job(
+                    PATH,
+                    run_name=f"game={env} epochs={policy_epochs}{1}{distil_epochs} ({seed})",
+                    policy_epochs=policy_epochs,
+                    value_epochs=1,
+                    distil_epochs=distil_epochs,
+                    **args,
+                    default_params=DNA_HARD_ARGS_HPS,
+                )
+
+
 def dna_noise(priority=0):
-    HOST = 'ML'
+    HOST = ''
     for seed in [1]:
         for env in ATARI_3_VAL:
             args = {
@@ -356,7 +459,6 @@ def dna_noise(priority=0):
                 abs_mode='shadow',
                 gae_lambda=0.95,
                 td_lambda=0.95, # keep it standard
-
                 **args,
                 default_params=DNA_HARD_ARGS_HPS,
             )
@@ -384,10 +486,13 @@ def dna_aux(priority=0):
                 )
 
 def setup(priority_modifier=0):
-    dna_hps(50) # fill in the gaps
-    dna_epochs(0)
-    dna_aux(100)
-    #dna_noise(-100)
-    #dna_replay(0) (save for replay paper)
-    #dna_gae(+100)
-    dna_final(200)
+    #dna_hps(0)     # done!
+    #dna_noise(50)  # done!
+    dna_beta(0)  # done!
+    dna_epochs(-200) # ...
+    dna_gae(0) # ...
+    # dna_final(200)
+
+    # bonus
+    # dna_aux(0) # reward prediction as aux task...
+

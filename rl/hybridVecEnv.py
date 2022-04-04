@@ -5,7 +5,7 @@ import sys
 
 from rl import wrappers, utils
 
-import gym.vector.async_vector_env
+from gym.vector import AsyncVectorEnv, SyncVectorEnv
 from gym.vector.utils import write_to_shared_memory, concatenate
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -13,12 +13,12 @@ from copy import deepcopy
 
 # modified to support vector environments...
 
-class ThreadVectorEnv(gym.vector.SyncVectorEnv):
+class ThreadVectorEnv(SyncVectorEnv):
     """Vectorized environment that uses threads to run multiple environments."""
 
     def __init__(self, env_fns, observation_space=None, action_space=None,
                  copy=True):
-        self.pool = ThreadPoolExecutor(max_workers=4)
+        self.pool = ThreadPoolExecutor(max_workers=2)
         super().__init__(env_fns, observation_space, action_space, copy)
 
     def step_wait(self):

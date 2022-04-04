@@ -32,7 +32,7 @@ class Config:
         self.epochs             = float()
         self.limit_epochs       = int()
         self.distil_beta        = float()
-        self.distil_ir          = float()
+        self.distil_mode        = str()
         self.distil_period      = int()
         self.distil_freq_ratio  = float()
         self.distil_batch_size_ratio = float()
@@ -78,6 +78,8 @@ class Config:
         self.export_video       = bool()
         self.export_trajectories= bool()
         self.device             = str()
+        self.upload_batch       = bool()
+        self.disable_logging    = bool()
         self.save_checkpoints   = bool()
         self.output_folder      = str()
         self.hostname           = str()
@@ -139,6 +141,8 @@ class Config:
         # phasic
         self.policy_epochs = int()                            
         self.value_epochs = int()
+        self.value_thinning = float()
+        self.value_resampling = bool()
         self.distil_epochs = int()
         self.aux_epochs = int()
         self.target_kl = float()
@@ -242,8 +246,7 @@ class Config:
                 # always enable when using replay buffer (makes hashing faster, and reduces copy time).
                 self.use_compression =\
                     self.batch_size >= THRESHOLD or \
-                    self.replay_size >= 0 or \
-                    self.debug_replay_shadow_buffers
+                    self.replay_size >= 0
             else:
                 self.use_compression = str2bool(str(self.use_compression))
 
@@ -425,6 +428,8 @@ def parse_args(no_env=False, args_override=None):
     # phasic inspired stuff
     parser.add_argument("--policy_epochs", type=int, default=3, help="Number of policy training epochs per training batch.")
     parser.add_argument("--value_epochs", type=int, default=2, help="Number of value training epochs per training batch.")
+    parser.add_argument("--value_thinning", type=float, default=1.0, help="Uses this proportion of the rollout for value learning. Can be used to obtain less than one epoch of value update.")
+    parser.add_argument("--value_resampling", type=str2bool, default=False, help="Recalculates value estimates each epoch.")
 
     # optional aux phase
     parser.add_argument("--aux_epochs", type=int, default=0, help="Number of auxiliary epochs")
@@ -433,7 +438,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--distil_ir", type=float, default=0.25, help="Uses intrinsic reward distillation (if available)")
+    parser.add_argument("--distil_mode", type=str, default="value",
+                        help="[value|features|projection]")
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
 
     parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
@@ -523,6 +529,10 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--export_trajectories", type=str2bool, default=False)
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--upload_batch", type=str2bool, default=False, help='Uploads an entire batch to GPU, faster, but uses more GPU RAM.')
+    parser.add_argument("--disable_logging", type=str2bool, default=False,
+                        help='Useful when profiling.')
+
     parser.add_argument("--ignore_device", type=str, default="[]", help="Devices to ignore when using auto")
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)
     parser.add_argument("--output_folder", type=str, default="./")
