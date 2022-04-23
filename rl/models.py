@@ -163,6 +163,30 @@ class NatureCNN_Net(Base_Net):
         return x
 
 
+class MLP_Net(Base_Net):
+    """ Based on https://arxiv.org/pdf/1707.06347.pdf
+        Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
+    """
+
+    def __init__(self, input_dims, hidden_units=64):
+
+        super().__init__(input_dims, hidden_units)
+
+        self.fc1 = nn.Linear(input_dims[0], hidden_units)
+        self.fc2 = nn.Linear(hidden_units, hidden_units)
+
+
+    # this causes everything to be on cuda:1... hmm... even when it's disabled...
+    #@torch.autocast(device_type='cuda', enabled=AMP)
+    def forward(self, x):
+        """ forwards input through model, returns features (without relu) """
+
+        x = torch.tanh(self.fc1(x))
+        x = self.fc2(x)
+
+        return x
+
+
 class RTG_Net(Base_Net):
     """ Takes stacked frames as input, and outputs features.
         Based on model from rescue the general
@@ -312,6 +336,7 @@ class DualHeadNet(nn.Module):
             tvf_max_horizon,
             tvf_value_scale_fn="identity",
             tvf_value_scale_norm="max",
+            feature_activation_fn="relu",
             actions=None,
             use_policy_head=True,
             use_value_head=True,
@@ -333,6 +358,7 @@ class DualHeadNet(nn.Module):
         self.tvf_max_horizon = tvf_max_horizon
         self.tvf_value_scale_fn = tvf_value_scale_fn
         self.tvf_value_scale_norm = tvf_value_scale_norm
+        self.feature_activation_fn = feature_activation_fn
 
         # aux head
         self.aux_head = nn.Linear(self.encoder.hidden_units, 16) # projection to 16 auxilary outputs, defaults to random.
@@ -430,13 +456,20 @@ class DualHeadNet(nn.Module):
         # convert back to float32, and also switch to channels first, not that that should matter.
         features = features.float(memory_format=torch.contiguous_format)
 
+        if self.feature_activation_fn == "relu":
+            af = F.relu
+        elif self.feature_activation_fn == "tanh":
+            af = torch.tanh
+        else:
+            raise ValueError(f"Invalid activation function {self.feature_activation_fn}")
+
         if include_features:
             # used for debugging sometimes
             result['raw_features'] = features
-            features = F.relu(features)
+            features = af(features)
             result['features'] = features
         else:
-            features = F.relu(features)
+            features = af(features)
 
         result['aux'] = self.aux_head(features)
 
@@ -540,6 +573,7 @@ class TVFModel(nn.Module):
             hidden_units:int = 512,
             tvf_hidden_units: int = 512,
             tvf_activation:str = "relu",
+            feature_activation_fn: str = "relu",
             tvf_value_scale_fn: str = "identity",
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
@@ -590,6 +624,7 @@ class TVFModel(nn.Module):
             tvf_max_horizon=tvf_max_horizon,
             tvf_value_scale_fn=tvf_value_scale_fn,
             tvf_value_scale_norm=tvf_value_scale_norm,
+            feature_activation_fn=feature_activation_fn,
             actions=actions,
             device=device,
             **(args or {})
@@ -648,8 +683,8 @@ class TVFModel(nn.Module):
         assert type(x) is torch.Tensor, "Input for normalization should be tensor"
         assert x.dtype == get_dtype()
 
-        B, C, H, W = x.shape
-        assert (C, H, W) == self.input_dims
+        B, *state_shape = x.shape
+        assert tuple(state_shape) == self.input_dims
 
         if update_normalization and not self.freeze_observation_normalization:
             batch_mean = torch.mean(x, dim=0).detach().cpu().numpy()
@@ -839,10 +874,12 @@ def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
         return NatureCNN_Net(input_dims, **kwargs)
     if head_name == "impala":
         return ImpalaCNN_Net(input_dims, channels=(16, 32, 32), down_sample='pool', **kwargs)
-    if head_name == "impala_fast":
+    if head_name == "impala_fast": # not that fast, not really.
         return ImpalaCNN_Net(input_dims, channels=(16, 32, 32, 48), down_sample='stride', **kwargs)
     if head_name == "rtg":
         return RTG_Net(input_dims, **kwargs)
+    if head_name == "mlp":
+        return MLP_Net(input_dims, **kwargs)
 
     raise Exception("No model head named {}".format(head_name))
 

@@ -19,6 +19,8 @@ def get_previous_experiment_guid(experiment_path, run_name):
             return guid
     return None
 
+
+
 def main():
 
     # see http://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
@@ -26,10 +28,20 @@ def main():
 
     # import here to make workers load faster / use less memory
     import torch
-    from rl import utils, models, atari, config, rollout
+    from rl import utils, models, config, rollout
     from rl import ppo
     from rl.config import args
     import numpy as np
+    import gym.spaces
+
+    def get_n_actions(space):
+        if type(space) == gym.spaces.Discrete:
+            return space.n
+        elif type(space) == gym.spaces.Box:
+            assert len(space.shape) == 1
+            return space.shape[0]
+        else:
+            raise ValueError(f"Action space of type {type(space)} not implemented yet.")
 
     config.parse_args()
 
@@ -108,8 +120,8 @@ def main():
     os.makedirs(args.log_folder, exist_ok=True)
 
     """ Runs experiment specified by config.args """
-    fake_env = atari.make(args.get_env_name())
-    n_actions = fake_env.action_space.n
+    fake_env = rollout.make_env(args.env_type, args.get_env_name())
+    n_actions = get_n_actions(fake_env.action_space)
     obs_space = fake_env.observation_space.shape
     log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
@@ -130,6 +142,7 @@ def main():
         tvf_max_horizon=args.tvf_max_horizon,
         tvf_value_scale_fn=args.tvf_value_scale_fn,
         tvf_value_scale_norm=args.tvf_value_scale_norm,
+        feature_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
         architecture=args.architecture,
 
         hidden_units=args.hidden_units,

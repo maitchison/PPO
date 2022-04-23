@@ -23,8 +23,9 @@ from typing import Union, Optional
 import math
 
 import rl.csgo
+import train
 from .logger import Logger
-from . import utils, atari, hybridVecEnv, wrappers, models, compression
+from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression
 from .lfr import compute_band_pass
 from .returns import get_return_estimate
 from .config import args
@@ -453,7 +454,7 @@ class SimulatedAnnealing:
 
 class Runner:
 
-    def __init__(self, model: models.TVFModel, log, name="agent"):
+    def __init__(self, model: models.TVFModel, log, name="agent", action_dist='discrete'):
         """ Setup our rollout runner. """
 
         self.name = name
@@ -509,6 +510,8 @@ class Runner:
         self.N = N = args.n_steps
         self.A = A = args.agents
 
+        self.action_dist = action_dist
+
         self.state_shape = model.input_dims
         self.rnn_state_shape = [2, 512]  # records h and c for LSTM units.
         self.policy_shape = [model.actions]
@@ -550,9 +553,15 @@ class Runner:
             self.all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8, device=self.model.device)
 
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
-        self.actions = np.zeros([N, A], dtype=np.int64)
+        if self.action_dist == "discrete":
+            self.actions = np.zeros([N, A], dtype=np.int64)
+        elif self.action_dist == "gaussian":
+            self.actions = np.zeros([N, A, self.model.actions], dtype=np.float32)
+        else:
+            raise ValueError(f"Invalid distribution {self.action_dist}")
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
+        self.raw_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.ext_advantage = np.zeros([N, A], dtype=np.float32) # unnormalized extrinsic reward advantages
         self.raw_advantage = np.zeros([N, A], dtype=np.float32) # advantages before normalization
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
@@ -700,7 +709,7 @@ class Runner:
         base_seed = args.seed
         if base_seed is None or base_seed < 0:
             base_seed = np.random.randint(0, 9999)
-        env_fns = [lambda i=i: atari.make(env_id=args.get_env_name(i), args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
+        env_fns = [lambda i=i: make_env(args.env_type, env_id=args.get_env_name(i), args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)
@@ -1117,6 +1126,33 @@ class Runner:
     def erp_internal_distance(self, value):
         self.erp_stats["erp_internal_distance"] = value
 
+    def get_current_action_std(self):
+
+        if self.action_dist == "discrete":
+            return 0.0
+        elif self.action_dist == "gaussian":
+            # hard coded for the moment (switch to log scale)
+            return np.exp(np.clip(-0.7 + (-0.7+1.6) * (self.step / 1e6), -1.6, -0.7))
+        else:
+            raise ValueError(f"invalid action distribution {self.action_dist}")
+
+
+    def sample_actions(self, model_out, train:bool=True):
+        """
+        Returns action sampled from the output of the given policy.
+        """
+        if self.action_dist == "discrete":
+            log_policy = model_out["log_policy"].cpu().numpy()
+            return np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
+        elif self.action_dist == "gaussian":
+            mu = np.tanh(model_out["raw_policy"].cpu().numpy())*1.1
+            std = self.get_current_action_std() if train else 0.0
+            return np.clip(np.random.randn(*mu.shape) * std + mu, -1, 1)
+        else:
+            raise ValueError(f"invalid action distribution {self.action_dist}")
+
+
+
     @torch.no_grad()
     def generate_rollout(self):
 
@@ -1156,6 +1192,7 @@ class Runner:
             )
 
             log_policy = model_out["log_policy"].cpu().numpy()
+            raw_policy = model_out["raw_policy"].cpu().numpy()
 
             if args.use_rnd:
                 # update the intrinsic rewards
@@ -1163,7 +1200,7 @@ class Runner:
                 self.int_value[t] = model_out["int_value"].detach().cpu().numpy()
 
             # sample actions and run through environment.
-            actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
+            actions = self.sample_actions(model_out)
 
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
 
@@ -1175,7 +1212,7 @@ class Runner:
                 ext_rewards += np.random.normal(0, args.per_step_reward_noise, size=ext_rewards.shape)
 
             # save raw rewards for monitoring the agents progress
-            raw_rewards = np.asarray([info.get("raw_reward", ext_rewards) for reward, info in zip(ext_rewards, infos)],
+            raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
 
             self.episode_score += raw_rewards
@@ -1232,6 +1269,7 @@ class Runner:
 
             self.ext_rewards[t] = ext_rewards
             self.log_policy[t] = log_policy
+            self.raw_policy[t] = raw_policy
             self.terminals[t] = dones
 
         # save the last state
@@ -1251,7 +1289,7 @@ class Runner:
         self.model.eval()
 
         # check if environments are in sync or not...
-        rollout_rvs = self.time / max(self.time)
+        rollout_rvs = self.time / max(self.time) # todo: fix time divide error...
         ks = scipy.stats.kstest(rvs=rollout_rvs, cdf=scipy.stats.uniform.cdf)
         self.log.watch("t_ks", ks.statistic, display_width=0)
 
@@ -2696,45 +2734,100 @@ class Runner:
 
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
+        def calc_entropy(x):
+            return -(x.exp() * x).sum(axis=1)
+
         mini_batch_size = len(data["prev_state"])
 
         prev_states = data["prev_state"]
         actions = data["actions"].to(torch.long)
-        old_policy_logprobs = data["log_policy"]
+        old_log_pac = data["log_pac"]
         advantages = data["advantages"]
 
         model_out = self.model.forward(prev_states, output="policy")
+
+        gain: torch.Tensor = 0
 
         # -------------------------------------------------------------------------
         # Calculate loss_pg
         # -------------------------------------------------------------------------
 
-        logps = model_out["log_policy"]
-        logpac = logps[range(mini_batch_size), actions]
-        old_logpac = old_policy_logprobs[range(mini_batch_size), actions]
-        ratio = torch.exp(logpac - old_logpac)
+        if self.action_dist == "discrete":
+            old_log_policy = data["log_policy"]
+            logps = model_out["log_policy"]
+            logpac = logps[range(mini_batch_size), actions]
+            ratio = torch.exp(logpac - old_log_pac)
 
-        clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
-
-        loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
-        gain: torch.Tensor = loss_clip
-
-        # approx kl
-        # this is from https://stable-baselines.readthedocs.io/en/master/_modules/stable_baselines/ppo2/ppo2.html
-        # but https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/ppo.py
-        # uses approx_kl = (b_logprobs[minibatch_ind] - newlogproba).mean() which I think is wrong
-        # anyway, why not just calculate the true kl?
-
-        # ok, I figured this out, we want
-        # sum_x P(x) log(P/Q)
-        # our actions were sampled from the policy so we have
-        # pi(expected_action) = sum_x P(x) then just mulitiply this by log(P/Q) which is log(p)-log(q)
-        # this means the spinning up version is right.
-
-        with torch.no_grad():
             clip_frac = torch.gt(torch.abs(ratio - 1.0), args.ppo_epsilon).float().mean()
-            kl_approx = (old_logpac - logpac).mean()
-            kl_true = F.kl_div(old_policy_logprobs, logps, log_target=True, reduction="batchmean")
+            clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
+
+            loss_clip = torch.min(ratio * advantages, clipped_ratio * advantages)
+            gain = gain + loss_clip
+
+            with torch.no_grad():
+                # record kl...
+                kl_approx = (old_log_pac - logpac).mean()
+                kl_true = F.kl_div(old_log_policy, logps, log_target=True, reduction="batchmean")
+
+            entropy = calc_entropy(logps)
+            original_entropy = calc_entropy(old_log_policy)
+
+            if args.eb_clip >= 0:
+                entropy_delta = (entropy - original_entropy).mean()
+                entropy_clip_frac = torch.gt(entropy, original_entropy + args.eb_clip).float().mean()
+                entropy_clipped = torch.min(entropy, original_entropy + args.eb_clip)
+                self.log.watch_mean("entropy_clip_frac", entropy_clip_frac, display_width=8, display_name="e_clip")
+                self.log.watch_stats("entropy_delta", entropy_delta.detach().cpu().numpy(), display_width=0,
+                                     display_name="e_delta")
+            else:
+                entropy_clipped = entropy
+
+            if args.use_uac:
+
+                # the simplest solution.
+                # sort states into high cost and low cost, and apply two different entropy bonus levels.
+                entropy_cost = data["ext_value"] - data["uni_value"]
+                threshold = torch.mean(entropy_cost) + torch.std(entropy_cost) * 1.0
+                mask = torch.gt(entropy_cost, threshold)  # not normal, so masked will be few...
+                inv_mask = torch.logical_not(mask)
+
+                bonus_safe = self.current_entropy_bonus * 1.1
+                bonus_risky = self.current_entropy_bonus / 10.0
+
+                eb = bonus_safe * inv_mask + bonus_risky * mask
+                self.log.watch_mean("eb", torch.mean(eb), display_width=8, display_precision=4)
+                self.log.watch_stats("ec", entropy_cost, display_width=0)
+
+                gain = gain + entropy_clipped * eb
+
+            else:
+                gain = gain + entropy_clipped * self.current_entropy_bonus
+
+            self.log.watch_mean("entropy", entropy.mean())
+            self.log.watch_stats("entropy", entropy, display_width=0)  # super useful...
+            self.log.watch_mean("entropy_bits", entropy.mean() * (1 / math.log(2)), display_width=0)
+            self.log.watch_mean("loss_ent", entropy.mean() * self.current_entropy_bonus, display_name=f"ls_ent",
+                                display_width=8)
+            self.log.watch_mean("kl_approx", kl_approx, display_width=0)
+            self.log.watch_mean("kl_true", kl_true, display_width=8)
+
+        elif self.action_dist == "gaussian":
+            mu = torch.clip(torch.tanh(model_out["raw_policy"])*1.1, -1, 1)
+            logpac = torch.distributions.normal.Normal(mu, self.get_current_action_std()).log_prob(actions)
+            ratio = torch.exp(logpac - old_log_pac)
+
+            clip_frac = torch.gt(torch.abs(ratio - 1.0), args.ppo_epsilon).float().mean()
+            clipped_ratio = torch.clamp(ratio, 1 - args.ppo_epsilon, 1 + args.ppo_epsilon)
+
+            loss_clip = torch.min(ratio * advantages[:, None], clipped_ratio * advantages[:, None])
+            gain = gain + loss_clip.mean(dim=-1) # mean over actions..
+
+            # todo kl for gaussian
+            kl_approx = torch.zeros(1)
+            kl_true = torch.zeros(1)
+
+        else:
+            raise ValueError(f"Invalid action distribution type {self.action_dist}")
 
         # -------------------------------------------------------------------------
         # Value learning for PPO mode
@@ -2743,75 +2836,6 @@ class Runner:
         if args.architecture == "single":
             # negative because we're doing gradient ascent.
             gain = gain - self.train_value_heads(model_out, data)
-
-        # -------------------------------------------------------------------------
-        # Calculate loss_entropy
-        # -------------------------------------------------------------------------
-
-        def calc_entropy(x):
-            return -(x.exp() * x).sum(axis=1)
-
-        entropy = calc_entropy(logps)
-        original_entropy = calc_entropy(old_policy_logprobs)
-
-        if args.eb_clip >= 0:
-            entropy_delta = (entropy - original_entropy).mean()
-            entropy_clip_frac = torch.gt(entropy, original_entropy + args.eb_clip).float().mean()
-            entropy_clipped = torch.min(entropy, original_entropy + args.eb_clip)
-            self.log.watch_mean("entropy_clip_frac", entropy_clip_frac, display_width=8, display_name="e_clip")
-            self.log.watch_stats("entropy_delta", entropy_delta.detach().cpu().numpy(), display_width=0, display_name="e_delta")
-        else:
-            entropy_clipped = entropy
-
-        if args.use_uac:
-
-            # the simplest solution.
-            # sort states into high cost and low cost, and apply two different entropy bonus levels.
-            entropy_cost = data["ext_value"] - data["uni_value"]
-            threshold = torch.mean(entropy_cost) + torch.std(entropy_cost) * 1.0
-            mask = torch.gt(entropy_cost, threshold) # not normal, so masked will be few...
-            inv_mask = torch.logical_not(mask)
-
-            bonus_safe = self.current_entropy_bonus * 1.1
-            bonus_risky = self.current_entropy_bonus / 10.0
-
-            eb = bonus_safe * inv_mask + bonus_risky * mask
-            self.log.watch_mean("eb", torch.mean(eb), display_width=8, display_precision=4)
-            self.log.watch_stats("ec", entropy_cost, display_width=0)
-
-            gain = gain + entropy_clipped * eb
-
-            # # in some cases cost may be negative, in which case entropy
-            # entropy_cost = data["ext_value"] - data["uni_value"]
-            # entropy_weights = 1.0 / (1 + args.eb_cost_alpha * torch.clip(entropy_cost, 0, float('inf')))
-            # self.log.watch_stats("entropy_weights", entropy_weights, display_width=0)
-            # # kind of need to see this... by guess is entropy_cost starts low and gets higher and higher.
-            # self.log.watch_stats("ec", entropy_cost, display_width=6)
-
-            # # this seems like a good idea, but does not work super great (I don't think)
-            # # new version (based on intrinsic value of entropy (above and beyond optimal...)
-            # # this is the cost of using a action in this state, as compared to our current policy.
-            # uniform_action_cost = data["ext_value"] - data["uni_value"]
-            # # delta entropy, and max_entropy
-            # delta_entropy = (entropy_clipped - original_entropy)
-            # n_actions = self.policy_shape[0]
-            # maximum_entropy = -(np.log(1/n_actions) * (1/n_actions)) * n_actions
-            # alpha = torch.abs(delta_entropy) / (maximum_entropy - original_entropy + 1e-6)
-            #
-            # # put it together
-            # entropy_cost = uniform_action_cost * alpha
-            # entropy_value = entropy_clipped * self.current_entropy_bonus  # the intrinsic value of increased entropy.
-            # entropy_bonus = (entropy_value - entropy_cost)
-            #
-            # self.log.watch_stats("entropy_cost", entropy_cost, display_width=0)
-            # self.log.watch_stats("entropy_value", entropy_value, display_width=0)
-            # self.log.watch_stats("entropy_bonus", entropy_bonus, display_width=0)
-            #
-            # gain = gain + (entropy_value - entropy_cost)
-        else:
-            gain = gain + entropy_clipped * self.current_entropy_bonus
-
-
 
         # -------------------------------------------------------------------------
         # Calculate gradients
@@ -2825,13 +2849,7 @@ class Runner:
         # -------------------------------------------------------------------------
 
         self.log.watch_mean("loss_pg", loss_clip.mean(), history_length=64*args.policy_epochs, display_name=f"ls_pg", display_width=8)
-        self.log.watch_mean("kl_approx", kl_approx, display_width=0)
-        self.log.watch_mean("kl_true", kl_true, display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
-        self.log.watch_mean("entropy", entropy.mean())
-        self.log.watch_stats("entropy", entropy, display_width=0) # super useful...
-        self.log.watch_mean("entropy_bits", entropy.mean()*(1/math.log(2)), display_width=0)
-        self.log.watch_mean("loss_ent", entropy.mean() * self.current_entropy_bonus, display_name=f"ls_ent", display_width=8)
         self.log.watch_mean("loss_policy", gain.mean(), display_name=f"ls_policy")
 
         return {
@@ -2995,8 +3013,19 @@ class Runner:
         N, A, *state_shape = self.prev_obs.shape
 
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
-        batch_data["actions"] = self.actions.reshape(B).astype(np.long)
-        batch_data["log_policy"] = self.log_policy.reshape([B, *self.policy_shape])
+
+        if self.action_dist == "discrete":
+            batch_data["actions"] = self.actions.reshape(B).astype(np.long)
+            batch_data["log_policy"] = self.log_policy.reshape([B, *self.policy_shape])
+            batch_data["log_pac"] = batch_data["log_policy"][range(B), self.actions]
+        elif self.action_dist == "gaussian":
+            assert self.actions.dtype == np.float32, f"actions should be float32, but were {type(self.actions)}"
+            mu = np.clip(np.tanh(self.raw_policy)*1.1, -1, 1)
+            batch_data["actions"] = self.actions.reshape(B, self.model.actions).astype(np.float32)
+            batch_data["log_pac"] = torch.distributions.normal.Normal(
+                torch.from_numpy(mu),
+                self.get_current_action_std()
+            ).log_prob(torch.from_numpy(self.actions)).reshape(B, self.model.actions)
 
         if args.architecture == "single":
             # ppo trains value during policy update
@@ -3690,6 +3719,15 @@ class RolloutBuffer():
         self.tvf_gamma = runner.tvf_gamma
         self.gamma = runner.gamma
         self.current_horizon = runner.current_horizon
+
+def make_env(env_type, env_id, **kwargs):
+    if env_type == "atari":
+        make_fn = rl.atari.make
+    elif env_type == "mujoco":
+        make_fn = rl.mujoco.make
+    else:
+        raise ValueError(f"Invalid environment type {env_type}")
+    return make_fn(env_id, **kwargs)
 
 def _open_checkpoint(checkpoint_path: str, **pt_args):
     """

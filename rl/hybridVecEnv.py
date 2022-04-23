@@ -131,7 +131,8 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             actions = np.reshape(actions, [self.n_parallel, self.n_sequential, n])
             actions = [list(actions[i]) for i in range(len(actions))]
         else:
-            actions = np.reshape(actions, [self.n_parallel, self.n_sequential])
+            n, *action_shape = actions.shape
+            actions = np.reshape(actions, [self.n_parallel, self.n_sequential, *action_shape])
             actions = [list(actions[i]) for i in range(len(actions))]
 
         observations_list, rewards, dones, infos = super().step(actions)

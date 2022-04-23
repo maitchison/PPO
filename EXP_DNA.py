@@ -1662,7 +1662,7 @@ def csgo_5(priority):
                 'policy_epochs': 2,
                 'value_epochs': 1,
                 'distil_epochs': 2,
-                'epochs': 20, # make 50
+                'epochs': 50, # make 50
             }
 
             args['priority'] =priority - (seed - 1) * 50 + 50
@@ -1710,7 +1710,7 @@ def csgo_5(priority):
             # tuning friction...
             for clip in [0.001]:
                 for beta1 in [0.95]:
-                    for friction in [0.03, 0.01, 0.003]:
+                    for friction in [0.03, 0.003]:
                         add_job(
                             "CSGO_6",
                             run_name=f"game={env} marcus2={clip} beta1={beta1} friction={friction} ({seed})",

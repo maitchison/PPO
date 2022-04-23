@@ -540,7 +540,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--export_trajectories", type=str2bool, default=False)
-    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--upload_batch", type=str2bool, default=False, help='Uploads an entire batch to GPU, faster, but uses more GPU RAM.')
     parser.add_argument("--disable_logging", type=str2bool, default=False,
                         help='Useful when profiling.')
@@ -622,6 +622,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--csgo_friction", type=float, default=0.01)
     parser.add_argument("--csgo_decay", type=float, default=1.00)
     parser.add_argument("--csgo_clip", type=float, default=4.00)
+
+    parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco]")
 
     # debugging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
