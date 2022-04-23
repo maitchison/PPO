@@ -87,12 +87,13 @@ class CnnDownStack(nn.Module):
     Downsampling stack from Impala CNN
     """
 
-    def __init__(self, inchan, nblock, outchan, scale=1.0, pool=True, **kwargs):
+    def __init__(self, inchan, nblock, outchan, scale=1.0, down_sample='pool', **kwargs):
         super().__init__()
+        assert down_sample in ['pool', 'stride', 'none']
         self.inchan = inchan
         self.outchan = outchan
-        self.pool = pool
-        self.firstconv = NormedConv2d(inchan, outchan, 3, padding=1)
+        self.down_sample = down_sample
+        self.firstconv = NormedConv2d(inchan, outchan, 3, padding=1, stride=2 if down_sample == 'stride' else 1)
         s = scale / math.sqrt(nblock)
         self.blocks = nn.ModuleList(
             [CnnBasicBlock(outchan, scale=s, **kwargs) for _ in range(nblock)]
@@ -100,7 +101,7 @@ class CnnDownStack(nn.Module):
 
     def forward(self, x):
         x = self.firstconv(x)
-        if getattr(self, "pool", True):
+        if self.down_sample == 'pool':
             x = F.max_pool2d(x, kernel_size=3, stride=2, padding=1)
         for block in self.blocks:
             x = block(x)
@@ -109,10 +110,18 @@ class CnnDownStack(nn.Module):
     def output_shape(self, inshape):
         c, h, w = inshape
         assert c == self.inchan
-        if getattr(self, "pool", True):
+        if self.down_sample == 'pool':
             return (self.outchan, (h + 1) // 2, (w + 1) // 2)
-        else:
+        elif self.down_sample == 'none':
             return (self.outchan, h, w)
+        elif self.down_sample == 'stride':
+            # from https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
+            out_h = math.floor((h + 2 * 1 - 1 * (3 - 1) - 1) / 2 + 1)
+            out_w = math.floor((w + 2 * 1 - 1 * (3 - 1) - 1) / 2 + 1)
+            return (self.outchan, out_h, out_w)
+        else:
+            raise ValueError(f"Invalid down_sample mode {self.down_sample}")
+
 
 
 # -----------------------------------------------------

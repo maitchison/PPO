@@ -69,7 +69,6 @@ regression_args = {
 
     # new params
     'observation_normalization': True,
-    'layer_norm': False,
 
     # distil params
     'distil_epochs': 1,

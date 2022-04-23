@@ -472,6 +472,79 @@ class RewardScaleWrapper(gym.Wrapper):
         obs, reward, done, info = self.env.step(action)
         return obs, reward*self.scale, done, info
 
+
+class BigRedButtonWrapper(gym.Wrapper):
+    """
+    Adds 1% chance to insert a big red button into the observation space. If the agent presses any action with an
+    even index the episode terminates with a penality equal to all accumulated score so far.
+    """
+
+    def __init__(self, env:gym.Env, p: float = 0.01, change_actions=False):
+        """
+        @param p: probability that button is inserted each frame.
+
+        Note: this will not work well on environments with negative rewards.
+        """
+        super().__init__(env)
+        self.p = p
+        self.time_since_button_shown = None
+        self.action_required = 0
+        self.accumulated_reward = 0
+        self.change_actions = change_actions
+
+    def step(self, action: int):
+
+        obs, reward, done, info = self.env.step(action)
+
+        assert obs.shape == (84, 84, 1), "Sorry big red button is hardcoded for 84x84 resolution, single channel."
+        assert obs.dtype == np.uint8, "Sorry big red button is hardcoded for uint8."
+
+        if self.time_since_button_shown == 1:
+            info['button'] = self.action_required
+            # we delay a little just because the environment might be stochastic
+            # actually this does not matter... because stochastic is implemented up the river, by ALE.
+            if action != self.action_required:
+                # blow up the world
+                info['pushed_button'] = True
+                return obs*0, -10000, True, info
+
+        # draw the 'button'
+        if np.random.rand() < self.p:
+            self.time_since_button_shown = 0
+            obs //= 3
+            if self.change_actions:
+                self.action_required = np.random.randint(0, self.env.action_space.n)
+                x_pos = 10 + (self.action_required % 4) * 13
+                y_pos = 10 + (self.action_required // 4) * 13
+                obs[x_pos:x_pos+10, y_pos:y_pos+10] = 255
+            else:
+                self.action_required = 0
+                obs[42-16:42+16, 42-16:42+16] = 255
+
+        if self.time_since_button_shown is not None:
+            self.time_since_button_shown += 1
+
+        self.accumulated_reward += reward
+
+        return obs, reward, done, info
+
+    def save_state(self, buffer):
+        buffer["time_since_button_shown"] = self.time_since_button_shown
+        buffer["accumulated_reward"] = self.accumulated_reward
+        buffer["action_required"] = self.action_required
+
+    def restore_state(self, buffer):
+        self.time_since_button_shown = buffer["time_since_button_shown"]
+        self.accumulated_reward = buffer["accumulated_reward"]
+        self.action_required = buffer["action_required"]
+
+    def reset(self, **kwargs):
+        self.time_since_button_shown = None
+        self.accumulated_reward = 0
+        return self.env.reset()
+
+
+
 class RandomTerminationWrapper(gym.Wrapper):
 
     def __init__(self, env:gym.Env, p: float):

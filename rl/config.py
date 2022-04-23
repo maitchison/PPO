@@ -28,6 +28,7 @@ class Config:
 
         self.input_crop         = bool()
         self.adam_epsilon       = float()
+        self.adam_beta1         = float()
         self.workers            = int()
         self.epochs             = float()
         self.limit_epochs       = int()
@@ -41,21 +42,27 @@ class Config:
         self.replay_mixing      = bool()
         self.replay_thinning = float()
 
+        self.log_frequency_response = bool()
+        self.lfr_samples = int()
+        self.lfr_normalize = bool()
+
         # value logging
         self.log_detailed_value_quality = bool()
         self.dvq_freq = int()
         self.dvq_samples = int()
         self.dvq_rollout_length = int()
 
-        # critical batch_size
-        self.abs_mode = str()
-        self.save_model_interval = bool()
+        # adaptive return estimation
+        self.are_mode = str()
+        self.are_min_h = 1
+        self.are_max_h = 100
+        self.are_epsilon = 0.0
+        self.are_alpha = 0.995
+        self.are_warmup = 5e6
+        self.are_target_p = float()
+        self.are_target_v = float()
 
-        # replay constraint
-        self.policy_replay_constraint = float()
-        self.value_replay_constraint = float()
-        self.policy_replay_constraint_anneal = str()
-        self.value_replay_constraint_anneal = str()
+        self.save_model_interval = bool()
 
         self.quite_mode         = bool()
 
@@ -74,6 +81,9 @@ class Config:
         self.repeated_action_penalty = float()
         self.color              = bool()
         self.entropy_bonus      = float()
+        self.use_uac = bool()
+        self.eb_cost_alpha = float()
+        self.eb_clip = float()
         self.threads            = int()
         self.export_video       = bool()
         self.export_trajectories= bool()
@@ -89,8 +99,14 @@ class Config:
         self.policy_mini_batch_size = int()
         self.value_mini_batch_size = int()
         self.distil_mini_batch_size = int()
-        self.network = str()
-        self.layer_norm = bool()
+
+        self.policy_network = str()
+        self.value_network = str()
+        self.policy_network_args = str()
+        self.value_network_args = str()
+
+        self.policy_norm = str()
+        self.value_norm = str()
 
 
         self.tvf_coef           = float()
@@ -125,8 +141,6 @@ class Config:
         self.tvf_hidden_units = int()
         self.use_tvf = bool()
         self.distil_delay = int()
-        self.distil_min_var = float()
-        self.distil_var_boost = float()
 
         # entropy bonus constants
         self.eb_alpha           = float()
@@ -137,6 +151,8 @@ class Config:
         self.embed_action = bool()
         self.ed_type = str()
         self.ed_gamma = float()
+
+        self.big_red_button_prob = float()
 
         # phasic
         self.policy_epochs = int()                            
@@ -226,7 +242,6 @@ class Config:
         # tvf loss
         self.tvf_loss_fn = str()
         self.tvf_huber_loss_delta = float()
-        self.use_tanh_clipping = bool()
 
         self.use_compression = bool()
         self.mutex_key = str()
@@ -271,10 +286,6 @@ class Config:
     @property
     def use_intrinsic_rewards(self):
         return self.use_rnd or self.use_ebd or self.use_erp
-
-    @property
-    def needs_dual_constraint(self):
-        return args.dna_dual_constraint != 0 and args.architecture == "dual" and args.distil_epochs > 0
 
     @property
     def rnd_epochs(self):
@@ -350,17 +361,27 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--reference_policy", type=str, default=None,
                         help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
 
+    parser.add_argument("--policy_network", type=str, default="nature", help="Encoder used, [nature|impala]")
+    parser.add_argument("--value_network", type=str, default="nature", help="Encoder used, [nature|impala]")
+    parser.add_argument("--policy_network_args", type=str, default=None)
+    parser.add_argument("--value_network_args", type=str, default=None)
 
-    parser.add_argument("--network", type=str, default="nature", help="Encoder used, [nature|impala]")
     parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
 
     parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--gae_value_multiplier", type=float, default=1.0, help="Modifies value before going into GAE. Used to see how bad value estimates affect performance.")
     parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clip gradients during training to this.")
+    parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|marcus1|marcus2]")
+
+    # policy features
+    parser.add_argument("--policy_batch_norm", type=str2bool, default=False)
+    parser.add_argument("--policy_weight_decay", type=float, default=0.0)
 
     parser.add_argument("--input_crop", type=str2bool, default=False, help="Enables atari input cropping.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
+    parser.add_argument("--adam_beta1", type=float, default=0.9, help="beta1 parameter for Adam optimizer")
+    parser.add_argument("--adam_beta2", type=float, default=0.999, help="beta1 parameter for Adam optimizer")
     parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
     parser.add_argument("--epochs", type=float, default=50.0,
                         help="Each epoch represents 1 million environment interactions.")
@@ -409,7 +430,9 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
-    parser.add_argument("--abs_mode", type=str, default="off", help="Enables adaptive batch size. [off|on|shadow]")
+    parser.add_argument("--are_mode", type=str, default="off", help="Enables adaptive batch size. [off|on|shadow|policy]")
+    parser.add_argument("--are_target_p", type=float, default=100)
+    parser.add_argument("--are_target_v", type=float, default=10)
     parser.add_argument("--save_model_interval", type=int, default=0, help="Period for which to saves model history during training (uses a lot of space!). 0 = off.")
 
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
@@ -417,6 +440,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_hidden_units", type=int, default=512, help="units used for value prediction")
 
     parser.add_argument("--use_tvf", type=str2bool, default=False, help="Enabled TVF mode.")
+    parser.add_argument("--big_red_button_prob", type=float, default=0.0, help="Probability of adding a big red button to environment that will terminate with a large penality.")
 
     # simulated annealing
     parser.add_argument("--sa_mu", type=float, default=0.0)
@@ -450,25 +474,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
     parser.add_argument("--replay_mixing", type=str2bool, default=False)
     parser.add_argument("--replay_thinning", type=float, default=1.0, help="Adds this fraction of experience to replay buffer.")
-    parser.add_argument("--policy_replay_constraint", type=float, default=0.0,
-                        help="How much to constrain policy on historical data when making updates.")
-    parser.add_argument("--value_replay_constraint", type=float, default=0.0,
-                        help="How much to constrain value on historical data when making updates.")
-    parser.add_argument("--value_replay_constraint_anneal", type=str, default="off",
-                        help="[off|linear|cos|cos_linear]")
-    parser.add_argument("--policy_replay_constraint_anneal", type=str, default="off",
-                        help="[off|linear|cos|cos_linear]")
 
     parser.add_argument("--distil_delay", type=int, default=0, help="Number of steps to wait before starting distillation")
-    parser.add_argument("--distil_min_var", type=float, default=0.0,
-                        help="If the variance of the value networks value estimates are less than this distil will not run.")
-    parser.add_argument("--distil_var_boost", type=float, default=0.0,
-                        help="Variance based bonus for distillation.")
 
     parser.add_argument("--dna_shared_initialization", type=str2bool, default=False,
                         help="Policy and value network start with same weight initialization")
-    parser.add_argument("--dna_dual_constraint", type=float, default=0,
-                        help="Policy updates are constrained by value prediction.")
 
     parser.add_argument("--entropy_scaling", type=str2bool, default=False,
                         help="Scales entropy bonus by 1/|std(adv)|.")
@@ -494,7 +504,6 @@ def parse_args(no_env=False, args_override=None):
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
     parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
-    parser.add_argument("--use_tanh_clipping", type=str2bool, default=False)
 
     parser.add_argument("--policy_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
                         help="Anneals learning rate to 0 (linearly) over training")
@@ -525,6 +534,9 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--repeated_action_penalty", type=float, default=0.0,
                         help="Penalty if agent repeats the same action more than this many times.")
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
+    parser.add_argument("--use_uac", type=str2bool, default=False, help="Learns the cost of a uniform exploration step (Uniform action cost)")
+    parser.add_argument("--eb_cost_alpha", type=float, default=10.0, help="Weights entropy bonus by uniform action cost.")
+    parser.add_argument("--eb_clip", type=float, default=-1, help="Clips entropy bonus. (negative disables clipping)")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--export_video", type=str2bool, default=True)
     parser.add_argument("--export_trajectories", type=str2bool, default=False)
@@ -572,7 +584,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--frame_stack", type=int, default=4)
     parser.add_argument("--frame_skip", type=int, default=4)
     parser.add_argument("--log_folder", type=str, default=None)
-    parser.add_argument("--use_clipped_value_loss", type=str2bool, default=False, help="Use the improved clipped value loss.")
+    parser.add_argument("--ppo_payback", type=str2bool, default=False)
 
     # icm stuff
     parser.add_argument("--use_icm", type=str2bool, default=False, help="Enables the Intrinsic Motivation Module (IDM).")
@@ -605,6 +617,12 @@ def parse_args(no_env=False, args_override=None):
                         help="disables explained variance calculations (faster)."
                         )
 
+    parser.add_argument("--optimizer", type=str, default="adam", help="[adam|sgd|csgo]")
+    parser.add_argument("--policy_optimizer", type=str, default="", help="[adam|sgd|csgo]")
+    parser.add_argument("--csgo_friction", type=float, default=0.01)
+    parser.add_argument("--csgo_decay", type=float, default=1.00)
+    parser.add_argument("--csgo_clip", type=float, default=4.00)
+
     # debugging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
     parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
@@ -619,6 +637,11 @@ def parse_args(no_env=False, args_override=None):
                         help='Allows the use of the reference return estimator (very slow). [default|reference|verify]'
                         )
 
+    parser.add_argument("--log_frequency_response", type=str2bool, default=False,
+                        help='Logs how much given frequency bands contribute to output.')
+    parser.add_argument("--lfr_samples", type=int, default=256, help='Number of samples for LRF.')
+    parser.add_argument("--lfr_normalize", type=str2bool, default=True, help='If input should use normalization transform.')
+
     # other
     parser.add_argument("--mutex_key", type=str, default='',
                         help="uses mutex locking so that only one GPU can be working on a rollout at a time. " +
@@ -626,7 +649,8 @@ def parse_args(no_env=False, args_override=None):
                         )
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--description", type=str, default=None, help="Can be used as needed. (logged in params.txt)")
-    parser.add_argument("--layer_norm", type=str2bool, default=False)
+    parser.add_argument("--policy_norm", type=str, default="off")
+    parser.add_argument("--value_norm", type=str, default="off")
     parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
 
     # legacy
@@ -660,7 +684,7 @@ def parse_args(no_env=False, args_override=None):
     assert not (args.use_ebd and not args.architecture == "dual"), "EBD requires dual architecture"
     assert not (args.erp_source == "both" and args.replay_size == 0), "erp_source=both requires a replay buffer"
 
-    assert args.abs_mode in ["off", "on", "shadow"]
+    assert args.are_mode in ["off", "on", "shadow", "policy"]
     assert args.return_estimator_mode in ["default", "reference", "verify"]
     if args.log_detailed_value_quality:
         assert args.learn_second_moment, "Logging requires second moment to be enabled."
@@ -713,4 +737,8 @@ def parse_args(no_env=False, args_override=None):
 
     if args.replay_mode == "off":
         args.replay_size = 0
+
+    if not args.use_tvf:
+        args.tvf_hidden_units = 0 # save some parameters..
+
 

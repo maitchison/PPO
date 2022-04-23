@@ -116,7 +116,8 @@ def main():
     utils.lock_job()
 
     actor_critic_model = models.TVFModel(
-        network=args.network,
+        networks=(args.policy_network, args.value_network),
+        network_args=(args.policy_network_args, args.value_network_args),
         input_dims=obs_space,
         actions=n_actions,
         device=args.device,
@@ -137,7 +138,6 @@ def main():
         shared_initialization=args.dna_shared_initialization,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
-        layer_norm=args.layer_norm,
     )
 
     if args.reference_policy is not None:

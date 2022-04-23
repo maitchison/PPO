@@ -1,3 +1,5 @@
+import ast
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,10 +10,16 @@ from typing import Union
 
 from . import utils, impala
 
-# AMP does not help much, and may degrade performance
-# JIT isn't that useful but it won't hurt to have it on
-JIT = True
-AMP = False # not helpful, and disabled for the moment
+# rough speeds for these models (on a 2080 TI, and with DNA)
+
+# Encoder      IPS       Params     Hidden Units   Notes
+# impala_fast  818       1.3M       256            Not actually much faster...
+# impala       767       2.2M       256
+# nature       1847      3.4M       512
+# nature_fat   1451      7.1M       512
+
+JIT = False # causes problems with impala
+AMP = False # not helpful
 
 # ----------------------------------------------------------------------------------------------------------------
 # Heads (feature extractors)
@@ -45,7 +53,14 @@ class ImpalaCNN_Net(Base_Net):
 
     name = "ImpalaCNN"  # put it here to preserve pickle compat
 
-    def __init__(self, input_dims:tuple, hidden_units:int = 256, channels=(16, 32, 32), n_block:int = 2, **ignore_args):
+    def __init__(self,
+                 input_dims:tuple,
+                 hidden_units:int = 256,
+                 channels=(16, 32, 32),
+                 n_block:int = 2,
+                 down_sample='pool', # [pool|stride]
+                 **ignore_args
+                 ):
 
         super().__init__(input_dims, hidden_units)
 
@@ -54,7 +69,7 @@ class ImpalaCNN_Net(Base_Net):
         s = 1 / math.sqrt(len(channels))  # per stack scale
         self.stacks = nn.ModuleList()
         for out_channel in channels:
-            stack = impala.CnnDownStack(curshape[0], nblock=n_block, outchan=out_channel, scale=s)
+            stack = impala.CnnDownStack(curshape[0], nblock=n_block, outchan=out_channel, scale=s, down_sample=down_sample)
             self.stacks.append(stack)
             curshape = stack.output_shape(curshape)
 
@@ -63,13 +78,12 @@ class ImpalaCNN_Net(Base_Net):
         self.out_shape = curshape
         self.d = utils.prod(self.out_shape)
         self.hidden_units = hidden_units
-        if self.hidden_units > 0:
-            self.fc = nn.Linear(self.d, hidden_units)
 
     def forward(self, x):
         """ forwards input through model, returns features (without relu)
             input should be in B,C,H,W format
          """
+        #with torch.torch.autocast(device_type='cuda', enabled=AMP):
         x = impala.sequential(self.stacks, x, diag_name=self.name)
         x = impala.flatten_image(x)
         x = torch.relu(x)
@@ -81,15 +95,15 @@ class NatureCNN_Net(Base_Net):
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
     """
 
-    def __init__(self, input_dims, hidden_units=512, layer_norm=False):
+    def __init__(self, input_dims, hidden_units=512, base_channels=32, norm='off'):
 
         super().__init__(input_dims, hidden_units)
 
         input_channels = input_dims[0]
 
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=(8, 8), stride=(4, 4))
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=(4, 4), stride=(2, 2))
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1))
+        self.conv1 = nn.Conv2d(input_channels, base_channels, kernel_size=(8, 8), stride=(4, 4))
+        self.conv2 = nn.Conv2d(base_channels, 2 * base_channels, kernel_size=(4, 4), stride=(2, 2))
+        self.conv3 = nn.Conv2d(2 * base_channels, 2 * base_channels, kernel_size=(3, 3), stride=(1, 1))
 
         fake_input = torch.zeros((1, *input_dims))
         _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
@@ -100,18 +114,29 @@ class NatureCNN_Net(Base_Net):
         if self.hidden_units > 0:
             self.fc = nn.Linear(self.d, hidden_units)
 
-        self.layer_norm = layer_norm
-        if layer_norm:
+        self.norm = norm
+
+        if self.norm == "off":
+            pass
+        elif self.norm == 'layer':
             # just on the convolutions... less parameters... less over fitting...
             x = self.conv1(fake_input)
             _, c, w, h = x.shape
-            self.ln1 = nn.LayerNorm([c, h, w])
+            self.n1 = nn.LayerNorm([c, h, w])
             x = self.conv2(x)
             _, c, w, h = x.shape
-            self.ln2 = nn.LayerNorm([c, h, w])
+            self.n2 = nn.LayerNorm([c, h, w])
             x = self.conv3(x)
             _, c, w, h = x.shape
-            self.ln3 = nn.LayerNorm([c, h, w])
+            self.n3 = nn.LayerNorm([c, h, w])
+        elif self.norm == 'batch':
+            momentum = 0.01 # we have a noisy setting...
+            self.n1 = nn.BatchNorm2d(base_channels, momentum)
+            self.n2 = nn.BatchNorm2d(2 * base_channels, momentum)
+            self.n3 = nn.BatchNorm2d(2 * base_channels, momentum)
+        else:
+            raise ValueError("Invalid normalization")
+
 
     # this causes everything to be on cuda:1... hmm... even when it's disabled...
     #@torch.autocast(device_type='cuda', enabled=AMP)
@@ -120,81 +145,17 @@ class NatureCNN_Net(Base_Net):
 
         D = self.d
 
-        if self.layer_norm:
-            x = F.relu(self.conv1(x))
-            x = self.ln1(x)
-            x = F.relu(self.conv2(x))
-            x = self.ln2(x)
-            x = F.relu(self.conv3(x))
-            x = self.ln3(x)
-        else:
+        if self.norm == "off":
             x = F.relu(self.conv1(x))
             x = F.relu(self.conv2(x))
             x = F.relu(self.conv3(x))
-
-        x = torch.reshape(x, [-1, D])
-        if self.hidden_units > 0:
-            x = self.fc(x)
-        return x
-
-
-
-class NatureFatCNN_Net(Base_Net):
-    """ Takes stacked frames as input, and outputs features.
-        Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
-        All parameters doubled...
-    """
-
-    def __init__(self, input_dims, hidden_units=512, layer_norm=False):
-
-        super().__init__(input_dims, hidden_units)
-
-        input_channels = input_dims[0]
-
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=(8, 8), stride=(4, 4))
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=(4, 4), stride=(2, 2))
-        self.conv3 = nn.Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1))
-
-        fake_input = torch.zeros((1, *input_dims))
-        _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
-
-        self.out_shape = (c, w, h)
-        self.d = utils.prod(self.out_shape)
-        self.hidden_units = hidden_units
-        if self.hidden_units > 0:
-            self.fc = nn.Linear(self.d, hidden_units)
-
-        self.layer_norm = layer_norm
-        if layer_norm:
-            # just on the convolutions... less parameters... less over fitting...
-            x = self.conv1(fake_input)
-            _, c, w, h = x.shape
-            self.ln1 = nn.LayerNorm([c, h, w])
-            x = self.conv2(x)
-            _, c, w, h = x.shape
-            self.ln2 = nn.LayerNorm([c, h, w])
-            x = self.conv3(x)
-            _, c, w, h = x.shape
-            self.ln3 = nn.LayerNorm([c, h, w])
-
-    # this causes everything to be on cuda:1... hmm... even when it's disabled...
-    #@torch.autocast(device_type='cuda', enabled=AMP)
-    def forward(self, x):
-        """ forwards input through model, returns features (without relu) """
-
-        D = self.d
-
-        if self.layer_norm:
+        elif self.norm in ["layer", "batch"]:
             x = F.relu(self.conv1(x))
-            x = self.ln1(x)
+            x = self.n1(x)
             x = F.relu(self.conv2(x))
-            x = self.ln2(x)
+            x = self.n2(x)
             x = F.relu(self.conv3(x))
-            x = self.ln3(x)
-        else:
-            x = F.relu(self.conv1(x))
-            x = F.relu(self.conv2(x))
-            x = F.relu(self.conv3(x))
+            x = self.n3(x)
 
         x = torch.reshape(x, [-1, D])
         if self.hidden_units > 0:
@@ -386,24 +347,25 @@ class DualHeadNet(nn.Module):
             self.time_transform = tvf_time_transform
 
             # value net outputs a basic value estimate as well as the truncated value estimates
-            self.value_head = nn.Linear(self.encoder.hidden_units, 4)
-            self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
-            self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
-            # we want intrinsic / extrinsic versions of first and second moments.
-            self.tvf_head = nn.Linear(tvf_hidden_units, 4, bias=False) # bias can cause problems as it will offset the entire curve.
+            self.value_head = nn.Linear(self.encoder.hidden_units, 5)
+            if tvf_hidden_units > 0:
+                self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
+                self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
+                # we want intrinsic / extrinsic versions of first and second moments.
+                self.tvf_head = nn.Linear(tvf_hidden_units, 5, bias=False) # bias can cause problems as it will offset the entire curve.
 
-            # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
-            torch.nn.init.uniform_(
-                self.tvf_hidden_aux.weight,
-                -1/(self.encoder.hidden_units ** 0.5),
-                 1/(self.encoder.hidden_units ** 0.5)
-            )
-            if self.tvf_hidden_aux.bias is not None:
+                # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
                 torch.nn.init.uniform_(
-                    self.tvf_hidden_aux.bias,
-                    -1 / (self.encoder.hidden_units ** 0.5),
-                    1 / (self.encoder.hidden_units ** 0.5)
+                    self.tvf_hidden_aux.weight,
+                    -1/(self.encoder.hidden_units ** 0.5),
+                     1/(self.encoder.hidden_units ** 0.5)
                 )
+                if self.tvf_hidden_aux.bias is not None:
+                    torch.nn.init.uniform_(
+                        self.tvf_hidden_aux.bias,
+                        -1 / (self.encoder.hidden_units ** 0.5),
+                        1 / (self.encoder.hidden_units ** 0.5)
+                    )
 
     @property
     def tvf_activation_function(self):
@@ -506,6 +468,7 @@ class DualHeadNet(nn.Module):
             result['int_value'] = value_values[:, 1]
             result['ext_value_sqr'] = value_values[:, 2]
             result['int_value_sqr'] = value_values[:, 3]
+            result['uni_value'] = value_values[:, 4]
 
             # auxiliary features
             if aux_features is not None:
@@ -532,6 +495,7 @@ class DualHeadNet(nn.Module):
                 result['tvf_int_value'] = values[..., 1]
                 result['tvf_ext_value_m2'] = values[..., 2]  # second moment estimates...
                 result['tvf_int_value_m2'] = values[..., 3]
+                result['tvf_uni_value'] = values[..., 4]
 
         return result
 
@@ -559,7 +523,8 @@ class TVFModel(nn.Module):
     """
     def __init__(
             self,
-            network: str,
+            networks: tuple,
+            network_args: tuple,
             input_dims: tuple,
             actions: int,
             device: str = "cuda",
@@ -580,8 +545,6 @@ class TVFModel(nn.Module):
             shared_initialization=False,
             observation_normalization=False,
             freeze_observation_normalization=False,
-            layer_norm: bool=False,
-            network_args:Union[dict, None] = None,
     ):
 
         assert not use_rnn, "RNN not supported yet"
@@ -594,12 +557,29 @@ class TVFModel(nn.Module):
         self.dtype = dtype
         self.observation_normalization = observation_normalization
 
-        self.name = "PPG-" + network
+        if architecture == "single":
+            self.name = "PPO-" + networks[0]
+        if architecture == "dual":
+            if tvf_hidden_units == 0:
+                self.name = "DNA-" + networks[0] + '-' + networks[1]
+            else:
+                self.name = "TVF-" + networks[0] + '-' + networks[1]
+
         single_channel_input_dims = (1, *input_dims[1:])
         self.use_rnd = use_rnd
         self.freeze_observation_normalization = freeze_observation_normalization
+        self._mu = None
+        self._std = None
 
-        make_net = lambda : DualHeadNet(
+        policy_network, value_network = networks
+        policy_network_args, value_network_args = network_args
+
+        if type(policy_network_args) is str:
+            policy_network_args = ast.literal_eval(policy_network_args)
+        if type(value_network_args) is str:
+            value_network_args = ast.literal_eval(value_network_args)
+
+        make_net = lambda network, args: DualHeadNet(
             network=network,
             input_dims=input_dims,
             tvf_activation=tvf_activation,
@@ -610,15 +590,14 @@ class TVFModel(nn.Module):
             tvf_max_horizon=tvf_max_horizon,
             tvf_value_scale_fn=tvf_value_scale_fn,
             tvf_value_scale_norm=tvf_value_scale_norm,
-            layer_norm=layer_norm,
             actions=actions,
             device=device,
-            **(network_args or {})
+            **(args or {})
         )
 
-        self.policy_net = make_net()
+        self.policy_net = make_net(policy_network, policy_network_args)
         if architecture == "dual":
-            self.value_net = make_net()
+            self.value_net = make_net(value_network, value_network_args)
             if shared_initialization:
                 return_msg = self.value_net.load_state_dict(self.policy_net.state_dict(), strict=True)
                 print(return_msg)
@@ -652,6 +631,10 @@ class TVFModel(nn.Module):
         """ Returns detached log_policy for given input. """
         return self.forward(x, state, output="policy")["log_policy"].detach().cpu().numpy()
 
+    def refresh_normalization_constants(self):
+        self._mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device, dtype=get_dtype())
+        self._std = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device, dtype=get_dtype())
+
     @torch.no_grad()
     def perform_normalization(self, x: torch.tensor, update_normalization: bool = False):
         """
@@ -674,12 +657,13 @@ class TVFModel(nn.Module):
             batch_var = torch.var(x, dim=0, unbiased=False).detach().cpu().numpy()
             batch_count = x.shape[0]
             self.obs_rms.update_from_moments(batch_mean, batch_var, batch_count)
+            self.refresh_normalization_constants()
 
-        mu = torch.tensor(self.obs_rms.mean.astype(np.float32)).to(self.device, dtype=get_dtype())
-        std = torch.tensor(self.obs_rms.var.astype(np.float32) ** 0.5).to(self.device, dtype=get_dtype())
+        if self._mu is None:
+            self.refresh_normalization_constants()
 
         # normalize x
-        x = torch.clamp((x - mu) / (std + 1e-5), -5, 5)
+        x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
 
         # note: clipping reduces the std down to 0.3, therefore we multiply the output so that it is roughly
         # unit normal.
@@ -853,10 +837,10 @@ def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
     head_name = head_name.lower()
     if head_name == "nature":
         return NatureCNN_Net(input_dims, **kwargs)
-    if head_name == "nature_fat":
-        return NatureFatCNN_Net(input_dims, **kwargs)
     if head_name == "impala":
-        return ImpalaCNN_Net(input_dims, **kwargs)
+        return ImpalaCNN_Net(input_dims, channels=(16, 32, 32), down_sample='pool', **kwargs)
+    if head_name == "impala_fast":
+        return ImpalaCNN_Net(input_dims, channels=(16, 32, 32, 48), down_sample='stride', **kwargs)
     if head_name == "rtg":
         return RTG_Net(input_dims, **kwargs)
 

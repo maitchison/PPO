@@ -27,6 +27,7 @@ Runs a single evaluation on given file
 
 import argparse
 import hashlib
+import shutil
 
 import json
 import pickle
@@ -166,6 +167,10 @@ def load_checkpoint(checkpoint_path, device=None):
     if args.frame_skip == 0:
         args.frame_skip = 4
 
+    # fip up horizon when in dna mode (used for plotting only)
+    if not args.use_tvf:
+        args.tvf_max_horizon = round(3/(1-args.gamma))
+
     env = atari.make(env_id=args.get_env_name(), monitor_video=True)
 
     model = make_model(env)
@@ -264,6 +269,17 @@ def make_model(env):
 
     try:
         additional_args['observation_normalization'] = args.observation_normalization
+    except:
+        pass
+
+    try:
+        additional_args['networks'] = (args.policy_network, args.value_network)
+        additional_args['network_args'] = (args.policy_network_args, args.value_network_args)
+    except:
+        pass
+
+    try:
+        additional_args['value_norm'] = args.value_norm
     except:
         pass
 
@@ -556,6 +572,7 @@ def generate_rollouts(
                 'mv_return_sample': [], # return samples for each horizon, specifically the discounted sum of (unscaled) rewards
                 'prev_state_hash': [],  # hash for each prev_state , used to verify that runs are identical
                 'is_running': [], # bool, True if agent is still alive, false otherwise.
+                'uac_value': [],
                 'actions': [],
                 'probs': [],
                 'noops': 0,
@@ -661,7 +678,8 @@ def generate_rollouts(
             kwargs['horizons'] = horizons
         else:
             # new method
-            kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
+            if args.use_tvf:
+                kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
 
         if rewards_only:
             kwargs['output'] = "policy"
@@ -866,7 +884,7 @@ def generate_rollouts(
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 append_buffer('frames', frame)
 
-            if horizons is not None:
+            if horizons is not None and args.use_tvf:
                 values = model_out["tvf_value"][i, :].detach().cpu().numpy()
                 values = values
 
@@ -882,6 +900,10 @@ def generate_rollouts(
             append_buffer('model_values', model_value)
             append_buffer('times', prev_times[i])
 
+            # calculate uac cost
+            if args.use_uac:
+                uniform_action_value = model_out["uni_value"][i].detach().cpu().numpy()
+                append_buffer('uac_value', uniform_action_value)
 
         process_timer.stop()
         total_timer.stop()
@@ -983,6 +1005,9 @@ class QuickPlot():
         self.buffer[-y, x] = c
 
     def h_line(self, x1:int, x2:int, y:int, c):
+        """
+        x,y in pixel space
+        """
         h, w, channels = self.buffer.shape
         if y < 0 or y >= h:
             return
@@ -1151,8 +1176,9 @@ def export_movie(
             if sample is not None:
                 max_return_sample = max(max_return_sample, sample.max())
 
-    max_value_estimate = np.max(buffer["values"]) / REWARD_SCALE
-    min_value_estimate = np.min(buffer["values"]) / REWARD_SCALE
+    key = "values" if args.use_tvf else "model_values"
+    max_value_estimate = np.max(buffer[key]) / REWARD_SCALE
+    min_value_estimate = np.min(buffer[key]) / REWARD_SCALE
     y_max = max(max_true_return, max_value_estimate, max_return_sample)
     y_min = min(min_true_return, min_value_estimate)
 
@@ -1263,10 +1289,21 @@ def export_movie(
             fig.plot(xs, ys, 'greenyellow')
         else:
             # white dot representing value estimate
-            xs = [args.tvf_max_horizon-10, args.tvf_max_horizon]
-            y = buffer["model_values"][t] / REWARD_SCALE
-            ys = [y, y]
+            xs = [round(args.tvf_max_horizon*0.95)-1, args.tvf_max_horizon]
+            y_value = buffer["model_values"][t] / REWARD_SCALE
+            ys = [y_value, y_value]
             fig.plot(xs, ys, 'white')
+
+            if args.use_uac:
+                xs = [round(args.tvf_max_horizon*0.98)-1, args.tvf_max_horizon]
+                y_uac = buffer["uac_value"][t] / REWARD_SCALE
+                ys = [y_uac, y_uac]
+                fig.plot(xs, ys, [1.0, 0.5, 0.0])
+                ys = [y_value, y_uac]
+                xs = [round(np.mean(xs)), round(np.mean(xs))]
+                fig.plot(xs, ys, [1.0, 0.5, 0.0])
+
+
 
         if needs_rediscount():
             # plot originally predicted values (without rediscounting)
@@ -1316,7 +1353,7 @@ def export_movie(
 
     # rename temp file...
     try:
-        os.rename(temp_filename, video_filename)
+        shutil.move(temp_filename, video_filename)
     except Exception as e:
         print(f"Warning: failed to rename {temp_filename} to {video_filename}: {e}")
 

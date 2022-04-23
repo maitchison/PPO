@@ -16,7 +16,7 @@ from os import listdir
 from os.path import isfile, join
 from typing import Union
 
-LOG_CAP = 1e-12 # when computing logs values <= 0 will be replaced with this
+LOG_CAP = 1e-6 # when computing logs values <= 0 will be replaced with this
 
 
 def safe_float(x):
@@ -64,6 +64,16 @@ def read_log(file_path):
     #           "tvf_soft_anchor", "tvf_coef"]:
     #     if v in params:
     #         params["quant_" + v] = 2 ** int(math.log2(params[v]))
+
+    # this is a fixup for double dunk, where score is 0 at the start before any real scores have arrived.
+    if params["environment"] == "DoubleDunk":
+        ep_scores = result["ep_score_mean"]
+        min_score = np.min(ep_scores)
+        for i in range(len(ep_scores)):
+            if ep_scores[i] == 0:
+                ep_scores[i] = min_score
+            else:
+                break
 
     for k in list(result.keys()):
         v = result[k]
@@ -256,7 +266,7 @@ class RunLog():
     def __init__(self, filename, skip_rows=0):
 
         self._patterns = {
-            'log_': lambda x: np.log10(np.clip(x, LOG_CAP, float('inf'))),
+            'log_': lambda x: np.log10(LOG_CAP+np.clip(x, 0, float('inf'))),
             'log2_': lambda x: np.log2(np.clip(x, LOG_CAP, float('inf'))),
             'neg_': lambda x: -x,
             'exp_': lambda x: np.exp(x),
@@ -332,7 +342,7 @@ class RunLog():
             params = read_params(os.path.split(file_path)[0]+"/params.txt")
             result[f"ep_score_norm"] = asn.normalize(params["environment"], result["ep_score_mean"])
         except:
-            pass
+            params = {}
 
         try:
             # include unscaled value estimates
@@ -343,6 +353,16 @@ class RunLog():
         except:
             pass
 
+        # this is a fixup for double dunk, where score is 0 at the start before any real scores have arrived.
+        if params.get("environment", '') == "DoubleDunk":
+            ep_scores = result["ep_score_mean"]
+            min_score = np.min(ep_scores)
+            for i in range(len(ep_scores)):
+                if ep_scores[i] == 0:
+                    ep_scores[i] = min_score
+                else:
+                    break
+
         self._fields = result
 
 
@@ -351,10 +371,10 @@ def compare_runs(
         x_lim=None,
         x_axis="env_step",
         y_axis="ep_score-mean",
+        x_start=None,
         show_legend=True,
         title=None,
         highlight=None,
-        run_filter=None,
         label_filter=None,
         color_filter=None,
         style_filter=None,
@@ -366,8 +386,10 @@ def compare_runs(
         y_axis_name=None,
         ref_level=None,
         hold=False,
+        x_transform=None,
         jitter=0.0,
         figsize=(16,4),
+        run_filter=None, # not used
 ):
     """
         Compare runs stored in given path.
@@ -417,6 +439,9 @@ def compare_runs(
         if x_axis == "walltime":
             xs = np.asarray(xs) / (60 * 60)  # in hours
 
+        if x_transform is not None:
+            xs = [x_transform(x) for x in xs]
+
         if y_axis not in run_data:
             continue
 
@@ -463,7 +488,6 @@ def compare_runs(
             alpha = 1.0
             zorder = None if zorder_filter is None else zorder_filter(run_name, run_params)
 
-
         if run_data is reference_run:
             color = "gray"
 
@@ -488,12 +512,13 @@ def compare_runs(
                 if group not in group_data:
                     group_data[group] = ([xs], [ys], run_label, alpha, color, zorder, ls)
                 else:
-                    group_data[group][0].append(xs)
-                    group_data[group][1].append(ys)
+                    group_data[group][0].append(xs[x_start:])
+                    group_data[group][1].append(ys[x_start:])
                 continue
 
-        plt.plot(xs, ys, alpha=0.2 * alpha, c=color)
-        plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
+
+        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color)
+        plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
 
     plt.xlabel(x_axis_name or x_axis)
@@ -509,18 +534,17 @@ def compare_runs(
         all_ys = [get_y(i) for i in range(len(xs))]
 
         ys = np.asarray([np.mean(y_sample) for y_sample in all_ys])
-        ys_std = np.asarray([np.std(y_sample) for y_sample in all_ys])
+        ys_std_err = np.asarray([np.std(y_sample) / (len(y_sample)**0.5) for y_sample in all_ys])
         #ys_low = [np.max(y_sample) for y_sample in all_ys]
         #ys_high = [np.min(y_sample) for y_sample in all_ys]
-        ys_low = ys - ys_std
-        ys_high = ys + ys_std
+        ys_low = ys - ys_std_err
+        ys_high = ys + ys_std_err
 
         for x_raw, y_raw in zip(group_xs, group_ys):
             # raw curves
-            plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
+            #plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
             pass
 
-        smooth_factor = 0.9
 
         plt.fill_between(xs, smooth(ys_low, smooth_factor), smooth(ys_high, smooth_factor), alpha=0.15 * alpha, color=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
@@ -536,7 +560,12 @@ def compare_runs(
         plt.legend(loc=loc)
 
     if not hold:
-        plt.show()
+        handles, labels = plt.gca().get_legend_handles_labels()
+        if len(labels) == 0:
+            # nothing to draw...
+            plt.close(plt.gcf())
+        else:
+            plt.show()
 
 
 def standard_grid():
@@ -769,26 +798,47 @@ def plot_experiment(
 
 
 class AtariScoreNormalizer:
-
     SUBSETS = {
-            'Atari_3_Val': (
-            ['Assault', 'MsPacman', 'YarsRevenge'],
-            [0.33525298, 0.42363799, 0.19161846],
-            17.1),
-
+        'Atari_Single': (
+            ['Zaxxon'],
+            [0.7364257371683655],
+            24.1),
         'Atari_5': (
             ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert'],
-            [0.38197512, 0.06790995, 0.31080415, 0.12412619, 0.08048518],
+            [0.3819751237831753, 0.0679099488887574, 0.310804148620847, 0.12412619402774641, 0.08048518286466755],
             10.4),
-
-        # these are the old subsets
-        # 'Atari_1': (['zaxxon'], [0.7361104013236862], 32.1),
-        # 'Atari_2': (['battlezone', 'namethisgame'], [0.3710712282605567, 0.6454953598106956], 21.2),
-        # 'Atari_3': (['battlezone', 'namethisgame', 'upndown'], [0.3223504230411684, 0.5675104493851542, 0.10601972957924621], 18.0),
-        # 'Atari_5': (['bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09355820685103215, 0.00021248297862930254, 0.33524848247535244, 0.4677328326407763, 0.10203002089200311], 15.5),
-        # 'Atari_7': (['beamrider', 'kungfumaster', 'bankheist', 'montezumarevenge', 'battlezone', 'namethisgame', 'upndown'], [0.09060641687077026, 0.12202782601137774, 0.08982327174630528, 0.008034433762979576, 0.28968403952214133, 0.33044208972707934, 0.0823538854612863], 13.6),
-        # 'Atari_3_Val': (['berzerk', 'boxing', 'zaxxon'], [0.18128771881834643, 0.23099736700126283, 0.5511012606596132], 24.8),
-        # 'Atari_5_Val': (['bowling', 'qbert', 'berzerk', 'boxing', 'zaxxon'], [0.10826840522123751, 0.09981087743817191, 0.15619612520585538, 0.20017493755002025, 0.44371420800910644], 19.3)
+        'Atari_3': (
+            ['Battlezone', 'Namethisgame', 'Phoenix'],
+            [0.3705645071598444, 0.513268255229986, 0.10151691314166367],
+            13.7
+        ),
+        'Atari_1': (
+            ['NameThisGame'],
+            [0.9975883300775931],
+            27.4
+        ),
+        'Atari_3_Val': (
+            ['Assault', 'MsPacman', 'YarsRevenge'],
+            [0.3352529798243203, 0.4236379909065204, 0.1916184632131803],
+            17.1
+        ),
+        'Atari_5_Val': (
+            ['BankHeist', 'VideoPinball', 'Assault', 'MsPacman', 'YarsRevenge'],
+            [0.10718453170488736, 0.09591728001257466, 0.2233635194763938, 0.294255864978837, 0.22392551763974122],
+            14.3
+        ),
+        'Atari_1_Val': (
+            ['Assault'],
+            [0.7195420422814323],
+            43.4
+        ),
+        'Atari_10': (
+            ['Amidar', 'Bowling', 'Frostbite', 'KungFuMaster', 'RiverRaid', 'BattleZone', 'DoubleDunk', 'NameThisGame',
+            'Phoenix', 'Qbert'],
+            [0.08246357439570691, 0.0559032813915904, 0.06912572845204429, 0.09861731598935165, 0.048594292965417056,
+            0.18882008828001498, 0.08519154019954558, 0.12869695652405946, 0.16432707026384483, 0.05922863791062832],
+            7.2
+        ),
     }
 
     def __init__(self):
@@ -866,6 +916,11 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     Load multiple games and averages their scores
     """
 
+    if type(path) is str:
+        paths = [path]
+    else:
+        paths = path
+
     if type(subset) is str:
         game_list, game_weights, _ = AtariScoreNormalizer.SUBSETS[subset]
         c = 0.0 # no intercept for these
@@ -877,7 +932,9 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     game_list = [x.lower() for x in game_list]
     epoch_scores = defaultdict(lambda: {x: [] for x in game_list})
 
-    folders = [x for x in os.listdir(path) if key in x and os.path.isdir(os.path.join(path, x))]
+    folders = []
+    for path in paths:
+        folders.extend([os.path.join(path, x) for x in os.listdir(path) if key in x and os.path.isdir(os.path.join(path, x))])
 
     if seed is not None:
         folders = [x for x in folders if f"({seed})" in x]
@@ -887,7 +944,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     for folder in folders:
         if folder in ["rl", "roms"]:
             continue
-        game_log = read_log(os.path.join(path, folder))
+        game_log = read_log(folder)
         if game_log is None:
             print(f"no log for {path} {folder}")
             return None
@@ -896,7 +953,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
             print(f"Skipping {game} as not in {game_list}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
-            epoch_scores[env_step // 1e6][game].append(ep_score)
+            epoch_scores[round(env_step / 1e6)][game].append(ep_score)
 
     if len(epoch_scores) == 0 or game_log is None:
         return None
@@ -975,7 +1032,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
 def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atari_3_Val"):
 
     if not hold:
-        plt.figure(figsize=(12, 4))
+        plt.figure(figsize=(18, 6))
 
     for key in keys:
         result = read_combined_log(path, key, subset=subset)
@@ -999,24 +1056,6 @@ def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atar
     if not hold:
         plt.legend()
         plt.show()
-
-def plot_seeded_validation(path, key, seeds=3, color=None, label=None, subset="Atari_3_Val"):
-
-    xs = range(50) # epochs
-    y_list = [[] for _ in xs]
-
-    for seed in range(1,seeds+1):
-        result = read_combined_log(path, key, subset=subset, seed=seed)
-        xs = np.asarray(result["env_step"])/1e-6
-
-        for i, x in enumerate(xs):
-            marker = bisect.bisect_left(xs, x)
-            y_list[i].append(result["score"][marker-5:marker])
-
-    y_mean = np.asarray([np.mean(y) if y != [] else None for y in y_list])
-    y_err = np.asarray([np.std(y)/len(y) if y != [] else 0 for y in y_list])
-    plt.plot(xs, y_mean, label=label, color=color, alpha=1.0)
-    plt.fill_between(xs, y_mean-y_err, y_mean+y_err, label=label, color=color, alpha=0.25)
 
 
 def plot_mode(path):
@@ -1605,6 +1644,89 @@ def load_hyper_parameter_search(path, table_cols: list = None, max_col_width: in
     return results
 
 
+import bisect
+
+
+def plot_seeded_validation(path, key, seeds=3, color=None, label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False):
+    xs = range(51)  # epochs
+    y_list = [[] for _ in xs]
+    max_x = 0
+
+    if label is None:
+        label = key
+
+    for seed in range(1, seeds + 1):
+        result = read_combined_log(path, key, subset=subset, seed=seed)
+        if result is None:
+            if check_seeds:
+                print(f"Missing seed {seed} for {key}")
+            continue
+        steps = np.asarray(result["env_step"], dtype=np.float32) / 1e6
+        if check_seeds:
+            if steps[-1] < 49.0:
+                print(f"Seed {seed} not complete for {key} - {steps[-1]}")
+
+        for i, y in zip(steps, result['score']):
+            y_list[round(i)].append(y)
+            max_x = max(round(i), max_x)
+            # plot individual runs so we can check...
+        plt.plot(steps * 4, result['score'], color=color, alpha=ghost_alpha, ls='--')
+
+    y_list = y_list[:max_x + 1]
+    xs = np.asarray(xs[:max_x + 1])
+
+    def std_err(x):
+        if len(x) == 0:
+            return 0.0
+        return np.std(x) / (len(x) ** 0.5)
+
+    y_mean = np.asarray([np.mean(y) if len(y) > 0 else 0 for y in y_list])
+    y_err = 1.0 * np.asarray([std_err(y) for y in y_list])
+    plt.plot(xs * 4, y_mean, label=label, color=color, alpha=1.0)
+    plt.fill_between(xs * 4, y_mean - y_err, y_mean + y_err, color=color, alpha=0.15)
+
+
+def setup_plot(title=None):
+    plt.figure(figsize=(12, 4))
+    plt.grid(True, alpha=0.25)
+    ax = plt.gca()
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    #plt.title(title)
+
+
+def experiment(title, path, keys: list, subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0):
+    setup_plot(title)
+    for i, key in enumerate(keys):
+        plot_seeded_validation(
+            path,
+            key,
+            color=cm(i),
+            subset=subset,
+            seeds=seeds,
+            check_seeds=check_seeds,
+            label=labels[i] if labels is not None else None,
+            ghost_alpha=ghost_alpha,
+        )
+    plt.legend()
+    plt.xlabel('Frame (M)')
+    plt.ylabel('Score')
+    ax = plt.gca()
+
+    plt.xlim(0, 200)
+    plt.title('')
+    if not hold:
+        plt.title(title)
+        plt.plot()
+
+
 asn = AtariScoreNormalizer()
 cmap = plt.cm.get_cmap('tab10')
 eval_cache = {}
+
+cm = plt.cm.get_cmap('tab10')
+cm20 = plt.cm.get_cmap('tab20')
+
+ATARI_3_VAL = AtariScoreNormalizer.SUBSETS['Atari_3_Val'][0]
+ATARI_5_VAL = AtariScoreNormalizer.SUBSETS['Atari_5_Val'][0]
+ATARI_5 = AtariScoreNormalizer.SUBSETS['Atari_5'][0]

@@ -205,8 +205,15 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
+    if args.big_red_button_prob != 0:
+        env = wrappers.BigRedButtonWrapper(
+            env,
+            p=abs(args.big_red_button_prob),
+            change_actions=args.big_red_button_prob < 0
+        )
+
     if args.embed_action:
-        # must come after frame_stack
+        # must come before frame_stack
         env = wrappers.ActionAwareWrapper(env)
 
     if args.ed_type != "none":
