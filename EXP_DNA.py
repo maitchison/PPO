@@ -1,19 +1,186 @@
 from runner_tools import WORKERS, add_job, random_search, Categorical
-from runner_tools import TVF_reference_args, DNA_reference_args
+from runner_tools import TVF_reference_args, DNA_reference_args, ATARI_57
 import numpy as np
 
+"""
+Todo:
+1. Remove old settings
+2. Upgrade all experiments to new code
+3. Sequential job system?
+4. Run main experiment (1 seed) make sure results match
+5. Run 5M of all other experiments, make sure settings match
+6. Confirm noise experiment
+
+"""
+
 ROLLOUT_SIZE = 128*128
-ATARI_3_VAL_v1 = ['NameThisGame', 'WizardOfWor', 'YarsRevenge']
-ATARI_5_v1 = ['Asterix', 'BattleZone', 'DoubleDunk', 'Phoenix', 'RiverRaid']
-
-# new set...
 ATARI_3_VAL = ['Assault', 'MsPacman', 'YarsRevenge']
-ATARI_5_VAL = ['Assault', 'MsPacman', 'YarsRevenge', 'BankHeist', 'VideoPinball']
-
 ATARI_5 = ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert']
 
-# proposed changes:
-# repeat action penality = 0.25
+def add_run(experiment: str, run_name: str, default_args, env_args, seeds:int, subset:list, priority=0, **kwargs):
+
+    args = STANDARD_ARGS.copy()
+    args.update(default_args)
+    args.update(env_args)
+
+    for seed in range(1, seeds+1):
+        for env in subset:
+            add_job(
+                experiment,
+                run_name=f"game={env} {run_name} ({seed})",
+                env_name=env,
+                seed=seed,
+                priority=priority - ((seed - 1) * 50),
+                default_params=args,
+                **kwargs,
+            )
+
+
+HARD_MODE_ARGS = {
+    # hard mode
+    "terminal_on_loss_of_life": False,
+    "reward_clipping": "off",
+    "full_action_space": True,
+    "repeat_action_probability": 0.25,
+}
+
+EASY_MODE_ARGS = {
+    # hard mode
+    "terminal_on_loss_of_life": True,
+    "reward_clipping": "off",
+    "full_action_space": False,
+    "repeat_action_probability": 0.0,
+}
+
+# These are the best settings from the HPS, but not from the axis search performed later.
+STANDARD_ARGS = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'hostname': '',
+    'architecture': 'dual',
+    'export_video': False,
+    'epochs': 50,
+    'use_compression': False,
+    'upload_batch': True,  # much faster
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+    'mutex_key': "DEVICE",
+
+    'max_grad_norm': 5.0,
+    'agents': 128,                  # HPS
+    'n_steps': 128,                 # HPS
+    'policy_mini_batch_size': 2048, # HPS
+    'value_mini_batch_size': 512,   # should be 256, but 512 for performance
+    'distil_mini_batch_size': 512,  # should be 256, but 512 for performance
+    'policy_epochs': 2,             # reasonable guess
+    'value_epochs': 2,              # reasonable guess
+    'distil_epochs': 2,             # reasonable guess
+    'ppo_epsilon': 0.2,             # allows faster policy movement
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
+    'entropy_bonus': 1e-2,           # standard
+    'hidden_units': 512,             # standard
+    'gae_lambda': 0.95,              # standard
+    'td_lambda': 0.95,               # standard
+    'repeated_action_penalty': 0.25, # HPS says 0, but I think we need this..
+
+    # tvf params
+    'use_tvf': False,
+
+    # distil / replay buffer (This would have been called h11 before
+    'distil_period': 1,
+    'replay_size': 0,       # off for now...
+    'distil_beta': 1.0,     # was 1.0
+
+    'replay_mode': "uniform",
+
+    # horizon
+    'gamma': 0.999,
+
+    # other
+    'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
+}
+
+# used in the PPO Paper
+PPO_ORIG_ARGS = STANDARD_ARGS.copy()
+PPO_ORIG_ARGS.update({
+    'n_steps': 128,            # no change
+    'agents': 8,
+    'ppo_epsilon': 0.1,
+    'policy_lr': 2.5e-4,
+    'policy_lr_anneal': True,
+    'ppo_epsilon_anneal': True,
+    'entropy_bonus': 1e-2,     # no change
+    'gamma': 0.99,
+    'policy_epochs': 3,
+    'td_lambda': 0.95,
+    'gae_lambda': 0.95,
+    'policy_mini_batch_size': 256,
+    'vf_coef': 2.0, # because I use vf 0.5*MSE
+    'value_epochs': 0,
+    'distil_epochs': 0,
+    'architecture': 'single',
+})
+
+DNA_TUNED_ARGS = STANDARD_ARGS.copy()
+DNA_TUNED_ARGS.update({
+    'gae_lambda': 0.8,
+    'td_lambda': 0.95,
+    'policy_epochs': 2,
+    'value_epochs': 1,
+    'distil_epochs': 2,
+})
+
+PPO_TUNED_ARGS = STANDARD_ARGS.copy()
+PPO_TUNED_ARGS.update({
+    'gae_lambda': 0.95,
+    'td_lambda': 0.95,
+    'policy_epochs': 1,
+    'value_epochs': 0,
+    'distil_epochs': 0,
+    'architecture': 'single',
+    'policy_network': 'nature_fat',
+})
+
+PPG_ARGS = STANDARD_ARGS.copy()
+PPG_ARGS.update({
+    'policy_epochs': 1,
+    'value_epochs': 1,
+    'distil_epochs': 0,
+    'aux_epochs': 6,
+    'aux_target': 'vtarg',
+    'aux_source': 'value',
+    'aux_period': 32,
+    'replay_mode': 'sequential',
+    'replay_size': 32*128*128,  # this is 0.5M frames (might need more?)
+    'distil_batch_size': 32*128*128, # use entire batch (but only every 32th step)
+    'use_compression': True,
+    'upload_batch': False,
+})
+
+# old settings
+# ---------------------------------------------------------------------------------------
+
+
+# used in the PPO Paper
+PPG_HARD_ARGS = STANDARD_ARGS.copy()
+PPG_HARD_ARGS.update({
+    'policy_epochs': 1,
+    'value_epochs': 1,
+    'distil_epochs': 0,
+    'aux_epochs': 6,
+    'aux_target': 'vtarg',
+    'aux_source': 'value',
+    'aux_period': 32,
+    'replay_mode': 'sequential',
+    'replay_size': 32*128*128,  # this is 0.5M frames (might need more?)
+    'distil_batch_size': 32*128*128, # use entire batch (but only every 32th step)
+    'use_compression': True,
+    'upload_batch': False,      # :(
+})
+
 
 # These are the best settings from the HPS, but not from the axis search performed later.
 DNA_HARD_ARGS_HPS = {
@@ -72,20 +239,21 @@ DNA_HARD_ARGS_HPS = {
 }
 
 # used in the PPO Paper
-PPO_ORIG_ARGS = DNA_HARD_ARGS_HPS.copy()
-PPO_ORIG_ARGS.update({
-    'n_steps': 128,            # no change
-    'agents': 8,
-    'ppo_epsilon': 0.1,        # no anneal.
-    'entropy_bonus': 1e-2,     # no change
-    'gamma': 0.99,
-    'policy_epochs': 3,
-    'td_lambda': 0.95,
-    'gae_lambda': 0.95,
-    'policy_mini_batch_size': 256,
-    'value_epochs': 0,
+PPG_HARD_ARGS = DNA_HARD_ARGS_HPS.copy()
+PPG_HARD_ARGS.update({
+    'policy_epochs': 1,
+    'value_epochs': 1,
     'distil_epochs': 0,
-    'architecture': 'single',
+    'aux_epochs': 6,
+    'aux_target': 'vtarg',
+    'aux_source': 'value',
+    'aux_period': 32,
+    'replay_mode': 'sequential',
+    'replay_size': 32*128*128,  # this is 0.5M frames (might need more?)
+    'distil_batch_size': 32*128*128, # use entire batch (but only every 32th step)
+    'use_compression': True,
+    'upload_batch': False,      # :(
+
 })
 
 def dna_hps(priority: int = 0):
@@ -265,31 +433,27 @@ def dna_hps(priority: int = 0):
 #             )
 
 
-def dna_gae(priority=0):
+def dna_lambda(priority:int=0):
     """
     Demonstrate that GAE for advantages and for return values can be different.
     """
-
-    # would be nice to check noise levels too..., but maybe do that later?
-
-    HOST = ''
-    for seed in [1, 2, 3, 5]: # this will need 3 seeds (results are close)
+    for seed in [1, 2, 3, 4, 5]:
         for env in ATARI_3_VAL:
             args = {
                 'env_name': env,
-                'hostname': HOST,
+                'hostname': 'desktop',
                 'priority': priority - (seed - 1) * 55,
                 'seed': seed,
                 'use_compression': False,
                 'upload_batch': True,  # much faster
                 'disable_ev': seed != 3, # need to know this on one seed at least
                 'distil_beta': 1.0,
-                'abs_mode': 'off',
+                'abs_mode': 'shadow' if seed == 4 else 'off',
             }
-            for gae_lambda in [0.6, 0.8, 0.9, 0.95, 0.975]: # guessing GAE wants lower...
+            for gae_lambda in [0.6, 0.8, 0.9, 0.95, 0.975]:
                 for td_lambda in [0.8, 0.95]:
                     add_job(
-                        "DNA_GAE",
+                        "DNA_LAMBDA",
                         run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
                         gae_lambda=gae_lambda,
                         td_lambda=td_lambda,
@@ -299,24 +463,73 @@ def dna_gae(priority=0):
                         **args,
                         default_params=DNA_HARD_ARGS_HPS,
                     )
-                for td_lambda in [0.95]:
-                    args['priority'] = priority - (seed - 1) * 55 - 500
-                    add_job(
-                        "PPO_GAE",
-                        run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
-                        gae_lambda=gae_lambda,
-                        td_lambda=td_lambda,
-                        policy_epochs=1,
-                        value_epochs=0,
-                        distil_epochs=0,
-                        architecture='single',
-                        **args,
-                        default_params=DNA_HARD_ARGS_HPS,
-                    )
+            # extra results added to check how td_lambda relates to noise.
+            if seed == 4:
+                for a in [0.95]:
+                    for b in [0.6, 0.8, 0.9, 0.95, 0.975, 0.9875, 0.99375, 1.0]:
+                        add_job(
+                            "DNA_LAMBDA",
+                            run_name=f"game={env} td_lambda={a} gae_lambda={b} ({seed})",
+                            td_lambda=a,
+                            gae_lambda=b,
+                            policy_epochs=2,
+                            value_epochs=1,
+                            distil_epochs=2,
+                            **args,
+                            default_params=DNA_HARD_ARGS_HPS,
+                        )
+                        add_job(
+                            "DNA_LAMBDA",
+                            run_name=f"game={env} td_lambda={b} gae_lambda={a} ({seed})",
+                            td_lambda=b,
+                            gae_lambda=a,
+                            policy_epochs=2,
+                            value_epochs=1,
+                            distil_epochs=2,
+                            **args,
+                            default_params=DNA_HARD_ARGS_HPS,
+                        )
 
-    # noise level results...
-    for seed in [4]: # this will need 3 seeds (results are close)
-        for env in ATARI_3_VAL:
+
+def merge_dict(a:dict, b:dict):
+    c = a.copy()
+    for k, v in b.items():
+        c[k] = v
+    return c
+
+def dna_A57(priority=0):
+
+    for path, env_args in zip(["A57_HARD", "A57_EASY"], [HARD_MODE_ARGS, EASY_MODE_ARGS]):
+
+        COMMON_ARGS = {
+            'experiment': path,
+            'seeds': 1,
+            'subset': ATARI_57,
+            'priority': 500 if path == "A57_HARD" else priority,
+            'hostname': "" if path == "A57_HARD" else '',
+        }
+
+        add_run(
+            run_name="dna_tuned",
+            default_args=DNA_TUNED_ARGS,
+            env_args=env_args,
+            **COMMON_ARGS
+        )
+
+        add_run(
+            run_name="ppo_tuned_fat",
+            default_args=PPO_TUNED_ARGS,
+            env_args=env_args,
+            **COMMON_ARGS
+        )
+
+def dna_a57_old(priority=0):
+    """
+    Fill in the remaining 57 games for 1 seed.
+    """
+
+    for seed in [1]:
+        for env in ATARI_57:
             args = {
                 'env_name': env,
                 'hostname': '',
@@ -326,59 +539,39 @@ def dna_gae(priority=0):
                 'upload_batch': True,  # much faster
                 'disable_ev': False,
                 'distil_beta': 1.0,
-                'abs_mode': 'shadow',
             }
-            for gae_lambda in [0.6, 0.8, 0.9, 0.95, 0.975]:  # guessing GAE wants lower...
-                for td_lambda in [0.8, 0.95]:
-                    add_job(
-                        "DNA_GAE",
-                        run_name=f"game={env} td_lambda={td_lambda} gae_lambda={gae_lambda} ({seed})",
-                        gae_lambda=gae_lambda,
-                        td_lambda=td_lambda,
-                        policy_epochs=2,
-                        value_epochs=1,
-                        distil_epochs=2,
-                        **args,
-                        default_params=DNA_HARD_ARGS_HPS,
-                    )
+            add_job(
+                "DNA_FINAL",
+                run_name=f"game={env} dna_tuned ({seed})",
+                gae_lambda=0.8,
+                td_lambda=0.95,
+                policy_epochs=2,
+                value_epochs=1,
+                distil_epochs=2,
+                **args,
+                default_params=DNA_HARD_ARGS_HPS,
+            )
 
-
-def dna_are(priority=0):
-    """
-    ...
-    """
-
-    # would be nice to check noise levels too..., but maybe do that later?
-
-    HOST = ''
-    for seed in [1]:
-        for env in ATARI_3_VAL:
             args = {
                 'env_name': env,
-                'hostname': HOST,
+                'hostname': '',
                 'priority': priority - (seed - 1) * 55,
                 'seed': seed,
                 'use_compression': False,
                 'upload_batch': True,  # much faster
-                'disable_ev': False, # need to know this on one seed at least
+                'disable_ev': False,
                 'distil_beta': 1.0,
-                'are_mode': 'policy',
+                'terminal_on_loss_of_life': True,
+                'reward_clipping': "off",
+                'full_action_space': False,
+                'repeat_action_probability': 0.0,
             }
-            for target in [100, 300]:
-                add_job(
-                    "DNA_ARE5",
-                    run_name=f"game={env} target_a={target} ({seed})",
-                    are_target_p=target,
-                    policy_epochs=2,
-                    value_epochs=1,
-                    distil_epochs=2,
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
-            args['are_mode'] = 'shadow'
+
             add_job(
-                "DNA_ARE5",
-                run_name=f"game={env} shadow ({seed})",
+                "DNA_FINAL_EASY",
+                run_name=f"game={env} dna_tuned ({seed})",
+                gae_lambda=0.8,
+                td_lambda=0.95,
                 policy_epochs=2,
                 value_epochs=1,
                 distil_epochs=2,
@@ -386,72 +579,164 @@ def dna_are(priority=0):
                 default_params=DNA_HARD_ARGS_HPS,
             )
 
-    return
-
-
-    HOST = ''
-    for seed in [1]:
-        for env in ATARI_3_VAL:
-            args = {
-                'env_name': env,
-                'hostname': HOST,
-                'priority': priority - (seed - 1) * 55,
-                'seed': seed,
-                'use_compression': False,
-                'upload_batch': True,  # much faster
-                'disable_ev': False, # need to know this on one seed at least
-                'distil_beta': 1.0,
-                'are_mode': 'on',
-            }
-            # add_job(
-            #     "DNA_ARE",
-            #     run_name=f"game={env} target_v=10 target_a=100 ({seed})",
-            #     are_target_a=100,
-            #     are_target_v=10,
-            #     policy_epochs=2,
-            #     value_epochs=1,
-            #     distil_epochs=2,
-            #     **args,
-            #     default_params=DNA_HARD_ARGS_HPS,
-            # )
-            add_job(
-                "DNA_ARE2",
-                run_name=f"game={env} target_v=15 target_a=175 ({seed})",
-                are_target_a=175,
-                are_target_v=15,
-                policy_epochs=2,
-                value_epochs=1,
-                distil_epochs=2,
-                **args,
-                default_params=DNA_HARD_ARGS_HPS,
-            )
-            args['are_mode'] = 'shadow'
-            add_job(
-                "DNA_ARE",
-                run_name=f"game={env} off ({seed})",
-                are_target_a=150,
-                are_target_v=15,
-                policy_epochs=2,
-                value_epochs=1,
-                distil_epochs=2,
-                **args,
-                default_params=DNA_HARD_ARGS_HPS,
-            )
-
-def merge_dict(a:dict, b:dict):
-    c = a.copy()
-    for k, v in b.items():
-        c[k] = v
-    return c
-
-
-def dna_final(priority=0):
+def ppg_final(priority=0):
     """
     Our main results...
     (including ablations)
     """
 
     HOST = '' # ML
+
+    for seed in [1, 2, 3]:
+        for env in ATARI_5:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed - 1) * 55,
+                'seed': seed,
+                'epochs': 50,
+                'anneal_target_epoch': 50,
+            }
+
+            add_job(
+                "DNA_FINAL",
+                run_name=f"game={env} ppg ({seed})",
+                **args,
+                default_params=PPG_HARD_ARGS,
+            )
+
+
+def dna_final_easy(priority=0):
+    """
+    Our main results...
+    """
+
+    HOST = '' # ML
+
+    for seed in [1, 2, 3]:
+        for env in ATARI_5:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed - 1) * 55,
+                'seed': seed,
+                'use_compression': False,
+                'upload_batch': True,  # much faster
+                'disable_ev': False,
+                'distil_beta': 1.0,
+
+                'terminal_on_loss_of_life': True,
+                'reward_clipping': 1, # probably better to not use this... not an env setting...
+                'full_action_space': False,
+                'repeat_action_probability': 0.0,
+            }
+
+            # easy mode run...
+            add_job(
+                "DNA_FINAL_EASY",
+                run_name=f"game={env} dna_tuned ({seed})",  # dna
+                gae_lambda=0.8,
+                td_lambda=0.95,
+                policy_epochs=2,
+                value_epochs=1,
+                distil_epochs=2,
+                **args,
+                default_params=DNA_HARD_ARGS_HPS,
+            )
+
+
+
+def dna_final(priority=0):
+    """
+    Our main results...
+    """
+
+    add_run(
+        experiment="DNA_FINAL_EASY",
+        run_name="dna_tuned",
+        default_args=DNA_TUNED_ARGS,
+        env_args=EASY_MODE_ARGS,
+        priority=priority,
+        seeds=3,
+        subset=ATARI_5,
+    )
+
+    add_run(
+        experiment="DNA_FINAL_EASY",
+        run_name="ppo_tuned_fat",
+        default_args=PPO_TUNED_ARGS,
+        env_args=EASY_MODE_ARGS,
+        priority=priority,
+        seeds=3,
+        subset=ATARI_5,
+    )
+
+    add_run(
+        experiment="DNA_FINAL_EASY",
+        run_name="ppo_orig",
+        default_args=PPO_ORIG_ARGS,
+        env_args=EASY_MODE_ARGS,
+        priority=priority,
+        seeds=3,
+        subset=ATARI_5,
+    )
+
+    return
+
+
+    HOST = '' # ML
+
+    for seed in [1, 2, 3]:
+        for env in ATARI_5:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed - 1) * 55,
+                'seed': seed,
+                'use_compression': False,
+                'upload_batch': True,  # much faster
+                'disable_ev': False,
+                'distil_beta': 1.0,
+
+                'terminal_on_loss_of_life': True,
+                'reward_clipping': 1, # probably better to not use this... not an env setting...
+                'full_action_space': False,
+                'repeat_action_probability': 0.0,
+            }
+
+            # easy mode run...
+            add_job(
+                "DNA_FINAL_EASY",
+                run_name=f"game={env} dna_tuned ({seed})",  # dna
+                gae_lambda=0.8,
+                td_lambda=0.95,
+                policy_epochs=2,
+                value_epochs=1,
+                distil_epochs=2,
+                **args,
+                default_params=DNA_HARD_ARGS_HPS,
+            )
+
+            # add_job(
+            #     "DNA_EASY",
+            #     run_name=f"game={env} ppo_tuned_fat ({seed})",
+            #     gae_lambda=0.95,
+            #     td_lambda=0.95,
+            #     policy_epochs=1,
+            #     value_epochs=0,
+            #     distil_epochs=0,
+            #     architecture='single',
+            #     network='nature_fat',
+            #     **args,
+            #     default_params=DNA_HARD_ARGS_HPS,
+            # )
+            # add_job(
+            #     "DNA_EASY",
+            #     run_name=f"game={env} ppo_orig ({seed})",
+            #     **args,
+            #     default_params=PPO_ORIG_ARGS,
+            # )
+
 
     for seed in [1]:
         for env in ATARI_5:
@@ -466,14 +751,14 @@ def dna_final(priority=0):
                 'distil_beta': 1.0,
 
                 'terminal_on_loss_of_life': True,
-                'reward_clipping': 1,
+                'reward_clipping': "off", # probably better to not use this... not an env setting...
                 'full_action_space': False,
                 'repeat_action_probability': 0.0,
             }
 
             # easy mode run...
             add_job(
-                "DNA_EASY",
+                "DNA_FINAL_EASY",
                 run_name=f"game={env} dna_tuned ({seed})",  # dna
                 gae_lambda=0.8,
                 td_lambda=0.95,
@@ -483,19 +768,26 @@ def dna_final(priority=0):
                 **args,
                 default_params=DNA_HARD_ARGS_HPS,
             )
-            add_job(
-                "DNA_EASY",
-                run_name=f"game={env} ppo_tuned_fat ({seed})",
-                gae_lambda=0.95,
-                td_lambda=0.95,
-                policy_epochs=1,
-                value_epochs=0,
-                distil_epochs=0,
-                architecture='single',
-                network='nature_fat',
-                **args,
-                default_params=DNA_HARD_ARGS_HPS,
-            )
+
+            # add_job(
+            #     "DNA_EASY",
+            #     run_name=f"game={env} ppo_tuned_fat ({seed})",
+            #     gae_lambda=0.95,
+            #     td_lambda=0.95,
+            #     policy_epochs=1,
+            #     value_epochs=0,
+            #     distil_epochs=0,
+            #     architecture='single',
+            #     network='nature_fat',
+            #     **args,
+            #     default_params=DNA_HARD_ARGS_HPS,
+            # )
+            # add_job(
+            #     "DNA_EASY",
+            #     run_name=f"game={env} ppo_orig ({seed})",
+            #     **args,
+            #     default_params=PPO_ORIG_ARGS,
+            # )
 
     # suplementroy results, 1 seed
 
@@ -617,26 +909,7 @@ def dna_final(priority=0):
     #
 
     #
-    # add_job(
-    #     "DNA_FINAL",
-    #     run_name=f"game={env} ppo_orig ({seed})",
-    #     n_steps=128,            # no change
-    #     agents=8,
-    #     ppo_epsilon=0.1,        # no anneal.
-    #     entropy_bonus=1e-2,     # no change
-    #     gamma=0.99,
-    #     policy_epochs=3,
-    #     td_lambda=0.95,
-    #     gae_lambda=0.95,
-    #     policy_mini_batch_size=256,
-    #
-    #     value_epochs=0,
-    #     distil_epochs=0,
-    #     architecture='single',
-    #     network='nature',
-    #     **args,
-    #     default_params=DNA_HARD_ARGS_HPS,
-    # )
+
     #
     # add_job(
     #     "DNA_FINAL",
@@ -703,6 +976,36 @@ def dna_final(priority=0):
                 **args,
                 default_params=DNA_HARD_ARGS_HPS,
             )
+
+            if seed == 1:
+                # move to ablations...
+                args['priority'] = +100
+                add_job(
+                    "DNA_FINAL",
+                    run_name=f"game={env} ppo_orig ({seed})",
+                    **args,
+                    default_params=PPO_ORIG_ARGS,
+                )
+
+    for seed in [1]:
+        for env in ATARI_5:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed - 1) * 55,
+                'seed': seed,
+                'use_compression': False,
+                'upload_batch': True,  # much faster
+                'disable_ev': False,
+                'distil_beta': 1.0,
+            }
+            # ablations...
+            # add_job(
+            #     "DNA_ABLATION",
+            #     run_name=f"game={env} ppo_orig ({seed})",
+            #     **args,
+            #     default_params=PPO_ORIG_ARGS,
+            # )
 
 
 def dna_beta(priority=0):
@@ -780,33 +1083,59 @@ def dna_mbs(priority=0):
                         default_params=DNA_HARD_ARGS_HPS,
                     )
 
-def dna_epochs(priority=0):
+def dna_tuning(priority=0):
 
-    # these value epochs where done early, but should probably be redone (with new codebase, and with beta=0.5)
-    # HOST = ''
-    # for seed in [1, 2, 3]: # three seeds is needed for an accurate results (but just do one for now...)
-    #     for env in ATARI_3_VAL:
-    #         args = {
-    #             'env_name': env,
-    #             'hostname': HOST,
-    #             'priority': priority - (seed-1) * 10,
-    #             'seed': seed,
-    #             'disable_ev': seed == 3, # only ev on seed 3...
-    #         }
-    #         for value_epochs in [1, 2, 3, 4]:
-    #             if value_epochs == 0:
-    #                 if seed != 1:
-    #                     continue
-    #             add_job(
-    #                 "DNA_EPOCHS",
-    #                 run_name=f"game={env} value_epochs={value_epochs} ({seed})",
-    #                 value_epochs=value_epochs,
-    #                 **args,
-    #                 default_params=DNA_HARD_ARGS_HPS,
-    #             )
+    COMMON_ARGS = {
+        'experiment': "DNA_TUNING",
+        'seeds': 3,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+    }
+
+    for epochs in [1, 2, 3, 4]:
+        add_run(
+            run_name=f"epochs=2{epochs}2",
+            default_args=STANDARD_ARGS,
+            env_args=HARD_MODE_ARGS,
+            policy_epochs=2,
+            value_epochs=epochs,
+            distil_epochs=2,
+            **COMMON_ARGS
+        )
+
+
+def dna_tuning_old(priority=0):
+
+    # these value epochs where done first
+    HOST = ''
+    PATH = "DNA_TUNING"
+
+    for seed in [1, 2, 3]: # three seeds is needed for an accurate results (but just do one for now...)
+        for env in ATARI_3_VAL:
+            args = {
+                'env_name': env,
+                'hostname': HOST,
+                'priority': priority - (seed-1) * 10,
+                'seed': seed,
+                'disable_ev': seed == 3, # only ev on seed 3...
+            }
+            policy_epochs = 2
+            distil_epochs = 2
+            for value_epochs in [1, 2, 3, 4]:
+                if value_epochs == 0:
+                    if seed != 1:
+                        continue
+                add_job(
+                    PATH,
+                    run_name=f"game={env} epochs={policy_epochs}{value_epochs}{distil_epochs} ({seed})",
+                    value_epochs=value_epochs,
+                    **args,
+                    default_params=DNA_HARD_ARGS_HPS,
+                )
 
     # one value epoch was, indeed, best...
-    PATH = f"DNA_EPOCHS"
+
     for seed in [1, 2, 3]:  # three seeds is needed for an accurate results
         for env in ATARI_3_VAL:
             args = {
@@ -845,7 +1174,6 @@ def dna_epochs(priority=0):
                     default_params=DNA_HARD_ARGS_HPS,
                 )
             for distil_epochs in [0, 1, 2, 3, 4]:
-                args['priority'] = priority - (seed - 1) * 10 + distil_epochs
                 policy_epochs = 2
                 add_job(
                     PATH,
@@ -858,7 +1186,7 @@ def dna_epochs(priority=0):
                 )
 
 
-def dna_mode(priority=0):
+def dna_distil(priority=0):
     for seed in [1]:
         for env in ATARI_3_VAL:
             args = {
@@ -873,7 +1201,7 @@ def dna_mode(priority=0):
             }
             for distil_mode in ['off', 'value', 'features', 'projection']:
                 add_job(
-                    "DNA_MODE",
+                    "DNA_DISTIL",
                     run_name=f"game={env} distil_mode={distil_mode} ({seed})",
                     policy_epochs=2,
                     value_epochs=1,
@@ -1306,9 +1634,9 @@ def dna_aux(priority=0):
                     default_params=DNA_HARD_ARGS_HPS,
                 )
 
-def ppo_tuning(priority):
+def ppo_tuning(priority:int = 0):
+
     # tuning for ppo
-    # one value epoch was, indeed, best...
     for seed in [1, 2, 3]:
         for env in ATARI_3_VAL:
             args = {
@@ -1334,7 +1662,7 @@ def ppo_tuning(priority):
                 args['priority'] = priority - (seed - 1) * 10 + policy_epochs
                 gae_lambda = 0.95
                 add_job(
-                    "PPO_EPOCHS",
+                    "PPO_TUNING",
                     run_name=f"game={env} epochs={policy_epochs} lambda={gae_lambda} ({seed})",
                     policy_epochs=policy_epochs,
                     gae_lambda=gae_lambda,
@@ -1345,7 +1673,7 @@ def ppo_tuning(priority):
             for gae_lambda in [0.8, 0.9, 0.95, 0.975]:
                 policy_epochs = 1
                 add_job(
-                    "PPO_EPOCHS",
+                    "PPO_TUNING",
                     run_name=f"game={env} epochs={policy_epochs} lambda={gae_lambda} ({seed})",
                     policy_epochs=policy_epochs,
                     gae_lambda=gae_lambda,
@@ -1355,450 +1683,170 @@ def ppo_tuning(priority):
                 )
 
 
-def csgo(priority):
 
-    for seed in [1]:
-        for env in ["NameThisGame"]:
-            args = {
-                'env_name': env,
-                'hostname': '',
-                'priority': priority - (seed - 1) * 50,
-                'seed': seed,
-                'policy_epochs': 1,
-                'value_epochs': 0,
-                'distil_epochs': 0,
-                'architecture': 'single',
-                'network': 'nature',
-                'epochs': 10,
-            }
 
-            add_job(
-                "CSGO_1",
-                run_name=f"game={env} reference ({seed})",
-                **args,
-                default_params=DNA_HARD_ARGS_HPS,
-            )
+def ablations(priority:int = 0):
 
-            # for lr in [3e-3, 1e-3, 1e-4]:
-            #     add_job(
-            #         "CSGO_1",
-            #         run_name=f"game={env} csgo={lr} clip=0.01 friction=0.01 decay=0.99 ({seed})",
-            #         optimizer='csgo',
-            #         policy_lr=lr,
-            #         **args,
-            #         default_params=DNA_HARD_ARGS_HPS,
-            #     )
-            #
-            #     add_job(
-            #         "CSGO_1",
-            #         run_name=f"game={env} sgd={lr} ({seed})",
-            #         optimizer='sgd',
-            #         policy_lr=lr,
-            #         **args,
-            #         default_params=DNA_HARD_ARGS_HPS,
-            #     )
+    COMMON_ARGS = {
+        'experiment': "DNA_FINAL",
+        'seeds': 3,
+        'subset': ATARI_5,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+    }
 
-            # attempt 2
-            args = {
-                'env_name': env,
-                'hostname': '',
-                'priority': priority - (seed - 1) * 50,
-                'seed': seed,
-                'gae_lambda': 0.8,
-                'td_lambda': 0.95,
-                'policy_epochs': 2,
-                'value_epochs': 1,
-                'distil_epochs': 2,
-                'epochs': 10,
-            }
+    # no seeds for ablations, just want to get an idea for what matters.
 
-            add_job(
-                "CSGO_2",
-                run_name=f"game={env} reference ({seed})",
-                **args,
-                default_params=DNA_HARD_ARGS_HPS,
-            )
+    # ---------------------------
+    # DNA ablations
 
-            for mgn in [1.0, 2.5, 5.0, 10.0]:
-                add_job(
-                    "CSGO_2",
-                    run_name=f"game={env} global_norm={mgn} ({seed})",
-                    max_grad_norm=mgn,
-                    grad_clip_mode='global_norm',
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
-            for clip in [0.1, 0.01, 0.001]:
-                add_job(
-                    "CSGO_2",
-                    run_name=f"game={env} marcus1={clip} ({seed})",
-                    max_grad_norm=clip,
-                    grad_clip_mode='marcus1',
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
-            for clip in [0.1, 0.01, 0.001]:
-                add_job(
-                    "CSGO_2",
-                    run_name=f"game={env} marcus2={clip} ({seed})",
-                    max_grad_norm=clip,
-                    grad_clip_mode='marcus2',
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
+    add_run(
+        run_name="dna_tuned_pmbs_512",
+        default_args=DNA_TUNED_ARGS,
+        policy_mini_batch_size=512,
+        **COMMON_ARGS
+    )
 
-            for lr in [1e-2, 1e-3, 1e-4]:
+    # interesting, but ran out of time...
+    # add_run(
+    #     run_name="dna_fat",
+    #     default_args=DNA_TUNED_ARGS,
+    #     policy_network="nature_fat",
+    #     value_network="nature_fat",
+    #     **COMMON_ARGS
+    # )
 
-                pass
+    add_run(
+        run_name="dna_no_distil",
+        default_args=DNA_TUNED_ARGS,
+        distil_epochs=0,
+        **COMMON_ARGS
+    )
 
-                # did not work due to no RMSprop...
-                # add_job(
-                #     "CSGO_2",
-                #     run_name=f"game={env} csgo={lr} clip=0.01 friction=0.01 decay=0.99 ({seed})",
-                #     policy_optimizer='csgo',
-                #     csgo_friction=0.01,
-                #     csgo_decay=0.99,
-                #     csgo_clip=0.01,
-                #     policy_lr=lr,
-                #     **args,
-                #     default_params=DNA_HARD_ARGS_HPS,
-                # )
+    add_run(
+        run_name="dna_fixed_lambda",
+        default_args=DNA_TUNED_ARGS,
+        gae_lambda=0.95,
+        td_lambda=0.95,
+        **COMMON_ARGS
+    )
 
-                # add_job(
-                #     "CSGO_2",
-                #     run_name=f"game={env} sgd={lr} ({seed})",
-                #     policy_optimizer='sgd',
-                #     policy_lr=lr,
-                #     **args,
-                #     default_params=DNA_HARD_ARGS_HPS,
-                # )
+    add_run(
+        run_name="ppo_basic",
+        default_args=PPO_TUNED_ARGS,
+        policy_epochs=2,
+        policy_network='nature',
+        gae_lambda=0.95,
+        td_lambda=0.95,
+        policy_mini_batch_size=512,
+        **COMMON_ARGS
+    )
 
-            ##########################
-            # attempt 3
-            ##########################
+    # ---------------------------
+    # PPO ablations
 
-            # epsilon test...
-            for adam_epsilon in [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]: # my guess is 1e-6 (not 1e-5)
-                add_job(
-                    "CSGO_3",
-                    run_name=f"game={env} adam_epsilon={adam_epsilon} ({seed})",
-                    max_grad_norm=5.0,
-                    grad_clip_mode='global_norm',
-                    adam_epsilon=adam_epsilon,
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
+    add_run(
+        run_name="ppo_2_fat",
+        default_args=PPO_TUNED_ARGS,
+        policy_epochs=2,
+        **COMMON_ARGS
+    )
 
-            for lr in [2.5e-4, 1e-4, 1e-3]:
-                for clip in [2.0, 3.0, 4.0, 999.0]:
-                    add_job(
-                        "CSGO_3",
-                        run_name=f"game={env} csgo={lr} clip={clip} friction=0.01 decay=0.99 ({seed})",
-                        policy_optimizer='csgo',
-                        csgo_friction=0.01,
-                        csgo_decay=0.99,
-                        csgo_clip=clip,
-                        policy_lr=lr,
-                        **args,
-                        default_params=DNA_HARD_ARGS_HPS,
-                    )
-            add_job(
-                "CSGO_3",
-                run_name=f"game={env} csgo={lr} clip={4.0} friction=0.1 decay=0.99 ({seed})",
-                policy_optimizer='csgo',
-                csgo_friction=0.1,
-                csgo_decay=0.99,
-                csgo_clip=4.0,
-                policy_lr=lr,
-                **args,
-                default_params=DNA_HARD_ARGS_HPS,
-            )
+    add_run(
+        run_name="ppo_nature",
+        default_args=PPO_TUNED_ARGS,
+        policy_network="nature",
+        **COMMON_ARGS
+    )
 
-            for clip in [0.03, 0.01, 0.005, 0.003, 0.004, 0.002, 0.001, 0.0003]:
-                add_job(
-                    "CSGO_3",
-                    run_name=f"game={env} marcus2={clip} ({seed})",
-                    max_grad_norm=clip,
-                    grad_clip_mode='marcus2',
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
-                add_job(
-                    "CSGO_3",
-                    run_name=f"game={env} marcus3={clip} ({seed})",
-                    max_grad_norm=clip,
-                    grad_clip_mode='marcus3',
-                    **args,
-                    default_params=DNA_HARD_ARGS_HPS,
-                )
+    add_run(
+        run_name="ppo_lambda",
+        default_args=PPO_TUNED_ARGS,
+        gae_lambda=0.8,
+        td_lambda=0.95,
+        **COMMON_ARGS
+    )
 
-def other(priority):
+    add_run(
+        run_name="ppo_orig",
+        default_args=PPO_ORIG_ARGS,
+        **COMMON_ARGS
+    )
 
-    # want to check, amoung other things, batch_norm, channels, and beta1
+    # ---------------------------
+    # PPG ablations
 
-    OTHER_HARD_ARGS_HPS = DNA_HARD_ARGS_HPS.copy()
-    OTHER_HARD_ARGS_HPS['max_grad_norm'] = 5.0
-    OTHER_HARD_ARGS_HPS['value_epochs'] = 1
+    add_run(
+        run_name="ppg",
+        default_args=PPG_HARD_ARGS,
+        **COMMON_ARGS
+    )
 
-    for seed in [1]:
-        for env in ["NameThisGame"]:
-            args = {
-                'env_name': env,
-                'hostname': '',
-                'seed': seed,
-                'epochs': 10,
-            }
-
-            args['priority'] =priority - (seed - 1) * 50 + 50
-
-            add_job(
-                "OTHER_1",
-                run_name=f"game={env} reference ({seed})",
-                **args,
-                default_params=OTHER_HARD_ARGS_HPS,
-            )
-
-            args['priority'] = priority - (seed - 1) * 50 + 10
-
-            for clip in [3, 5, 10, 20, 50]:
-                add_job(
-                    "CSGO_4",
-                    run_name=f"game={env} marcus4={clip} epsilon=1e-6 ({seed})",
-                    max_grad_norm=clip,
-                    grad_clip_mode='marcus4',
-                    adam_epsilon=1e-6,
-                    **args,
-                    default_params=OTHER_HARD_ARGS_HPS,
-                )
-
-            args['priority'] = priority - (seed - 1) * 50 + 99
-
-            add_job(
-                "CSGO_4",
-                run_name=f"game={env} reference ({seed})",
-                max_grad_norm=5.0,
-                adam_epsilon=1e-6,
-                **args,
-                default_params=OTHER_HARD_ARGS_HPS,
-            )
-
-            args['priority'] = priority - (seed - 1) * 50
-
-            for csgo_friction in [0.003, 0.01, 0.03]:
-                clip = 0.003 # best from before
-                add_job(
-                    "OTHER_1",
-                    run_name=f"game={env} marcus3={clip} friction={csgo_friction} ({seed})",
-                    max_grad_norm=clip,
-                    grad_clip_mode='marcus3',
-                    csgo_friction=csgo_friction,
-                    **args,
-                    default_params=OTHER_HARD_ARGS_HPS,
-                )
-
-            for beta1 in [0, 0.8, 0.9, 0.95, 0.975]:
-                if beta1 == 0.9:
-                    continue
-                add_job(
-                    "OTHER_1",
-                    run_name=f"game={env} beta1={beta1} ({seed})",
-                    adam_beta1=beta1,
-                    **args,
-                    default_params=OTHER_HARD_ARGS_HPS,
-                )
-
-            for base_channels in [16, 32, 64]:
-                if base_channels == 32:
-                    continue
-                add_job(
-                    "OTHER_1",
-                    run_name=f"game={env} policy_base_channels={base_channels} ({seed})",
-                    policy_network_args="{'base_channels':"+str(base_channels)+"}",
-                    **args,
-                    default_params=OTHER_HARD_ARGS_HPS,
-                )
-
-            for weight_decay in [0, 0.01]:
-                if weight_decay == 0:
-                    continue
-                add_job(
-                    "OTHER_2",
-                    run_name=f"game={env} weight_decay={weight_decay} ({seed})",
-                    policy_weight_decay=weight_decay,
-                    **args,
-                    default_params=OTHER_HARD_ARGS_HPS,
-                )
-
-            for policy_norm in ['off', 'layer', 'batch']:
-                for value_norm in ['off', 'layer', 'batch']:
-                    if policy_norm == value_norm == "off":
-                        continue
-                    add_job(
-                        "OTHER_1",
-                        run_name=f"game={env} policy_norm={policy_norm} value_norm={value_norm} ({seed})",
-                        policy_network_args="{'norm':'" + policy_norm + "'}",
-                        value_network_args="{'norm':'" + value_norm + "'}",
-                        **args,
-                        default_params=OTHER_HARD_ARGS_HPS,
-                    )
-
-def csgo_5(priority):
-
-    # want to check, amoung other things, batch_norm, channels, and beta1
-
-    OTHER_HARD_ARGS_HPS = DNA_HARD_ARGS_HPS.copy()
-    OTHER_HARD_ARGS_HPS['max_grad_norm'] = 5.0
-    OTHER_HARD_ARGS_HPS['value_epochs'] = 1
-    OTHER_HARD_ARGS_HPS['adam_beta1'] = 0.95
-
-    for seed in [1]:
-        for env in ["NameThisGame"]:
-            args = {
-                'env_name': env,
-                'hostname': '',
-                'seed': seed,
-                'gae_lambda': 0.8,
-                'td_lambda': 0.95,
-                'policy_epochs': 2,
-                'value_epochs': 1,
-                'distil_epochs': 2,
-                'epochs': 50, # make 50
-            }
-
-            args['priority'] =priority - (seed - 1) * 50 + 50
-
-            add_job(
-                "CSGO_5",
-                run_name=f"game={env} reference ({seed})",
-                **args,
-                default_params=OTHER_HARD_ARGS_HPS,
-            )
-
-            args['priority'] = priority - (seed - 1) * 50 + 10
-
-            # heavy clipping
-            # for clip in [0.01, 0.001]:
-            #     for beta1 in [0, 0.95]:
-            #         for friction in [1.0, 0.1, 0.01]:
-            #             add_job(
-            #                 "CSGO_5",
-            #                 run_name=f"game={env} marcus2={clip} beta1={beta1} friction={friction} ({seed})",
-            #                 max_grad_norm=clip,
-            #                 adam_beta1=beta1,
-            #                 csgo_friction=friction,
-            #                 grad_clip_mode='marcus2',
-            #                 **args,
-            #                 default_params=OTHER_HARD_ARGS_HPS,
-            #             )
-
-            # even more heavy clipping (and logging of redisual part)
-            # interaction between clipping and momentum (with friction fixed)
-            for clip in [0.001, 0.0003, 0.0001]: # add 0.01, and maybe others...
-                for beta1 in [0, 0.5, 0.95]:
-                    for friction in [0.01]:
-                        add_job(
-                            "CSGO_6",
-                            run_name=f"game={env} marcus2={clip} beta1={beta1} friction={friction} ({seed})",
-                            max_grad_norm=clip,
-                            adam_beta1=beta1,
-                            csgo_friction=friction,
-                            grad_clip_mode='marcus2',
-                            **args,
-                            default_params=OTHER_HARD_ARGS_HPS,
-                        )
-
-            # tuning friction...
-            for clip in [0.001]:
-                for beta1 in [0.95]:
-                    for friction in [0.03, 0.003]:
-                        add_job(
-                            "CSGO_6",
-                            run_name=f"game={env} marcus2={clip} beta1={beta1} friction={friction} ({seed})",
-                            max_grad_norm=clip,
-                            adam_beta1=beta1,
-                            csgo_friction=friction,
-                            grad_clip_mode='marcus2',
-                            **args,
-                            default_params=OTHER_HARD_ARGS_HPS,
-                        )
-
-            args['priority'] = priority - (seed - 1) * 50 + 15
-
-            for clip in [10]:
-                for beta1 in [0.95]:
-                    for friction in [0.01]:
-                        add_job(
-                            "CSGO_6",
-                            run_name=f"game={env} marcus4={clip} beta1={beta1} friction={friction} ({seed})",
-                            max_grad_norm=clip,
-                            adam_beta1=beta1,
-                            csgo_friction=friction,
-                            grad_clip_mode='marcus4',
-                            **args,
-                            default_params=OTHER_HARD_ARGS_HPS,
-                        )
-
-            # marcus 5 mode
-            # did not work at all...
-            # for clip in [40]:
-            #     for beta1 in [0.95]:
-            #         for friction in [0.01]:
-            #             add_job(
-            #                 "CSGO_6",
-            #                 run_name=f"game={env} marcus5={clip} beta1={beta1} friction={friction} ({seed})",
-            #                 max_grad_norm=clip,
-            #                 adam_beta1=beta1,
-            #                 csgo_friction=friction,
-            #                 grad_clip_mode='marcus5',
-            #                 **args,
-            #                 default_params=OTHER_HARD_ARGS_HPS,
-            #             )
+    add_run(
+        run_name="ppg_tuned",
+        default_args=PPG_HARD_ARGS,
+        policy_epochs=2,
+        value_epochs=1,
+        aux_epochs=2,
+        **COMMON_ARGS
+    )
 
 
 
+def verify(run_list):
+    """
+    Check two sets of experiments, check if they match exactly or not.
+    Useful for confirming that the changes I made to config did not result in differences to the algorithm
 
-def entropy_scaling(priority=0):
-    # theory is entropy_bonus should scale with policy epochs...
-    # have a look and see if entropy is about the same?
-    for seed in [1]:
-        for env in ATARI_3_VAL[0:1]:
-            args = {
-                'env_name': env,
-                'hostname': '',
-                'priority': priority - (seed - 1) * 10,
-                'seed': seed,
-                'use_compression': False,
-                'upload_batch': True, # much faster
-                'disable_ev': True,
-                'distil_beta': 1.0,
-                'epochs': 20, # this should be enough to see how things are going..
-            }
-            for policy_epochs in [4]:
-                for factor in [1/4, 1/2, 1, 2, 4]:
-                    # the idea here is entropy bonus should increase with epochs... see if epochs=4 works?
-                    entropy_bonus = round(1e-2 * factor, 4)
-                    # copy policy_epochs=1 from other...
-                    add_job(
-                        "ENTROPY_SCALING",
-                        run_name=f"game={env} epochs={policy_epochs} entropy_bonus={entropy_bonus} ({seed})",
-                        entropy_bonus=entropy_bonus,
-                        policy_epochs=policy_epochs,
-                        value_epochs=1,
-                        distil_epochs=2,
-                        **args,
-                        default_params=DNA_HARD_ARGS_HPS,
-                    )
+    Process:
+    - code up the verification code
+    - run on one thing and see if we match
+    - do a code clean up on reference code from dna_final
+    - switch all experiments over to new config system
+    - implement sequential run system?
+    - run verification to 5m or something
+
+    What this gives me
+    - proof that the replication script runs
+    - proof that the settings on the replication script are right
+    - proof that results are not due to config errors.
+
+    also...
+    - verify that PPG is working properly
+    - verify that experimental settings (as run) were correct for all main experiments (make a checklist for this)
+
+    """
+    pass
+
 
 def setup(priority_modifier=0):
-    #dna_hps(0)     # done!
-    #dna_noise(50)  # done!
-    # dna_epochs(-100) # done?
-    # ppo_tuning(-100)
-    csgo(300)
-    csgo_5(400)
-    other(350)
 
-    # dna_gae(-100) # ...
-    dna_final(-100)
+
+    # ---------------------------
+    # atari-3 validation
+
+    # dna_hps()
+
+    # ppo_tuning()
+        #dna_tuning()
+    #
+    # dna_noise()
+    # dna_distil()
+        #dna_lambda()
+
+    # ---------------------------
+    # atari-5 test set
+
+    dna_final(50)
+    # ppg_final(0)
+
+    # ablations(600)
+
+    # ---------------------------
+    # atari-57
+    dna_A57(-500)
+
+    pass
 
 

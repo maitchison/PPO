@@ -37,6 +37,7 @@ class ExperienceReplayBuffer:
     AUX_REWARD = 2
     AUX_ACTION = 3
     AUX_STEP = 4
+    AUX_VTARG = 5
 
     def __init__(self,
                  max_size:int,
@@ -169,7 +170,7 @@ class ExperienceReplayBuffer:
             raise ValueError("Invalid type for hashing {type(x)}")
 
     @staticmethod
-    def create_aux_buffer(shape:tuple, hash=None, time=None, reward=None, action=None, step=None):
+    def create_aux_buffer(shape:tuple, hash=None, time=None, reward=None, action=None, step=None, vtarg=None):
 
         buffer = np.zeros([*shape, ExperienceReplayBuffer.N_AUX], dtype=np.float64)
 
@@ -183,6 +184,8 @@ class ExperienceReplayBuffer:
             buffer[..., ExperienceReplayBuffer.AUX_ACTION] = action
         if step is not None:
             buffer[..., ExperienceReplayBuffer.AUX_STEP] = step
+        if vtarg is not None:
+            buffer[..., ExperienceReplayBuffer.AUX_VTARG] = vtarg
 
         return buffer
 
@@ -193,6 +196,11 @@ class ExperienceReplayBuffer:
         @param new_experience: ndarray of dims [N, *state_shape]
         @param new_aux: auxillary information
         """
+
+        if type(new_experience) is torch.Tensor:
+            new_experience = new_experience.cpu().numpy()
+        if type(new_aux) is torch.Tensor:
+            new_aux = new_aux.cpu().numpy()
 
         assert new_experience.shape[1:] == self.data.shape[1:], \
             f"Invalid shape for new experience, expecting {new_experience.shape[1:]} but found {self.data.shape[1:]}."

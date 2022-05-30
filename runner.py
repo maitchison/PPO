@@ -8,16 +8,9 @@ if __name__ == "__main__":
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     # load in the jobs...
-    import EXP_RP
-    import EXP_TVF
-    import EXP_PGG
-    import EXP_A57
-    import EXP_EXP
-    import EXP_DNA
-    import EXP_STUCK
+    import exp_tvf
 
-    #EXP_TVF.setup(-100)
-    EXP_DNA.setup(50)
+    exp_tvf.setup()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

@@ -370,7 +370,7 @@ def compare_runs(
         runs: list,
         x_lim=None,
         x_axis="env_step",
-        y_axis="ep_score-mean",
+        y_axis="ep_score_mean",
         x_start=None,
         show_legend=True,
         title=None,
@@ -388,7 +388,7 @@ def compare_runs(
         hold=False,
         x_transform=None,
         jitter=0.0,
-        figsize=(16,4),
+        figsize=(16, 4),
         run_filter=None, # not used
 ):
     """
@@ -521,8 +521,10 @@ def compare_runs(
         plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
 
-    plt.xlabel(x_axis_name or x_axis)
-    plt.ylabel(y_axis_name or y_axis)
+    if x_axis_name != '':
+        plt.xlabel(x_axis_name or x_axis)
+    if y_axis_name != '':
+        plt.ylabel(y_axis_name or y_axis)
 
     # show groups
     for k, (group_xs, group_ys, run_label, alpha, color, zorder, ls) in group_data.items():
@@ -839,6 +841,7 @@ class AtariScoreNormalizer:
             0.18882008828001498, 0.08519154019954558, 0.12869695652405946, 0.16432707026384483, 0.05922863791062832],
             7.2
         ),
+
     }
 
     def __init__(self):
@@ -950,7 +953,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
             return None
         game = game_log["params"]["environment"].lower()
         if game not in game_list:
-            print(f"Skipping {game} as not in {game_list}")
+            #print(f"Skipping {game} as not in {game_list}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[round(env_step / 1e6)][game].append(ep_score)
@@ -1647,7 +1650,7 @@ def load_hyper_parameter_search(path, table_cols: list = None, max_col_width: in
 import bisect
 
 
-def plot_seeded_validation(path, key, seeds=3, color=None, label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False):
+def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False):
     xs = range(51)  # epochs
     y_list = [[] for _ in xs]
     max_x = 0
@@ -1682,8 +1685,11 @@ def plot_seeded_validation(path, key, seeds=3, color=None, label=None, subset="A
 
     y_mean = np.asarray([np.mean(y) if len(y) > 0 else 0 for y in y_list])
     y_err = 1.0 * np.asarray([std_err(y) for y in y_list])
-    plt.plot(xs * 4, y_mean, label=label, color=color, alpha=1.0)
+    plt.plot(xs * 4, y_mean, label=label, color=color, alpha=1.0, ls=style)
     plt.fill_between(xs * 4, y_mean - y_err, y_mean + y_err, color=color, alpha=0.15)
+
+    if print_results:
+        print(f"{key}: {y_mean[-1]:.2f} += {y_err[-1]:.2f}")
 
 
 def setup_plot(title=None):
@@ -1706,7 +1712,7 @@ def experiment(title, path, keys: list, subset='Atari_3_Val', seeds=5, hold=Fals
             seeds=seeds,
             check_seeds=check_seeds,
             label=labels[i] if labels is not None else None,
-            ghost_alpha=ghost_alpha,
+            ghost_alpha=ghost_alpha
         )
     plt.legend()
     plt.xlabel('Frame (M)')

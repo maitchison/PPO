@@ -34,6 +34,7 @@ class Config:
         self.limit_epochs       = int()
         self.distil_beta        = float()
         self.distil_mode        = str()
+        self.distil_loss        = str()
         self.distil_period      = int()
         self.distil_freq_ratio  = float()
         self.distil_batch_size_ratio = float()
@@ -457,13 +458,16 @@ def parse_args(no_env=False, args_override=None):
 
     # optional aux phase
     parser.add_argument("--aux_epochs", type=int, default=0, help="Number of auxiliary epochs")
+    parser.add_argument("--aux_target", type=str, default='reward', help="[reward|vtarg]]")
+    parser.add_argument("--aux_source", type=str, default='aux', help="[aux|value]]")
+    parser.add_argument("--aux_period", type=int, default=0, help="")
 
     # distil / replay
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--distil_mode", type=str, default="value",
-                        help="[value|features|projection]")
+    parser.add_argument("--distil_mode", type=str, default="value", help="[value|features|projection]")
+    parser.add_argument("--distil_loss", type=str, default="mse_logit", help="[mse_logit|mse_policy|kl_policy]")
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
 
     parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
@@ -504,6 +508,9 @@ def parse_args(no_env=False, args_override=None):
     # experimental...
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
     parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
+
+    parser.add_argument("--ppo_epsilon_anneal", type=str2bool, nargs='?', const=True, default=False,
+                        help="Anneals learning rate to 0 (linearly) over training")
 
     parser.add_argument("--policy_lr_anneal", type=str2bool, nargs='?', const=True, default=False,
                         help="Anneals learning rate to 0 (linearly) over training")
@@ -623,7 +630,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--csgo_decay", type=float, default=1.00)
     parser.add_argument("--csgo_clip", type=float, default=4.00)
 
-    parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco]")
+    parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
 
     # debugging
     parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")

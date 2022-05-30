@@ -48,7 +48,6 @@ ATARI_3 = ['BattleZone', 'Gopher', 'TimePilot']
 ATARI_2 = ['Krull', 'KungFuMaster']
 MYSTIC_FIVE = ['Pong', 'CrazyClimber', 'Surround', 'Breakout', 'Skiing']
 
-
 ATARI_5 = ['Centipede', 'CrazyClimber', 'Krull', 'SpaceInvaders', 'Zaxxon']  # Atari5
 LONG_TERM_CREDIT = ['BeamRider', 'Pong', 'Skiing', 'Surround']  # long term credit assignment from Agent57
 
@@ -376,7 +375,7 @@ def add_job(
         chunk_size: int = 10,
         default_params=None,
         score_threshold=None,
-        hostname: str = '',
+        hostname: str = None,
         **kwargs
 ):
 
@@ -387,10 +386,14 @@ def add_job(
             elif k == "priority":
                 priority = v
             elif k == "hostname":
-                hostname = v
+                if hostname is None:
+                    hostname = v
             else:
                 if k not in kwargs:
                     kwargs[k] = v
+
+    if hostname is None:
+        hostname = ''
 
     if "device" not in kwargs:
         kwargs["device"] = DEVICE
