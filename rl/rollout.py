@@ -967,7 +967,7 @@ class Runner:
         rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
         value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
         required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
-        head: which head to use for estimate, i.e. ext_value, int_value, ext_value_square etc
+        head: which head to use for estimate, i.e. ext_value, int_value, ext_sqr_value etc
         sqrt_m2: returns a tuple containing (first moment, sqrt second moment)
         """
 
