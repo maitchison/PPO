@@ -33,7 +33,6 @@ class Config:
         self.epochs             = float()
         self.limit_epochs       = int()
         self.distil_beta        = float()
-        self.distil_mode        = str()
         self.distil_loss        = str()
         self.distil_period      = int()
         self.distil_freq_ratio  = float()
@@ -466,7 +465,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--distil_mode", type=str, default="value", help="[value|features|projection]")
     parser.add_argument("--distil_loss", type=str, default="mse_logit", help="[mse_logit|mse_policy|kl_policy]")
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
 

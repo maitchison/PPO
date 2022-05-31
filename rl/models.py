@@ -360,9 +360,6 @@ class DualHeadNet(nn.Module):
         self.tvf_value_scale_norm = tvf_value_scale_norm
         self.feature_activation_fn = feature_activation_fn
 
-        # aux head
-        self.aux_head = nn.Linear(self.encoder.hidden_units, 16) # projection to 16 auxilary outputs, defaults to random.
-
         if self.use_policy_head:
             assert actions is not None
             self.policy_head = nn.Linear(self.encoder.hidden_units, actions)
@@ -470,8 +467,6 @@ class DualHeadNet(nn.Module):
             result['features'] = features
         else:
             features = af(features)
-
-        result['aux'] = self.aux_head(features)
 
         if self.use_policy_head and not exclude_policy:
             unscaled_policy = self.policy_head(features)

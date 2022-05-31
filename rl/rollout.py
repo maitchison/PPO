@@ -2374,14 +2374,7 @@ class Runner:
             raise ValueError(f"Invalid tvf_loss_fn {args.tvf_loss_fn}")
 
     def get_distil_target_name(self):
-        if args.distil_mode == "value":
-            return 'tvf_ext_value' if args.use_tvf else "ext_value"
-        elif args.distil_mode == "projection":
-            return 'aux'
-        elif args.distil_mode == "features":
-            return 'raw_features'
-        else:
-            raise ValueError(f"Invalid distil mode {args.distil_mode}")
+        return 'tvf_ext_value' if args.use_tvf else "ext_value"
 
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
 
@@ -2393,7 +2386,6 @@ class Runner:
         model_out = self.model.forward(
             data["prev_state"],
             output="policy",
-            include_features=args.distil_mode == 'features',
             aux_features=aux_features
         )
         targets = data["distil_targets"]
@@ -3324,7 +3316,6 @@ class Runner:
             obs=obs,
             aux_features=aux_features,
             output="full",
-            include_features=args.distil_mode == "features"
         )
 
         batch_data["distil_targets"] = model_out['value_'+self.get_distil_target_name()]
