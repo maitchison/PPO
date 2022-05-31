@@ -623,7 +623,7 @@ class Runner:
             )
 
         #  these horizons will always be generated and their scores logged.
-        self.tvf_debug_horizons = [0] + self.get_standard_horizon_sample(args.tvf_max_horizon)
+        self.tvf_debug_horizons = [0] + Runner.get_standard_horizon_sample(args.tvf_max_horizon)
 
 
     def anneal(self, x, mode: str = "linear"):
@@ -669,11 +669,25 @@ class Runner:
         return self.anneal(args.distil_lr, mode="linear" if args.distil_lr_anneal else "off")
 
 
-    def get_standard_horizon_sample(self, max_horizon: int):
+    @staticmethod
+    def get_standard_horizon_sample(max_horizon: int):
         """
         Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = current_horizon.
         These may change over time (if current horizon changes). Use debug_horizons for a fixed set.
         """
+
+        if args.tvf_use_fixed_heads:
+            assert args.tvf_value_samples == args.tvf_horizon_samples, "Fixed heads requires args.tvf_value_samples == args.tvf_horizon_samples"
+            assert args.tvf_value_distribution == args.tvf_horizon_distribution, "Fixed heads require value and horizon distributions to match."
+            assert "fixed" in args.tvf_value_distribution and "fixed" in args.tvf_horizon_distribution, "Fixed heads requires fixed sampling"
+            # with fixed head mode we can only use these horizons...
+            return Runner.generate_horizon_sample(
+                args.n_steps, args.tvf_max_horizon,
+                samples=args.tvf_value_samples,
+                distribution=args.tvf_value_distribution,
+                force_first_and_last=True,
+            )
+
         assert max_horizon <= 30000, "horizons over 30k not yet supported."
         horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
                                    h <= max_horizon]
@@ -1316,7 +1330,7 @@ class Runner:
             aux_features = None
             if args.use_tvf:
                 aux_features = package_aux_features(
-                    np.asarray(self.get_standard_horizon_sample(self.current_horizon)),
+                    np.asarray(Runner.get_standard_horizon_sample(self.current_horizon)),
                     self.all_time.reshape([(N + 1) * A])
                 )
             output = self.detached_batch_forward(
@@ -1649,9 +1663,10 @@ class Runner:
 
         # unfortunately we can not get estimates for horizons longer than N, so just generate the return estimates
         # up to N.
-        VALUE_SAMPLE_HORIZONS = self.generate_horizon_sample(
+        VALUE_SAMPLE_HORIZONS = Runner.generate_horizon_sample(
             # I really want 128 samples, but need to reduce the space requirements a little.
-            N, 64, distribution="fixed_geometric", force_first_and_last=True
+            self.N, N,
+            64, distribution="fixed_geometric", force_first_and_last=True
         )
         VALUE_SAMPLE_HORIZONS = list(set(VALUE_SAMPLE_HORIZONS)) # remove any duplicates
         VALUE_SAMPLE_HORIZONS.sort()
@@ -1857,7 +1872,7 @@ class Runner:
         )
 
         value_samples = self.generate_horizon_sample(
-            self.current_horizon,
+            self.N, self.current_horizon,
             args.tvf_value_samples,
             distribution=args.tvf_value_distribution,
             force_first_and_last=True,
@@ -2603,8 +2618,9 @@ class Runner:
             'losses': loss.detach()
         }
 
+    @staticmethod
     def generate_horizon_sample(
-            self,
+            N: int,
             max_value: int,
             samples: int,
             distribution: str = "linear",
@@ -2634,11 +2650,11 @@ class Runner:
             samples = np.random.uniform(np.log(1), np.log(max_value+1), size=samples)
             samples = np.exp(samples)-1
         elif distribution == "saturated_geometric":
-            samples1 = np.random.uniform(np.log(1), np.log(min(self.N, max_value) + 1), size=samples//2)
+            samples1 = np.random.uniform(np.log(1), np.log(min(N, max_value) + 1), size=samples//2)
             samples2 = np.random.uniform(np.log(1), np.log(max_value + 1), size=samples//2)
             samples = np.exp(np.concatenate([samples1, samples2])) - 1
         elif distribution == "saturated_fixed_geometric":
-            samples1 = np.geomspace(1, min(self.N, max_value) + 1, num=samples//2, endpoint=False)-1
+            samples1 = np.geomspace(1, min(N, max_value) + 1, num=samples//2, endpoint=False)-1
             samples2 = np.geomspace(1, 1+max_value, num=samples//2, endpoint=True)-1
             samples = np.concatenate([samples1, samples2])
         else:
@@ -2669,15 +2685,15 @@ class Runner:
         H = self.current_horizon
         N, A, *state_shape = self.prev_obs.shape
 
-        horizon_samples = self.generate_horizon_sample(
-            H,
+        horizon_samples = Runner.generate_horizon_sample(
+            N, H,
             args.tvf_horizon_samples,
             distribution=args.tvf_horizon_distribution,
             force_first_and_last=force_first_and_last,
         )
 
-        value_samples = self.generate_horizon_sample(
-            H,
+        value_samples = Runner.generate_horizon_sample(
+            N, H,
             args.tvf_value_samples,
             distribution=args.tvf_value_distribution,
             force_first_and_last=True
@@ -3300,8 +3316,9 @@ class Runner:
         if args.use_tvf:
             assert not args.tvf_force_ext_value_distil, "tvf_force_ext_value_distil not supported yet."
 
-            horizons = self.generate_horizon_sample(
-                self.current_horizon, args.tvf_horizon_samples,
+            horizons = Runner.generate_horizon_sample(
+                self.N, self.current_horizon,
+                args.tvf_horizon_samples,
                 args.tvf_horizon_distribution
             )
             H = len(horizons)

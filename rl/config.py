@@ -123,6 +123,7 @@ class Config:
         self.tvf_value_scale_norm = str()
         self.tvf_gamma          = float()
         self.return_estimator_mode = str()
+        self.tvf_use_fixed_heads = int()
 
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
@@ -504,6 +505,7 @@ def parse_args(no_env=False, args_override=None):
 
 
     # experimental...
+    parser.add_argument("--tvf_use_fixed_heads", type=str2bool, default=False, help="Enabled fixed head mode, requires horizon_samples=value_samples and fixed sampling")
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
     parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
 

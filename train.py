@@ -127,6 +127,12 @@ def main():
 
     utils.lock_job()
 
+    if args.tvf_use_fixed_heads:
+        tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
+    else:
+        tvf_fixed_head_horizons = None
+
+
     actor_critic_model = models.TVFModel(
         networks=(args.policy_network, args.value_network),
         network_args=(args.policy_network_args, args.value_network_args),
@@ -143,6 +149,7 @@ def main():
         tvf_value_scale_fn=args.tvf_value_scale_fn,
         tvf_value_scale_norm=args.tvf_value_scale_norm,
         feature_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
+        tvf_fixed_head_horizons=tvf_fixed_head_horizons,
         architecture=args.architecture,
 
         hidden_units=args.hidden_units,
