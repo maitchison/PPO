@@ -384,6 +384,11 @@ class DualHeadNet(nn.Module):
             encoder = encoder
             del kwargs["network"]
 
+        assert tvf_mode in ["off", "dynamic", "fixed"]
+
+        if tvf_mode == "dynamic":
+            assert tvf_fixed_head_horizons is not None
+
         if len(kwargs) > 0:
             # this is just to checkwe didn't accidently ignore some parameters
             print(f" - additional encoder args: {kwargs}")
@@ -502,28 +507,29 @@ class DualHeadNet(nn.Module):
         @transformed_aux_features: aux features transformed (e.g. logged and scaled) [B, H, 2]
         @force_single_h: Returns [B, F] instead of [B, H, F], where first h is used.
 
-        @returns: TVF hidden features of dims [B, H, F_tvf] or [B, F_tvf] or
+        @returns: TVF hidden features of dims [B, H, F_tvf] or [B, F_tvf]
 
         """
 
         if self.tvf_hidden_units > 0:
             # this is the version where we use a hidden layer
             # generate one value estimate per input horizon, horizons can be anything.
+            tvf_features = self.tvf_hidden(encoder_features)
             if force_single_h:
-                aux_part = self.tvf_hidden_aux(transformed_aux_features)  # [B, H, F]
-                tvf_h = self.tvf_activation_function(encoder_features[:, None, :] + aux_part)  # [B, H, F] = [B, -, F] + [B, H, F]
-            else:
                 aux_part = self.tvf_hidden_aux(transformed_aux_features[:, 0])  # [B, F]
-                tvf_h = self.tvf_activation_function(encoder_features[:, :] + aux_part)  # [B, H, F] = [B, -, F] + [B, H, F]
-            return tvf_h
+                tvf_h = self.tvf_activation_function(tvf_features + aux_part)  # [B, H, F] = [B, -, F] + [B, H, F]
+            else:
+                aux_part = self.tvf_hidden_aux(transformed_aux_features)  # [B, H, F_tvf]
+                tvf_h = self.tvf_activation_function(tvf_features[:, None, :] + aux_part)  # [B, H, F] = [B, -, F] + [B, H, F]
         else:
             # in this case we concatinate
             if force_single_h:
-                tvf_h = torch.concat([encoder_features[:, :], transformed_aux_features[:,0]], dim=2) # [B, F] + [B, 2]
+                tvf_h = torch.concat([encoder_features, transformed_aux_features[:, 0, :]], dim=1) # [B, F] + [B, 2]
             else:
-                tvf_h = torch.concat([encoder_features[:, :], transformed_aux_features[:,0]],
-                                     dim=2)  # [B, -, F] + [B, H, 2]
-            return tvf_h
+                _, H, _  = transformed_aux_features.shape
+                encoder_features = encoder_features[:, None, :].repeat(1, H, 1)
+                tvf_h = torch.concat([encoder_features, transformed_aux_features], dim=2)  # [B, H, F] + [B, H, 2]
+        return tvf_h
 
 
     def forward(
@@ -538,12 +544,12 @@ class DualHeadNet(nn.Module):
         result = {}
         if self.encoder.trace_module is not None:
             # faster path, precompiled
-            features = self.encoder.trace_module(x)
+            encoder_features = self.encoder.trace_module(x)
         else:
-            features = self.encoder(x)
+            encoder_features = self.encoder(x)
 
         # convert back to float32, and also switch to channels first, not that that should matter.
-        features = features.float(memory_format=torch.contiguous_format)
+        encoder_features = encoder_features.float(memory_format=torch.contiguous_format)
 
         if self.feature_activation_fn == "relu":
             af = F.relu
@@ -554,14 +560,14 @@ class DualHeadNet(nn.Module):
 
         if include_features:
             # used for debugging sometimes
-            result['raw_features'] = features
-            features = af(features)
-            result['features'] = features
+            result['raw_features'] = encoder_features
+            encoder_features = af(encoder_features)
+            result['features'] = encoder_features
         else:
-            features = af(features)
+            encoder_features = af(encoder_features)
 
         if not exclude_policy:
-            unscaled_policy = self.policy_head(features)
+            unscaled_policy = self.policy_head(encoder_features)
             result['raw_policy'] = unscaled_policy
 
             assert len(unscaled_policy.shape) == 2
@@ -583,11 +589,11 @@ class DualHeadNet(nn.Module):
 
         if not exclude_value:
 
-            value_values = self.value_head(features)
+            value_values = self.value_head(encoder_features)
             for i, name in enumerate(self.value_head_names):
                 result[f'{name}_value'] = value_values[:, i]
 
-            using_fixed_heads = self.tvf_fixed_head_horizons is not None
+            using_fixed_heads = self.tvf_mode == "fixed"
 
             # if auxiliary features are present generate a result per h using tvf heads
             if aux_features is not None:
@@ -605,18 +611,11 @@ class DualHeadNet(nn.Module):
                 if using_fixed_heads:
                     transformed_aux_features[:, :, 0] = 0
 
-                encoder_features = self.tvf_hidden(features) #[B, F]
-
                 tvf_h = self.process_tvf_hidden_layer(encoder_features, transformed_aux_features, force_single_h=using_fixed_heads)
 
                 if using_fixed_heads:
                     # generate all fixed horizons then map to requested order. Any horizons which do not match will
                     # cause an error.
-                    # transformed_aux_features = torch.zeros_like(aux_features[:, 0]) # [B,2] # ignore horizon, just want time
-                    # transformed_aux_features[:, 0] = 0 # [B, 2]
-                    # transformed_aux_features[:, 1] = self.time_transform(aux_features[:, 0, 1])  # [B, 2]
-                    # aux_part = self.tvf_hidden_aux(transformed_aux_features)  # [B, F]
-                    # tvf_h = self.tvf_activation_function(features_part + aux_part)  # [B, F] = [B, F] + [B, F]
 
                     tvf_values = self.tvf_head(tvf_h) # [B, F, H_fixed]
 
@@ -679,6 +678,7 @@ class TVFModel(nn.Module):
             use_rnd:bool = False,
             use_rnn:bool = False,
 
+            tvf_mode:str="off",
             tvf_max_horizon:int = 65536,
             tvf_horizon_transform = lambda x : x,
             tvf_time_transform = lambda x: x,
@@ -729,6 +729,7 @@ class TVFModel(nn.Module):
         make_net = lambda network, args: DualHeadNet(
             encoder=network,
             input_dims=input_dims,
+            tvf_mode=tvf_mode,
             tvf_activation_fn=tvf_activation,
             hidden_units=hidden_units,
             tvf_hidden_units=tvf_hidden_units,

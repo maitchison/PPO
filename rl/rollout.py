@@ -676,7 +676,7 @@ class Runner:
         These may change over time (if current horizon changes). Use debug_horizons for a fixed set.
         """
 
-        if args.tvf_use_fixed_heads:
+        if args.tvf_mode == "fixed":
             assert args.tvf_value_samples == args.tvf_horizon_samples, "Fixed heads requires args.tvf_value_samples == args.tvf_horizon_samples"
             assert args.tvf_value_distribution == args.tvf_horizon_distribution, "Fixed heads require value and horizon distributions to match."
             assert "fixed" in args.tvf_value_distribution and "fixed" in args.tvf_horizon_distribution, "Fixed heads requires fixed sampling"
@@ -970,7 +970,7 @@ class Runner:
             time=None,
             rewards=None,
             dones=None,
-            tvf_mode=None,
+            tvf_return_mode=None,
             tvf_n_step=None,
             include_second_moment: bool = False,
     ):
@@ -999,7 +999,7 @@ class Runner:
         time = time if time is not None else self.all_time
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
-        tvf_mode = tvf_mode or args.tvf_return_mode
+        tvf_return_mode = tvf_return_mode or args.tvf_return_mode
         tvf_n_step = tvf_n_step or args.tvf_return_n_step
 
         N, A, *state_shape = obs[:-1].shape
@@ -1041,7 +1041,7 @@ class Runner:
             re_mode = "default"
 
         returns = get_return_estimate(
-            mode=tvf_mode,
+            mode=tvf_return_mode,
             gamma=args.tvf_gamma,
             rewards=rewards,
             dones=dones,
@@ -1885,7 +1885,7 @@ class Runner:
             time=self.all_time,
             rewards=self.ext_rewards,
             dones=self.terminals,
-            tvf_mode="fixed",  # <-- MC is the least bias method we can do...
+            tvf_return_mode="fixed",  # <-- MC is the least bias method we can do...
             tvf_n_step=args.n_steps,
             include_second_moment=args.learn_second_moment
         )
@@ -2717,7 +2717,7 @@ class Runner:
                 _, returns_m2 = self.calculate_sampled_returns(
                     value_sample_horizons=value_samples,
                     required_horizons=horizon_samples,
-                    tvf_mode=args.sqr_return_mode,
+                    tvf_return_mode=args.sqr_return_mode,
                     tvf_n_step=args.sqr_return_n_step,
                     include_second_moment=True
                 )

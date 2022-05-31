@@ -127,11 +127,7 @@ def main():
 
     utils.lock_job()
 
-    if args.tvf_use_fixed_heads:
-        tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
-    else:
-        tvf_fixed_head_horizons = None
-
+    tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
 
     actor_critic_model = models.TVFModel(
         networks=(args.policy_network, args.value_network),
@@ -143,6 +139,7 @@ def main():
 
         use_rnd=args.use_rnd,
         use_rnn=False,
+        tvf_mode=args.tvf_mode,
         tvf_horizon_transform=rollout.horizon_scale_function,
         tvf_time_transform=rollout.time_scale_function,
         tvf_max_horizon=args.tvf_max_horizon,
