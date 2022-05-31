@@ -35,11 +35,14 @@ regression_args = {
     'architecture': 'dual',
     'export_video': False,
     'epochs': 10,
-    'use_compression': True,
+
     'warmup_period': 0,
     'seed': 0,
     'mutex_key': "DEVICE",
     'benchmark_mode': True,
+
+    'upload_batch': True,
+    'use_compression': False,
 
     # env parameters
     'embed_time': True,
@@ -51,27 +54,28 @@ regression_args = {
     'max_grad_norm': 5.0,
     'agents': 128,
     'n_steps': 128,
-    'policy_mini_batch_size': 512,
+    'policy_mini_batch_size': 2048,
     'value_mini_batch_size': 512,
+    'distil_mini_batch_size': 512,
     'max_micro_batch_size': 512,
-    'policy_epochs': 3,
-    'value_epochs': 2,
+    'policy_epochs': 2,
+    'value_epochs': 1,
 
     'target_kl': -1,
-    'ppo_epsilon': 0.1,
+    'ppo_epsilon': 0.2,
     'policy_lr': 2.5e-4,
     'value_lr': 2.5e-4,
     'distil_lr': 2.5e-4,
     'entropy_bonus': 1e-3,
     'tvf_force_ext_value_distil': False,
-    'hidden_units': 256,
+    'hidden_units': 512,
     'gae_lambda': 0.95,
 
     # new params
     'observation_normalization': True,
 
     # distil params
-    'distil_epochs': 1,
+    'distil_epochs': 2,
     'distil_beta': 1.0,
 
     # tvf params
@@ -82,7 +86,7 @@ regression_args = {
     'tvf_time_scale': 'log',
     'tvf_hidden_units': 256,
     'tvf_value_samples': 128,
-    'tvf_horizon_samples': 32,
+    'tvf_horizon_samples': 128,
     'tvf_return_mode': 'exponential',
     'tvf_coef': 0.5,
     'tvf_soft_anchor': 0,
@@ -340,7 +344,7 @@ if __name__ == "__main__":
         parser.add_argument("mode", type=str, help="[full|quick|ppo|regression|show|suite]")
         parser.add_argument("--verbose", type=str2bool, default=False)
         parser.add_argument("--parallel_jobs", type=int, default=1)
-        parser.add_argument("--use_compression", type=str2bool, default=True)
+        parser.add_argument("--use_compression", type=str2bool, default=False)
         parser.add_argument("--observation_normalization", type=str2bool, default=True)
         parser.add_argument("--numa", type=str, default=None, help='e.g. [0,1]')
         parser.add_argument("--jobs", type=str, default=None)

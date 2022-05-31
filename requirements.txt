@@ -1,9 +1,0 @@
-torch==1.10.1+cu113
-opencv-python
-gym[atari]==0.21.0
-lz4
-blosc
-matplotlib
-pandas
-scipy
-numpy
