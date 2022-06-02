@@ -43,7 +43,7 @@ date
     If you've configured email settings, you'll get an email as it progresses in the queue.
     """
 
-    cmds = get_experiment_cmds(job_filter)
+    cmds = get_experiment_cmds(job_filter, force_params={'mutex':''})
     n = 0
     while len(cmds) > 0:
         n += 1

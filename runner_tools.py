@@ -617,11 +617,15 @@ class Job:
         else:
             return 0
 
-    def get_command_string(self):
+    def get_command_string(self, force_params=None):
         """
         Return the basic command string, with no resume etc.
         """
         params = self.params.copy()
+
+        if force_params is not None:
+            params.update(force_params)
+
         params["experiment_name"] = self.experiment_name
         params["run_name"] = self.run_name
         params['error_on_missing_restore'] = False # restore if we can, but do not error if we can not.
@@ -816,13 +820,13 @@ def fix_clashes():
             os.rename(first_path, first_path+" (clash)")
 
 
-def get_experiment_cmds(job_filter=None):
+def get_experiment_cmds(job_filter=None, force_params=None):
     cmds = []
     job_list.sort()
     for job in job_list:
         if job_filter is not None and not job_filter(job):
             continue
-        cmds.append(job.get_command_string())
+        cmds.append(job.get_command_string(force_params))
     return cmds
 
 
