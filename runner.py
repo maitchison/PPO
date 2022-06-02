@@ -17,11 +17,11 @@ def generate_slurm(job_filter=None):
 #SBATCH --job-name=%JOBNAME%          # Job name
 #SBATCH --mail-type=START,END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
-#SBATCH --ntasks=16                   # We use 8-workers per job
+#SBATCH --ntasks=8                    # We use 8-workers per job so 16 is ideal, but 8 is ok too.
 #SBATCH --mem=16G                     # 8GB per job is about right
 #SBATCH --time=4:00:00                # Jobs take 8 hours tops, but maybe do them in chunks?
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:3090:1                 # Two jobs per one GPU
+#SBATCH --gres=gpu:2080ti:1           # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
 #SBATCH --output=%JOBNAME%_%j.log     # Standard output and error log
 
 pwd; hostname; date
@@ -34,13 +34,10 @@ echo "--- done ---"
 date
 """
 
-    """
-    $ sbatch textgen.slurm
-    Submitted batch job 66
-    $ squeue
-    JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
-    66       gpu textgene u1111111  R       0:03      1 gpusrv-3
-    If you've configured email settings, you'll get an email as it progresses in the queue.
+
+    # run with
+    # $ sbatch job_001.slurm
+
     """
 
     cmds = get_experiment_cmds(job_filter, force_params={'mutex':''})
