@@ -1079,7 +1079,7 @@ class NoopResetWrapper(gym.Wrapper):
             noops = self.override_num_noops
             print(f"Forcing {noops} NOOPs.")
         else:
-            noops = self.unwrapped.np_random.randint(1, self.noop_max+1)
+            noops = np.random.randint(1, self.noop_max+1)
 
         assert noops >= 0
 
