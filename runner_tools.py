@@ -880,7 +880,7 @@ def show_experiments(filter_jobs=None, all=False):
             ping = ""
 
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10} {:<15} {:>6}".format(
-            job.priority, job.mode[:19], job.run_name[:60], percent_complete, status, eta_hours, comma(fps),
+            job.priority, job.experiment_name[:19], job.run_name[:60], percent_complete, status, eta_hours, comma(fps),
             comma(score), host, ping))
 
 

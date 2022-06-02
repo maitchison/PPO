@@ -161,7 +161,7 @@ def load_checkpoint(checkpoint_path, device=None):
 
     load_args(checkpoint_path)
 
-    args.mode = Path(os.path.join(os.path.join(os.getcwd(), checkpoint_path))).parts[-3]
+    args.experiment_name = Path(os.path.join(os.path.join(os.getcwd(), checkpoint_path))).parts[-3]
 
     # fix up frameskip, this happens for older versions of the code.
     if args.frame_skip == 0:
@@ -823,7 +823,7 @@ def generate_rollouts(
 
             probs = np.exp(log_probs)
             if np.isnan(log_probs).any():
-                raise Exception(f"NaN found in policy ({args.mode}, {args.run_name}).")
+                raise Exception(f"NaN found in policy ({args.experiment_name}, {args.run_name}).")
             actions = np.asarray([utils.sample_action_from_logp(prob) for prob in log_probs], dtype=np.int32)
 
         prev_states = states.copy()
@@ -1550,7 +1550,7 @@ if __name__ == "__main__":
                 max_frames=eval_args.max_frames,
             )
         else:
-            raise Exception(f"Invalid mode {args.mode}")
+            raise Exception(f"Invalid mode {args.experiment_name}")
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:

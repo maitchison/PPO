@@ -1483,7 +1483,7 @@ class Runner:
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
 
-        self.log.mode = self.log.LM_MUTE
+        self.log.experiment_name = self.log.LM_MUTE
         result = {}
 
         def process_gradient(context):
@@ -1519,7 +1519,7 @@ class Runner:
         s_mean = np.mean(ss)
         g2_mean = np.mean(g2s)
 
-        self.log.mode = self.log.LM_DEFAULT
+        self.log.experiment_name = self.log.LM_DEFAULT
 
         # add these samples to the mix
         for var_name, var_value in zip(['s', 'g2'], [s_mean, g2_mean]):
@@ -3378,7 +3378,7 @@ class Runner:
     def train(self):
 
         if args.disable_logging:
-            self.log.mode = self.log.LM_MUTE
+            self.log.experiment_name = self.log.LM_MUTE
 
         self.model.eval()
 

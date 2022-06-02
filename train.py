@@ -137,12 +137,12 @@ def main():
     # set a guid
     if args.restore:
         # look for a previous experiment and use it if we find one...
-        guid = get_previous_experiment_guid(os.path.join(args.output_folder, args.mode), args.run_name)
+        guid = get_previous_experiment_guid(os.path.join(args.output_folder, args.experiment_name), args.run_name)
         if guid is None:
             if args.error_on_missing_restore:
                 # exit with an error
                 log.error(
-                    "Could not restore experiment {}:{}. Previous run not found.".format(args.mode, args.run_name))
+                    "Could not restore experiment {}:{}. Previous run not found.".format(args.experiment_name, args.run_name))
                 return
             else:
                 # this is fine, we are in auto mode
@@ -162,7 +162,7 @@ def main():
         torch.backends.cudnn.run_benchmark = True
 
     # work out the logging folder...
-    args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.mode, args.run_name), args.guid[-8:])
+    args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
     log.info("Logging to folder " + args.log_folder)
 
     # population training gets a summary log, which we need to name differently as it can not be processed by
