@@ -139,13 +139,14 @@ def main():
         # look for a previous experiment and use it if we find one...
         guid = get_previous_experiment_guid(os.path.join(args.output_folder, args.mode), args.run_name)
         if guid is None:
-            if args.restore == "auto":
+            if args.error_on_missing_restore:
+                # exit with an error
+                log.error(
+                    "Could not restore experiment {}:{}. Previous run not found.".format(args.mode, args.run_name))
+                return
+            else:
                 # this is fine, we are in auto mode
                 args.guid = str(uuid.uuid4().hex)
-            else:
-                # exit with an error
-                log.error("Could not restore experiment {}:{}. Previous run not found.".format(args.mode, args.run_name))
-                return
         else:
             args.guid = guid
     else:

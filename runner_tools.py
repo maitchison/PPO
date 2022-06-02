@@ -624,7 +624,7 @@ class Job:
         params = self.params.copy()
         params["experiment_name"] = self.experiment_name
         params["run_name"] = self.run_name
-        params['restore'] = "auto" # restore if we can, but do not error if we can not.
+        params['error_on_missing_restore'] = False # restore if we can, but do not error if we can not.
         nice_params = [
             f"--{k}={nice_format(v)}" for k, v in params.items() if k not in ["env_name"] and v is not None
         ]

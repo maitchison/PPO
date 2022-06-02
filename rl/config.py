@@ -17,6 +17,7 @@ class Config:
 
         self.hash_size          = int()
         self.restore            = bool()
+        self.error_on_missing_restore = bool()
 
         self.gamma              = float()
         self.gamma_int          = float()
@@ -367,6 +368,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--hash_size", type=int, default=42, help="Adjusts the hash template generator size.")
     parser.add_argument("--restore", type=str2bool, default=False,
                         help="Restores previous model or raises error. If set to false and new run will be started.")
+    parser.add_argument("--error_on_missing_restore", type=str2bool, default=True,
+                        help="Raises error if restore point is missing.")
 
     parser.add_argument("--reference_policy", type=str, default=None,
                         help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
