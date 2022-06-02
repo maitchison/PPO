@@ -21,7 +21,7 @@ def generate_slurm(job_filter=None):
 #SBATCH --mem=16G                     # 8GB per job is about right
 #SBATCH --time=4:00:00                # Jobs take 8 hours tops, but maybe do them in chunks?
 #SBATCH --partition=gpu
-#SBATCH --gres=3090:1                 # Two jobs per one GPU
+#SBATCH --gres=gpu:3090:1                 # Two jobs per one GPU
 #SBATCH --output=%JOBNAME%_%j.log     # Standard output and error log
 
 pwd; hostname; date
