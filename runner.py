@@ -15,11 +15,11 @@ def generate_slurm(job_filter=None):
 
     template = """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
-#SBATCH --mail-type=START,END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
 #SBATCH --ntasks=8                    # We use 8-workers per job so 16 is ideal, but 8 is ok too.
 #SBATCH --mem=16G                     # 8GB per job is about right
-#SBATCH --time=4:00:00                # Jobs take 8 hours tops, but maybe do them in chunks?
+#SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:2080ti:1           # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
 #SBATCH --output=%JOBNAME%_%j.log     # Standard output and error log
@@ -37,8 +37,6 @@ date
 
     # run with
     # $ sbatch job_001.slurm
-
-    """
 
     cmds = get_experiment_cmds(job_filter, force_params={'mutex':''})
     n = 0

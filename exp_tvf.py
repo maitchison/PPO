@@ -549,8 +549,8 @@ def csgo(priority:int = 0):
     COMMON_ARGS['seeds'] = 2
     COMMON_ARGS['default_args'] = PPO_FAST_ARGS
 
-    for c1 in [0.003, 0.01, 0.1]:
-        for mode in ["mode1", "mode2", "mode3"]:
+    for c1 in [0.001, 0.003, 0.01, 0.1]:
+        for mode in ["mode1", "mode2"]:
             add_run(
                 run_name=f"mode={mode} clip={c1}",
                 grad_clip_mode="cak",

@@ -18,7 +18,7 @@ def clip_and_keep(
     mode:str = "mode1",
     alpha = 0.99,
     decay:float = 1.0,
-    c1 = 5,
+    c1 = 5.0,
     c2 = None,
     clip_scaled_gradients: bool = False,
 ):

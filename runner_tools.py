@@ -626,6 +626,7 @@ class Job:
         if force_params is not None:
             params.update(force_params)
 
+        params["output_folder"] = "./Run"
         params["experiment_name"] = self.experiment_name
         params["run_name"] = self.run_name
         params['error_on_missing_restore'] = False # restore if we can, but do not error if we can not.
