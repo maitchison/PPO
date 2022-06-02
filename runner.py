@@ -2,6 +2,62 @@ from runner_tools import *
 
 # ---------------------------------------------------------------------------------------------------------
 
+def print_experiments(job_filter=None):
+    cmds = get_experiment_cmds(job_filter)
+    for cmd in cmds:
+        print(cmd)
+        print()
+
+def generate_slurm(job_filter=None):
+    """
+    Generate slurm scripts for jobs
+    """
+
+    template = """#!/bin/bash
+#SBATCH --job-name=%JOBNAME%          # Job name
+#SBATCH --mail-type=START,END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
+#SBATCH --ntasks=16                   # We use 8-workers per job
+#SBATCH --mem=16G                     # 8GB per job is about right
+#SBATCH --time=4:00:00                # Jobs take 8 hours tops, but maybe do them in chunks?
+#SBATCH --partition=gpu
+#SBATCH --gres=3090:1                 # Two jobs per one GPU
+#SBATCH --output=%JOBNAME%_%j.log     # Standard output and error log
+
+pwd; hostname; date
+echo "--- training ---"
+cd PPO     
+singularity exec --nv /opt/apps/containers/pytorch_22.01-py3.sif %CMD1% &
+singularity exec --nv /opt/apps/containers/pytorch_22.01-py3.sif %CMD2% &
+wait
+echo "--- done ---"
+date
+"""
+
+    """
+    $ sbatch textgen.slurm
+    Submitted batch job 66
+    $ squeue
+    JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
+    66       gpu textgene u1111111  R       0:03      1 gpusrv-3
+    If you've configured email settings, you'll get an email as it progresses in the queue.
+    """
+
+    cmds = get_experiment_cmds(job_filter)
+    n = 0
+    while len(cmds) > 0:
+        n += 1
+        with open(f'job_{n:03d}.slurm', 'wt') as t:
+            modified_template = template.replace("%JOBNAME%", f'job_{n:03d}')
+            modified_template = modified_template.replace("%CMD1%", cmds.pop(0))
+            if len(cmds) > 0:
+                modified_template = modified_template.replace("%CMD2%", cmds.pop(0))
+            else:
+                modified_template = modified_template.replace("%CMD2%", '')
+
+            t.write(modified_template)
+
+
 if __name__ == "__main__":
 
     # see https://github.com/pytorch/pytorch/issues/37377 :(
@@ -12,20 +68,35 @@ if __name__ == "__main__":
 
     exp_tvf.setup()
 
-    if len(sys.argv) == 1:
-        experiment_name = "show"
-    else:
-        experiment_name = sys.argv[1]
+    # todo: switch to proper command line args...
 
-    if experiment_name == "show_all":
+    experiment_filter = None
+
+    if len(sys.argv) == 1:
+        mode = "show"
+    elif len(sys.argv) == 2:
+        mode = sys.argv[1]
+    elif len(sys.argv) == 3:
+        mode = sys.argv[1]
+        experiment_filter = sys.argv[2]
+    else:
+        raise Exception("Invalid parameters.")
+
+    job_filter = (lambda x: experiment_filter in x.run_name) if experiment_filter is not None else None
+
+    if mode == "show_all":
         show_experiments(all=True)
-    elif experiment_name == "show":
+    elif mode == "show":
         show_experiments()
-    elif experiment_name == "clash":
+    elif mode == "print":
+        print_experiments(job_filter)
+    elif mode == "slurm":
+        generate_slurm(job_filter)
+    elif mode == "clash":
         fix_clashes()
-    elif experiment_name == "fps":
+    elif mode == "fps":
         show_fps()
-    elif experiment_name == "auto":
+    elif mode == "auto":
         run_next_experiment()
     else:
-        run_next_experiment(filter_jobs=lambda x: experiment_name in x.run_name)
+        run_next_experiment(filter_jobs=lambda x: mode in x.run_name)

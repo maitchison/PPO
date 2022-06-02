@@ -617,6 +617,21 @@ class Job:
         else:
             return 0
 
+    def get_command_string(self):
+        """
+        Return the basic command string, with no resume etc.
+        """
+        params = self.params.copy()
+        params["experiment_name"] = self.experiment_name
+        params["run_name"] = self.run_name
+        params['restore'] = "auto" # restore if we can, but do not error if we can not.
+        nice_params = [
+            f"--{k}={nice_format(v)}" for k, v in params.items() if k not in ["env_name"] and v is not None
+        ]
+        python_part = "python {} {}".format('train.py', params["env_name"])
+        params_part = " ".join(nice_params)
+        return python_part+" "+params_part
+
     def run(self,
             chunk_size: int = 10,
             run_async=False,
@@ -801,6 +816,16 @@ def fix_clashes():
             os.rename(first_path, first_path+" (clash)")
 
 
+def get_experiment_cmds(job_filter=None):
+    cmds = []
+    job_list.sort()
+    for job in job_list:
+        if job_filter is not None and not job_filter(job):
+            continue
+        cmds.append(job.get_command_string())
+    return cmds
+
+
 def show_experiments(filter_jobs=None, all=False):
 
     epochs, hours, ips = get_eta_stats()
@@ -855,7 +880,7 @@ def show_experiments(filter_jobs=None, all=False):
             ping = ""
 
         print("{:^10}{:<20}{:<60}{:>10}{:>10}{:>10}{:>10}{:>10} {:<15} {:>6}".format(
-            job.priority, job.experiment_name[:19], job.run_name[:60], percent_complete, status, eta_hours, comma(fps),
+            job.priority, job.mode[:19], job.run_name[:60], percent_complete, status, eta_hours, comma(fps),
             comma(score), host, ping))
 
 
