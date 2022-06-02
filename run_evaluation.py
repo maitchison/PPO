@@ -43,7 +43,7 @@ from typing import Union, List, Dict
 import cv2
 import numpy as np
 import torch
-import os
+
 import traceback
 from pathlib import Path
 
@@ -173,7 +173,14 @@ def load_checkpoint(checkpoint_path, device=None):
 
     env = atari.make(env_id=args.get_env_name(), monitor_video=True)
 
-    model = make_model(env)
+    try:
+        import train
+        make_model = train.make_model
+    except:
+        # old versions of train did not have a make model function so use our own
+        make_model = __make_model
+
+    model = make_model(args)
 
     # some older versions might not have the open_checkpoint function... :(
     try:
@@ -182,7 +189,12 @@ def load_checkpoint(checkpoint_path, device=None):
         oc = backup_open_checkpoint
     checkpoint = oc(checkpoint_path, map_location=device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    except Exception as e:
+        print(f"Warning, failed to load model, trying non-strict version: {e}")
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+
     step = checkpoint['step']
     env_state = checkpoint["env_state"]
     CURRENT_HORIZON = checkpoint.get("current_horizon", 0)
@@ -204,7 +216,49 @@ def load_checkpoint(checkpoint_path, device=None):
 
     return model
 
-def make_model(env):
+
+# remove once old runs are done.
+def __get_n_actions(space):
+
+    import gym
+    if type(space) == gym.spaces.Discrete:
+        return space.n
+    elif type(space) == gym.spaces.Box:
+        assert len(space.shape) == 1
+        return space.shape[0]
+    else:
+        raise ValueError(f"Action space of type {type(space)} not implemented yet.")
+
+
+def __get_standard_horizon_sample(max_horizon: int):
+    """
+    Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = current_horizon.
+    These may change over time (if current horizon changes). Use debug_horizons for a fixed set.
+    """
+
+    is_fixed_mode = False
+    try:
+        if args.tvf_mode == "fixed":
+            is_fixed_mode = True
+    except:
+        pass
+
+    if is_fixed_mode:
+        assert args.tvf_value_samples == args.tvf_horizon_samples == 128, "Not implemented yet"
+        samples = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 6, 7, 7, 8, 9, 10, 10, 11, 12, 14, 15,
+             16, 18, 19, 21, 23, 25, 27, 29, 32, 35, 38, 41, 44, 48, 52, 57, 62, 67, 73, 79, 86, 93, 101, 110, 119, 129,
+             140, 152, 165, 179, 195, 211, 229, 249, 270, 293, 317, 344, 374, 405, 440, 477, 517, 561, 609, 660, 716, 777,
+             842, 914, 991, 1075, 1166, 1265, 1372, 1488, 1613, 1750, 1898, 2059, 2233, 2422, 2627, 2849, 3090, 3351, 3634,
+             3942, 4275, 4637, 5029, 5454, 5916, 6416, 6959, 7547, 8185, 8878, 9628, 10443, 11326, 12283, 13322, 14449,
+             15671, 16996, 18433, 19992, 21682, 23516, 25504, 27661, 30000]
+        return sorted(set(samples))
+    else:
+        return None
+
+
+def __legacy_make_model():
+
+    env = rollout.make_env(args.env_type, args.get_env_name())
 
     import inspect
     allowed_args = set(inspect.signature(models.TVFModel.__init__).parameters.keys())
@@ -246,7 +300,6 @@ def make_model(env):
     additional_args['tvf_activation'] = args.tvf_activation
     additional_args['tvf_max_horizon'] = args.tvf_max_horizon
 
-
     try:
         additional_args['architecture'] = args.architecture
     except:
@@ -287,13 +340,77 @@ def make_model(env):
     additional_args['network'] = network
 
     return models.TVFModel(
-            input_dims=env.observation_space.shape,
-            actions=env.action_space.n,
-            device=DEVICE,
-            dtype=torch.float32,
-            **{k:v for k, v in additional_args.items() if k in allowed_args},
-        )
+        input_dims=env.observation_space.shape,
+        actions=env.action_space.n,
+        device=DEVICE,
+        dtype=torch.float32,
+        **{k: v for k, v in additional_args.items() if k in allowed_args},
+    )
 
+def get_standard_horizon_sample():
+    try:
+        return rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
+    except:
+        return __get_standard_horizon_sample(args.tvf_max_horizon)
+
+
+def is_fixed_head():
+    try:
+        return args.tvf_mode == "fixed"
+    except:
+        return False
+
+# remove once old runs are done.
+def __make_model(args):
+    """
+    Construct model based on env, and arguments.
+    """
+
+    from rl import rollout, models
+    import torch
+
+    fake_env = rollout.make_env(args.env_type, args.get_env_name())
+    n_actions = __get_n_actions(fake_env.action_space)
+    obs_space = fake_env.observation_space.shape
+    print("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
+
+
+    try:
+        model = models.TVFModel(
+            networks=(args.policy_network, args.value_network),
+            network_args=(args.policy_network_args, args.value_network_args),
+            input_dims=obs_space,
+            actions=n_actions,
+            device=args.device,
+            dtype=torch.float32,
+
+            use_rnd=args.use_rnd,
+            use_rnn=False,
+            tvf_mode=args.tvf_mode,
+            tvf_horizon_transform=rollout.horizon_scale_function,
+            tvf_time_transform=rollout.time_scale_function,
+            tvf_max_horizon=args.tvf_max_horizon,
+            tvf_value_scale_fn=args.tvf_value_scale_fn,
+            tvf_value_scale_norm=args.tvf_value_scale_norm,
+            feature_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
+            tvf_fixed_head_horizons=get_standard_horizon_sample(),
+            architecture=args.architecture,
+
+            hidden_units=args.hidden_units,
+            tvf_hidden_units=args.tvf_hidden_units,
+            tvf_activation=args.tvf_activation,
+            shared_initialization=args.dna_shared_initialization,
+            observation_normalization=args.observation_normalization,
+            freeze_observation_normalization=args.freeze_observation_normalization,
+        )
+    except Exception as e:
+        # legacy version
+        print(f"Error:{e}")
+        print("-"*60)
+        print("** Using legacy model initialization **")
+        print("-"*60)
+        model = __legacy_make_model()
+    return model
 
 def discount_rewards(rewards, gamma):
     """
@@ -588,12 +705,18 @@ def generate_rollouts(
     elif include_horizons is False:
         include_horizons = "last"
 
+    # special case for fixed head mode
+    if include_horizons and is_fixed_head():
+        include_horizons = "standard"
+
     if include_horizons == "full":
         horizons = np.repeat(np.arange(int(args.tvf_max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "debug":
         horizons = np.repeat(np.asarray([1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000])[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "last":
         horizons = np.repeat(np.arange(args.tvf_max_horizon, args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
+    elif include_horizons == "standard":
+        horizons = get_standard_horizon_sample()
     else:
         raise ValueError(f"invalid horizons mode {include_horizons}")
 
@@ -673,13 +796,8 @@ def generate_rollouts(
         except:
             is_old_code = True
 
-        if is_old_code:
-            # old method
-            kwargs['horizons'] = horizons
-        else:
-            # new method
-            if args.use_tvf:
-                kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
+        if args.use_tvf:
+            kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
 
         if rewards_only:
             kwargs['output'] = "policy"
@@ -885,7 +1003,11 @@ def generate_rollouts(
                 append_buffer('frames', frame)
 
             if horizons is not None and args.use_tvf:
-                values = model_out["tvf_value"][i, :].detach().cpu().numpy()
+                try:
+                    values = model_out["tvf_ext_value"][i, :].detach().cpu().numpy()
+                except:
+                    # legacy version
+                    values = model_out["tvf_value"][i, :].detach().cpu().numpy()
                 values = values
 
                 if needs_rediscount():
@@ -1284,7 +1406,10 @@ def export_movie(
 
         # plot predicted values
         if args.use_tvf:
-            xs = list(range(len(buffer["values"][t])))
+            if is_fixed_head():
+                xs = get_standard_horizon_sample()
+            else:
+                xs = list(range(len(buffer["values"][t])))
             ys = buffer["values"][t] / REWARD_SCALE  # model learned scaled rewards
             fig.plot(xs, ys, 'greenyellow')
         else:

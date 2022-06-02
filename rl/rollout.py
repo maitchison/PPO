@@ -1,4 +1,3 @@
-import logging
 import os
 
 import numpy as np
@@ -6,7 +5,6 @@ import gym
 import scipy.stats
 from tqdm import tqdm
 import blosc
-from ast import literal_eval
 
 import torch
 import torch.nn as nn
@@ -15,17 +13,14 @@ import torch.nn.functional as F
 import time
 import time as clock
 import json
-import cv2
 import pickle
 import gzip
-from collections import defaultdict, deque
+from collections import deque
 from typing import Union, Optional
 import math
 
-import rl.csgo
-import train
 from .logger import Logger
-from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression
+from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression, csgo
 from .lfr import compute_band_pass
 from .returns import get_return_estimate
 from .config import args
@@ -477,7 +472,7 @@ class Runner:
             elif name == "sgd":
                 optimizer = torch.optim.SGD
             elif name == "csgo":
-                optimizer = rl.csgo.CSGO
+                optimizer = csgo.CSGO
                 optimizer_params = {
                     'clip': args.csgo_clip,
                     'decay': args.csgo_decay,
@@ -583,7 +578,7 @@ class Runner:
         self.ext_returns = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
         self.ext_value = np.zeros([N+1, A], dtype=np.float32)
-        self.uni_value = np.zeros([N+1, A], dtype=np.float32)
+        # self.uni_value = np.zeros([N+1, A], dtype=np.float32)
 
         # terminal prediction
         self.tp_final_value_estimate = np.zeros([A], dtype=np.float32)
@@ -2085,7 +2080,7 @@ class Runner:
         else:
             # in this case just generate ext value estimates from model
             ext_value_estimates, model_out = self.get_value_estimates(obs=self.all_obs, include_model_out=True)
-            self.uni_value = model_out["uni_value"].detach().cpu().numpy().reshape([N+1, A])
+            # self.uni_value = model_out["uni_value"].detach().cpu().numpy().reshape([N+1, A])
 
         self.ext_value = ext_value_estimates
 
@@ -2219,88 +2214,6 @@ class Runner:
 
         self.flags = {}
 
-    @torch.no_grad()
-    def clip_and_keep(self, optimizer, parameters, label, mode='cak2'):
-
-        clipped = 0
-        count = 1
-        acc_norms = []
-        grad_norms = []
-
-        for p in parameters:
-            
-            grad = p.grad.data
-            grad_accumulator = optimizer.state[p].get('acc', torch.zeros_like(grad))
-
-            grad_norms.append(((torch.square(grad).sum()) ** 0.5).cpu())
-            acc_norms.append(((torch.square(grad_accumulator).sum() * args.csgo_friction) ** 0.5).cpu())
-            count += utils.prod(grad.shape)
-
-            if mode == "cak1":
-                grad += grad_accumulator # this is the gradient not used before...
-                grad_accumulator *= 0.99
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm)
-                tail = grad - head
-                grad_accumulator = tail
-                p.grad.data = head
-            elif mode == "cak2":
-                # clip(r+g)
-                grad += grad_accumulator * args.csgo_friction
-                grad_accumulator *= (1 - args.csgo_friction)
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm)
-                tail = grad - head
-                grad_accumulator += tail
-                p.grad.data = head
-            elif mode == "cak3":
-                # works if csgo_friction is tuned really well
-                # clipped(g)+r
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm)
-                tail = grad - head
-                p.grad.data = head + grad_accumulator * args.csgo_friction
-                grad_accumulator *= (1 - args.csgo_friction) * args.csgo_decay
-                grad_accumulator += tail
-            elif mode == "cak4":
-                # clip(g)+r on scaled gradients.
-                assert args.optimizer == "adam", "Only adam supported with this clipping method."
-                if 'exp_avg_sq' not in optimizer.state[p]:
-                    continue
-                bias_correction = 1 - (args.adam_beta2 ** optimizer.state[p]['step'])
-                scale = (optimizer.state[p]['exp_avg_sq'] / bias_correction).sqrt() + args.adam_epsilon
-                clipped += torch.gt(torch.abs(grad / scale), args.max_grad_norm).sum()
-                head = torch.clip(grad / scale, -args.max_grad_norm, +args.max_grad_norm) * scale
-                tail = grad - head
-                p.grad.data = head + grad_accumulator * args.csgo_friction
-                grad_accumulator *= (1 - args.csgo_friction) * args.csgo_decay
-                grad_accumulator += tail
-            elif mode == "cak5":
-                # clip(g+r) on scaled gradients.
-                assert args.optimizer == "adam", "Only adam supported with this clipping method."
-                if 'exp_avg_sq' not in optimizer.state[p]:
-                    continue
-                bias_correction = 1 - (args.adam_beta2 ** optimizer.state[p]['step'])
-                scale = (optimizer.state[p]['exp_avg_sq'] / bias_correction).sqrt() + args.adam_epsilon
-                acc_norms[-1] = ((torch.square(grad_accumulator * scale).sum() * args.csgo_friction) ** 0.5).cpu() # override a2 here...
-                grad = (grad / scale) + grad_accumulator * args.csgo_friction
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm) * scale
-                tail = grad - head
-                p.grad.data = head
-                p.grad.data *= scale
-                grad_accumulator *= (1 - args.csgo_friction) * args.csgo_decay
-                grad_accumulator += tail
-            else:
-                raise ValueError("Invalid clip_mode.")
-
-            # save accumaltor
-            optimizer.state[p]['acc'] = grad_accumulator
-
-        self.log.watch_mean(f"clip_{label}", clipped / count, display_width=10)
-        self.log.watch_stats(f"a2_{label}", acc_norms, display_width=0)
-        self.log.watch_stats(f"g2_{label}", grad_norms, display_width=0)
-
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
         # get parameters
@@ -2327,7 +2240,19 @@ class Runner:
         elif args.grad_clip_mode == "global_norm":
             grad_norm = nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
         elif "cak" in args.grad_clip_mode:
-            self.clip_and_keep(optimizer, parameters, label, args.grad_clip_mode)
+            stats = csgo.clip_and_keep(
+                optimizer,
+                mode=args.csgo_mode,
+                alpha=args.csgo_alpha,
+                decay=args.csgo_decay,
+                c1=args.csgo_c1,
+                c2=args.csgo_c2,
+                clip_scaled_gradients=args.csgo_clip_scaled_gradients,
+            )
+
+            self.log.watch_mean(f"clip_{label}", stats['clip'], display_width=7)
+            self.log.watch_stats(f"a2_{label}", stats['a2'], display_width=0)
+            self.log.watch_stats(f"g2_{label}", stats['g2'], display_width=0)
         else:
             raise ValueError("Invalid clip_mode.")
 
@@ -2348,7 +2273,7 @@ class Runner:
         predictions: tensor of dims matching target
         horizons: tensor of dims matching targets of type int (optional)
 
-        returns: loss as a tensor of dims [N, A]
+        returns: loss as a tensor of same dims as input
 
         """
 
@@ -2543,6 +2468,12 @@ class Runner:
             targets = data["tvf_returns"]
             value_predictions = model_out["tvf_ext_value"]
             tvf_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
+            if args.tvf_horizon_dropout > 0:
+                # note: we weight the mask so that after the average the loss per example will be approximately the same
+                # magnitude.
+                keep_prob = (1-args.tvf_horizon_dropout)
+                mask = torch.bernoulli(torch.ones_like(tvf_loss)*keep_prob) / keep_prob
+                tvf_loss = tvf_loss * mask
             per_horizon_loss = tvf_loss.detach().mean(dim=0).cpu().numpy()
             tvf_loss = tvf_loss.mean(dim=-1)
             tvf_loss = 0.5 * args.tvf_coef * tvf_loss
@@ -2583,22 +2514,22 @@ class Runner:
         # -------------------------------------------------------------------------
 
         # handle uniform value as a special case
-        if args.use_uac != 0:
-            assert not args.use_tvf, "TVF not supported with uniform value learning yet."
-
-            # find the magic ratio
-            log_uniform_prob = math.log(1.0 / self.policy_shape[0])
-            log_policy = data["log_pac"]
-            log_ratio = torch.clip(log_uniform_prob - log_policy, float('-inf'), 0)
-            ratio = torch.exp(log_ratio)
-
-            uni_predicction = model_out["uni_value"]
-            targets = (1-ratio*ratio) * uni_predicction + (ratio * ratio) * data["ext_returns"]
-            uni_value_loss = args.vf_coef * torch.square(uni_predicction - targets)
-
-            self.log.watch_mean("loss_v_uni", uni_value_loss.mean(), history_length=64,
-                                display_name="ls_v_uni")
-            loss = loss + uni_value_loss
+        # if args.use_uac != 0:
+        #     assert not args.use_tvf, "TVF not supported with uniform value learning yet."
+        #
+        #     # find the magic ratio
+        #     log_uniform_prob = math.log(1.0 / self.policy_shape[0])
+        #     log_policy = data["log_pac"]
+        #     log_ratio = torch.clip(log_uniform_prob - log_policy, float('-inf'), 0)
+        #     ratio = torch.exp(log_ratio)
+        #
+        #     uni_predicction = model_out["uni_value"]
+        #     targets = (1-ratio*ratio) * uni_predicction + (ratio * ratio) * data["ext_returns"]
+        #     uni_value_loss = args.vf_coef * torch.square(uni_predicction - targets)
+        #
+        #     self.log.watch_mean("loss_v_uni", uni_value_loss.mean(), history_length=64,
+        #                         display_name="ls_v_uni")
+        #     loss = loss + uni_value_loss
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -2864,26 +2795,26 @@ class Runner:
             else:
                 entropy_clipped = entropy
 
-            if args.use_uac:
-
-                # the simplest solution.
-                # sort states into high cost and low cost, and apply two different entropy bonus levels.
-                entropy_cost = data["ext_value"] - data["uni_value"]
-                threshold = torch.mean(entropy_cost) + torch.std(entropy_cost) * 1.0
-                mask = torch.gt(entropy_cost, threshold)  # not normal, so masked will be few...
-                inv_mask = torch.logical_not(mask)
-
-                bonus_safe = self.current_entropy_bonus * 1.1
-                bonus_risky = self.current_entropy_bonus / 10.0
-
-                eb = bonus_safe * inv_mask + bonus_risky * mask
-                self.log.watch_mean("eb", torch.mean(eb), display_width=8, display_precision=4)
-                self.log.watch_stats("ec", entropy_cost, display_width=0)
-
-                gain = gain + entropy_clipped * eb
-
-            else:
-                gain = gain + entropy_clipped * self.current_entropy_bonus
+            # if args.use_uac:
+            #
+            #     # the simplest solution.
+            #     # sort states into high cost and low cost, and apply two different entropy bonus levels.
+            #     entropy_cost = data["ext_value"] - data["uni_value"]
+            #     threshold = torch.mean(entropy_cost) + torch.std(entropy_cost) * 1.0
+            #     mask = torch.gt(entropy_cost, threshold)  # not normal, so masked will be few...
+            #     inv_mask = torch.logical_not(mask)
+            #
+            #     bonus_safe = self.current_entropy_bonus * 1.1
+            #     bonus_risky = self.current_entropy_bonus / 10.0
+            #
+            #     eb = bonus_safe * inv_mask + bonus_risky * mask
+            #     self.log.watch_mean("eb", torch.mean(eb), display_width=8, display_precision=4)
+            #     self.log.watch_stats("ec", entropy_cost, display_width=0)
+            #
+            #     gain = gain + entropy_clipped * eb
+            #
+            # else:
+            gain = gain + entropy_clipped * self.current_entropy_bonus
 
             self.log.watch_mean("entropy", entropy.mean())
             self.log.watch_stats("entropy", entropy, display_width=0)  # super useful...
@@ -3113,9 +3044,9 @@ class Runner:
             # ppo trains value during policy update
             batch_data["ext_returns"] = self.ext_returns.reshape([B])
 
-        if args.use_uac:
-            batch_data["ext_value"] = self.ext_value[:N].reshape([B])
-            batch_data["uni_value"] = self.uni_value[:N].reshape([B])
+        # if args.use_uac:
+        #     batch_data["ext_value"] = self.ext_value[:N].reshape([B])
+        #     batch_data["uni_value"] = self.uni_value[:N].reshape([B])
 
         # sort out advantages
         advantages = self.advantage.reshape(B).copy()
@@ -3193,10 +3124,10 @@ class Runner:
             # these are needed if we are using the clipped value objective...
             batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
 
-        if args.use_uac:
-            log_policy = self.log_policy.reshape(B, *self.policy_shape)
-            actions = self.actions.reshape(B)
-            batch_data["log_pac"] = log_policy[range(B), actions]
+        # if args.use_uac:
+        #     log_policy = self.log_policy.reshape(B, *self.policy_shape)
+        #     actions = self.actions.reshape(B)
+        #     batch_data["log_pac"] = log_policy[range(B), actions]
 
         def get_value_estimate(prev_states, times):
             assert args.use_tvf, "replay_restraint require use_tvf=true (for the moment)"
@@ -3778,9 +3709,9 @@ class RolloutBuffer():
 
 def make_env(env_type, env_id, **kwargs):
     if env_type == "atari":
-        make_fn = rl.atari.make
+        make_fn = atari.make
     elif env_type == "mujoco":
-        make_fn = rl.mujoco.make
+        make_fn = mujoco.make
     else:
         raise ValueError(f"Invalid environment type {env_type}")
     return make_fn(env_id, **kwargs)

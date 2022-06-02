@@ -81,7 +81,7 @@ class Config:
         self.repeated_action_penalty = float()
         self.color              = bool()
         self.entropy_bonus      = float()
-        self.use_uac = bool()
+        # self.use_uac = bool()
         self.eb_cost_alpha = float()
         self.eb_clip = float()
         self.threads            = int()
@@ -108,6 +108,7 @@ class Config:
         self.policy_norm = str()
         self.value_norm = str()
 
+        self.use_tvf = bool()
         self.tvf_mode = str()
         self.tvf_coef           = float()
         self.tvf_max_horizon    = int()
@@ -116,6 +117,7 @@ class Config:
         self.auto_strategy = str()
         self.tvf_value_samples  = int()
         self.tvf_horizon_samples= int()
+        self.tvf_horizon_dropout = float()
         self.tvf_value_distribution = str()
         self.tvf_horizon_distribution = str()
         self.tvf_gae = bool()
@@ -123,6 +125,15 @@ class Config:
         self.tvf_value_scale_norm = str()
         self.tvf_gamma          = float()
         self.return_estimator_mode = str()
+
+
+        # csgo
+        self.csgo_mode = str()
+        self.csgo_alpha = float()
+        self.csgo_decay = float()
+        self.csgo_c1 = float()
+        self.csgo_c2 = float()
+        self.csgo_clip_scaled_gradients = bool()
 
 
         self.tvf_return_samples = int()
@@ -276,10 +287,6 @@ class Config:
         raise ValueError(f"Invalid type for environment {type(self.environment)} expecting str or list.")
 
     @property
-    def use_tvf(self):
-        return self.tvf_mode != "off"
-
-    @property
     def reward_normalization_gamma(self):
         gamma = self.tvf_gamma if self.use_tvf else self.gamma
         if self.override_reward_normalization_gamma is not None:
@@ -375,7 +382,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--gae_value_multiplier", type=float, default=1.0, help="Modifies value before going into GAE. Used to see how bad value estimates affect performance.")
     parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clip gradients during training to this.")
-    parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|marcus1|marcus2]")
+    parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
 
     # policy features
     parser.add_argument("--policy_batch_norm", type=str2bool, default=False)
@@ -402,6 +409,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss multiplier for TVF loss.")
     parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
 
+    parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0,
+                        help="fraction of horizons to exclude per epoch")
     parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
     parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
@@ -506,7 +515,8 @@ def parse_args(no_env=False, args_override=None):
 
 
     # experimental...
-    parser.add_argument("--tvf_mode", type=str, default="off", help="[off|dynamic|fixed]")
+    parser.add_argument("--use_tvf", type=str2bool, default=False)
+    parser.add_argument("--tvf_mode", type=str, default="dynamic", help="[dynamic|fixed]")
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
     parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
 
@@ -542,7 +552,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--repeated_action_penalty", type=float, default=0.0,
                         help="Penalty if agent repeats the same action more than this many times.")
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
-    parser.add_argument("--use_uac", type=str2bool, default=False, help="Learns the cost of a uniform exploration step (Uniform action cost)")
+    # parser.add_argument("--use_uac", type=str2bool, default=False, help="Learns the cost of a uniform exploration step (Uniform action cost)")
     parser.add_argument("--eb_cost_alpha", type=float, default=10.0, help="Weights entropy bonus by uniform action cost.")
     parser.add_argument("--eb_clip", type=float, default=-1, help="Clips entropy bonus. (negative disables clipping)")
     parser.add_argument("--threads", type=int, default=2)
@@ -627,9 +637,13 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--optimizer", type=str, default="adam", help="[adam|sgd|csgo]")
     parser.add_argument("--policy_optimizer", type=str, default="", help="[adam|sgd|csgo]")
-    parser.add_argument("--csgo_friction", type=float, default=0.01)
+
+    parser.add_argument("--csgo_mode", type=str, default="mode1", help="[mode1|mode2|mode3]")
+    parser.add_argument("--csgo_alpha", type=float, default=0.01)
     parser.add_argument("--csgo_decay", type=float, default=1.00)
-    parser.add_argument("--csgo_clip", type=float, default=4.00)
+    parser.add_argument("--csgo_c1", type=float, default=4.00)
+    parser.add_argument("--csgo_c2", type=float, default=4.00)
+    parser.add_argument("--csgo_clip_scaled_gradients", type=str2bool, default=False)
 
     parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
 
@@ -652,8 +666,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--lfr_samples", type=int, default=256, help='Number of samples for LRF.')
     parser.add_argument("--lfr_normalize", type=str2bool, default=True, help='If input should use normalization transform.')
 
-    # legacy
-    parser.add_argument("--use_tvf", type=str2bool, default=None)
+
     # other
     parser.add_argument("--mutex_key", type=str, default='',
                         help="uses mutex locking so that only one GPU can be working on a rollout at a time. " +

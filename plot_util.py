@@ -10,6 +10,7 @@ import json
 import math
 import typing
 from collections import defaultdict
+from glob import glob
 
 import pickle
 from os import listdir
@@ -1701,7 +1702,27 @@ def setup_plot(title=None):
     #plt.title(title)
 
 
-def experiment(title, path, keys: list, subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0):
+def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None):
+
+    if type(key_filter) is str:
+        mask = key_filter
+        key_filter = lambda x: mask in x
+
+    if keys == "auto":
+        paths = glob(f"{path}/*/", recursive=False)
+        keys = []
+        for x in paths:
+            try:
+                run = " ".join(x.split("/")[-2].split(" ")[1:-2])
+                if run in [""]:
+                    continue
+                if key_filter is not None and not key_filter(run):
+                    continue
+                keys.append(run+' ')
+            except:
+                pass
+        keys = sorted(set(keys))
+
     setup_plot(title)
     for i, key in enumerate(keys):
         plot_seeded_validation(

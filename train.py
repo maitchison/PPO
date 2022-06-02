@@ -20,6 +20,63 @@ def get_previous_experiment_guid(experiment_path, run_name):
     return None
 
 
+def get_n_actions(space):
+    import gym
+    if type(space) == gym.spaces.Discrete:
+        return space.n
+    elif type(space) == gym.spaces.Box:
+        assert len(space.shape) == 1
+        return space.shape[0]
+    else:
+        raise ValueError(f"Action space of type {type(space)} not implemented yet.")
+
+
+def make_model(args):
+    """
+    Construct model based on env, and arguments.
+    """
+
+    from rl import rollout, models
+    import torch
+
+    fake_env = rollout.make_env(args.env_type, args.get_env_name())
+    n_actions = get_n_actions(fake_env.action_space)
+    obs_space = fake_env.observation_space.shape
+    log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
+
+    tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
+    tvf_fixed_head_horizons = sorted(set(tvf_fixed_head_horizons))
+
+    model = models.TVFModel(
+        networks=(args.policy_network, args.value_network),
+        network_args=(args.policy_network_args, args.value_network_args),
+        input_dims=obs_space,
+        actions=n_actions,
+        device=args.device,
+        dtype=torch.float32,
+
+        use_rnd=args.use_rnd,
+        use_rnn=False,
+        tvf_mode=args.tvf_mode,
+        tvf_horizon_transform=rollout.horizon_scale_function,
+        tvf_time_transform=rollout.time_scale_function,
+        tvf_max_horizon=args.tvf_max_horizon,
+        tvf_value_scale_fn=args.tvf_value_scale_fn,
+        tvf_value_scale_norm=args.tvf_value_scale_norm,
+        feature_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
+        tvf_fixed_head_horizons=tvf_fixed_head_horizons,
+        architecture=args.architecture,
+
+        hidden_units=args.hidden_units,
+        tvf_hidden_units=args.tvf_hidden_units,
+        tvf_activation=args.tvf_activation,
+        shared_initialization=args.dna_shared_initialization,
+        observation_normalization=args.observation_normalization,
+        freeze_observation_normalization=args.freeze_observation_normalization,
+    )
+    return model
+
+
 
 def main():
 
@@ -33,15 +90,6 @@ def main():
     from rl.config import args
     import numpy as np
     import gym.spaces
-
-    def get_n_actions(space):
-        if type(space) == gym.spaces.Discrete:
-            return space.n
-        elif type(space) == gym.spaces.Box:
-            assert len(space.shape) == 1
-            return space.shape[0]
-        else:
-            raise ValueError(f"Action space of type {type(space)} not implemented yet.")
 
     config.parse_args()
 
@@ -119,43 +167,8 @@ def main():
 
     os.makedirs(args.log_folder, exist_ok=True)
 
-    """ Runs experiment specified by config.args """
-    fake_env = rollout.make_env(args.env_type, args.get_env_name())
-    n_actions = get_n_actions(fake_env.action_space)
-    obs_space = fake_env.observation_space.shape
-    log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
-
     utils.lock_job()
-
-    tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
-
-    actor_critic_model = models.TVFModel(
-        networks=(args.policy_network, args.value_network),
-        network_args=(args.policy_network_args, args.value_network_args),
-        input_dims=obs_space,
-        actions=n_actions,
-        device=args.device,
-        dtype=torch.float32,
-
-        use_rnd=args.use_rnd,
-        use_rnn=False,
-        tvf_mode=args.tvf_mode,
-        tvf_horizon_transform=rollout.horizon_scale_function,
-        tvf_time_transform=rollout.time_scale_function,
-        tvf_max_horizon=args.tvf_max_horizon,
-        tvf_value_scale_fn=args.tvf_value_scale_fn,
-        tvf_value_scale_norm=args.tvf_value_scale_norm,
-        feature_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
-        tvf_fixed_head_horizons=tvf_fixed_head_horizons,
-        architecture=args.architecture,
-
-        hidden_units=args.hidden_units,
-        tvf_hidden_units=args.tvf_hidden_units,
-        tvf_activation=args.tvf_activation,
-        shared_initialization=args.dna_shared_initialization,
-        observation_normalization=args.observation_normalization,
-        freeze_observation_normalization=args.freeze_observation_normalization,
-    )
+    actor_critic_model = make_model(args)
 
     if args.reference_policy is not None:
         assert args.architecture == "dual"
