@@ -173,7 +173,7 @@ def main():
 
     os.makedirs(args.log_folder, exist_ok=True)
 
-    utils.lock_job()
+    utils.lock_job(force=args.ignore_lock)
     actor_critic_model = make_model(args)
 
     if args.reference_policy is not None:

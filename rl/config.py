@@ -213,6 +213,7 @@ class Config:
 
         self.use_clipped_value_loss = bool()
         self.reward_clipping    = str()
+        self.ignore_lock = bool()
 
         self.log_folder         = str()
         self.checkpoint_every   = int()
@@ -565,6 +566,11 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--upload_batch", type=str2bool, default=False, help='Uploads an entire batch to GPU, faster, but uses more GPU RAM.')
     parser.add_argument("--disable_logging", type=str2bool, default=False,
                         help='Useful when profiling.')
+
+    parser.add_argument("--ignore_lock", type=str2bool, default=False,
+                        help="ignores previous lock")
+
+
 
     parser.add_argument("--ignore_device", type=str, default="[]", help="Devices to ignore when using auto")
     parser.add_argument("--save_checkpoints", type=str2bool, default=True)

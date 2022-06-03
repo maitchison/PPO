@@ -718,11 +718,11 @@ def generate_hash_image(key, hash_size, obs_size):
 # -------------------------------------------------------------
 
 
-def lock_job():
+def lock_job(force:bool=False):
 
     # make sure there isn't another lock
     previous_lock = get_lock_info()
-    if previous_lock is not None and previous_lock["key"] != config.LOCK_KEY:
+    if previous_lock is not None and previous_lock["key"] != config.LOCK_KEY and not force:
         raise Exception("Could not get lock for job, another worker has a lock open.")
 
     lock = {

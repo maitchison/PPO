@@ -59,7 +59,13 @@ def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_2
     Generate slurm scripts for jobs
     """
 
-    cmds = get_experiment_cmds(job_filter, force_params={'mutex_key': ''})
+    cmds = get_experiment_cmds(
+        job_filter,
+        force_params={
+            'mutex_key': '',
+            'ignore_lock': True,
+        }
+    )
     n = 0
     while len(cmds) > 0:
         n += 1

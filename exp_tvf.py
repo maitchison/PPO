@@ -564,7 +564,7 @@ def cluster_dropout(priority: int = 0):
         'subset': ATARI_3_VAL,
         'priority': priority,
         'hostname': "",
-        'device': 'cuda:0',
+        #'device': 'cuda',
         'env_args': HARD_MODE_ARGS,
         # improvements
         'use_tvf': True,
