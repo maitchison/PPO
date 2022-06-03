@@ -226,6 +226,7 @@ TVF_INITIAL_ARGS.update({
     'tvf_horizon_samples': 128, # probably too much!
     'tvf_return_mode': 'exponential',
     'tvf_return_n_step': 20,    # should be 20 maybe, or higher maybe?
+    'tvf_return_samples': 16,   # too low probably?
     'tvf_coef': 1.0,
 
     # yes please to replay, might remove later though
@@ -239,322 +240,138 @@ TVF_INITIAL_ARGS.update({
 })
 
 
-# def distil(priority: int = 0):
-#
-#     # check if distil constraint made a difference
-#
-#     COMMON_ARGS = {
-#         'experiment': "DNA_DISTIL",
-#         'seeds': 2,
-#         'subset': ATARI_3_VAL,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#     }
-#
-#     for distil_loss in ["mse_logit", "kl_policy", "mse_policy"]:
-#         add_run(
-#             run_name=f"distil_loss={distil_loss}",
-#             default_args=DNA_TUNED_ARGS,
-#             distil_loss=distil_loss,
-#             **COMMON_ARGS
-#         )
-#
-# def epochs(priority: int = 0):
-#
-#     COMMON_ARGS = {
-#         'experiment': "TVF_EPOCHS",
-#         'seeds': 2,
-#         'subset': ATARI_3_VAL,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#     }
-#
-#     for epochs in [1, 2, 3]:
-#         add_run(
-#             run_name=f"epochs=2{epochs}2",
-#             default_args=TVF_INITIAL_ARGS,
-#             policy_epochs=2,
-#             value_epochs=epochs,
-#             distil_epochs=2,
-#             **COMMON_ARGS
-#         )
-#         add_run(
-#             run_name=f"epochs={epochs}22",
-#             default_args=TVF_INITIAL_ARGS,
-#             policy_epochs=epochs,
-#             value_epochs=2,
-#             distil_epochs=2,
-#             **COMMON_ARGS
-#         )
-#
-# def horizon(priority: int = 0):
-#
-#     COMMON_ARGS = {
-#         'experiment': "TVF_HORIZON",
-#         'seeds': 2,
-#         'subset': ATARI_3_VAL,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#
-#         # improved settings?
-#
-#         'tvf_mode': "dynamic",
-#         'gae_lambda': 0.8,
-#         'hidden_units': 256,
-#         'tvf_hidden_units': 512,
-#         'replay_size': 128 * 128,
-#         'distil_batch_size': 128 * 128,
-#         'policy_epochs': 2,
-#         'value_epochs': 2,
-#         'distil_epochs': 2,
-#         'tvf_return_n_step': 20,
-#     }
-#
-#     add_run(
-#         run_name=f"tvf 100",
-#         default_args=TVF_INITIAL_ARGS,
-#         gamma=0.99,
-#         tvf_gamma=0.99,
-#         tvf_max_horizon=300,
-#         **COMMON_ARGS
-#     )
-#     add_run(
-#         run_name=f"tvf 1k",
-#         default_args=TVF_INITIAL_ARGS,
-#         gamma=0.999,
-#         tvf_gamma=0.999,
-#         tvf_max_horizon=3000,
-#         **COMMON_ARGS
-#     )
-#     add_run(
-#         run_name=f"tvf 10k",
-#         default_args=TVF_INITIAL_ARGS,
-#         gamma=0.9999,
-#         tvf_gamma=0.9999,
-#         tvf_max_horizon=30000,
-#         **COMMON_ARGS
-#     )
-#     add_run(
-#         run_name=f"tvf 30k",
-#         default_args=TVF_INITIAL_ARGS,
-#         gamma=0.99997,
-#         tvf_gamma=0.99997,
-#         tvf_max_horizon=30000,
-#         **COMMON_ARGS
-#     )
-#
-#
-#
-# def tvf_hidden(priority: int = 0):
-#
-#     COMMON_ARGS = {
-#         'experiment': "TVF_HIDDEN",
-#         'seeds': 2,
-#         'subset': ATARI_3_VAL,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#     }
-#
-#     for hidden_units in [256, 512]:
-#         for tvf_hidden_units in [256, 512]: # try super wide.
-#             add_run(
-#                 run_name=f"hidden={hidden_units}x{tvf_hidden_units}",
-#                 default_args=TVF_INITIAL_ARGS,
-#                 hidden_units=hidden_units,
-#                 tvf_hidden_units=tvf_hidden_units,
-#                 **COMMON_ARGS
-#             )
-#     # try wide and thin
-#     add_run(
-#         run_name=f"hidden=256x2048",
-#         default_args=TVF_INITIAL_ARGS,
-#         hidden_units=256,
-#         tvf_hidden_units=2048,
-#         **COMMON_ARGS
-#     )
-#     add_run(
-#         run_name=f"hidden=256x64",
-#         default_args=TVF_INITIAL_ARGS,
-#         hidden_units=256,
-#         tvf_hidden_units=64,
-#         **COMMON_ARGS
-#     )
-#
-#
-#
-#
-# def tvf_lambda(priority: int = 0):
-#
-#     COMMON_ARGS = {
-#         'experiment': "TVF_LAMBDA",
-#         'seeds': 2,
-#         'subset': ATARI_3_VAL,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#     }
-#
-#     for tvf_return_n_step in [10, 20, 40, 80, 120, 160]:
-#         add_run(
-#             run_name=f"tvf_return_n_step={tvf_return_n_step}",
-#             default_args=TVF_INITIAL_ARGS,
-#             policy_epochs=2,
-#             value_epochs=2,
-#             distil_epochs=2,
-#             tvf_return_n_step=tvf_return_n_step,
-#             **COMMON_ARGS
-#         )
-#
-#     IMPROVED_ARGS = COMMON_ARGS.copy()
-#     IMPROVED_ARGS.update({
-#         'gae_lambda': 0.8,
-#         'hidden_units': 256,
-#         'tvf_hidden_units': 512,
-#         'replay_size': 128 * 128,
-#         'distil_batch_size': 128 * 128,
-#         'policy_epochs': 2,
-#         'value_epochs': 2,
-#         'distil_epochs': 2,
-#     })
-#
-#     for samples in [1, 4, 16, 64]:
-#         add_run(
-#             run_name=f"samples={samples}",
-#             default_args=TVF_INITIAL_ARGS,
-#             tvf_return_samples=samples,
-#             tvf_return_n_step=80,
-#             **IMPROVED_ARGS
-#         )
-#
-#
-# def fixed_head(priority: int = 0):
-#
-#     COMMON_ARGS = {
-#         'experiment': "TVF_FIXED",
-#         'seeds': 2,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#     }
-#
-#     for subset in [ATARI_3_VAL, ["Breakout"]]:
-#         for tvf_mode in ["fixed", "dynamic"]:
-#             for tvf_hidden_units in [0, 512]:
-#                 add_run(
-#                     run_name=f"tvf {tvf_mode} h={tvf_hidden_units}",
-#                     default_args=TVF_INITIAL_ARGS,
-#                     tvf_mode=tvf_mode,
-#                     tvf_hidden_units=tvf_hidden_units,
-#                     policy_epochs=2,
-#                     value_epochs=2,
-#                     distil_epochs=2,
-#                     tvf_return_n_step=20,
-#                     subset=subset,
-#                     **COMMON_ARGS
-#                 )
-#
-#
-#
-def initial(priority: int = 0):
+def merge_dict(a, b):
+    x = a.copy()
+    x.update(b)
+    return x
+
+
+def reference(priority: int = 0):
 
     COMMON_ARGS = {
-        'experiment': "TVF_INITIAL",
         'seeds': 1,
         'subset': ATARI_3_VAL,
         'priority': priority,
         'hostname': "",
         'env_args': HARD_MODE_ARGS,
+        'experiment': "REFERENCE",
     }
 
+    # reference runs just to see how we're doing.
+
     add_run(
-        run_name="dna_tuned",
-        default_args=DNA_TUNED_ARGS,
-        **COMMON_ARGS
+        run_name="ppo (reference)",
+        default_args=PPO_TUNED_ARGS,
+        **COMMON_ARGS,
     )
 
     add_run(
-        run_name="tvf (30k)",
+        run_name="dna (reference)",
+        default_args=DNA_TUNED_ARGS,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name="tvf (reference)",
         default_args=TVF_INITIAL_ARGS,
         **COMMON_ARGS
     )
 
+
+def horizon(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'default_args': TVF_INITIAL_ARGS,
+        'experiment': "TVF_HORIZON",
+    }
+
+    # check horizons
     add_run(
         run_name="tvf (10k)",
         gamma=0.9999,
         tvf_gamma=0.9999,
-        default_args=TVF_INITIAL_ARGS,
         **COMMON_ARGS
     )
 
-#
-#
-# def csgo(priority:int = 0):
-#     # sneaky csgo experiments with super fast ppo
-#     COMMON_ARGS = {
-#         'experiment': "CSGO_INITIAL",
-#         'seeds': 1,
-#         'subset': ATARI_3_VAL,
-#         'priority': priority,
-#         'hostname': "",
-#         'env_args': HARD_MODE_ARGS,
-#     }
-#
-#     for mode in ["mode1", "mode2", "mode3"]:
-#         add_run(
-#             run_name=f"mode={mode}",
-#             default_args=DNA_TUNED_ARGS,
-#             grad_clip_mode="cak",
-#             csgo_mode=mode,
-#             **COMMON_ARGS
-#         )
-#     add_run(
-#         run_name=f"mode=off",
-#         default_args=DNA_TUNED_ARGS,
-#         grad_clip_mode="off",
-#         **COMMON_ARGS
-#     )
-#     add_run(
-#         run_name=f"mode=global_norm",
-#         default_args=DNA_TUNED_ARGS,
-#         grad_clip_mode="global_norm",
-#         **COMMON_ARGS
-#     )
-#
-#     # later on:
-#     # add scaling runs
-#     # maybe try alpha=1, or different alphas?
-#
-#     # new csgo, on namethisgame
-#     COMMON_ARGS['subset'] = ['NameThisGame']
-#     COMMON_ARGS['experiment'] = 'CSGO_0'
-#     COMMON_ARGS['seeds'] = 2
-#     COMMON_ARGS['default_args'] = PPO_FAST_ARGS
-#
-#     for c1 in [0.001, 0.003, 0.01, 0.1]:
-#         for mode in ["mode1", "mode2"]:
-#             add_run(
-#                 run_name=f"mode={mode} clip={c1}",
-#                 grad_clip_mode="cak",
-#                 csgo_c1=c1,
-#                 csgo_c2=4.0,
-#                 csgo_mode=mode,
-#                 **COMMON_ARGS
-#             )
-#     add_run(
-#         run_name=f"mode=off",
-#         grad_clip_mode="off",
-#         **COMMON_ARGS
-#     )
-#     add_run(
-#         run_name=f"mode=global_norm",
-#         grad_clip_mode="global_norm",
-#         **COMMON_ARGS
-#     )
+    add_run(
+        run_name="tvf (1k)",
+        gamma=0.999,
+        tvf_gamma=0.999,
+        **COMMON_ARGS
+    )
 
+    # check rediscounting
+    add_run(
+        run_name="tvf (30k_10k)",
+        gamma=0.9999,
+        tvf_gamma=0.99997,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="tvf (30k_1k)",
+        gamma=0.999,
+        tvf_gamma=0.99997,
+        **COMMON_ARGS
+    )
+
+
+def returns(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'default_args': TVF_INITIAL_ARGS,
+        'experiment': "TVF_RETURN",
+    }
+
+    # check n_steps and samples
+    for n_step in [80]: # what I think it should be...
+        for samples in [1, 4, 16, 64]:
+            add_run(
+                run_name=f"n_step={n_step} samples={samples}",
+                tvf_return_samples=samples,
+                tvf_return_n_step=n_step,
+                **COMMON_ARGS
+            )
+    for n_step in [10, 20, 40, 80]:
+        for samples in [16]:
+            add_run(
+                run_name=f"n_step={n_step} samples={samples}",
+                tvf_return_samples=samples,
+                tvf_return_n_step=n_step,
+                **COMMON_ARGS
+            )
+
+def value_heads(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'default_args': TVF_INITIAL_ARGS,
+        'experiment': "TVF_VALUEHEAD",
+    }
+
+    # check n_steps and samples
+    for value_heads in [8, 32, 128]:
+        add_run(
+
+            run_name=f"value_heads={value_heads}",
+            tvf_value_samples=value_heads,
+            tvf_horizon_samples=value_heads,
+            **COMMON_ARGS
+        )
 
 def cluster_dropout(priority: int = 0):
 
@@ -571,6 +388,8 @@ def cluster_dropout(priority: int = 0):
         'tvf_mode': 'fixed',
         'gae_lambda': 0.8,
         'hidden_units': 512,
+        'tvf_return_n_step': 20,
+        'tvf_return_samples': 32,
         'tvf_hidden_units': 0,
         'replay_size': 1 * 128 * 128,
         'distil_batch_size': 1 * 128 * 128,
@@ -601,15 +420,10 @@ def cluster_dropout(priority: int = 0):
 
 
 def setup():
-    # distil()
 
-    # epochs()
-    # tvf_lambda()
-    # tvf_hidden(25)
-    # fixed_head(25)
-    # horizon()
-    # csgo(50)
-
-    initial()
+    reference(25)
+    horizon()
+    returns()
+    value_heads()
 
     cluster_dropout(200)

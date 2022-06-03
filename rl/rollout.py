@@ -512,10 +512,8 @@ class Runner:
         self.policy_shape = [model.actions]
 
         self.batch_counter = 0
-        self.erp_stats = {}
-        self.are_stats = {}
-        self.are_stats["value_h"] = 1/(1-args.td_lambda)
-        self.are_stats["policy_h"] = 1/(1-args.gae_lambda)
+
+        self.noise_level_stats = {}
 
         self.grad_accumulator = {}
 
@@ -782,11 +780,8 @@ class Runner:
         if not disable_env_state:
             data['env_state'] = utils.save_env_state(self.vec_env)
 
-        if args.use_erp:
-            data['erp_stats'] = self.erp_stats
-
         if args.are_mode != "off":
-            data['are_stats'] = self.are_stats
+            data['are_stats'] = self.noise_level_stats
 
         if self.replay_buffer is not None and not disable_replay:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
@@ -867,10 +862,8 @@ class Runner:
         self.batch_counter = checkpoint.get('batch_counter', 0)
         self.stats = checkpoint.get('stats', 0)
 
-        if args.use_erp:
-            self.erp_stats = checkpoint['erp_stats']
 
-        self.are_stats = checkpoint.get('are_stats', {})
+        self.noise_level_stats = checkpoint.get('are_stats', {})
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -1320,7 +1313,7 @@ class Runner:
         # calculate int_value for intrinsic motivation (RND does not need this as it was done during rollout)
         # note: RND generates int_value during rollout, however in dual mode these need to (and should) come
         # from the value network, so we redo them here.
-        if args.use_ebd or args.use_erp or (args.use_rnd and args.architecture == "dual"):
+        if args.use_rnd and args.architecture == "dual":
             N, A = self.prev_time.shape
             aux_features = None
             if args.use_tvf:
@@ -1337,85 +1330,6 @@ class Runner:
             # note: in single mode value_int_value = policy_int_value
             self.int_value[:, :] = output["value_int_value"].reshape([(N + 1), A]).detach().cpu().numpy()
 
-            if args.use_erp:
-                # calculate intrinsic reward via replay diversity
-
-                if args.erp_reduce == "mean":
-                    reduce_fn = np.nanmean
-                elif args.erp_reduce == "min":
-                    reduce_fn = np.nanmin
-                elif args.erp_reduce == "top5":
-                    def top5(x, axis):
-                        x_sorted = np.sort(x, axis=axis)[:5]
-                        return np.nanmean(x_sorted, axis=axis)
-                    reduce_fn = top5
-                else:
-                    raise ValueError(f"Invalid erp_reduce {args.erp_reduce}")
-
-                def get_distances(target: np.ndarray, enable_mask=False):
-                    samples = min(args.erp_samples, len(target))
-                    samples = np.random.choice(len(target), [samples], replace=False)
-                    internal_distance = self.get_diversity(target[samples], target, reduce_fn, mask=samples).mean()
-                    target_distances = self.get_diversity(
-                        utils.merge_down(self.prev_obs), target, reduce_fn,
-                        mask=np.arange(len(target)) if enable_mask else None
-                    )
-                    return internal_distance, target_distances
-
-                def get_intrinsic_rewards(mode:str):
-                    if mode == "rollout" or self.replay_buffer.current_size == 0:
-                        internal_distance, rollout_distances = get_distances(utils.merge_down(self.prev_obs), enable_mask=True)
-                    elif mode == "replay":
-                        internal_distance, rollout_distances = get_distances(self.replay_buffer.data[:self.replay_buffer.current_size])
-                    else:
-                        raise ValueError(f"Invalid mode {mode}")
-
-                    id_code = f"{mode}_internal_distance"
-                    self.erp_stats[id_code] = internal_distance
-
-                    self.log.watch_mean(f"{mode}_internal_distance", internal_distance, display_width=0)
-
-                    # calculate intrinsic reward
-                    self.log.watch_mean_std(f"{mode}_distance", rollout_distances, display_width=0)
-                    if args.erp_bias == "centered":
-                        bias = rollout_distances.mean()
-                    elif args.erp_bias == "none":
-                        bias = 0
-                    elif args.erp_bias == "internal":
-                        bias = self.erp_stats[id_code]
-                    else:
-                        raise ValueError(f"Invalid erp_bias {args.erp_bias}")
-
-                    return (rollout_distances.reshape([N, A]) - bias) / self.erp_stats[id_code]
-
-                if args.erp_source == "rollout":
-                    self.int_rewards += get_intrinsic_rewards("rollout")
-                elif args.erp_source == "replay":
-                    self.int_rewards += get_intrinsic_rewards("replay")
-                elif args.erp_source == "both":
-                    self.int_rewards += (get_intrinsic_rewards("replay") + get_intrinsic_rewards("rollout")) / 2
-                else:
-                    raise ValueError(f"Invalid erp_source {args.erp_source}")
-
-            if args.use_ebd:
-                if args.use_tvf:
-                    if args.tvf_force_ext_value_distil:
-                        # in this case it is just policy_ext_value that has been trained
-                        # note: there might be a problem here as value gets time, but policy does not, using
-                        # a shorter horizon might work better...
-                        policy_prediction = output["policy_ext_value"][..., np.newaxis]
-                        value_prediction = output["value_tvf_value"][..., -1][..., np.newaxis]
-                    else:
-                        # use samples from entire curve
-                        policy_prediction = output["policy_tvf_value"]
-                        value_prediction = output["value_tvf_value"]
-                else:
-                    policy_prediction = output["policy_ext_value"][..., np.newaxis]
-                    value_prediction = output["value_ext_value"][..., np.newaxis]
-                errors = (policy_prediction - value_prediction).mean(dim=-1)
-                int_rewards = torch.square(errors).reshape([N+1, A])
-                self.int_rewards += int_rewards[:N].cpu().numpy()
-
         self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
         aux_fields = {}
@@ -1428,7 +1342,7 @@ class Runner:
                 self.ext_value[self.N],
                 self.terminals,
                 self.gamma,
-                self.lambda_value
+                args.lambda_value
             ) + self.ext_value[:self.N]
             aux_fields['vtarg'] = utils.merge_down(v_target)
 
@@ -1523,13 +1437,13 @@ class Runner:
 
         # add these samples to the mix
         for var_name, var_value in zip(['s', 'g2'], [s_mean, g2_mean]):
-            if f'{label}_{var_name}_history' not in self.are_stats:
-                self.are_stats[f'{label}_{var_name}_history'] = deque(maxlen=100)
-            self.are_stats[f'{label}_{var_name}_history'].append(var_value)
-            self.are_stats[f'{label}_{var_name}'] = np.mean(self.are_stats[f'{label}_{var_name}_history'])
+            if f'{label}_{var_name}_history' not in self.noise_level_stats:
+                self.noise_level_stats[f'{label}_{var_name}_history'] = deque(maxlen=100)
+            self.noise_level_stats[f'{label}_{var_name}_history'].append(var_value)
+            self.noise_level_stats[f'{label}_{var_name}'] = np.mean(self.noise_level_stats[f'{label}_{var_name}_history'])
 
-        av_s = np.mean(self.are_stats[f'{label}_s_history'])
-        av_g2 = np.mean(self.are_stats[f'{label}_g2_history'])
+        av_s = np.mean(self.noise_level_stats[f'{label}_s_history'])
+        av_g2 = np.mean(self.noise_level_stats[f'{label}_g2_history'])
 
         # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
         # to avoid this we clip the *smoothed* g2 to epsilon.
@@ -1537,7 +1451,7 @@ class Runner:
         epsilon = 1e-4
         ratio = max(av_s, epsilon) / max(av_g2, epsilon)
 
-        self.are_stats[f'{label}_ratio'] = ratio
+        self.noise_level_stats[f'{label}_ratio'] = ratio
 
         self.log.watch(f'are_{label}_smooth_s', av_s, display_precision=0, display_width=8, display_name=f"sns_{label}_s")
         self.log.watch(f'are_{label}_smooth_g2', av_g2, display_precision=0, display_width=8, display_name=f"sns_{label}_g2")
@@ -1545,7 +1459,7 @@ class Runner:
         self.log.watch(f'are_{label}_s', s_mean, display_precision=0, display_width=0)
         self.log.watch(f'are_{label}_g2', g2_mean, display_precision=0, display_width=0)
         self.log.watch(f'are_{label}_b', ratio, display_precision=0, display_width=0)
-        self.log.watch(f'are_{label}_smooth_b', self.are_stats[f'{label}_ratio'], display_precision=0, display_width=0)
+        self.log.watch(f'are_{label}_smooth_b', self.noise_level_stats[f'{label}_ratio'], display_precision=0, display_width=0)
         self.log.watch(
             f'are_{label}_sqrt_b',
             np.clip(ratio, 0, float('inf')) ** 0.5,
@@ -1553,7 +1467,7 @@ class Runner:
             display_name=f"sns_{label}"
         )
 
-        return self.are_stats[f'{label}_ratio']
+        return self.noise_level_stats[f'{label}_ratio']
 
     @torch.no_grad()
     def get_value_estimates(self, obs: Union[np.ndarray, torch.Tensor], time: Union[None, np.ndarray]=None,
@@ -1949,7 +1863,7 @@ class Runner:
         SAMPLES = 10
 
         # really trying to make samples be different between runs here.
-        h = 1/(1 - self.lambda_value)
+        h = 1/(1 - args.lambda_value)
         lambdas = [1 - (1 / (factor * h)) for factor in np.geomspace(0.25, 4.0, SAMPLES)]
 
         advantage_estimate = np.zeros([SAMPLES, N, A], dtype=np.float32)
@@ -2050,7 +1964,7 @@ class Runner:
                         batch_value_estimates[N],
                         rollout.terminals,
                         self.gamma,
-                        self.lambda_policy
+                        args.lambda_policy
                     )
 
                     batch_returns = ext_advantage + batch_value_estimates[:N]
@@ -2092,7 +2006,7 @@ class Runner:
                 ext_value_estimates[N],
                 self.terminals,
                 self.gamma,
-                self.lambda_policy
+                args.lambda_policy
             )
         else:
             self.ext_advantage = calculate_gae(
@@ -2101,7 +2015,7 @@ class Runner:
                 ext_value_estimates[N],
                 self.terminals,
                 self.gamma,
-                self.lambda_policy
+                args.lambda_policy
             )
 
         # calculate ext_returns for PPO targets, and for debugging
@@ -2112,7 +2026,7 @@ class Runner:
             ext_value_estimates[N],
             self.terminals,
             self.gamma,
-            self.lambda_value,
+            args.lambda_value,
         )
         self.ext_returns = temp_advantage_estimate + ext_value_estimates[:N]
 
@@ -2144,7 +2058,7 @@ class Runner:
                 self.int_value[N],
                 (not args.intrinsic_reward_propagation) * self.terminals,
                 gamma=args.gamma_int,
-                lamb=self.lambda_policy
+                lamb=args.lambda_policy
             )
 
             self.int_returns = self.int_advantage + self.int_value[:N]
@@ -3000,7 +2914,7 @@ class Runner:
             v.to(device=self.model.device, non_blocking=True)
             batch_data[k] = v
 
-    def wants_are_update(self, network=None):
+    def wants_noise_estimate(self, network=None):
         """
         returns if this batch step wants an adaptive batch_size update or not.
         """
@@ -3274,37 +3188,6 @@ class Runner:
 
         return batch_data
 
-    def get_adaptive_mbs(self, noise_scale: float, r=50):
-        """
-        Returns an appropriate mini-batch size based on the cbs estimate.
-        """
-
-        # todo: factor in the number of epochs
-
-        min_size = 128  # partly for performance, partly for safety
-        max_size = args.batch_size
-        if noise_scale < 0:
-            # this happens quite a bit...
-            noise_scale = 0
-        target_batch_size = math.sqrt(r*noise_scale)
-        clipped_target_batch_size = np.clip(target_batch_size, min_size, max_size)
-        quantised_target_batch_size = 2 ** round(math.log2(clipped_target_batch_size))
-        return quantised_target_batch_size
-
-    @property
-    def lambda_value(self):
-        if args.are_mode in ["on"]:
-            return 1 - (1 / self.are_stats["value_h"])
-        else:
-            return args.td_lambda
-
-    @property
-    def lambda_policy(self):
-        if args.are_mode in ["on", "policy"]:
-            return 1 - (1 / self.are_stats["policy_h"])
-        else:
-            return args.gae_lambda
-
     def train_distil(self):
 
         # ----------------------------------------------------
@@ -3405,33 +3288,6 @@ class Runner:
         if args.use_rnd:
             self.train_rnd()
 
-        # adaptive return estimation
-        # takes time for noise scale to warm up...
-        if args.are_mode != "off":
-            # note: due to noise, ratios can be negative early on in training.
-            if 'policy_ratio' in self.are_stats and self.are_stats['policy_ratio'] > 0:
-                rho_a = (self.are_stats['policy_ratio'] ** 0.5) / args.are_target_p
-                if self.step >= args.are_warmup and args.are_mode in ['on', 'policy']:
-                    if rho_a > 1 + args.are_epsilon:
-                        self.are_stats["policy_h"] = np.clip(self.are_stats["policy_h"] * args.are_alpha, args.are_min_h, args.are_max_h)
-                    if rho_a < 1 - args.are_epsilon:
-                        self.are_stats["policy_h"] = np.clip(self.are_stats["policy_h"] / args.are_alpha, args.are_min_h, args.are_max_h)
-                self.log.watch_mean("are_pr", rho_a)
-                self.log.watch_mean("are_ph", self.are_stats["policy_h"])
-
-            if 'value_ratio' in self.are_stats and self.are_stats['value_ratio'] > 0:
-                rho_v = (self.are_stats['value_ratio'] ** 0.5) / args.are_target_v
-                if self.step >= args.are_warmup and args.are_mode in ['on']:
-                    if rho_v > 1 + args.are_epsilon:
-                        self.are_stats["value_h"] = np.clip(self.are_stats["value_h"] * args.are_alpha, args.are_min_h, args.are_max_h)
-                    if rho_v < 1 - args.are_epsilon:
-                        self.are_stats["value_h"] = np.clip(self.are_stats["value_h"] / args.are_alpha, args.are_min_h, args.are_max_h)
-                self.log.watch_mean("are_vr", rho_v)
-                self.log.watch_mean("are_vh", self.are_stats["value_h"])
-
-        self.log.watch("lambda_policy", self.lambda_policy)
-        self.log.watch("lambda_value", self.lambda_value)
-
         self.batch_counter += 1
 
     def train_batch(
@@ -3461,7 +3317,7 @@ class Runner:
         if args.upload_batch:
             self.upload_batch(batch_data)
 
-        if epoch == 0 and self.wants_are_update(label):
+        if epoch == 0 and self.wants_noise_estimate(label):
             self.estimate_noise_level(batch_data, mini_batch_func, optimizer, label)
 
         assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"

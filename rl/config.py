@@ -21,7 +21,7 @@ class Config:
 
         self.gamma              = float()
         self.gamma_int          = float()
-        self.gae_lambda         = float()
+        self.lambda_policy         = float()
         self.gae_value_multiplier = float()
         self.ppo_epsilon        = float()
         self.vf_coef            = float()
@@ -54,14 +54,7 @@ class Config:
         self.dvq_rollout_length = int()
 
         # adaptive return estimation
-        self.are_mode = str()
-        self.are_min_h = 1
-        self.are_max_h = 100
-        self.are_epsilon = 0.0
-        self.are_alpha = 0.995
-        self.are_warmup = 5e6
-        self.are_target_p = float()
-        self.are_target_v = float()
+        self.generate_noise_estimates = bool()
 
         self.save_model_interval = bool()
 
@@ -140,7 +133,7 @@ class Config:
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
         self.tvf_return_n_step = int()
-        self.td_lambda = float()
+        self.lambda_value = float()
         self.tvf_return_use_log_interpolation = bool()
         self.sqr_return_mode = str()
         self.sqr_return_n_step = int()
@@ -220,13 +213,6 @@ class Config:
         self.disable_ev         = bool()
 
         self.use_rnd            = bool()
-        self.use_ebd            = bool()
-        self.use_erp            = bool()
-        self.erp_samples        = int()
-        self.erp_reduce         = str()
-        self.erp_relu           = bool()
-        self.erp_bias           = bool()
-        self.erp_source         = str()
         self.warmup_period      = int()
         self.rnd_lr             = float()
         self.rnd_experience_proportion = float()
@@ -297,7 +283,7 @@ class Config:
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_ebd or self.use_erp
+        return self.use_rnd
 
     @property
     def rnd_epochs(self):
@@ -383,7 +369,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
 
     parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
-    parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
+    parser.add_argument("--lambda_policy", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--gae_value_multiplier", type=float, default=1.0, help="Modifies value before going into GAE. Used to see how bad value estimates affect performance.")
     parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clip gradients during training to this.")
     parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
@@ -418,7 +404,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
     parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
     parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
-    parser.add_argument("--td_lambda", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
+    parser.add_argument("--lambda_value", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
     parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
 
     parser.add_argument("--sqr_return_n_step", type=int, default=80, help="n step to use for tvf_return_sqr estimation")
@@ -446,7 +432,7 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
-    parser.add_argument("--are_mode", type=str, default="off", help="Enables adaptive batch size. [off|on|shadow|policy]")
+    parser.add_argument("--generate_noise_estimates", type=str2bool, default=False, help="Generates level noise estimates")
     parser.add_argument("--are_target_p", type=float, default=100)
     parser.add_argument("--are_target_v", type=float, default=10)
     parser.add_argument("--save_model_interval", type=int, default=0, help="Period for which to saves model history during training (uses a lot of space!). 0 = off.")
@@ -622,10 +608,6 @@ def parse_args(no_env=False, args_override=None):
                         help="Enables the Random Network Distillation (RND) module.")
     parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
 
-    parser.add_argument("--use_ebd", type=str2bool, default=False,
-                        help="Enables the exploration by disagreement reward.")
-    parser.add_argument("--use_erp", type=str2bool, default=False,
-                        help="Enables the exploration by replay diversity reward.")
     parser.add_argument("--erp_source", type=str, default="replay",
                         help="[replay|rollout|both]")
     parser.add_argument("--erp_reduce", type=str, default="min",
@@ -708,7 +690,6 @@ def parse_args(no_env=False, args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-    assert not (args.use_ebd and not args.architecture == "dual"), "EBD requires dual architecture"
     assert not (args.erp_source == "both" and args.replay_size == 0), "erp_source=both requires a replay buffer"
 
     assert args.are_mode in ["off", "on", "shadow", "policy"]
@@ -721,7 +702,7 @@ def parse_args(no_env=False, args_override=None):
         # this seems key to getting intrinsic motivation to work
         # without it the agent might never want to die (as it can gain int_reward forever).
         # maybe this is correct behaviour? Not sure.
-        args.intrinsic_reward_propagation = (args.use_rnd or args.use_ebd or args.use_erp)
+        args.intrinsic_reward_propagation = args.use_rnd
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
     if args.distil_batch_size is None:
