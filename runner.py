@@ -24,7 +24,7 @@ TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
 #SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:3090:2             # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
-#SBATCH --output=~/logs/%j.log     # Standard output and error log
+#SBATCH --output=%j.log     # Standard output and error log
 
 pwd; hostname; date
 echo "--- training ---"
@@ -44,7 +44,7 @@ TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
 #SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:2080ti:4           # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
-#SBATCH --output=~/logs/%j.log     # Standard output and error log
+#SBATCH --output=%j.log     # Standard output and error log
 pwd; hostname; date
 echo "--- training ---"
 cd ~
@@ -102,7 +102,11 @@ if __name__ == "__main__":
     else:
         raise Exception("Invalid parameters.")
 
-    job_filter = (lambda x: experiment_filter in x.run_name) if experiment_filter is not None else None
+    job_filter = (
+        lambda x:
+            (experiment_filter.lower() in x.run_name.lower()) or
+            (experiment_filter.lower() in x.experiment_name.lower())
+    ) if experiment_filter is not None else None
 
     if mode == "show_all":
         show_experiments(all=True)
