@@ -19,7 +19,7 @@ TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
 #SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
-#SBATCH --ntasks=32                   # We use 8-workers per job so 16 is ideal, but 8 is ok too.
+#SBATCH --ntasks=24                   # More than 24 seems to crash prolog?
 #SBATCH --mem=64G                     # 8GB per job is about right
 #SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
@@ -39,7 +39,7 @@ TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
 #SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
-#SBATCH --ntasks=48                   # We use 8-workers per job so 16 is ideal, but 8 is ok too.
+#SBATCH --ntasks=24                   # More than 24 seems to crash prolog?
 #SBATCH --mem=64G                     # 8GB per job is about right
 #SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
@@ -54,7 +54,7 @@ echo "--- done ---"
 date
 """, n_gpus=4, n_jobs=8)
 
-def generate_slurm(job_filter=None, st: SlurmTemplate=TEMPLATE_2080ti):
+def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_2080ti):
     """
     Generate slurm scripts for jobs
     """
@@ -63,7 +63,7 @@ def generate_slurm(job_filter=None, st: SlurmTemplate=TEMPLATE_2080ti):
     n = 0
     while len(cmds) > 0:
         n += 1
-        with open(f'job_{n:02d}_{st.name}.slurm', 'wt') as t:
+        with open(f'{experiment}_{n:02d}_{st.name}.slurm', 'wt') as t:
 
             lines = []
 
@@ -73,7 +73,7 @@ def generate_slurm(job_filter=None, st: SlurmTemplate=TEMPLATE_2080ti):
                 lines.append(f"singularity exec --nv /opt/apps/containers/pytorch_22.01-py3.sif {cmd} &")
             lines.append('wait')
 
-            modified_template = st.template.replace("%JOBNAME%", f'job_{n:02d}').replace("%CMD%", "\n".join(lines))
+            modified_template = st.template.replace("%JOBNAME%", f'{experiment}_{n:02d}').replace("%CMD%", "\n".join(lines))
 
             t.write(modified_template)
 
@@ -111,8 +111,8 @@ if __name__ == "__main__":
     elif mode == "print":
         print_experiments(job_filter)
     elif mode == "slurm":
-        generate_slurm(job_filter, TEMPLATE_2080ti)
-        generate_slurm(job_filter, TEMPLATE_3090)
+        generate_slurm(experiment=experiment_filter or "job",  job_filter=job_filter, st=TEMPLATE_2080ti)
+        generate_slurm(experiment=experiment_filter or "job", job_filter=job_filter, st=TEMPLATE_3090)
     elif mode == "clash":
         fix_clashes()
     elif mode == "fps":

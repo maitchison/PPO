@@ -100,7 +100,7 @@ def train(model: models.TVFModel, log: Logger):
         log.csv_path = os.path.join(args.log_folder, "training_log.csv")
         log.txt_path = os.path.join(args.log_folder, "log.txt")
     else:
-        if args.restore:
+        if args.restore and args.error_on_missing_restore:
             raise Exception(f"Error: no restore point at {args.log_folder} found.")
 
         start_iteration = 0

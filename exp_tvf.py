@@ -574,43 +574,53 @@ def csgo(priority:int = 0):
 def dropout(priority: int = 0):
 
     IMPROVED_ARGS = {
-        'experiment': "TVF_DROPOUT",
+        'experiment': "TVF_DROPOUT_2",
         'seeds': 2,
-        'subset': ['MsPacman', 'YarsRevenge'],
+        'subset': ATARI_3_VAL,
         'priority': priority,
         'hostname': "cluster",
+        'device': 'cuda',
         'env_args': HARD_MODE_ARGS,
         # improvements
         'use_tvf': True,
         'tvf_mode': 'fixed',
         'gae_lambda': 0.8,
-        'hidden_units': 256,
-        'tvf_hidden_units': 1024,
+        'hidden_units': 512,
+        'tvf_hidden_units': 0,
         'replay_size': 1 * 128 * 128,
         'distil_batch_size': 1 * 128 * 128,
         'policy_epochs': 2,
         'distil_epochs': 2,
     }
 
-    for value_epochs in [2, 4]:
-        for dropout in [0, 0.1, 0.5, 0.9, 0.95, 0.99]:
+    # second attempt, no hidden layer will allow heads to be more independent.
+
+    for value_epochs in [2]:
+        for tvf_horizon_dropout in [0.5, 0.9, 0.99]:
             add_run(
-                run_name=f"2{value_epochs}2 dropout={dropout}",
+                run_name=f"2{value_epochs}2 dropout={tvf_horizon_dropout}",
                 default_args=TVF_INITIAL_ARGS,
                 value_epochs=value_epochs,
-                tvf_horizon_dropout=dropout,
-                device="cuda", # force single device (will run on cluster)
+                tvf_horizon_dropout=tvf_horizon_dropout,
                 **IMPROVED_ARGS
             )
+        add_run(
+            run_name=f"2{value_epochs}2 reference",
+            default_args=TVF_INITIAL_ARGS,
+            value_epochs=value_epochs,
+            tvf_horizon_dropout=0,
+            **IMPROVED_ARGS
+        )
+
 
 
 def setup():
-    distil()
-    initial()
-    epochs()
-    tvf_lambda()
-    tvf_hidden(25)
-    fixed_head(25)
-    horizon()
-    csgo(50)
-    dropout(25)
+    # distil()
+    # initial()
+    # epochs()
+    # tvf_lambda()
+    # tvf_hidden(25)
+    # fixed_head(25)
+    # horizon()
+    # csgo(50)
+    dropout(0)
