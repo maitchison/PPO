@@ -518,7 +518,7 @@ def compare_runs(
                 continue
 
 
-        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color)
+        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color, linestyle=ls)
         plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
 
@@ -548,10 +548,9 @@ def compare_runs(
             #plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
             pass
 
-
         plt.fill_between(xs, smooth(ys_low, smooth_factor), smooth(ys_high, smooth_factor), alpha=0.15 * alpha, color=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
-                 linestyle="-", zorder=zorder)
+                 linestyle=ls, zorder=zorder)
 
     standard_grid()
 

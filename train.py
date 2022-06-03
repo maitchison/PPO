@@ -42,7 +42,7 @@ def make_model(args):
     fake_env = rollout.make_env(args.env_type, args.get_env_name())
     n_actions = get_n_actions(fake_env.action_space)
     obs_space = fake_env.observation_space.shape
-    log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
+    #log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
     tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
     tvf_fixed_head_horizons = sorted(set(tvf_fixed_head_horizons))

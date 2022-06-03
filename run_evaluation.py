@@ -1023,9 +1023,9 @@ def generate_rollouts(
             append_buffer('times', prev_times[i])
 
             # calculate uac cost
-            if args.use_uac:
-                uniform_action_value = model_out["uni_value"][i].detach().cpu().numpy()
-                append_buffer('uac_value', uniform_action_value)
+            # if args.use_uac:
+            #     uniform_action_value = model_out["uni_value"][i].detach().cpu().numpy()
+            #     append_buffer('uac_value', uniform_action_value)
 
         process_timer.stop()
         total_timer.stop()

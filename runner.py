@@ -8,47 +8,72 @@ def print_experiments(job_filter=None):
         print(cmd)
         print()
 
-def generate_slurm(job_filter=None):
+class SlurmTemplate:
+    def __init__(self, name:str, template: str, n_gpus: int, n_jobs:int):
+        self.name = name
+        self.template = template
+        self.n_gpus = n_gpus
+        self.n_jobs = n_jobs
+
+TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
+#SBATCH --job-name=%JOBNAME%          # Job name
+#SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
+#SBATCH --ntasks=32                   # We use 8-workers per job so 16 is ideal, but 8 is ok too.
+#SBATCH --mem=64G                     # 8GB per job is about right
+#SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:3090:2             # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
+#SBATCH --output=~/logs/%j.log     # Standard output and error log
+
+pwd; hostname; date
+echo "--- training ---"
+cd ~
+cd PPO     
+%CMD%
+echo "--- done ---"
+date
+""", n_gpus=2, n_jobs=8)
+
+TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
+#SBATCH --job-name=%JOBNAME%          # Job name
+#SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
+#SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
+#SBATCH --ntasks=48                   # We use 8-workers per job so 16 is ideal, but 8 is ok too.
+#SBATCH --mem=64G                     # 8GB per job is about right
+#SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:2080ti:4           # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
+#SBATCH --output=~/logs/%j.log     # Standard output and error log
+pwd; hostname; date
+echo "--- training ---"
+cd ~
+cd PPO     
+%CMD%
+echo "--- done ---"
+date
+""", n_gpus=4, n_jobs=8)
+
+def generate_slurm(job_filter=None, st: SlurmTemplate=TEMPLATE_2080ti):
     """
     Generate slurm scripts for jobs
     """
 
-    template = """#!/bin/bash
-#SBATCH --job-name=%JOBNAME%          # Job name
-#SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
-#SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
-#SBATCH --ntasks=12                   # We use 8-workers per job so 16 is ideal, but 8 is ok too.
-#SBATCH --mem=16G                     # 8GB per job is about right
-#SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:2080ti:1           # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
-#SBATCH --output=%JOBNAME%_%j.log     # Standard output and error log
-
-pwd; hostname; date
-echo "--- training ---"
-cd PPO     
-singularity exec --nv /opt/apps/containers/pytorch_22.01-py3.sif %CMD1% &
-singularity exec --nv /opt/apps/containers/pytorch_22.01-py3.sif %CMD2% &
-wait
-echo "--- done ---"
-date
-"""
-
-
-    # run with
-    # $ sbatch job_001.slurm
-
-    cmds = get_experiment_cmds(job_filter, force_params={'mutex':''})
+    cmds = get_experiment_cmds(job_filter, force_params={'mutex_key': ''})
     n = 0
     while len(cmds) > 0:
         n += 1
-        with open(f'job_{n:03d}.slurm', 'wt') as t:
-            modified_template = template.replace("%JOBNAME%", f'job_{n:03d}')
-            modified_template = modified_template.replace("%CMD1%", cmds.pop(0))
-            if len(cmds) > 0:
-                modified_template = modified_template.replace("%CMD2%", cmds.pop(0))
-            else:
-                modified_template = modified_template.replace("%CMD2%", '')
+        with open(f'job_{n:02d}_{st.name}.slurm', 'wt') as t:
+
+            lines = []
+
+            while len(cmds) > 0 and len(lines) < st.n_jobs:
+                cmd = cmds.pop(0)
+                cmd = cmd.replace('--device="cuda"', f'--device="cuda:{len(lines) % st.n_gpus}"')
+                lines.append(f"singularity exec --nv /opt/apps/containers/pytorch_22.01-py3.sif {cmd} &")
+            lines.append('wait')
+
+            modified_template = st.template.replace("%JOBNAME%", f'job_{n:02d}').replace("%CMD%", "\n".join(lines))
 
             t.write(modified_template)
 
@@ -86,7 +111,8 @@ if __name__ == "__main__":
     elif mode == "print":
         print_experiments(job_filter)
     elif mode == "slurm":
-        generate_slurm(job_filter)
+        generate_slurm(job_filter, TEMPLATE_2080ti)
+        generate_slurm(job_filter, TEMPLATE_3090)
     elif mode == "clash":
         fix_clashes()
     elif mode == "fps":

@@ -576,7 +576,7 @@ def dropout(priority: int = 0):
     IMPROVED_ARGS = {
         'experiment': "TVF_DROPOUT",
         'seeds': 2,
-        'subset': ATARI_1_VAL,
+        'subset': ['MsPacman', 'YarsRevenge'],
         'priority': priority,
         'hostname': "cluster",
         'env_args': HARD_MODE_ARGS,
@@ -593,7 +593,7 @@ def dropout(priority: int = 0):
     }
 
     for value_epochs in [2, 4]:
-        for dropout in [0, 0.1, 0.5, 0.9]:
+        for dropout in [0, 0.1, 0.5, 0.9, 0.95, 0.99]:
             add_run(
                 run_name=f"2{value_epochs}2 dropout={dropout}",
                 default_args=TVF_INITIAL_ARGS,
