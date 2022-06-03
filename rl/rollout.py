@@ -513,7 +513,7 @@ class Runner:
 
         self.batch_counter = 0
 
-        self.noise_level_stats = {}
+        self.noise_stats = {}
 
         self.grad_accumulator = {}
 
@@ -780,8 +780,8 @@ class Runner:
         if not disable_env_state:
             data['env_state'] = utils.save_env_state(self.vec_env)
 
-        if args.are_mode != "off":
-            data['are_stats'] = self.noise_level_stats
+        if args.use_sns:
+            data['noise_stats'] = self.noise_stats
 
         if self.replay_buffer is not None and not disable_replay:
             data["replay_buffer"] = self.replay_buffer.save_state(force_copy=False)
@@ -861,9 +861,7 @@ class Runner:
         self.episode_brb_buffer = checkpoint['episode_brb_buffer']
         self.batch_counter = checkpoint.get('batch_counter', 0)
         self.stats = checkpoint.get('stats', 0)
-
-
-        self.noise_level_stats = checkpoint.get('are_stats', {})
+        self.noise_stats = checkpoint.get('noise_stats', {})
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -1391,7 +1389,7 @@ class Runner:
                             marker=t-first_frame+1
                         )
 
-    def estimate_noise_level(self, batch_data, mini_batch_func, optimizer: torch.optim.Optimizer, label):
+    def estimate_noise_scale(self, batch_data, mini_batch_func, optimizer: torch.optim.Optimizer, label):
         """
         Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
         See: https://arxiv.org/pdf/1812.06162.pdf
@@ -1437,13 +1435,13 @@ class Runner:
 
         # add these samples to the mix
         for var_name, var_value in zip(['s', 'g2'], [s_mean, g2_mean]):
-            if f'{label}_{var_name}_history' not in self.noise_level_stats:
-                self.noise_level_stats[f'{label}_{var_name}_history'] = deque(maxlen=100)
-            self.noise_level_stats[f'{label}_{var_name}_history'].append(var_value)
-            self.noise_level_stats[f'{label}_{var_name}'] = np.mean(self.noise_level_stats[f'{label}_{var_name}_history'])
+            if f'{label}_{var_name}_history' not in self.noise_stats:
+                self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=100)
+            self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
+            self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
 
-        av_s = np.mean(self.noise_level_stats[f'{label}_s_history'])
-        av_g2 = np.mean(self.noise_level_stats[f'{label}_g2_history'])
+        av_s = np.mean(self.noise_stats[f'{label}_s_history'])
+        av_g2 = np.mean(self.noise_stats[f'{label}_g2_history'])
 
         # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
         # to avoid this we clip the *smoothed* g2 to epsilon.
@@ -1451,23 +1449,23 @@ class Runner:
         epsilon = 1e-4
         ratio = max(av_s, epsilon) / max(av_g2, epsilon)
 
-        self.noise_level_stats[f'{label}_ratio'] = ratio
+        self.noise_stats[f'{label}_ratio'] = ratio
 
-        self.log.watch(f'are_{label}_smooth_s', av_s, display_precision=0, display_width=8, display_name=f"sns_{label}_s")
-        self.log.watch(f'are_{label}_smooth_g2', av_g2, display_precision=0, display_width=8, display_name=f"sns_{label}_g2")
+        self.log.watch(f'sns_{label}_smooth_s', av_s, display_precision=0, display_width=8, display_name=f"sns_{label}_s")
+        self.log.watch(f'sns_{label}_smooth_g2', av_g2, display_precision=0, display_width=8, display_name=f"sns_{label}_g2")
 
-        self.log.watch(f'are_{label}_s', s_mean, display_precision=0, display_width=0)
-        self.log.watch(f'are_{label}_g2', g2_mean, display_precision=0, display_width=0)
-        self.log.watch(f'are_{label}_b', ratio, display_precision=0, display_width=0)
-        self.log.watch(f'are_{label}_smooth_b', self.noise_level_stats[f'{label}_ratio'], display_precision=0, display_width=0)
+        self.log.watch(f'sns_{label}_s', s_mean, display_precision=0, display_width=0)
+        self.log.watch(f'sns_{label}_g2', g2_mean, display_precision=0, display_width=0)
+        self.log.watch(f'sns_{label}_b', ratio, display_precision=0, display_width=0)
+        self.log.watch(f'sns_{label}_smooth_b', self.noise_stats[f'{label}_ratio'], display_precision=0, display_width=0)
         self.log.watch(
-            f'are_{label}_sqrt_b',
+            f'sns_{label}_sqrt_b',
             np.clip(ratio, 0, float('inf')) ** 0.5,
             display_precision=0,
             display_name=f"sns_{label}"
         )
 
-        return self.noise_level_stats[f'{label}_ratio']
+        return self.noise_stats[f'{label}_ratio']
 
     @torch.no_grad()
     def get_value_estimates(self, obs: Union[np.ndarray, torch.Tensor], time: Union[None, np.ndarray]=None,
@@ -1929,7 +1927,6 @@ class Runner:
             new_gamma=new_gamma,
             horizons=horizons
         ).reshape([(N + 1), A])
-
 
     def calculate_returns(self):
 
@@ -2423,27 +2420,6 @@ class Runner:
 
         loss = (0.0 if loss is None else loss) + self.train_value_heads(model_out, data)
 
-        # -------------------------------------------------------------------------
-        # Uniform value
-        # -------------------------------------------------------------------------
-
-        # handle uniform value as a special case
-        # if args.use_uac != 0:
-        #     assert not args.use_tvf, "TVF not supported with uniform value learning yet."
-        #
-        #     # find the magic ratio
-        #     log_uniform_prob = math.log(1.0 / self.policy_shape[0])
-        #     log_policy = data["log_pac"]
-        #     log_ratio = torch.clip(log_uniform_prob - log_policy, float('-inf'), 0)
-        #     ratio = torch.exp(log_ratio)
-        #
-        #     uni_predicction = model_out["uni_value"]
-        #     targets = (1-ratio*ratio) * uni_predicction + (ratio * ratio) * data["ext_returns"]
-        #     uni_value_loss = args.vf_coef * torch.square(uni_predicction - targets)
-        #
-        #     self.log.watch_mean("loss_v_uni", uni_value_loss.mean(), history_length=64,
-        #                         display_name="ls_v_uni")
-        #     loss = loss + uni_value_loss
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -2709,25 +2685,6 @@ class Runner:
             else:
                 entropy_clipped = entropy
 
-            # if args.use_uac:
-            #
-            #     # the simplest solution.
-            #     # sort states into high cost and low cost, and apply two different entropy bonus levels.
-            #     entropy_cost = data["ext_value"] - data["uni_value"]
-            #     threshold = torch.mean(entropy_cost) + torch.std(entropy_cost) * 1.0
-            #     mask = torch.gt(entropy_cost, threshold)  # not normal, so masked will be few...
-            #     inv_mask = torch.logical_not(mask)
-            #
-            #     bonus_safe = self.current_entropy_bonus * 1.1
-            #     bonus_risky = self.current_entropy_bonus / 10.0
-            #
-            #     eb = bonus_safe * inv_mask + bonus_risky * mask
-            #     self.log.watch_mean("eb", torch.mean(eb), display_width=8, display_precision=4)
-            #     self.log.watch_stats("ec", entropy_cost, display_width=0)
-            #
-            #     gain = gain + entropy_clipped * eb
-            #
-            # else:
             gain = gain + entropy_clipped * self.current_entropy_bonus
 
             self.log.watch_mean("entropy", entropy.mean())
@@ -2914,17 +2871,6 @@ class Runner:
             v.to(device=self.model.device, non_blocking=True)
             batch_data[k] = v
 
-    def wants_noise_estimate(self, network=None):
-        """
-        returns if this batch step wants an adaptive batch_size update or not.
-        """
-        if args.are_mode == "off":
-            return False
-        elif args.are_mode in ["on", "shadow"]:
-            return True
-        else:
-            return args.are_mode == network
-
     def train_policy(self):
 
         # ----------------------------------------------------
@@ -2957,10 +2903,6 @@ class Runner:
         if args.architecture == "single":
             # ppo trains value during policy update
             batch_data["ext_returns"] = self.ext_returns.reshape([B])
-
-        # if args.use_uac:
-        #     batch_data["ext_value"] = self.ext_value[:N].reshape([B])
-        #     batch_data["uni_value"] = self.uni_value[:N].reshape([B])
 
         # sort out advantages
         advantages = self.advantage.reshape(B).copy()
@@ -3038,11 +2980,6 @@ class Runner:
             # these are needed if we are using the clipped value objective...
             batch_data["ext_value"] = self.get_value_estimates(obs=self.prev_obs).reshape(B)
 
-        # if args.use_uac:
-        #     log_policy = self.log_policy.reshape(B, *self.policy_shape)
-        #     actions = self.actions.reshape(B)
-        #     batch_data["log_pac"] = log_policy[range(B), actions]
-
         def get_value_estimate(prev_states, times):
             assert args.use_tvf, "replay_restraint require use_tvf=true (for the moment)"
             aux_features = package_aux_features(np.asarray([self.current_horizon]), times)
@@ -3071,6 +3008,27 @@ class Runner:
             ext_value_estimates = self.get_value_estimates(obs=self.all_obs)
         else:
             ext_value_estimates = None
+
+        if args.sns_generate_horizon_estimates:
+
+            # generate our per-horizon estimates
+            if args.upload_batch:
+                self.upload_batch(batch_data)
+
+            def train_value_minibatch_single_horizon(i:int, data, loss_scale=1.0):
+                _data = data.copy()
+                _data["tvf_horizons"] = data["tvf_horizons"][i:i + 1]
+                _data["tvf_returns"] = data["tvf_returns"][i:i + 1]
+                self.train_value_minibatch(_data, loss_scale)
+
+            for i, h in enumerate(self.tvf_debug_horizons):
+                self.estimate_noise_scale(
+                    batch_data,
+                    lambda data, loss_scale: train_value_minibatch_single_horizon(i, data, loss_scale),
+                    optimizer=self.value_optimizer,
+                    label=f"head_{i}"
+                )
+            self.value_optimizer.zero_grad(set_to_none=True)
 
         for value_epoch in range(args.value_epochs):
 
@@ -3317,8 +3275,8 @@ class Runner:
         if args.upload_batch:
             self.upload_batch(batch_data)
 
-        if epoch == 0 and self.wants_noise_estimate(label):
-            self.estimate_noise_level(batch_data, mini_batch_func, optimizer, label)
+        if epoch == 0 and args.use_sns: # check noise of first update only
+            self.estimate_noise_scale(batch_data, mini_batch_func, optimizer, label)
 
         assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"
         batch_size, *state_shape = batch_data["prev_state"].shape

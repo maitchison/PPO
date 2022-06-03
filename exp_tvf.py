@@ -172,7 +172,7 @@ PPO_TUNED_ARGS.update({
     'value_epochs': 0,
     'distil_epochs': 0,
     'architecture': 'single',
-    'policy_network': 'nature_fat',
+    'policy_network': 'nature', # was nature_fat
 })
 
 PPO_FAST_ARGS = HPS_ARGS.copy()
@@ -373,6 +373,39 @@ def value_heads(priority: int = 0):
             **COMMON_ARGS
         )
 
+def noise(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_1_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_NOISE",
+    }
+
+    add_run(
+        run_name=f"tvf",
+        use_sns=True,
+        sns_generate_horizon_estimates=True,
+        default_args=TVF_INITIAL_ARGS,
+        **COMMON_ARGS
+    )
+
+    # add_run(
+    #     run_name=f"dna",
+    #     use_sns=True,
+    #     default_args=DNA_TUNED_ARGS,
+    #     **COMMON_ARGS
+    # )
+    #
+    # add_run(
+    #     run_name=f"ppo",
+    #     use_sns=True,
+    #     default_args=PPO_TUNED_ARGS,
+    #     **COMMON_ARGS
+    # )
+
 def cluster_dropout(priority: int = 0):
 
     IMPROVED_ARGS = {
@@ -425,5 +458,6 @@ def setup():
     horizon()
     returns()
     value_heads()
+    noise(300)
 
     cluster_dropout(200)

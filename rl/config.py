@@ -5,6 +5,7 @@ import socket
 import argparse
 import random
 from typing import Union
+from . import utils
 
 class Config:
 
@@ -54,7 +55,8 @@ class Config:
         self.dvq_rollout_length = int()
 
         # adaptive return estimation
-        self.generate_noise_estimates = bool()
+        self.use_sns = bool()
+        self.sns_generate_horizon_estimates = bool()
 
         self.save_model_interval = bool()
 
@@ -75,7 +77,7 @@ class Config:
         self.repeated_action_penalty = float()
         self.color              = bool()
         self.entropy_bonus      = float()
-        # self.use_uac = bool()
+
         self.eb_cost_alpha = float()
         self.eb_clip = float()
         self.threads            = int()
@@ -337,10 +339,10 @@ def str2bool(v):
 
 def parse_args(no_env=False, args_override=None):
 
-    REMOVED_PARAMS = [
-        "tvf_soft_anchor", "tvf_exp_mode", "value_transform",
-        "tvf_n_dedicated_value_heads",
-    ]
+    REMAPPED_PARAMS = {
+        'gae_lambda': 'lambda_policy',
+        'td_lambda': 'lambda_value',
+    }
 
     parser = argparse.ArgumentParser(description="Trainer for PPO2")
 
@@ -432,9 +434,10 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
-    parser.add_argument("--generate_noise_estimates", type=str2bool, default=False, help="Generates level noise estimates")
-    parser.add_argument("--are_target_p", type=float, default=100)
-    parser.add_argument("--are_target_v", type=float, default=10)
+    parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
+    parser.add_argument("--sns_generate_horizon_estimates", type=str2bool, default=False,
+                        help="Generates noise level estimates for each value head (requires TVF) - very slow!")
+
     parser.add_argument("--save_model_interval", type=int, default=0, help="Period for which to saves model history during training (uses a lot of space!). 0 = off.")
 
     parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
@@ -542,7 +545,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--repeated_action_penalty", type=float, default=0.0,
                         help="Penalty if agent repeats the same action more than this many times.")
     parser.add_argument("--entropy_bonus", type=float, default=0.01)
-    # parser.add_argument("--use_uac", type=str2bool, default=False, help="Learns the cost of a uniform exploration step (Uniform action cost)")
     parser.add_argument("--eb_cost_alpha", type=float, default=10.0, help="Weights entropy bonus by uniform action cost.")
     parser.add_argument("--eb_clip", type=float, default=-1, help="Clips entropy bonus. (negative disables clipping)")
     parser.add_argument("--threads", type=int, default=2)
@@ -669,11 +671,25 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--value_norm", type=str, default="off")
     parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
 
-    for param in REMOVED_PARAMS:
-        parser.add_argument(f"--{param}", type=str, default=None, help=argparse.SUPPRESS)
+    for k,v in REMAPPED_PARAMS.items():
+        parser.add_argument(f"--{k}", type=str, default=None, help=argparse.SUPPRESS)
 
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
+
+    # mappings
+    for old_name, new_name in REMAPPED_PARAMS.items():
+        if old_name in vars(args).keys():
+            legacy_value = vars(args)[old_name]
+            if vars(args)[new_name] is None:
+                print(f"Warning! Using deprecated parameter {utils.Color.FAIL}{old_name}{utils.Color.ENDC} which is being mapped to {utils.Color.BOLD}{new_name}{utils.Color.ENDC} with value {legacy_value}")
+                vars(args)[new_name] = type(vars(args)[new_name])(legacy_value)
+                del vars(args)[old_name]
+            else:
+                non_legacy_value = vars(args)[new_name]
+                print(
+                    f"Warning! Using deprecated parameter {utils.Color.FAIL}{old_name}{utils.Color.ENDC} was specified but clashes with value assigned to {utils.Color.BOLD}{new_name}{utils.Color.ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
+                vars(args)[new_name] = type(vars(args)[new_name])(legacy_value)
 
     # conversions
     try:
@@ -690,9 +706,6 @@ def parse_args(no_env=False, args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-    assert not (args.erp_source == "both" and args.replay_size == 0), "erp_source=both requires a replay buffer"
-
-    assert args.are_mode in ["off", "on", "shadow", "policy"]
     assert args.return_estimator_mode in ["default", "reference", "verify"]
     if args.log_detailed_value_quality:
         assert args.learn_second_moment, "Logging requires second moment to be enabled."
@@ -707,6 +720,9 @@ def parse_args(no_env=False, args_override=None):
         args.tvf_gamma = args.gamma
     if args.distil_batch_size is None:
         args.distil_batch_size = args.batch_size
+
+    if args.sns_generate_horizon_estimates:
+        assert args.use_sns and args.use_tvf
 
     # having these here just causes bugs as the override the newer settings...
     # better to simply throw an error
@@ -723,10 +739,6 @@ def parse_args(no_env=False, args_override=None):
     #     args.tvf_return_mode = args.tvf_mode
     # if args.tvf_n_step is not None:
     #     args.tvf_return_n_step = args.tvf_n_step
-
-    for param in REMOVED_PARAMS:
-        if param in vars(args).keys() and vars(args)[param] is not None:
-            print(f"Warning, {param} has been removed, and is being ignored.")
 
     # smart config
     buffer_size = args.replay_size if args.replay_size > 0 else args.batch_size
