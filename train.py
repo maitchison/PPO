@@ -48,15 +48,14 @@ def make_model(args):
     tvf_fixed_head_horizons = sorted(set(tvf_fixed_head_horizons))
 
     model = models.TVFModel(
-        networks=(args.policy_network, args.value_network),
-        network_args=(args.policy_network_args, args.value_network_args),
+        encoder=args.encoder,
+        encoder_args=args.encoder_args,
         input_dims=obs_space,
         actions=n_actions,
         device=args.device,
         dtype=torch.float32,
 
         use_rnd=args.use_rnd,
-        use_rnn=False,
         tvf_mode=args.tvf_mode,
         tvf_horizon_transform=rollout.horizon_scale_function,
         tvf_time_transform=rollout.time_scale_function,
@@ -70,7 +69,6 @@ def make_model(args):
         hidden_units=args.hidden_units,
         tvf_hidden_units=args.tvf_hidden_units,
         tvf_activation=args.tvf_activation,
-        shared_initialization=args.dna_shared_initialization,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
     )
@@ -85,15 +83,14 @@ def main():
 
     # import here to make workers load faster / use less memory
     import torch
-    from rl import utils, models, config, rollout
+    from rl import utils, config, rollout
     from rl import ppo
     from rl.config import args
     import numpy as np
-    import gym.spaces
 
     config.parse_args()
 
-    if args.quite_mode:
+    if args.quiet_mode:
         log.print_level = log.WARN
 
     # work out device to use
@@ -128,22 +125,16 @@ def main():
     else:
         raise Exception("Invalid resolution " + args.resolution)
 
-    if args.use_icm and args.use_rnd:
-        raise Exception("Can only use either ICM or RND, not both.")
-
     # check the output folder is valid...
     assert os.path.isdir(args.output_folder), "Can not find path " + args.output_folder
 
     # set a guid
-    if args.restore:
+    if args.restore in ["always", "auto"]:
         # look for a previous experiment and use it if we find one...
         guid = get_previous_experiment_guid(os.path.join(args.output_folder, args.experiment_name), args.run_name)
         if guid is None:
-            if args.error_on_missing_restore:
-                # exit with an error
-                log.error(
-                    "Could not restore experiment {}:{}. Previous run not found.".format(args.experiment_name, args.run_name))
-                return
+            if args.restore == "always":
+                log.error(f"Could not restore experiment {args.experiment_name}:{args.run_name}. Previous run not found.")
             else:
                 # this is fine, we are in auto mode
                 args.guid = str(uuid.uuid4().hex)
@@ -152,7 +143,7 @@ def main():
     else:
         args.guid = str(uuid.uuid4().hex)
 
-    # if seed was defined then set the seed and enable determanistic mode.
+    # if seed was defined then set the seed and enable deterministic mode.
     if args.seed >= 0:
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)

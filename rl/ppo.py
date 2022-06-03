@@ -7,7 +7,7 @@ import math
 import sys
 import shlex
 
-from . import compression
+from . import compression, config
 from .logger import Logger, LogVariable
 from .returns import test_return_estimators
 from .rollout import Runner, save_progress
@@ -83,11 +83,12 @@ def train(model: models.TVFModel, log: Logger):
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)
-    if len(checkpoints) > 0:
+    has_checkpoint = len(checkpoints) > 0
 
-        if not args.restore:
-            raise Exception(f"Error: restore point found but --restore not specified.")
+    if args.restore == "always" and not has_checkpoint:
+        raise Exception(f"Error: no restore point at {args.log_folder} found.")
 
+    if has_checkpoint and args.restore in ['auto', 'always']:
         log.info("Previous checkpoint detected.")
         checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
         restored_step = runner.load_checkpoint(checkpoint_path)
@@ -100,9 +101,7 @@ def train(model: models.TVFModel, log: Logger):
         log.csv_path = os.path.join(args.log_folder, "training_log.csv")
         log.txt_path = os.path.join(args.log_folder, "log.txt")
     else:
-        if args.restore and args.error_on_missing_restore:
-            raise Exception(f"Error: no restore point at {args.log_folder} found.")
-
+        # do not restore.
         start_iteration = 0
         walltime = 0
         did_restore = False
@@ -117,7 +116,7 @@ def train(model: models.TVFModel, log: Logger):
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"), "w") as f:
-        params = {k: v for k, v in args.__dict__.items()}
+        params = args.flatten()
         f.write(json.dumps(params, indent=4))
 
     # make a copy of training files for reference
@@ -273,18 +272,6 @@ def train(model: models.TVFModel, log: Logger):
                 runner.save_checkpoint(checkpoint_name, env_step)
                 log.log("  -checkpoint saved")
 
-            if args.export_video:
-                video_name = utils.get_checkpoint_path(env_step, args.environment)
-                runner.export_movie(video_name)
-                log.info("  -video exported")
-
-            if args.export_trajectories:
-                video_name = utils.get_trajectory_path(env_step, args.environment)
-                os.makedirs(os.path.split(video_name)[0], exist_ok=True)
-                for i in range(16):
-                    runner.export_movie(video_name+"-{:02}".format(i), include_rollout=True, include_video=False)
-                log.info("  -trajectories exported")
-
             log.info()
 
         log_time = (time.time() - log_start_time) / batch_size
@@ -305,7 +292,7 @@ def train(model: models.TVFModel, log: Logger):
         time_to_complete = time.time() - start_train_time
         steps = end_iteration * batch_size
         print(f"Completed {steps:,} steps in {time_to_complete:.1f}s")
-        if args.use_compression:
+        if args.obs_compression:
             print(f"Compression stats: "
                   f"{1000*compression.av_compression_time():.4f}ms / "
                   f"{1000*compression.av_decompression_time():.4f}ms, "

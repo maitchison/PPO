@@ -40,7 +40,4 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.MonitorWrapper(env, monitor_video=False)
 
-    if args.reward_scale != 1.0 and not args.reward_normalization:
-        env = wrappers.RewardScaleWrapper(env, args.reward_scale)
-
     return env

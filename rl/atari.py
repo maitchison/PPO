@@ -179,9 +179,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
     env = wrappers.EpisodeScoreWrapper(env)
 
-    if args.input_crop:
-        env = wrappers.FrameCropWrapper(env, None, None, 34, -16)
-
     if args.reward_clipping == "off":
         pass
     elif args.reward_clipping == "sqrt":
@@ -193,34 +190,11 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
             raise ValueError("reward_clipping should be off, sqrt, or a float")
         env = wrappers.ClipRewardWrapper(env, clip)
 
-    # apply filter
-    if args.filter == "none":
-        pass
-    elif args.filter == "hash":
-        env = wrappers.HashWrapper(env, args.hash_size)
-    elif args.filter == "hash_time":
-        env = wrappers.HashWrapper(env, args.hash_size, use_time=True)
-    else:
-        raise Exception("Invalid observation filter {}.".format(args.filter))
-
     env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
-
-    if args.big_red_button_prob != 0:
-        env = wrappers.BigRedButtonWrapper(
-            env,
-            p=abs(args.big_red_button_prob),
-            change_actions=args.big_red_button_prob < 0
-        )
 
     if args.embed_action:
         # must come before frame_stack
         env = wrappers.ActionAwareWrapper(env)
-
-    if args.ed_type != "none":
-        env = wrappers.EpisodicDiscounting(env, args.ed_type, args.ed_gamma)
-
-    if args.reward_scale != 1.0 and not args.reward_normalization:
-        env = wrappers.RewardScaleWrapper(env, args.reward_scale)
 
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
@@ -228,10 +202,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.deferred_rewards != 0:
         env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
 
-    if args.ema_frame_stack:
-        env = wrappers.EMAFrameStack(env, n_stacks=args.frame_stack, gamma=args.ema_frame_stack_gamma)
-    else:
-        env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
+    env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
 
     if args.embed_time:
         # must come after frame_stack

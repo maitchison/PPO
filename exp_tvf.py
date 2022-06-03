@@ -11,6 +11,10 @@ ATARI_1_VAL = ['Assault']
 ATARI_5 = ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert']
 
 
+# proposed changes
+# microbatch down to 256
+# value and distil minibatch down to 256
+
 """
 Todo:
  [x] check if tvf oss differs from value loss, maybe beta needs tuning? (this seems fine...)
@@ -97,6 +101,8 @@ HPS_ARGS = {
     'disable_ev': False,
     'seed': 0,
     'mutex_key': "DEVICE",
+
+    'max_micro_batch_size': 256,    # might help now that we upload the entire batch?
 
     'max_grad_norm': 5.0,
     'agents': 128,                  # HPS
@@ -351,6 +357,13 @@ def returns(priority: int = 0):
                 **COMMON_ARGS
             )
 
+    for gae_lambda in [0.6, 0.8, 0.9]:
+        add_run(
+            run_name=f"gae_lambda={gae_lambda}",
+            gae_lambda=gae_lambda,
+            **COMMON_ARGS
+        )
+
 def value_heads(priority: int = 0):
 
     COMMON_ARGS = {
@@ -388,6 +401,8 @@ def noise(priority: int = 0):
         run_name=f"tvf",
         use_sns=True,
         sns_generate_horizon_estimates=True,
+        tvf_value_samples=32,      # 128 is just too much...
+        tvf_horizon_samples=32,
         default_args=TVF_INITIAL_ARGS,
         **COMMON_ARGS
     )

@@ -326,7 +326,7 @@ def __legacy_make_model():
         pass
 
     try:
-        additional_args['networks'] = (args.policy_network, args.value_network)
+        additional_args['networks'] = (args.encoder, args.value_network)
         additional_args['network_args'] = (args.policy_network_args, args.value_network_args)
     except:
         pass
@@ -377,7 +377,7 @@ def __make_model(args):
 
     try:
         model = models.TVFModel(
-            networks=(args.policy_network, args.value_network),
+            encoders=(args.encoder, args.value_network),
             network_args=(args.policy_network_args, args.value_network_args),
             input_dims=obs_space,
             actions=n_actions,
@@ -399,7 +399,6 @@ def __make_model(args):
             hidden_units=args.hidden_units,
             tvf_hidden_units=args.tvf_hidden_units,
             tvf_activation=args.tvf_activation,
-            shared_initialization=args.dna_shared_initialization,
             observation_normalization=args.observation_normalization,
             freeze_observation_normalization=args.freeze_observation_normalization,
         )

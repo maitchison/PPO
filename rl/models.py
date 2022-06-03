@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import math
 
 from typing import Union
+from enum import Enum
 
 from . import utils, impala
 
@@ -30,6 +31,12 @@ def get_memory_format():
 
 def get_dtype():
     return torch.float16 if AMP else torch.float32
+
+class TVFMode(Enum):
+    OFF = 'off'
+    DYNAMIC = 'dynamic'
+    FIXED = 'fixed'
+
 
 class Base_Net(nn.Module):
 
@@ -331,7 +338,7 @@ class DualHeadNet(nn.Module):
             n_actions: int,
 
             hidden_units: int = 512,
-            tvf_mode:str = "dynamic",
+            tvf_mode:TVFMode = TVFMode.DYNAMIC,
             tvf_hidden_units: int = 512,
             tvf_horizon_transform=lambda x: x,
             tvf_time_transform=lambda x: x,
@@ -384,9 +391,7 @@ class DualHeadNet(nn.Module):
             encoder = encoder
             del kwargs["network"]
 
-        assert tvf_mode in ["off", "dynamic", "fixed"]
-
-        if tvf_mode == "dynamic":
+        if tvf_mode == TVFMode.DYNAMIC:
             assert tvf_fixed_head_horizons is not None
 
         if len(kwargs) > 0:
@@ -421,9 +426,7 @@ class DualHeadNet(nn.Module):
         # value net outputs a basic value estimate as well as the truncated value estimates
         self.value_head = nn.Linear(self.encoder.hidden_units, len(value_head_names))
 
-        if tvf_mode == "off":
-            pass
-        elif tvf_mode in ["dynamic", "fixed"]:
+        if tvf_mode != TVFMode.OFF:
             heads_multiplier = 1 if tvf_fixed_head_horizons is None else len(tvf_fixed_head_horizons)
             if tvf_hidden_units > 0:
                 self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
@@ -447,11 +450,7 @@ class DualHeadNet(nn.Module):
                 tvf_n_features = 2 + self.encoder.hidden_units
 
             # we want intrinsic / extrinsic versions of first and second moments.
-            self.tvf_head = nn.Linear(tvf_n_features, heads_multiplier * len(value_head_names),
-                                      bias=False)  # bias can cause problems as it will offset the entire curve.
-        else:
-            raise ValueError(f"Invalid tvf_mode {tvf_mode}.")
-
+            self.tvf_head = nn.Linear(tvf_n_features, heads_multiplier * len(value_head_names), bias=True)
 
 
     @property
@@ -593,7 +592,7 @@ class DualHeadNet(nn.Module):
             for i, name in enumerate(self.value_head_names):
                 result[f'{name}_value'] = value_values[:, i]
 
-            using_fixed_heads = self.tvf_mode == "fixed"
+            using_fixed_heads = self.tvf_mode == TVFMode.FIXED
 
             # if auxiliary features are present generate a result per h using tvf heads
             if aux_features is not None:
@@ -643,32 +642,14 @@ class DualHeadNet(nn.Module):
 
         return result
 
-
 class TVFModel(nn.Module):
-    """
-    Truncated Value Function model
-    based on PPG, and (optionally) using RND
 
-    network: the network to use, [nature_cnn]
-    input_dims: tuple containing input dims with channels first, e.g. (4, 84, 84)
-    actions: number of actions
-    device: device to use for model
-    dtype: dtype to use for model
 
-    use_rnd: enables random network distilation for exploration
-    use_rnn: enables recurrent model (not implemented yet)
 
-    tvf_horizon_transform: transform to use on horizons before input.
-    hidden_units: number of hidden units to use on FC layer before output
-    tvf_activation: activation to use on TVF FC layer
-
-    network_args: dict containing arguments for network
-
-    """
     def __init__(
             self,
-            networks: tuple,
-            network_args: tuple,
+            encoder: str,
+            encoder_args: Union[str, dict],
             input_dims: tuple,
             actions: int,
             device: str = "cuda",
@@ -676,9 +657,8 @@ class TVFModel(nn.Module):
             dtype: torch.dtype=torch.float32,
 
             use_rnd:bool = False,
-            use_rnn:bool = False,
 
-            tvf_mode:str="off",
+            tvf_mode:TVFMode=TVFMode.OFF,
             tvf_max_horizon:int = 65536,
             tvf_horizon_transform = lambda x : x,
             tvf_time_transform = lambda x: x,
@@ -688,13 +668,30 @@ class TVFModel(nn.Module):
             feature_activation_fn: str = "relu",
             tvf_value_scale_fn: str = "identity",
             tvf_value_scale_norm: str = "max",
-            shared_initialization=False,
             observation_normalization=False,
             freeze_observation_normalization=False,
             tvf_fixed_head_horizons: Union[None, list] = None,
     ):
+        """
+            Truncated Value Function model
+            based on PPG, and (optionally) using RND
 
-        assert not use_rnn, "RNN not supported yet"
+            encoder: feature encoder to use [nature|impala]
+            encoder_args: dict, or dict as string giving any encoder specific args.
+            input_dims: tuple containing input dims with channels first, e.g. (4, 84, 84)
+            actions: number of actions
+            device: device to use for model
+            dtype: dtype to use for model
+
+            use_rnd: enables random network distilation for exploration
+
+            tvf_horizon_transform: transform to use on horizons before input.
+            hidden_units: number of hidden units to use on FC layer before output
+            tvf_activation: activation to use on TVF FC layer
+
+            network_args: dict containing arguments for network
+
+        """
 
         super().__init__()
 
@@ -704,13 +701,14 @@ class TVFModel(nn.Module):
         self.dtype = dtype
         self.observation_normalization = observation_normalization
 
+        # todo: rename this..
         if architecture == "single":
-            self.name = "PPO-" + networks[0]
+            self.name = "PPO-" + encoder
         if architecture == "dual":
-            if tvf_hidden_units == 0:
-                self.name = "DNA-" + networks[0] + '-' + networks[1]
+            if tvf_mode != TVFMode.OFF:
+                self.name = "DNA-" + encoder
             else:
-                self.name = "TVF-" + networks[0] + '-' + networks[1]
+                self.name = "TVF-" + encoder
 
         single_channel_input_dims = (1, *input_dims[1:])
         self.use_rnd = use_rnd
@@ -718,39 +716,32 @@ class TVFModel(nn.Module):
         self._mu = None
         self._std = None
 
-        policy_network, value_network = networks
-        policy_network_args, value_network_args = network_args
+        if type(encoder_args) is str:
+            encoder_args = ast.literal_eval(encoder_args)
 
-        if type(policy_network_args) is str:
-            policy_network_args = ast.literal_eval(policy_network_args)
-        if type(value_network_args) is str:
-            value_network_args = ast.literal_eval(value_network_args)
+        def make_net():
+            return DualHeadNet(
+                encoder=encoder,
+                input_dims=input_dims,
+                tvf_mode=tvf_mode,
+                tvf_activation_fn=tvf_activation,
+                hidden_units=hidden_units,
+                tvf_hidden_units=tvf_hidden_units,
+                tvf_horizon_transform=tvf_horizon_transform,
+                tvf_time_transform=tvf_time_transform,
+                tvf_max_horizon=tvf_max_horizon,
+                tvf_value_scale_fn=tvf_value_scale_fn,
+                tvf_value_scale_norm=tvf_value_scale_norm,
+                activation_fn=feature_activation_fn,
+                tvf_fixed_head_horizons=tvf_fixed_head_horizons,
+                n_actions=actions,
+                device=device,
+                **(encoder_args or {})
+            )
 
-        make_net = lambda network, args: DualHeadNet(
-            encoder=network,
-            input_dims=input_dims,
-            tvf_mode=tvf_mode,
-            tvf_activation_fn=tvf_activation,
-            hidden_units=hidden_units,
-            tvf_hidden_units=tvf_hidden_units,
-            tvf_horizon_transform=tvf_horizon_transform,
-            tvf_time_transform=tvf_time_transform,
-            tvf_max_horizon=tvf_max_horizon,
-            tvf_value_scale_fn=tvf_value_scale_fn,
-            tvf_value_scale_norm=tvf_value_scale_norm,
-            activation_fn=feature_activation_fn,
-            tvf_fixed_head_horizons=tvf_fixed_head_horizons,
-            n_actions=actions,
-            device=device,
-            **(args or {})
-        )
-
-        self.policy_net = make_net(policy_network, policy_network_args)
+        self.policy_net = make_net()
         if architecture == "dual":
-            self.value_net = make_net(value_network, value_network_args)
-            if shared_initialization:
-                return_msg = self.value_net.load_state_dict(self.policy_net.state_dict(), strict=True)
-                print(return_msg)
+            self.value_net = make_net()
         elif architecture == "single":
             self.value_net = self.policy_net
         else:
