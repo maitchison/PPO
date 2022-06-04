@@ -325,6 +325,7 @@ class Config(BaseConfig):
         parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
         parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
         parser.add_argument("--distil_batch_size_ratio", type=float, default=None, help="Sets distil_batch_size to rollout_size * distil_batch_size_ratio")
+        parser.add_argument("--distil_head_skip", type=int, default=1, help="Skips every n heads when doing distil")
 
         # --------------------------------
         # Replay
@@ -456,6 +457,7 @@ class Config(BaseConfig):
         self.distil_batch_size = object()
         self.distil_freq_ratio = float()
         self.distil_batch_size_ratio = float()
+        self.distil_head_skip = int()
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()

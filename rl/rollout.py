@@ -1872,7 +1872,12 @@ class Runner:
         )
         targets = data["distil_targets"]
         predictions = model_out[self.get_distil_target_name()]
-        loss_value = 0.5 * torch.square(targets - predictions)
+
+        # this is used to only apply distil to every nth head, which can be useful as multi value head involves
+        # learning a very complex function. We go backwards so that the final head is always included.
+        distil_filter = slice(None, None, -args.distil_head_skip)
+        loss_value = 0.5 * torch.square(targets[..., distil_filter] - predictions[..., distil_filter])
+
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean accross final dim if targets / predictions were vector.
         loss = loss_value

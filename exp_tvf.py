@@ -497,7 +497,6 @@ def improved(priority: int = 0):
         'experiment': "TVF_IMPROVED",
     }
 
-    # check n_steps and samples
     add_run(
         run_name=f"improved",
         # improvements
@@ -509,6 +508,31 @@ def improved(priority: int = 0):
         distil_mini_batch_size=256,  # should be 256, but 512 for performance
         **COMMON_ARGS
     )
+
+def distil(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'default_args': TVF_INITIAL_ARGS,
+        'experiment': "TVF2_DISTIL",
+    }
+
+    for distil_head_skip in [1, 2, 8, 32, 128]:
+        add_run(
+            run_name=f"distil_head_skip={distil_head_skip}",
+            # improvements
+            gae_lambda=0.8,
+            tvf_value_samples=128,
+            tvf_horizon_samples=128,
+            distil_head_skip=distil_head_skip,
+            **COMMON_ARGS
+        )
+
+    # todo: beta
 
 def noise(priority: int = 0):
 
@@ -620,5 +644,6 @@ def setup():
     noise(300)
     stuck(300)
     improved()
+    distil(100)
 
     cluster_dropout(200)
