@@ -57,7 +57,7 @@ class BaseConfig:
             if k.startswith('_'):
                 continue
             if issubclass(type(v), BaseConfig):
-                if v._prefix != '':
+                if v._prefix == '':
                     continue
                 sub_params = v.flatten()
                 prefix = v._prefix
@@ -261,8 +261,6 @@ class Config(BaseConfig):
         # (atari)
         parser.add_argument("--resolution", type=str, default="nature", help="['full', 'nature', 'half']")
         parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
-        parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
-        parser.add_argument("--repeated_action_penalty", type=float, default=0.0, help="Penalty if agent repeats the same action more than this many times.")
         parser.add_argument("--full_action_space", type=str2bool, default=False)
         parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)
         parser.add_argument("--frame_stack", type=int, default=4)
@@ -270,6 +268,9 @@ class Config(BaseConfig):
         parser.add_argument("--embed_time", type=str2bool, default=True, help="Encodes time into observation")
         parser.add_argument("--embed_action", type=str2bool, default=True, help="Encodes actions into observation")
         parser.add_argument("--atari_rom_check", type=str2bool, default=True, help="Verifies on load, that the MD5 of atari ROM matches the ALE.")
+        # (stuck)
+        parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
+        parser.add_argument("--repeated_action_penalty", type=float, default=0.0, help="Penalty if agent repeats the same action more than this many times.")
 
         # --------------------------------
 

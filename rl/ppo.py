@@ -7,7 +7,7 @@ import math
 import sys
 import shlex
 
-from . import compression, config
+from . import compression
 from .logger import Logger, LogVariable
 from .returns import test_return_estimators
 from .rollout import Runner, save_progress
@@ -115,9 +115,9 @@ def train(model: models.TVFModel, log: Logger):
         desync_envs(runner, 2, 4, verbose=False)
 
     # make a copy of params
-    with open(os.path.join(args.log_folder, "params.txt"), "w") as f:
+    with open(os.path.join(args.log_folder, "params.txt"), "wt") as t:
         params = args.flatten()
-        f.write(json.dumps(params, indent=4))
+        t.write(json.dumps(params, indent=4))
 
     # make a copy of training files for reference
     utils.copy_source_files("./", args.log_folder)

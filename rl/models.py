@@ -338,7 +338,7 @@ class DualHeadNet(nn.Module):
             n_actions: int,
 
             hidden_units: int = 512,
-            tvf_mode:TVFMode = TVFMode.DYNAMIC,
+            tvf_mode:Union[TVFMode, str] = TVFMode.DYNAMIC,
             tvf_hidden_units: int = 512,
             tvf_horizon_transform=lambda x: x,
             tvf_time_transform=lambda x: x,
@@ -390,6 +390,9 @@ class DualHeadNet(nn.Module):
         if "network" in kwargs:
             encoder = encoder
             del kwargs["network"]
+
+        if type(tvf_mode) is not TVFMode:
+            tvf_mode = TVFMode(tvf_mode)
 
         if tvf_mode == TVFMode.DYNAMIC:
             assert tvf_fixed_head_horizons is not None
@@ -705,7 +708,7 @@ class TVFModel(nn.Module):
         if architecture == "single":
             self.name = "PPO-" + encoder
         if architecture == "dual":
-            if tvf_mode != TVFMode.OFF:
+            if tvf_mode == TVFMode.OFF:
                 self.name = "DNA-" + encoder
             else:
                 self.name = "TVF-" + encoder

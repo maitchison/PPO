@@ -124,22 +124,23 @@ class ActionAwareWrapper(gym.Wrapper):
         return self._process_obs(obs, -1)
 
     def _process_obs(self, obs, action: int):
+
         assert obs.dtype == np.uint8
 
+        # draw actions we pressed on frames
         BLOCK_SIZE = 4
 
         if action >= 0:
             x = action * BLOCK_SIZE
             y = 0
             obs[x:x+BLOCK_SIZE, y:y+BLOCK_SIZE, :] = 255
+
         return obs
 
     def step(self, action):
         assert type(action) in [int, np.int, np.int32, np.int16], f"Action aware requires discrete actions, but found action of type {type(action)}"
         obs, reward, done, info = self.env.step(action)
         return self._process_obs(obs, action), reward, done, info
-
-
 
 class TimeAwareWrapper(gym.Wrapper):
     """
@@ -173,6 +174,51 @@ class TimeAwareWrapper(gym.Wrapper):
         assert "time_frac" in info, "Must use TimeLimitWrapper."
         time_frac = np.clip(info["time_frac"], 0, 1)
         return self._process_obs(obs, time_frac), reward, done, info
+
+
+class ActionHistoryWrapper(gym.Wrapper):
+    """
+    Includes markings on final frame in stack indicating history of actions
+
+    [..., C, H, W]
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.action_history = collections.deque(maxlen=100)
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self.action_history.clear()
+        return self._process_obs(obs)
+
+    def _process_obs(self, obs):
+        assert obs.dtype == np.uint8
+        *_, C, H, W = obs.shape
+
+        # draw history of actions at bottom final state
+        n_actions = self.action_space.n
+        obs[0, :n_actions, :] = 32
+        for x, a in enumerate(list(self.action_history)[:W]):
+            if a < 0:
+                # -1 means env was ignored.
+                continue
+            y = a
+            obs[0, y, x] = 255
+        return obs
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.action_history.appendleft(action)
+        return self._process_obs(obs), reward, done, info
+
+    def save_state(self, buffer):
+        buffer["action_history"] = self.action_history
+
+    def restore_state(self, buffer):
+        self.action_history = buffer["action_history"]
+
+
 
 
 class HashWrapper(gym.Wrapper):
@@ -609,11 +655,15 @@ class VecRepeatedActionPenalty(gym.Wrapper):
 
         obs, rewards, dones, infos = self.env.step(actions)
 
-        mask = (actions == self.prev_actions)
+        no_action_mask = (actions >= 0) # action=-1 means we ignored that environment
+        mask = (actions == self.prev_actions) * no_action_mask
         self.duplicate_counter += mask
         self.duplicate_counter *= mask
 
         too_many_repeated_actions = (self.duplicate_counter > self.max_repeated_actions)
+
+        infos[0]['max_repeats'] = np.max(self.duplicate_counter)
+        infos[0]['mean_repeats'] = np.mean(self.duplicate_counter)
 
         if np.sum(too_many_repeated_actions) > 0:
             for i, repeated_action in enumerate(too_many_repeated_actions):
@@ -925,7 +975,6 @@ class AtariWrapper(gym.Wrapper):
         Stack and do other stuff...
         Input should be (210, 160, 3)
         Output is a stack of shape (nstacks, width, height)
-        @param stuck_limit: int, number of repeated frames before forced reset.
         """
 
         super().__init__(env)

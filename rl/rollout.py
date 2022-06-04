@@ -29,19 +29,19 @@ def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
 
     details = {}
-    details["max.epochs"] = args.epochs
-    details["completed.epochs"] = log["env_step"] / 1e6  # include the current completed step.
+    details["max_epochs"] = args.epochs
+    details["completed_epochs"] = log["env_step"] / 1e6  # include the current completed step.
     # ep_score could be states, or a float (population based is the group mean which is a float)
     if type(log["ep_score"]) is float:
         details["score"] = log["ep_score"]
     else:
         details["score"] = log["ep_score"][0]
-    details["fraction_complete"] = details["completed.epochs"] / details["max.epochs"]
+    details["fraction_complete"] = details["completed_epochs"] / details["max_epochs"]
     try:
         details["fps"] = log["fps"]
     except:
         details["fps"] = 0
-    frames_remaining = (details["max.epochs"] - details["completed.epochs"]) * 1e6
+    frames_remaining = (details["max_epochs"] - details["completed_epochs"]) * 1e6
     details["eta"] = (frames_remaining / details["fps"]) if details["fps"] > 0 else 0
     details["host"] = args.hostname
     details["device"] = args.device
@@ -1133,6 +1133,12 @@ class Runner:
             self.episode_score += raw_rewards
             self.episode_len += 1
 
+            # log repeated action stats
+            if 'max_repeats' in infos[0]:
+                self.log.watch_mean('max_repeats', infos[0]['max_repeats'])
+            if 'mean_repeats' in infos[0]:
+                self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'])
+
             for i, (done, info) in enumerate(zip(dones, infos)):
                 if "reward_clips" in info:
                     self.stats['reward_clips'] += info["reward_clips"]
@@ -1440,16 +1446,8 @@ class Runner:
             ev = 0 if (this_var == 0) else np.clip(1 - this_not_explained_var / this_var, -1, 1)
 
             self.log.watch_mean(
-                f"ev_{h}"+postfix,
+                f"ev_{h_index}"+postfix,
                 ev,
-                display_width=0 if (10 <= h <= 30) or h == args.tvf_max_horizon else 0,
-                history_length=1
-            )
-
-            # this is just for debugging sml
-            self.log.watch_mean(
-                f"v_{h}" + postfix,
-                value.mean(),
                 display_width=0,
                 history_length=1
             )
@@ -1885,7 +1883,7 @@ class Runner:
         elif args.distil_loss == "mse_policy":
             loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_log_policy"], model_out["log_policy"]).mean(dim=-1)
         elif args.distil_loss == "kl_policy":
-            loss_policy = args.distil_beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="batchmean")
+            loss_policy = args.distil_beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none")
         else:
             raise ValueError(f"Invalid distil_loss {args.distil_loss}")
 

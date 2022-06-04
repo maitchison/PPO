@@ -151,6 +151,7 @@ def load_args(checkpoint_path):
             vars(args)[k] = v
         args.log_folder = ''
         args.terminal_on_loss_of_life = False # always off for evaluation...
+        args.device = eval_args.device
 
 # load a model and evaluate performance
 def load_checkpoint(checkpoint_path, device=None):
@@ -987,13 +988,6 @@ def generate_rollouts(
             append_buffer('actions', actions[i])
             append_buffer('probs', probs[i])
 
-            if args.learn_second_moment:
-                sqrt_m2_est = model_out["tvf_ext_value_m2"]
-                m2_est = torch.relu(sqrt_m2_est)**2
-                variance = (m2_est - model_out["tvf_ext_value"] ** 2)[i].detach().cpu().numpy()
-                append_buffer('std', np.clip(variance, 0, float('inf'))**0.5)
-                append_buffer('sqrt_m2', sqrt_m2_est[i].detach().cpu().numpy())
-
             if 'frames' in buffers[i]:
                 agent_layers = prev_states[i]
                 channels = prev_infos[i].get("channels", None)
@@ -1359,20 +1353,6 @@ def export_movie(
         # plotting...
         fig.clear()
 
-        if args.use_tvf and args.learn_second_moment:
-            # show 1 standard deviations
-            xs = list(range(len(buffer["values"][t])))
-            err = buffer["std"][t] * 1
-            ys_min = (buffer["values"][t] - err) / REWARD_SCALE  # model learned scaled rewards
-            ys_max = (buffer["values"][t] + err) / REWARD_SCALE  # model learned scaled rewards
-            color = (0.1, 0.1, 0.2)
-            fig.plot_between(xs, ys_min, ys_max, color)
-
-            color = (0.4, 0.4, 0.4)
-            fig.plot_between(xs, ys_min, ys_max, color, edges_only=True)
-
-            sqrt_square = buffer["sqrt_m2"][t] / REWARD_SCALE
-            fig.plot(xs, sqrt_square, (0.6, 0.3, 0.1))
 
         if return_sample is not None:
             # plot return sample

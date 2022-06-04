@@ -170,7 +170,6 @@ def main():
     if args.reference_policy is not None:
         assert args.architecture == "dual"
         # load only the policy parameters, and the normalization constants
-        # "Run/TVF_EV1/game=Zaxxon samples=4 (1) [6bf5f217]/checkpoint-001M-params.pt.gz"
         checkpoint = rollout._open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
         policy_checkpoint = {k[len('policy_net.'):]: v for k, v in checkpoint["model_state_dict"].items() if k.startswith("policy_net.")}
         actor_critic_model.policy_net.load_state_dict(policy_checkpoint)

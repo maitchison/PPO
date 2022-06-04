@@ -393,6 +393,98 @@ def value_heads(priority: int = 0):
             **COMMON_ARGS
         )
 
+
+def stuck(priority: int = 0):
+
+    # try to figure out the stuck thing...
+
+    COMMON_ARGS = {
+        'seeds': 3,
+        'subset': ['YarsRevenge'],
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_STUCK",
+        'epochs': 20,
+    }
+
+    # reference runs just to see how we're doing.
+
+    add_run(
+        run_name="tvf (reference)",
+        default_args=TVF_INITIAL_ARGS,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="tvf penalty=0",
+        default_args=TVF_INITIAL_ARGS,
+        repeated_action_penalty=0,
+        **COMMON_ARGS
+    )
+
+    # smaller penalty but more quickly
+    add_run(
+        run_name="max=30 penalty=0.02",
+        default_args=TVF_INITIAL_ARGS,
+        max_repeated_actions=30,
+        repeated_action_penalty=0.02,
+        **COMMON_ARGS
+    )
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ['YarsRevenge'],
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_STUCK2",
+        'epochs': 20,
+    }
+
+    # # main thing here is to see how history works
+
+    add_run(
+        run_name="max=30 penalty=-0.01", # this is just to make sure it's working, it should just get stuck all the time
+        default_args=TVF_INITIAL_ARGS,
+        max_repeated_actions=30,
+        repeated_action_penalty=-0.01,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="max=30 penalty=0.01",
+        default_args=TVF_INITIAL_ARGS,
+        max_repeated_actions=30,
+        repeated_action_penalty=0.01,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="max=100 penalty=0.01",
+        default_args=TVF_INITIAL_ARGS,
+        max_repeated_actions=100,
+        repeated_action_penalty=0.01,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="max=100 penalty=0.0",
+        default_args=TVF_INITIAL_ARGS,
+        max_repeated_actions=100,
+        repeated_action_penalty=0.0,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="max=100 penalty=0.25",
+        default_args=TVF_INITIAL_ARGS,
+        max_repeated_actions=100,
+        repeated_action_penalty=0.25,
+        **COMMON_ARGS
+    )
+
+
 def improved(priority: int = 0):
 
     COMMON_ARGS = {
@@ -409,11 +501,11 @@ def improved(priority: int = 0):
     add_run(
         run_name=f"improved",
         # improvements
-        gae_lambda=0.8,  # this seems to help I guess
-        tvf_value_samples=64,    # maybe less is more?
-        tvf_horizon_samples=64,  #
-        policy_mini_batch_size=4096,  # This is just 4 policy updates, might need to increase policy?
-        value_mini_batch_size=512,  # useful for high noise?
+        gae_lambda=0.8,              # this seems to help I guess
+        tvf_value_samples=64,        # maybe less is more?
+        tvf_horizon_samples=64,      #
+        policy_mini_batch_size=4096, # This is just 4 policy updates, might need to increase policy?
+        value_mini_batch_size=512,   # useful for high noise?
         distil_mini_batch_size=256,  # should be 256, but 512 for performance
         **COMMON_ARGS
     )
@@ -526,6 +618,7 @@ def setup():
     returns()
     value_heads()
     noise(300)
+    stuck(300)
     improved()
 
     cluster_dropout(200)

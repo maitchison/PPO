@@ -72,7 +72,7 @@ def run_evaluation_script(
     old_path = os.getcwd()
     try:
         os.chdir(experiment_folder)
-        #print(" ".join(["python", "run_evaluation.py", *args]))
+        print(" ".join(["python", "run_evaluation.py", *args]))
         import subprocess
         completed_process = subprocess.run(["python", "run_evaluation.py", *args])
         if completed_process.returncode >= 128:

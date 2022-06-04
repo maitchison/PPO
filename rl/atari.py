@@ -192,10 +192,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
-    if args.embed_action:
-        # must come before frame_stack
-        env = wrappers.ActionAwareWrapper(env)
-
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
 
@@ -207,6 +203,11 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.embed_time:
         # must come after frame_stack
         env = wrappers.TimeAwareWrapper(env)
+
+    if args.embed_action:
+        # this one is better
+        env = wrappers.ActionHistoryWrapper(env)
+
 
     env = wrappers.NullActionWrapper(env)
 
