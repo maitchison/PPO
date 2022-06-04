@@ -33,7 +33,7 @@ cd PPO
 %CMD%
 echo "--- done ---"
 date
-""", n_gpus=2, n_jobs=8)
+""", n_gpus=2, n_jobs=9)
 
 TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
@@ -52,7 +52,7 @@ cd PPO
 %CMD%
 echo "--- done ---"
 date
-""", n_gpus=4, n_jobs=8)
+""", n_gpus=4, n_jobs=9)
 
 def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_2080ti):
     """

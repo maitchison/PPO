@@ -298,6 +298,13 @@ def horizon(priority: int = 0):
 
     # check horizons
     add_run(
+        run_name="tvf (30k)",
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        **COMMON_ARGS
+    )
+
+    add_run(
         run_name="tvf (10k)",
         gamma=0.9999,
         tvf_gamma=0.9999,
@@ -357,7 +364,7 @@ def returns(priority: int = 0):
                 **COMMON_ARGS
             )
 
-    for gae_lambda in [0.6, 0.8, 0.9]:
+    for gae_lambda in [0.6, 0.8, 0.9, 0.95]:
         add_run(
             run_name=f"gae_lambda={gae_lambda}",
             gae_lambda=gae_lambda,
@@ -386,6 +393,31 @@ def value_heads(priority: int = 0):
             **COMMON_ARGS
         )
 
+def improved(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'default_args': TVF_INITIAL_ARGS,
+        'experiment': "TVF_IMPROVED",
+    }
+
+    # check n_steps and samples
+    add_run(
+        run_name=f"improved",
+        # improvements
+        gae_lambda=0.8,  # this seems to help I guess
+        tvf_value_samples=64,    # maybe less is more?
+        tvf_horizon_samples=64,  #
+        policy_mini_batch_size=4096,  # This is just 4 policy updates, might need to increase policy?
+        value_mini_batch_size=512,  # useful for high noise?
+        distil_mini_batch_size=256,  # should be 256, but 512 for performance
+        **COMMON_ARGS
+    )
+
 def noise(priority: int = 0):
 
     COMMON_ARGS = {
@@ -407,19 +439,19 @@ def noise(priority: int = 0):
         **COMMON_ARGS
     )
 
-    # add_run(
-    #     run_name=f"dna",
-    #     use_sns=True,
-    #     default_args=DNA_TUNED_ARGS,
-    #     **COMMON_ARGS
-    # )
-    #
-    # add_run(
-    #     run_name=f"ppo",
-    #     use_sns=True,
-    #     default_args=PPO_TUNED_ARGS,
-    #     **COMMON_ARGS
-    # )
+    add_run(
+        run_name=f"dna",
+        use_sns=True,
+        default_args=DNA_TUNED_ARGS,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"ppo",
+        use_sns=True,
+        default_args=PPO_TUNED_ARGS,
+        **COMMON_ARGS
+    )
 
 def cluster_dropout(priority: int = 0):
 
@@ -465,6 +497,26 @@ def cluster_dropout(priority: int = 0):
             **IMPROVED_ARGS
         )
 
+    IMPROVED_ARGS['seeds'] = 1
+    IMPROVED_ARGS['ignore_lock'] = None #not supported
+
+    for value_epochs in [4]:
+        for tvf_horizon_dropout in [0.5, 0.9]:
+            add_run(
+                run_name=f"2{value_epochs}2 dropout={tvf_horizon_dropout}",
+                default_args=TVF_INITIAL_ARGS,
+                value_epochs=value_epochs,
+                tvf_horizon_dropout=tvf_horizon_dropout,
+                **IMPROVED_ARGS
+            )
+        add_run(
+            run_name=f"2{value_epochs}2 reference",
+            default_args=TVF_INITIAL_ARGS,
+            value_epochs=value_epochs,
+            tvf_horizon_dropout=0,
+            **IMPROVED_ARGS
+        )
+
 
 
 def setup():
@@ -474,5 +526,6 @@ def setup():
     returns()
     value_heads()
     noise(300)
+    improved()
 
     cluster_dropout(200)

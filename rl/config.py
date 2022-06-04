@@ -301,7 +301,7 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Auto Gamma
-        parser.add_argument("--use_ag", type=str, default="off", help="[off|tvf|gamma|both]")
+        parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
         parser.add_argument("--ag_strategy", type=str, default="episode_length", help="[episode_length|agent_age_slow|sa_return|sa_reward]")
         parser.add_argument("--ag_mode", type=str, default="policy", help="[policy|value|both]")
 
@@ -441,7 +441,7 @@ class Config(BaseConfig):
         self.tvf_horizon_scale = str()
         self.tvf_time_scale = str()
         self.tvf_hidden_units = int()
-        self.use_ag = str()
+        self.use_ag = bool()
         self.ag_strategy = str()
         self.ag_mode = str()
         self.use_sns = bool()

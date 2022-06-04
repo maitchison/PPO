@@ -1566,7 +1566,7 @@ class Runner:
         return np.take_along_axis(values, sample[None, :, :], axis=0)
 
     @torch.no_grad()
-    def get_tvf_rediscounted_value_estimates(self, rollout, new_gamma:float):
+    def get_tvf_rediscounted_value_estimates_dynamic(self, rollout, new_gamma:float):
         """
         Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
         """
@@ -1613,6 +1613,40 @@ class Runner:
             horizons=horizons
         ).reshape([(N + 1), A])
 
+    @torch.no_grad()
+    def get_tvf_rediscounted_value_estimates_fixed(self, rollout, new_gamma: float):
+        """
+        Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
+        """
+
+        N, A, *state_shape = rollout.all_obs[:-1].shape
+
+        if (abs(new_gamma - args.tvf_gamma) < 1e-8):
+            # no rediscounting is required...
+            return self.get_value_estimates(
+                obs=rollout.all_obs,
+                time=rollout.all_time
+            )
+
+        # going backwards makes sure that final horizon is always included
+        horizons = self.tvf_debug_horizons
+
+        # these are the value estimates at each horizon under current tvf_gamma
+        # todo: these should be generated during rollout
+        value_estimates = self.get_value_estimates(
+            obs=rollout.all_obs,
+            time=rollout.all_time,
+            horizons=horizons
+        )
+
+        # convert to new gamma
+        return get_rediscounted_value_estimate(
+            values=value_estimates.reshape([(N + 1) * A, -1]),
+            old_gamma=self.tvf_gamma,
+            new_gamma=new_gamma,
+            horizons=horizons
+        ).reshape([(N + 1), A])
+
     def calculate_returns(self):
 
         self.old_time = time.time()
@@ -1623,7 +1657,13 @@ class Runner:
 
         # 1. first we calculate the ext_value estimate
         if args.use_tvf:
-            ext_value_estimates = self.get_tvf_rediscounted_value_estimates(
+            if args.tvf_mode == "fixed":
+                rediscount = self.get_tvf_rediscounted_value_estimates_fixed
+            elif args.tvf_mode == "dynamic":
+                rediscount = self.get_tvf_rediscounted_value_estimates_dynamic
+            else:
+                raise ValueError(f"Invalid tvf_mode {args.tvf_mode}")
+            ext_value_estimates = rediscount(
                 RolloutBuffer(self, copy=False),
                 new_gamma=self.gamma
             )
