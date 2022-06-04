@@ -633,7 +633,6 @@ class Job:
         params["output_folder"] = "./Run"
         params["experiment_name"] = self.experiment_name
         params["run_name"] = self.run_name
-        params['restore'] = True
         params['error_on_missing_restore'] = False # restore if we can, but do not error if we can not.
 
         nice_params = [

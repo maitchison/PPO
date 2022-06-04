@@ -754,7 +754,7 @@ class Runner:
 
         if not models.JIT:
             # remove tracemodule if jit is disabled.
-            print("debug:", list(checkpoint['model_state_dict'].keys()))
+            #print("debug:", list(checkpoint['model_state_dict'].keys()))
             checkpoint['model_state_dict'] = {
                 k: v for k, v in checkpoint['model_state_dict'].items() if "trace_module" not in k
             }
@@ -1875,7 +1875,12 @@ class Runner:
 
         # this is used to only apply distil to every nth head, which can be useful as multi value head involves
         # learning a very complex function. We go backwards so that the final head is always included.
-        distil_filter = slice(None, None, -args.distil_head_skip)
+        distil_filter = slice(None, None)
+        if len(targets.shape) == 2:
+            B, H = targets.shape
+            if args.distil_head_skip != 1:
+                distil_filter = np.arange(H)[::-args.distil_head_skip][::-1]
+
         loss_value = 0.5 * torch.square(targets[..., distil_filter] - predictions[..., distil_filter])
 
         if len(loss_value.shape) == 2:

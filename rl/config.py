@@ -179,7 +179,7 @@ class Config(BaseConfig):
         parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
         parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
         parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
-        parser.add_argument("--restore", type=str, default='never', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
+        parser.add_argument("--restore", type=str, default='auto', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
         parser.add_argument("--reference_policy", type=str, default=None, help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
         parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
         parser.add_argument("--threads", type=int, default=2, help="Number of numpy/torch threads. Usually does not improve performance.")
@@ -530,6 +530,12 @@ def parse_args(args_override=None):
 
     cmd_args = parser.parse_args(args_override).__dict__
     args.update(**cmd_args)
+
+    # fix restore using legacy settings
+    if args.restore is True or args.restore == "True":
+        args.restore = "always"
+    if args.restore is False or args.restore == "False":
+        args.restore = "never"
 
     # mappings
     for old_name, new_name in REMAPPED_PARAMS.items():
