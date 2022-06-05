@@ -1165,6 +1165,10 @@ class Runner:
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
 
+        if self.batch_counter % args.sns_period != 0:
+            # only evaluate every so often.
+            return
+
         self.log.mode = self.log.LM_MUTE
         result = {}
 
@@ -1220,7 +1224,7 @@ class Runner:
         # alternative include larger batch_sizes, and / or larger EMA horizon.
         # noise levels above 1000 will not be very accurate, but around 20 should be fine.
         epsilon = 1e-3
-        ratio = max(av_s, 0) / max(av_g2, epsilon)
+        ratio = (max(av_s, 0) + epsilon) / (max(av_g2, 0) + epsilon) # we bias this a bit towards a ratio of 1.
 
         self.noise_stats[f'{label}_ratio'] = ratio
 
@@ -1239,14 +1243,14 @@ class Runner:
         return self.noise_stats[f'{label}_ratio']
 
     @torch.no_grad()
-    def log_dna_value_quality(self):
+    def log_value_quality(self):
         targets = calculate_bootstrapped_returns(
             self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
         )
         values = self.ext_value[:self.N]
         self.log.watch_mean("ev_ext", utils.explained_variance(values.ravel(), targets.ravel()), history_length=1)
 
-    def log_curve_quality(self, estimates, targets, postfix: str = ''):
+    def _log_curve_quality(self, estimates, targets, postfix: str = ''):
         """
         Calculates explained variance at each of the debug horizons
         @param estimates: np array of dims[N,A,K]
@@ -1284,7 +1288,7 @@ class Runner:
         )
 
     @torch.no_grad()
-    def log_tvf_value_quality(self):
+    def log_tvf_curve_quality(self):
         """
         Writes value quality stats to log
         """
@@ -1303,7 +1307,7 @@ class Runner:
 
         first_moment_targets = targets
         first_moment_estimates = self.tvf_value[:N, :, :, 0].reshape(N, A, K)
-        self.log_curve_quality(first_moment_estimates, first_moment_targets)
+        self._log_curve_quality(first_moment_estimates, first_moment_targets)
 
     @property
     def prev_obs(self):
@@ -1497,10 +1501,9 @@ class Runner:
 
         if not args.disable_ev and self.batch_counter % 2 == 1:
             # only about 3% slower with this on.
-            if not args.use_tvf:
-                self.log_dna_value_quality()
-            else:
-                self.log_tvf_value_quality()
+            self.log_value_quality()
+            if args.use_tvf:
+                self.log_tvf_curve_quality()
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -1671,7 +1674,10 @@ class Runner:
             value_heads.append("int")
         return value_heads
 
-    def train_value_minibatch(self, data, loss_scale=1.0):
+    def train_value_minibatch(self, data, loss_scale=1.0, single_value_head: Optional[int] = None):
+        """
+        @param single_value_head: if given trains on just this indexed tvf value head.
+        """
 
         model_out = self.model.forward(data["prev_state"], output="value")
 
@@ -1689,6 +1695,11 @@ class Runner:
             # predictions need to be generated... this could take a lot of time so just sample a few..
             targets = data["tvf_returns"] # locked to "ext" head for the moment
             predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment
+
+            if single_value_head is not None:
+                targets = targets[:, single_value_head]
+                predictions = predictions[:, single_value_head]
+
             tvf_loss = 0.5 * torch.square(targets - predictions)
             if args.tvf_horizon_dropout > 0:
                 # note: we weight the mask so that after the average the loss per example will be approximately the same
@@ -2040,7 +2051,7 @@ class Runner:
             # just train ext head for the moment
             batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
 
-        if args.use_tvf and  args.sns_max_heads > 0:
+        if args.use_tvf and args.sns_max_heads > 0:
 
             # generate our per-horizon estimates
             if args.upload_batch:
@@ -2051,13 +2062,14 @@ class Runner:
                 if i < 0:
                     # just train main head
                     del _data["tvf_returns"]
+                    self.train_value_minibatch(_data, loss_scale)
                 else:
-                    _data["tvf_returns"] = data["tvf_returns"][:, i:i + 1]
-                    del _data["returns"] # make sure to not also learn main value head
-                self.train_value_minibatch(_data, loss_scale)
+                    # make sure to not also learn main value head
+                    del _data["returns"]
+                    self.train_value_minibatch(_data, loss_scale, single_value_head=i)
 
             if len(self.tvf_horizons) > args.sns_max_heads:
-                sample = np.linspace(1, len(self.tvf_horizons), args.sns_max_heads, dtype=np.int32)
+                sample = np.linspace(0, len(self.tvf_horizons)-1, args.sns_max_heads, dtype=np.int32)
             else:
                 sample = np.arange(len(self.tvf_horizons))
 
@@ -2282,7 +2294,7 @@ class Runner:
             label,
             epoch=None,
             hooks: Union[dict, None] = None,
-            thinning:float = 1.0,
+            thinning: float = 1.0,
         ) -> dict:
         """
         Trains agent on current batch of experience

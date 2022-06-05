@@ -814,6 +814,48 @@ def reference(priority: int = 0):
 #
 
 
+def noise(priority: int = 0):
+
+    # improved "always on" noise system...
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_1_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF2_NOISE",
+    }
+
+    add_run(
+        run_name=f"tvf",
+        use_sns=True,
+        default_args=TVF2_ARGS,
+        replay_size=128 * 128,
+        distil_period=1,
+        tvf_return_samples=32,
+        policy_mini_batch_size=2048,
+        value_mini_batch_size=512,
+        distil_mini_batch_size=512,
+        tvf_value_heads=128, # this is the default, but I think it's too many.
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"dna",
+        use_sns=True,
+        default_args=DNA_TUNED_ARGS,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"ppo",
+        use_sns=True,
+        default_args=PPO_TUNED_ARGS,
+        **COMMON_ARGS
+    )
+
+
 def setup():
 
     # reference(25)
@@ -827,5 +869,6 @@ def setup():
 
     # cluster_dropout(200)
 
-    reference(100)
-    valueheads(150)
+    reference(0)
+    valueheads(0)
+    noise(100)
