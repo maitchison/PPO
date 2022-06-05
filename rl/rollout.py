@@ -2057,7 +2057,7 @@ class Runner:
                 self.train_value_minibatch(_data, loss_scale)
 
             if len(self.tvf_horizons) > args.sns_max_heads:
-                sample = np.linspace(1, len(self.tvf_horizons), args.sns_max_heads)
+                sample = np.linspace(1, len(self.tvf_horizons), args.sns_max_heads, dtype=np.int32)
             else:
                 sample = np.arange(len(self.tvf_horizons))
 
@@ -2316,8 +2316,10 @@ class Runner:
                 assert v.dtype in [torch.uint8, torch.int64, torch.float32], \
                     f"Batch input should [uint8, int64, or float32] but {k} was {type(v.dtype)}"
 
+        assert batch_size % mini_batch_size == 0
         mini_batches = batch_size // mini_batch_size
         micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
+        assert mini_batch_size % micro_batch_size == 0
         micro_batches = mini_batch_size // micro_batch_size
 
         ordering = list(range(batch_size))
@@ -2327,10 +2329,6 @@ class Runner:
         outputs = []
 
         context = {}
-
-        logging_sample_per_microbatch = 0
-        log_x = None
-        log_y = None
 
         for j in range(mini_batches):
 
