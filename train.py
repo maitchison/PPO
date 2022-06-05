@@ -31,7 +31,7 @@ def get_n_actions(space):
         raise ValueError(f"Action space of type {type(space)} not implemented yet.")
 
 
-def make_model(args):
+def make_model(args, log=None):
     """
     Construct model based on env, and arguments.
     """
@@ -42,10 +42,11 @@ def make_model(args):
     fake_env = rollout.make_env(args.env_type, args.get_env_name())
     n_actions = get_n_actions(fake_env.action_space)
     obs_space = fake_env.observation_space.shape
-    #log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
-    tvf_fixed_head_horizons = rollout.Runner.get_standard_horizon_sample(args.tvf_max_horizon)
-    tvf_fixed_head_horizons = sorted(set(tvf_fixed_head_horizons))
+    if log is not None:
+        log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
+
+    tvf_fixed_head_horizons = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing)
 
     model = models.TVFModel(
         encoder=args.encoder,
@@ -54,21 +55,11 @@ def make_model(args):
         actions=n_actions,
         device=args.device,
         dtype=torch.float32,
-
         use_rnd=args.use_rnd,
-        tvf_mode=args.tvf_mode,
-        tvf_horizon_transform=rollout.horizon_scale_function,
-        tvf_time_transform=rollout.time_scale_function,
-        tvf_max_horizon=args.tvf_max_horizon,
-        tvf_value_scale_fn=args.tvf_value_scale_fn,
-        tvf_value_scale_norm=args.tvf_value_scale_norm,
-        feature_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
+        encoder_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
         tvf_fixed_head_horizons=tvf_fixed_head_horizons,
         architecture=args.architecture,
-
         hidden_units=args.hidden_units,
-        tvf_hidden_units=args.tvf_hidden_units,
-        tvf_activation=args.tvf_activation,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
     )
@@ -165,7 +156,7 @@ def main():
     os.makedirs(args.log_folder, exist_ok=True)
 
     utils.lock_job(force=args.ignore_lock)
-    actor_critic_model = make_model(args)
+    actor_critic_model = make_model(args, log)
 
     if args.reference_policy is not None:
         assert args.architecture == "dual"

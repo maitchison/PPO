@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import time
 import time as clock
 import json
 import gzip
@@ -24,6 +23,17 @@ from .replay import ExperienceReplayBuffer
 
 import collections
 
+def get_value_head_horizons(n_heads:int, max_horizon: int, spacing:str="geometric"):
+    """
+    Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = max_horizon.
+    Some early horizons may be duplicated due to rounding.
+    """
+    if spacing == "geometric":
+        return np.asarray(np.round(np.geomspace(1, max_horizon+1, n_heads))-1, dtype=np.int)
+    elif spacing == "linear":
+        return np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int)
+    else:
+        raise ValueError(f"Invalid spacing value {spacing}")
 
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
@@ -94,8 +104,18 @@ def calculate_bootstrapped_returns(rewards, dones, final_value_estimate, gamma) 
 
     return returns
 
+def td_lambda(
+        batch_rewards,
+        batch_value,
+        final_value_estimate,
+        batch_terminal,
+        gamma: float,
+        lamb=0.95,
+):
+    advantages = gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb, normalize=False)
+    return advantages + batch_value
 
-def calculate_gae(
+def gae(
         batch_rewards,
         batch_value,
         final_value_estimate,
@@ -381,6 +401,7 @@ def calculate_tvf_td(
             returns[t, :, h] = estimate
     return returns
 
+
 class Runner:
 
     def __init__(self, model: models.TVFModel, log, name="agent", action_dist='discrete'):
@@ -430,11 +451,12 @@ class Runner:
 
         self.N = N = args.n_steps
         self.A = A = args.agents
+        self.VH = VH = len(self.value_heads)
+        self.K = K = args.tvf_value_heads
 
         self.action_dist = action_dist
 
         self.state_shape = model.input_dims
-        self.rnn_state_shape = [2, 512]  # records h and c for LSTM units.
         self.policy_shape = [model.actions]
 
         self.batch_counter = 0
@@ -446,7 +468,6 @@ class Runner:
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
-        self.time = np.zeros([A], dtype=np.float32)
         self.done = np.zeros([A], dtype=np.bool)
 
         if args.mutex_key:
@@ -471,7 +492,6 @@ class Runner:
             # in batch upload mode we can just keep all_obs on the GPU
             self.all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8, device=self.model.device)
 
-        self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         if self.action_dist == "discrete":
             self.actions = np.zeros([N, A], dtype=np.int64)
         elif self.action_dist == "gaussian":
@@ -481,32 +501,25 @@ class Runner:
         self.ext_rewards = np.zeros([N, A], dtype=np.float32)
         self.log_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
         self.raw_policy = np.zeros([N, A, *self.policy_shape], dtype=np.float32)
-        self.ext_advantage = np.zeros([N, A], dtype=np.float32) # unnormalized extrinsic reward advantages
         self.raw_advantage = np.zeros([N, A], dtype=np.float32) # advantages before normalization
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
+        self.advantage = np.zeros([N, A], dtype=np.float32)  # advantage estimates
 
-        self.replay_value_estimates = np.zeros([N, A], dtype=np.float32)
+        self.replay_value_estimates = np.zeros([N, A], dtype=np.float32) # what is this?
 
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
-        self.int_value = np.zeros([N+1, A], dtype=np.float32)
-        self.int_advantage = np.zeros([N, A], dtype=np.float32)
-        self.int_returns = np.zeros([N, A], dtype=np.float32)
+
         self.intrinsic_reward_norm_scale: float = 1
 
-        # log optimal
-        self.sqr_value = np.zeros([N+1, A], dtype=np.float32)
-        self.sqr_returns = np.zeros([N, A], dtype=np.float32)
+        # value and returns
+        self.value = np.zeros([N+1, A, VH], dtype=np.float32)
+        self.tvf_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)
+        self.returns = np.zeros([N, A, VH], dtype=np.float32)
+        self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
 
         # returns generation
-        self.ext_returns = np.zeros([N, A], dtype=np.float32)
         self.advantage = np.zeros([N, A], dtype=np.float32)
-        self.ext_value = np.zeros([N+1, A], dtype=np.float32)
-        # self.uni_value = np.zeros([N+1, A], dtype=np.float32)
-
-        # terminal prediction
-        self.tp_final_value_estimate = np.zeros([A], dtype=np.float32)
-        self.tp_returns = np.zeros([N, A], dtype=np.float32)  # terminal state predictions are generated the same was as returns.
 
         self.intrinsic_returns_rms = utils.RunningMeanStd(shape=())
         self.ems_norm = np.zeros([args.agents])
@@ -529,6 +542,7 @@ class Runner:
             replay_dtype = self.prev_obs[0].cpu().numpy().dtype
         else:
             replay_dtype = self.prev_obs.dtype
+
         if args.replay_size > 0:
             self.replay_buffer = ExperienceReplayBuffer(
                 max_size=args.replay_size,
@@ -538,9 +552,21 @@ class Runner:
                 thinning=args.replay_thinning,
             )
 
-        #  these horizons will always be generated and their scores logged.
-        self.tvf_debug_horizons = [0] + Runner.get_standard_horizon_sample(args.tvf_max_horizon)
+    @property
+    def ext_value(self):
+        return self.value[:, :, self.value_heads.index('ext')]
 
+    @property
+    def int_value(self):
+        return self.value[:, :, self.value_heads.index('int')]
+
+    @property
+    def ext_returns(self):
+        return self.returns[:, :, self.value_heads.index('ext')]
+
+    @property
+    def int_returns(self):
+        return self.returns[:, :, self.value_heads.index('int')]
 
     def anneal(self, x, mode: str = "linear"):
 
@@ -574,45 +600,8 @@ class Runner:
         return self.anneal(args.policy.lr, mode="linear" if args.policy.lr_anneal else "off")
 
     @property
-    def intrinsic_reward_scale(self):
-        # todo: add anneal
-        return args.reward_scale_int
-
-    @property
-    def extrinsic_reward_scale(self):
-        return args.reward_scale_ext
-
-
-    @property
     def ppo_epsilon(self):
         return self.anneal(args.ppo_epsilon, mode="linear" if args.ppo_epsilon_anneal else "off")
-
-
-    @staticmethod
-    def get_standard_horizon_sample(max_horizon: int):
-        """
-        Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = max_horizon.
-        These may change over time (if current horizon changes). Use debug_horizons for a fixed set.
-        """
-
-        if args.tvf_mode == "fixed":
-            assert args.tvf_value_samples == args.tvf_horizon_samples, "Fixed heads requires args.tvf_value_samples == args.tvf_horizon_samples"
-            assert args.tvf_value_distribution == args.tvf_horizon_distribution, "Fixed heads require value and horizon distributions to match."
-            assert "fixed" in args.tvf_value_distribution and "fixed" in args.tvf_horizon_distribution, "Fixed heads requires fixed sampling"
-            # with fixed head mode we can only use these horizons...
-            return Runner.generate_horizon_sample(
-                args.n_steps, args.tvf_max_horizon,
-                samples=args.tvf_value_samples,
-                distribution=args.tvf_value_distribution,
-                force_first_and_last=True,
-            )
-
-        assert max_horizon <= 30000, "horizons over 30k not yet supported."
-        horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
-                                   h <= max_horizon]
-        if max_horizon not in horizons:
-            horizons.append(max_horizon)
-        return horizons
 
     @property
     def rnd_lr(self):
@@ -800,7 +789,6 @@ class Runner:
 
         # initialize agent
         self.obs = self.vec_env.reset()
-        self.time *= 0
         self.done = np.zeros_like(self.done)
         self.episode_score *= 0
         self.episode_len *= 0
@@ -819,7 +807,7 @@ class Runner:
         self.episode_length_buffer.append(1000)
 
     @torch.no_grad()
-    def detached_batch_forward(self, obs:np.ndarray, aux_features=None, **kwargs):
+    def detached_batch_forward(self, obs:np.ndarray, **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
             obs: np array of dims [B, *state_shape]
@@ -847,7 +835,6 @@ class Runner:
                 batch_end = min((batch_idx + 1) * max_batch_size, B)
                 batch_result = self.detached_batch_forward(
                     obs[batch_start:batch_end],
-                    aux_features=aux_features[batch_start:batch_end] if aux_features is not None else None,
                     **kwargs
                 )
                 batch_results.append(batch_result)
@@ -859,21 +846,22 @@ class Runner:
         else:
             if obs.dtype == np.object:
                 obs = np.asarray([obs[i].decompress() for i in range(len(obs))])
-            results = self.model.forward(obs, aux_features=aux_features, **kwargs)
+            results = self.model.forward(obs, **kwargs)
             return results
 
-    def calculate_sampled_returns(
+    @property
+    def tvf_horizons(self):
+        assert args.use_tvf
+        return self.model.tvf_fixed_head_horizons
+
+    def calculate_tvf_returns(
             self,
-            value_sample_horizons: Union[list, np.ndarray],
-            required_horizons: Union[list, np.ndarray, int],
-            head: str = "ext", # ext|int
+            value_head: str = "ext", # ext|int
             obs=None,
-            time=None,
             rewards=None,
             dones=None,
             tvf_return_mode=None,
             tvf_n_step=None,
-            include_second_moment: bool = False,
     ):
         """
         Calculates and returns the (tvf_gamma discounted) (transformed) return estimates for given rollout.
@@ -881,23 +869,12 @@ class Runner:
         prev_states: ndarray of dims [N+1, B, *state_shape] containing prev_states
         rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
         value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
-        required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
-        head: which head to use for estimate, i.e. ext_value, int_value, ext_sqr_value etc
-        sqrt_m2: returns a tuple containing (first moment, sqrt second moment)
+        value_head: which head to use for estimate, i.e. ext_value, int_value, ext_sqr_value etc
+
         """
-
-        assert utils.is_sorted(required_horizons), f"Required horizons must be sorted but found {required_horizons}"
-
-        if type(value_sample_horizons) is list:
-            value_sample_horizons = np.asarray(value_sample_horizons)
-        if type(required_horizons) is list:
-            required_horizons = np.asarray(required_horizons)
-        if type(required_horizons) in [float, int]:
-            required_horizons = np.asarray([required_horizons])
 
         # setup
         obs = obs if obs is not None else self.all_obs
-        time = time if time is not None else self.all_time
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
         tvf_return_mode = tvf_return_mode or args.tvf_return_mode
@@ -909,29 +886,6 @@ class Runner:
         assert rewards.shape == (N, A)
         assert dones.shape == (N, A)
 
-        # step 1:
-        # use our model to generate the value estimates required
-        # for MC this is just an estimate at the end of the window
-        assert value_sample_horizons[0] == 0 and value_sample_horizons[-1] == args.tvf_max_horizon, "First and value horizon are required."
-
-        value_samples = self.get_value_estimates(
-            obs=obs,
-            time=time,
-            horizons=value_sample_horizons,
-            head=f"{head}_value",
-        )
-
-        if include_second_moment:
-            sqrt_m2_value_samples = self.get_value_estimates(
-                obs=obs,
-                time=time,
-                horizons=value_sample_horizons,
-                head=f"{head}_value_m2",
-            )
-            # model predicts sqrt of sqr, so need to square it here
-            value_samples_m2 = np.maximum(sqrt_m2_value_samples, 0) ** 2
-        else:
-            value_samples_m2 = None
 
         # step 2: calculate the returns
         start_time = clock.time()
@@ -946,10 +900,9 @@ class Runner:
             gamma=args.tvf_gamma,
             rewards=rewards,
             dones=dones,
-            required_horizons=required_horizons,
-            value_sample_horizons=value_sample_horizons,
-            value_samples=value_samples,
-            value_samples_m2=value_samples_m2,
+            required_horizons=np.asarray(self.tvf_horizons),
+            value_sample_horizons=np.asarray(self.tvf_horizons),
+            value_samples=self.tvf_value[..., self.value_heads.index(value_head)],
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
             estimator_mode=re_mode,
@@ -957,16 +910,11 @@ class Runner:
             use_log_interpolation=args.tvf_return_use_log_interpolation,
         )
 
-        if include_second_moment:
-            # we always return the sqrt of the second moment.
-            m1, m2 = returns
-            returns = (m1, np.maximum(m2, 0) ** 0.5)
-
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
             "time_return_estimate",
-            return_estimate_time,
-            display_precision=2,
+            return_estimate_time*1000,
+            display_precision=1,
             display_name="t_re",
         )
         return returns
@@ -1076,51 +1024,36 @@ class Runner:
                 x = torch.from_numpy(x).to(self.all_obs.device)
             return x
 
-        # times are...
-        # Forward: 1.1ms
-        # Step: 33ms
-        # Compress: 2ms
-        # everything else should be minimal.
-
         self.model.train()
 
         self.int_rewards *= 0
+        self.ext_rewards *= 0
+        self.value *= 0
+        self.tvf_value *= 0
+
         for k in self.stats.keys():
             if k.startswith("batch_"):
                 self.stats[k] *= 0
 
-        needs_value_output = True
-
         for t in range(self.N):
 
             prev_obs = self.obs.copy()
-            prev_time = self.time.copy()
 
             # forward state through model, then detach the result and convert to numpy.
             model_out = self.detached_batch_forward(
                 self.obs,
-                output="default" if needs_value_output else "policy", # would make sense to do both here? especially for batch norm?
+                output="default",
                 include_rnd=args.use_rnd,
                 update_normalization=True
             )
 
-            log_policy = model_out["log_policy"].cpu().numpy()
-            raw_policy = model_out["raw_policy"].cpu().numpy()
-
-            value_estimate = model_out["ext_value"].cpu().numpy()
+            # sample actions and run through environment.
+            actions = self.sample_actions(model_out)
+            self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
 
             if args.use_rnd:
                 # update the intrinsic rewards
                 self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
-                self.int_value[t] = model_out["int_value"].detach().cpu().numpy()
-
-            # sample actions and run through environment.
-            actions = self.sample_actions(model_out)
-
-            self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
-
-            # time fraction
-            self.time = np.asarray([info["time"] for info in infos])
 
             # per step reward noise
             if args.per_step_reward_noise > 0:
@@ -1139,6 +1072,7 @@ class Runner:
             if 'mean_repeats' in infos[0]:
                 self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'])
 
+            # process each environment, check if they have finished
             for i, (done, info) in enumerate(zip(dones, infos)):
                 if "reward_clips" in info:
                     self.stats['reward_clips'] += info["reward_clips"]
@@ -1148,7 +1082,6 @@ class Runner:
                     self.stats['action_repeats'] += 1
                 if "repeated_action" in info:
                     self.stats['batch_action_repeats'] += 1
-
 
                 if done:
                     # this should be always updated, even if it's just a loss of life terminal
@@ -1168,61 +1101,33 @@ class Runner:
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
 
+            # compress observations if needed
             if args.obs_compression:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
 
+            # get all the information we need from the model
             self.all_obs[t] = upload_if_needed(prev_obs)
+            self.value[t] = model_out["value"].cpu().numpy()
+            self.tvf_value[t] = model_out["tvf_value"].cpu().numpy()
+            self.actions[t] = actions
+            self.ext_rewards[t] = ext_rewards
+            self.log_policy[t] = model_out["log_policy"].cpu().numpy()
+            self.raw_policy[t] = model_out["raw_policy"].cpu().numpy()
+            self.terminals[t] = dones
             self.done = dones
 
-            self.all_time[t] = prev_time
-            self.actions[t] = actions
-
-            self.ext_rewards[t] = ext_rewards
-            self.ext_value[t] = value_estimate
-            self.log_policy[t] = log_policy
-            self.raw_policy[t] = raw_policy
-            self.terminals[t] = dones
-
-        # save the last state
+        # process the final state
         if args.obs_compression:
             last_obs = np.asarray([compression.BufferSlot(self.obs[i]) for i in range(len(self.obs))])
         else:
             last_obs = self.obs
         self.all_obs[-1] = upload_if_needed(last_obs)
-        self.all_time[-1] = self.time
-
-        # work out final value if needed
-        if args.use_rnd:
-            final_state_out = self.detached_batch_forward(self.obs, output="policy")
-            self.int_value[-1] = final_state_out["int_value"].detach().cpu().numpy()
-
-        # required for PPG
-        if args.aux.epochs > 0:
-            final_state_out = self.detached_batch_forward(self.obs, output="value")
-            self.ext_value[-1] = final_state_out["ext_value"].detach().cpu().numpy()
+        final_model_out = self.detached_batch_forward(self.obs, output="default")
+        self.value[-1] = final_model_out["value"].cpu().numpy()
+        self.tvf_value[-1] = final_model_out["tvf_value"].cpu().numpy()
 
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
-
-        # calculate int_value for intrinsic motivation (RND does not need this as it was done during rollout)
-        # note: RND generates int_value during rollout, however in dual mode these need to (and should) come
-        # from the value network, so we redo them here.
-        if args.use_rnd and args.architecture == "dual":
-            N, A = self.prev_time.shape
-            aux_features = None
-            if args.use_tvf:
-                aux_features = package_aux_features(
-                    np.asarray(Runner.get_standard_horizon_sample(args.tvf_max_horizon)),
-                    self.all_time.reshape([(N + 1) * A])
-                )
-            output = self.detached_batch_forward(
-                utils.merge_down(self.all_obs),
-                aux_features,
-                output="full"
-            )
-
-            # note: in single mode value_int_value = policy_int_value
-            self.int_value[:, :] = output["value_int_value"].reshape([(N + 1), A]).detach().cpu().numpy()
 
         self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
@@ -1230,14 +1135,14 @@ class Runner:
 
         # calculate targets for ppg
         if args.aux.epochs > 0:
-            v_target = calculate_gae(
+            v_target = td_lambda(
                 self.ext_rewards,
                 self.ext_value[:self.N],
                 self.ext_value[self.N],
                 self.terminals,
                 self.gamma,
                 args.lambda_value
-            ) + self.ext_value[:self.N]
+            )
             aux_fields['vtarg'] = utils.merge_down(v_target)
 
         # add data to replay buffer if needed
@@ -1247,7 +1152,6 @@ class Runner:
                 utils.merge_down(self.prev_obs),
                 self.replay_buffer.create_aux_buffer(
                     (len(steps),),
-                    time=utils.merge_down(self.prev_time),
                     reward=utils.merge_down(self.ext_rewards),
                     action=utils.merge_down(self.actions),
                     step=steps,
@@ -1255,29 +1159,13 @@ class Runner:
                 )
             )
 
-        # log the expected return, and expected squared return for each horizon
-        # this is just for debugging second moment learning
-        for h in self.tvf_debug_horizons:
-            # this will be a bit noisy, as we only use the first transition within the rollout.
-            if h < self.N:
-                self.log.watch_mean(
-                    f"av_r_{h}",
-                    self.ext_rewards[:h].sum(axis=0).mean(),
-                    display_width=0,
-                )
-                self.log.watch_mean(
-                    f"av_r2_{h}",
-                    (self.ext_rewards[:h].sum(axis=0)**2).mean(),
-                    display_width=0,
-                )
-
     def estimate_noise_scale(self, batch_data, mini_batch_func, optimizer: torch.optim.Optimizer, label, verbose:bool=True):
         """
         Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
 
-        self.log.experiment_name = self.log.LM_MUTE
+        self.log.mode = self.log.LM_MUTE
         result = {}
 
         def process_gradient(context):
@@ -1294,9 +1182,8 @@ class Runner:
 
         hook = {'after_mini_batch': process_gradient}
 
-        SMALL_SAMPLES = 32
-        b_small = 32
-        b_big = len(batch_data["prev_state"])
+        b_small = args.sns_b_small
+        b_big = min(args.sns_b_big, len(batch_data["prev_state"]))
 
         g2s = []
         ss = []
@@ -1304,7 +1191,7 @@ class Runner:
         self.train_batch(batch_data, mini_batch_func, b_big, optimizer, label, hooks=hook)
         g_b_big_squared = float(result['grad_magnitude']) ** 2
 
-        for sample in range(SMALL_SAMPLES):
+        for sample in range(args.sns_small_samples):
             self.train_batch(batch_data, mini_batch_func, b_small, optimizer, label, hooks=hook)
             g_b_small_squared = float(result['grad_magnitude']) ** 2
             g2s.append((b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small))
@@ -1313,12 +1200,15 @@ class Runner:
         s_mean = np.mean(ss)
         g2_mean = np.mean(g2s)
 
-        self.log.experiment_name = self.log.LM_DEFAULT
+        self.log.mode = self.log.LM_DEFAULT
 
         # add these samples to the mix
         for var_name, var_value in zip(['s', 'g2'], [s_mean, g2_mean]):
             if f'{label}_{var_name}_history' not in self.noise_stats:
-                self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=100)
+                history_frames = 5e6 # 5 million frames should be about right
+                ideal_updates_length = history_frames / (self.N*self.A)
+                buffer_len = int(max(10, math.ceil(ideal_updates_length / args.sns_period)))
+                self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=buffer_len)
             self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
             self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
 
@@ -1328,95 +1218,28 @@ class Runner:
         # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
         # to avoid this we clip the *smoothed* g2 to epsilon.
         # alternative include larger batch_sizes, and / or larger EMA horizon.
-        epsilon = 1e-4
-        ratio = max(av_s, epsilon) / max(av_g2, epsilon)
+        # noise levels above 1000 will not be very accurate, but around 20 should be fine.
+        epsilon = 1e-3
+        ratio = max(av_s, 0) / max(av_g2, epsilon)
 
         self.noise_stats[f'{label}_ratio'] = ratio
 
         self.log.watch(f'sns_{label}_smooth_s', av_s, display_precision=0, display_width=0, display_name=f"sns_{label}_s")
         self.log.watch(f'sns_{label}_smooth_g2', av_g2, display_precision=0, display_width=0, display_name=f"sns_{label}_g2")
-
         self.log.watch(f'sns_{label}_s', s_mean, display_precision=0, display_width=0)
         self.log.watch(f'sns_{label}_g2', g2_mean, display_precision=0, display_width=0)
         self.log.watch(f'sns_{label}_b', ratio, display_precision=0, display_width=0)
-        self.log.watch(f'sns_{label}_smooth_b', self.noise_stats[f'{label}_ratio'], display_precision=0, display_width=0)
         self.log.watch(
-            f'sns_{label}_sqrt_b',
+            f'sns_{label}',
             np.clip(ratio, 0, float('inf')) ** 0.5,
             display_precision=0,
             display_width=8 if verbose else 0,
-            display_name=f"sns_{label}"
         )
 
         return self.noise_stats[f'{label}_ratio']
 
     @torch.no_grad()
-    def get_value_estimates(self, obs: Union[np.ndarray, torch.Tensor], time: Union[None, np.ndarray]=None,
-                            horizons: Union[None, np.ndarray, int] = None,
-                            include_model_out: bool = False,
-                            head: str = "ext_value",
-                            ) -> Union[np.ndarray, tuple]:
-        """
-        Returns value estimates for each given observation
-        If horizons are none max_horizon is used.
-        obs: np array of dims [N, A, *state_shape]
-        time: np array of dims [N, A]
-        horizons:
-            ndarray of dims [K] (returns NAK)
-            integer (returns NA for horizon given
-            none (returns NA for current horizon
-
-        returns: ndarray of dims [N, A, K] if horizons was array else [N, A]
-        """
-
-        N, A, *state_shape = obs.shape
-
-        if args.use_tvf:
-            horizons = horizons if horizons is not None else args.tvf_max_horizon
-
-            assert time is not None and time.shape == (N, A)
-            if type(horizons) == int:
-                pass
-            elif type(horizons) is np.ndarray:
-                assert len(horizons.shape) == 1, f"Invalid horizon shape {horizons.shape}"
-            else:
-                raise ValueError("Invalid horizon type {type(horizons)}")
-
-            if type(horizons) in [int, float]:
-                scalar_output = True
-                horizons = np.asarray([horizons])
-            else:
-                scalar_output = False
-
-            time = time.reshape(N*A)
-
-            model_out = self.detached_batch_forward(
-                obs=obs.reshape([N * A, *state_shape]),
-                aux_features=package_aux_features(horizons, time),
-                output="value",
-            )
-
-            values = model_out[f"tvf_{head}"]
-
-            if scalar_output:
-                result = values.reshape([N, A]).cpu().numpy()
-            else:
-                result = values.reshape([N, A, horizons.shape[-1]]).cpu().numpy()
-        else:
-            assert horizons is None, "PPO only supports max horizon value estimates"
-            model_out = self.detached_batch_forward(
-                obs=obs.reshape([N * A, *state_shape]),
-                output="value",
-            )
-            result = model_out[head].reshape([N, A]).cpu().numpy()
-
-        if include_model_out:
-            return result, model_out
-        else:
-            return result
-
-    @torch.no_grad()
-    def log_dna_value_quality(self, head="ext_value"):
+    def log_dna_value_quality(self):
         targets = calculate_bootstrapped_returns(
             self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
         )
@@ -1434,7 +1257,7 @@ class Runner:
         """
         total_not_explained_var = 0
         total_var = 0
-        for h_index, h in enumerate(self.tvf_debug_horizons):
+        for h_index, h in enumerate(self.tvf_horizons):
             value = estimates[:, :, h_index].reshape(-1)
             target = targets[:, :, h_index].reshape(-1)
 
@@ -1460,8 +1283,6 @@ class Runner:
             history_length=1
         )
 
-
-
     @torch.no_grad()
     def log_tvf_value_quality(self):
         """
@@ -1469,30 +1290,11 @@ class Runner:
         """
 
         N, A, *state_shape = self.prev_obs.shape
-        K = len(self.tvf_debug_horizons)
+        K = len(self.tvf_horizons)
 
-        # first we generate the value estimates, then we calculate the returns required for each debug horizon
-        # because we use sampling it is not guaranteed that these horizons will be included, so we need to
-        # recalculate everything
-
-        model_out = self.detached_batch_forward(
-            obs=utils.merge_down(self.prev_obs),
-            aux_features=package_aux_features(np.asarray(self.tvf_debug_horizons), utils.merge_down(self.prev_time)),
-            output="value",
-        )
-
-        value_samples = self.generate_horizon_sample(
-            self.N, args.tvf_max_horizon,
-            args.tvf_value_samples,
-            distribution=args.tvf_value_distribution,
-            force_first_and_last=True,
-        )
-
-        targets = self.calculate_sampled_returns(
-            value_sample_horizons=value_samples,
-            required_horizons=self.tvf_debug_horizons,
+        targets = self.calculate_tvf_returns(
+            value_head='ext',
             obs=self.all_obs,
-            time=self.all_time,
             rewards=self.ext_rewards,
             dones=self.terminals,
             tvf_return_mode="fixed",  # <-- MC is the least bias method we can do...
@@ -1500,10 +1302,8 @@ class Runner:
         )
 
         first_moment_targets = targets
-        first_moment_estimates = model_out["tvf_ext_value"].reshape(N, A, K).cpu().numpy()
+        first_moment_estimates = self.tvf_value[:N, :, :, 0].reshape(N, A, K)
         self.log_curve_quality(first_moment_estimates, first_moment_targets)
-
-
 
     @property
     def prev_obs(self):
@@ -1518,19 +1318,6 @@ class Runner:
         Returns final observation
         """
         return self.all_obs[-1]
-
-    @property
-    def prev_time(self):
-        """
-        Returns prev_time with size [N,A] (i.e. missing final state)
-        """
-        return self.all_time[:-1]
-
-    def final_time(self):
-        """
-        Returns final time
-        """
-        return self.all_time[-1]
 
     def generate_sampled_return_targets(self, ext_value_estimates: np.ndarray):
         """
@@ -1550,7 +1337,7 @@ class Runner:
         advantage_estimate = np.zeros([SAMPLES, N, A], dtype=np.float32)
 
         for i, lamb in enumerate(lambdas):
-            advantage_estimate[i] = calculate_gae(
+            advantage_estimate[i] = gae(
                 self.ext_rewards,
                 ext_value_estimates[:N],
                 ext_value_estimates[N],
@@ -1564,138 +1351,104 @@ class Runner:
         return np.take_along_axis(values, sample[None, :, :], axis=0)
 
     @torch.no_grad()
-    def get_tvf_rediscounted_value_estimates_dynamic(self, rollout, new_gamma:float):
+    def get_tvf_rediscounted_value_estimates(self, new_gamma: float, value_head="ext"):
         """
+
         Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
+        Usually this is just GAE, but if gamma != tvf_gamma, then rediscounting is applied.
+
+        We expect:
+        self.tvf_value: np array of dims [N+1, A, K, VH] containing value estimates for each horizon K and each value head VH
+
+        @returns value estimate for gamma=gamma for example [N+1, A]
         """
 
-        N, A, *state_shape = rollout.all_obs[:-1].shape
+        assert args.use_tvf
+        N, A, K, VH = self.tvf_value[:self.N].shape
 
-        if (abs(new_gamma - args.tvf_gamma) < 1e-8):
-            # no rediscounting is required...
-            return self.get_value_estimates(
-                obs=rollout.all_obs,
-                time=rollout.all_time
-            )
+        # [N, A, K]
+        tvf_values = self.tvf_value[:, :, :, self.value_heads.index(value_head)]
 
-        # these makes sure error is less than 1%
-        c_1 = 7
-        c_2 = 400
+        if abs(new_gamma - args.tvf_gamma) < 1e-8:
+            # no rediscounting required, just use final head
+            return tvf_values[:, :, -1]
 
-        # work out a range and skip to use so that we never use more than around 400 samples and we don't waste
-        # samples on heavily discounted rewards
-        if new_gamma >= 1:
-            effective_horizon = round(args.tvf_max_horizon)
-        else:
-            effective_horizon = min(round(c_1 / (1 - new_gamma)), args.tvf_max_horizon)
-
-        # note: we could down sample the value estimates and adjust the gamma calculations if
-        # this ends up being too slow..
-        step_skip = math.ceil(effective_horizon / c_2)
-
-        # going backwards makes sure that final horizon is always included
-        horizons = np.asarray(range(effective_horizon, 0, -step_skip))[::-1]
-
-        # these are the value estimates at each horizon under current tvf_gamma
-        value_estimates = self.get_value_estimates(
-            obs=rollout.all_obs,
-            time=rollout.all_time,
-            horizons=horizons
-        )
-
-        # convert to new gamma
+        # otherwise... we need to rediscount...
         return get_rediscounted_value_estimate(
-            values=value_estimates.reshape([(N + 1) * A, -1]),
+            values=tvf_values.reshape([(N + 1) * A, -1]),
             old_gamma=self.tvf_gamma,
             new_gamma=new_gamma,
-            horizons=horizons
+            horizons=self.tvf_horizons,
         ).reshape([(N + 1), A])
 
-    @torch.no_grad()
-    def get_tvf_rediscounted_value_estimates_fixed(self, rollout, new_gamma: float):
-        """
-        Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
-        """
+    def calculate_intrinsic_returns(self):
 
-        N, A, *state_shape = rollout.all_obs[:-1].shape
+        if not args.use_intrinsic_rewards:
+            return 0
 
-        if (abs(new_gamma - args.tvf_gamma) < 1e-8):
-            # no rediscounting is required...
-            return self.get_value_estimates(
-                obs=rollout.all_obs,
-                time=rollout.all_time
-            )
+        N, A, *state_shape = self.prev_obs.shape
 
-        # going backwards makes sure that final horizon is always included
-        horizons = self.tvf_debug_horizons
+        if args.normalize_intrinsic_rewards:
+            # normalize returns using EMS
+            # this is this how openai did it (i.e. forward rather than backwards)
+            for t in range(self.N):
+                terminals = (not args.intrinsic_reward_propagation) * self.terminals[t, :]
+                self.ems_norm = (1 - terminals) * args.gamma_int * self.ems_norm + self.int_rewards[t, :]
+                self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
 
-        # these are the value estimates at each horizon under current tvf_gamma
-        # todo: these should be generated during rollout
-        value_estimates = self.get_value_estimates(
-            obs=rollout.all_obs,
-            time=rollout.all_time,
-            horizons=horizons
+            # normalize the intrinsic rewards
+            # the 0.4 means that the returns average around 1, which is similar to where the
+            # extrinsic returns should average. I used to have a justification for this being that
+            # the clipping during normalization means that the input has std < 1 and this accounts for that
+            # but since we multiply by EMS normalizing scale this shouldn't happen.
+            # in any case, the 0.4 is helpful as it means |return_int| ~ |return_ext|, which is good when
+            # we try to set the intrinsic_reward_scale hyperparameter.
+            # One final thought, this also means that return_ratio, under normal circumstances, should be
+            # about 1.0
+            self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
+            self.int_rewards = (self.int_rewards / self.intrinsic_reward_norm_scale)
+
+        int_advantage = gae(
+            self.int_rewards,
+            self.int_value[:N],
+            self.int_value[N],
+            (not args.intrinsic_reward_propagation) * self.terminals,
+            gamma=args.gamma_int,
+            lamb=args.lambda_policy
         )
 
-        # convert to new gamma
-        return get_rediscounted_value_estimate(
-            values=value_estimates.reshape([(N + 1) * A, -1]),
-            old_gamma=self.tvf_gamma,
-            new_gamma=new_gamma,
-            horizons=horizons
-        ).reshape([(N + 1), A])
+        self.int_returns[:] = int_advantage + self.int_value[:N]
+        return int_advantage
 
     def calculate_returns(self):
+        """
+        Calculates return targets for all value heads as required
+        """
 
-        self.old_time = time.time()
+        self.returns *= 0
 
         N, A, *state_shape = self.prev_obs.shape
 
         self.model.eval()
 
-        # 1. first we calculate the ext_value estimate
+        # 1. first we calculate 'ext_value' estimate, which is the primarly value estimate
         if args.use_tvf:
-            if args.tvf_mode == "fixed":
-                rediscount = self.get_tvf_rediscounted_value_estimates_fixed
-            elif args.tvf_mode == "dynamic":
-                rediscount = self.get_tvf_rediscounted_value_estimates_dynamic
-            else:
-                raise ValueError(f"Invalid tvf_mode {args.tvf_mode}")
-            ext_value_estimates = rediscount(
-                RolloutBuffer(self, copy=False),
-                new_gamma=self.gamma
-            )
-            # todo: uni value estimates for tvf
+            ext_value_estimates = self.get_tvf_rediscounted_value_estimates(new_gamma=self.gamma)
         else:
-            # in this case just generate ext value estimates from model
-            ext_value_estimates, model_out = self.get_value_estimates(obs=self.all_obs, include_model_out=True)
-            # self.uni_value = model_out["uni_value"].detach().cpu().numpy().reshape([N+1, A])
+            # in this case just use the value networks value estimate
+            ext_value_estimates = self.ext_value
 
-        self.ext_value = ext_value_estimates
+        ext_advantage = gae(
+            self.ext_rewards,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
+            self.terminals,
+            self.gamma,
+            args.lambda_policy
+        )
 
-        # GAE requires inputs to be true value not transformed value...
-        if args.tvf_gae and args.use_tvf:
-            self.ext_advantage = calculate_gae_tvf(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_policy
-            )
-        else:
-            self.ext_advantage = calculate_gae(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_policy
-            )
-
-        # calculate ext_returns for PPO targets, and for debugging
-        # note, we use a different lambda for these.
-        temp_advantage_estimate = calculate_gae(
+        # calculate ext_returns.
+        self.ext_returns[:] = td_lambda(
             self.ext_rewards,
             ext_value_estimates[:N],
             ext_value_estimates[N],
@@ -1703,59 +1456,36 @@ class Runner:
             self.gamma,
             args.lambda_value,
         )
-        self.ext_returns = temp_advantage_estimate + ext_value_estimates[:N]
 
+        self.advantage = ext_advantage
         if args.use_intrinsic_rewards:
+            int_advantage = args.intrinsic_reward_scale * self.calculate_intrinsic_returns()
+            self.advantage += int_advantage
+            self.log.watch_mean_std("adv_int", int_advantage, display_width=0)
 
-            if args.normalize_intrinsic_rewards:
-                # normalize returns using EMS
-                # this is this how openai did it (i.e. forward rather than backwards)
-                for t in range(self.N):
-                    terminals = (not args.intrinsic_reward_propagation) * self.terminals[t, :]
-                    self.ems_norm = (1-terminals) * args.gamma_int * self.ems_norm + self.int_rewards[t, :]
-                    self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
+        # tvf
+        if args.use_tvf:
+            # only ext enabled at the moment...
+            self.tvf_returns[..., 0] = self.calculate_tvf_returns(value_head='ext')
 
-                # normalize the intrinsic rewards
-                # the 0.4 means that the returns average around 1, which is similar to where the
-                # extrinsic returns should average. I used to have a justification for this being that
-                # the clipping during normalization means that the input has std < 1 and this accounts for that
-                # but since we multiply by EMS normalizing scale this shouldn't happen.
-                # in any case, the 0.4 is helpful as it means |return_int| ~ |return_ext|, which is good when
-                # we try to set the intrinsic_reward_scale hyperparameter.
-                # One final thought, this also means that return_ratio, under normal circumstances, should be
-                # about 1.0
-                self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
-                self.int_rewards = (self.int_rewards / self.intrinsic_reward_norm_scale)
-
-            self.int_advantage = calculate_gae(
-                self.int_rewards,
-                self.int_value[:N],
-                self.int_value[N],
-                (not args.intrinsic_reward_propagation) * self.terminals,
-                gamma=args.gamma_int,
-                lamb=args.lambda_policy
-            )
-
-            self.int_returns = self.int_advantage + self.int_value[:N]
-
-        self.advantage = self.extrinsic_reward_scale * self.ext_advantage
-        if args.use_intrinsic_rewards:
-            self.advantage += self.intrinsic_reward_scale * self.int_advantage
-
+        # logging
         if args.observation_normalization:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
+        self.log.watch_mean_std("adv_ext", ext_advantage, display_width=0)
+
+        for i, head in enumerate(self.value_heads):
+            self.log.watch_mean_std(f"return_{head}", self.returns[..., i], display_width=0)
+            self.log.watch_mean_std(f"value_{head}", self.value[..., i], display_name="ret_ext")
+
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0, history_length=1)
         self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)
-
-        self.log.watch_mean_std("reward_ext", self.ext_rewards, display_name="rew_ext", display_width=0)
-        self.log.watch_mean_std("return_ext", self.ext_returns, display_name="ret_ext")
-        self.log.watch_mean_std("value_ext", self.ext_value, display_name="est_v_ext", display_width=0)
 
         for k, v in self.stats.items():
             self.log.watch(k, v, display_width=0)
 
+        self.log.watch("gamma", self.gamma, display_width=0)
         if args.use_tvf:
             self.log.watch("tvf_gamma", self.tvf_gamma)
 
@@ -1765,39 +1495,12 @@ class Runner:
             if args.replay_size > 0:
                 self.replay_buffer.log_stats(self.log)
 
-        self.log.watch("gamma", self.gamma, display_width=0)
-
         if not args.disable_ev and self.batch_counter % 2 == 1:
             # only about 3% slower with this on.
             if not args.use_tvf:
                 self.log_dna_value_quality()
             else:
                 self.log_tvf_value_quality()
-
-        self.log.watch_mean_std("adv_ext", self.ext_advantage, display_width=0)
-
-        if args.use_intrinsic_rewards:
-            self.log.watch_mean_std("reward_int", self.int_rewards, display_name="rew_int", display_width=0)
-            self.log.watch_mean_std("return_int", self.int_returns, display_name="ret_int", display_width=0)
-            self.log.watch_mean_std("value_int", self.int_value, display_name="est_v_int", display_width=0)
-            ev_int = utils.explained_variance(self.int_value[:-1].ravel(), self.int_returns.ravel())
-            self.log.watch_mean("ev_int", ev_int)
-            if ev_int <= 0:
-                pass
-
-            self.log.watch_mean_std("adv_int", self.int_advantage, display_width=0)
-            self.log.watch_mean("ir_scale", self.intrinsic_reward_scale, display_width=0)
-            self.log.watch_mean(
-                "return_ratio",
-                np.mean(np.abs(self.ext_returns)) / np.mean(np.abs(self.int_returns)),
-                display_name="return_ratio",
-                display_width=10
-            )
-
-        if args.normalize_intrinsic_rewards:
-            self.log.watch_mean("reward_scale_int", self.intrinsic_reward_norm_scale, display_width=0)
-
-        self.flags = {}
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -1836,64 +1539,40 @@ class Runner:
 
         return float(grad_norm)
 
-    # todo: remove this
-    def calculate_value_loss(self, targets:torch.tensor, predictions:torch.tensor, horizons:torch.tensor = None):
-        """
-        Calculate loss between predicted value and actual value
-
-        targets: tensor of dims [N, A, H] or [N, A] or [N]
-        predictions: tensor of dims matching target
-        horizons: tensor of dims matching targets of type int (optional)
-
-        returns: loss as a tensor of same dims as input
-
-        """
-
-        assert predictions.shape == targets.shape
-        if horizons is not None:
-            assert horizons.shape == targets.shape
-
-        return torch.square(targets - predictions)
-
-    def get_distil_target_name(self):
-        return 'tvf_ext_value' if args.use_tvf else "ext_value"
-
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
-
-        if args.use_tvf:
-            aux_features = package_aux_features(data["tvf_horizons"], data["tvf_time"])
-        else:
-            aux_features = None
 
         model_out = self.model.forward(
             data["prev_state"],
             output="policy",
-            aux_features=aux_features
         )
-        targets = data["distil_targets"]
-        predictions = model_out[self.get_distil_target_name()]
 
-        # this is used to only apply distil to every nth head, which can be useful as multi value head involves
-        # learning a very complex function. We go backwards so that the final head is always included.
-        distil_filter = slice(None, None)
-        if len(targets.shape) == 2:
-            B, H = targets.shape
+        targets = data["distil_targets"] # targets are [B or B, K]
+
+        if args.use_tvf:
+            predictions = model_out["tvf_value"][:, :, 0]
+            # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
+            # learning a very complex function. We go backwards so that the final head is always included.
+            distil_filter = slice(None, None)
+            B, K = targets.shape
             if args.distil_head_skip != 1:
-                distil_filter = np.arange(H)[::-args.distil_head_skip][::-1]
+                distil_filter = np.arange(K)[::-args.distil_head_skip][::-1]
+            predictions = predictions[:, distil_filter]
+            targets = targets[:, distil_filter]
+        else:
+            predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets[..., distil_filter] - predictions[..., distil_filter])
+        loss_value = 0.5 * torch.square(targets - predictions)
 
         if len(loss_value.shape) == 2:
-            loss_value = loss_value.mean(axis=-1) # mean accross final dim if targets / predictions were vector.
+            loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
         loss = loss_value
 
-        # MSE loss on the logits...
         if args.distil_loss == "mse_logit":
-            loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_raw_policy"], model_out["raw_policy"]).mean(dim=-1)
+            loss_policy = args.distil_beta * 0.5 * torch.square(data["old_raw_policy"] - model_out["raw_policy"]).mean(dim=-1)
         elif args.distil_loss == "mse_policy":
-            loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_log_policy"], model_out["log_policy"]).mean(dim=-1)
+            loss_policy = args.distil_beta * 0.5 * torch.square(data["old_log_policy"] - model_out["log_policy"]).mean(dim=-1)
         elif args.distil_loss == "kl_policy":
-            loss_policy = args.distil_beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none")
+            loss_policy = args.distil_beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none").sum(dim=-1)
         else:
             raise ValueError(f"Invalid distil_loss {args.distil_loss}")
 
@@ -1954,8 +1633,8 @@ class Runner:
         else:
             raise ValueError(f"Invalid aux target, {args.aux_source}")
 
-        value_loss = self.calculate_value_loss(targets, value_predictions).mean()
-        policy_loss = self.calculate_value_loss(targets, policy_predictions).mean()
+        value_loss = torch.square(targets - value_predictions).mean()
+        policy_loss = torch.square(targets - policy_predictions).mean()
 
         value_ev = 1 - torch.var(value_predictions - targets) / (torch.var(targets) + 1e-8)
         policy_ev = 1 - torch.var(policy_predictions - targets) / (torch.var(targets) + 1e-8)
@@ -1987,49 +1666,38 @@ class Runner:
         """
         Returns a list containing value heads that need to be calculated.
         """
-        value_heads = []
-        if not args.use_tvf:
-            value_heads.append("ext")
+        value_heads = ['ext']
         if args.use_intrinsic_rewards:
             value_heads.append("int")
         return value_heads
 
     def train_value_minibatch(self, data, loss_scale=1.0):
 
-        # create additional args if needed
-        kwargs = {}
-        if args.use_tvf:
-            # horizons are [B, H], and times is B so we need to adjust them
-            kwargs['aux_features'] = package_aux_features(
-                data["tvf_horizons"],
-                data["tvf_time"]
-            )
+        model_out = self.model.forward(data["prev_state"], output="value")
 
-        model_out = self.model.forward(data["prev_state"], output="value", include_features=True, **kwargs)
+        B = len(data["prev_state"])
 
         # -------------------------------------------------------------------------
         # Calculate loss_value_function_horizons
         # -------------------------------------------------------------------------
 
-        loss = None
+        loss = torch.zeros(size=[B], dtype=torch.float32, device=self.model.device, requires_grad=True)
 
-        if args.use_tvf:
+        if "tvf_returns" in data:
             # targets "tvf_returns" are [B, K]
-            # predictions "tvf_value" are [B, K]
+            # predictions "tvf_value" are [B, K, VH]
             # predictions need to be generated... this could take a lot of time so just sample a few..
-            targets = data["tvf_returns"]
-            value_predictions = model_out["tvf_ext_value"]
-            tvf_loss = self.calculate_value_loss(targets, value_predictions, data["tvf_horizons"])
+            targets = data["tvf_returns"] # locked to "ext" head for the moment
+            predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment
+            tvf_loss = 0.5 * torch.square(targets - predictions)
             if args.tvf_horizon_dropout > 0:
                 # note: we weight the mask so that after the average the loss per example will be approximately the same
                 # magnitude.
                 keep_prob = (1-args.tvf_horizon_dropout)
                 mask = torch.bernoulli(torch.ones_like(tvf_loss)*keep_prob) / keep_prob
                 tvf_loss = tvf_loss * mask
-            per_horizon_loss = tvf_loss.detach().mean(dim=0).cpu().numpy()
-            tvf_loss = tvf_loss.mean(dim=-1)
-            tvf_loss = 0.5 * tvf_loss
-            loss = tvf_loss
+            tvf_loss = tvf_loss.mean(dim=-1) # mean over horizon
+            loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64*args.value.epochs, display_name="ls_tvf", display_width=8)
 
@@ -2037,7 +1705,8 @@ class Runner:
         # Calculate loss_value
         # -------------------------------------------------------------------------
 
-        loss = (0.0 if loss is None else loss) + self.train_value_heads(model_out, data)
+        if "returns" in data:
+            loss = loss + self.train_value_heads(model_out, data)
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -2050,106 +1719,11 @@ class Runner:
         # Logging
         # -------------------------------------------------------------------------
 
-        self.log.watch_stats("value_features", model_out["features"], display_width=0)
         self.log.watch_mean("loss_value", loss.mean(), display_name=f"ls_value")
 
         return {
             'losses': loss.detach()
         }
-
-    @staticmethod
-    def generate_horizon_sample(
-            N: int,
-            max_value: int,
-            samples: int,
-            distribution: str = "linear",
-            force_first_and_last: bool = False) -> np.ndarray:
-        """
-        generates random samples from 0 to max (inclusive) using sampling with replacement
-        and always including the first and last value
-        distribution is the distribution to sample from
-        force_first_and_last: if true horizon 0 and horizon max_value will always be included.
-        output is always sorted.
-
-        Note: fixed_geometric may return less than the expected number of samples.
-
-        """
-
-        if samples == -1 or samples >= (max_value + 1):
-            return np.arange(0, max_value + 1)
-
-        # these distributions don't require random sampling, and always include first and last by default.
-        if distribution == "fixed_linear":
-            samples = np.linspace(0, max_value, num=samples, endpoint=True)
-        elif distribution == "fixed_geometric":
-            samples = np.geomspace(1, 1+max_value, num=samples, endpoint=True)-1
-        elif distribution == "linear":
-            samples = np.random.choice(range(1, max_value), size=samples, replace=False)
-        elif distribution == "geometric":
-            samples = np.random.uniform(np.log(1), np.log(max_value+1), size=samples)
-            samples = np.exp(samples)-1
-        elif distribution == "saturated_geometric":
-            samples1 = np.random.uniform(np.log(1), np.log(min(N, max_value) + 1), size=samples//2)
-            samples2 = np.random.uniform(np.log(1), np.log(max_value + 1), size=samples//2)
-            samples = np.exp(np.concatenate([samples1, samples2])) - 1
-        elif distribution == "saturated_fixed_geometric":
-            samples1 = np.geomspace(1, min(N, max_value) + 1, num=samples//2, endpoint=False)-1
-            samples2 = np.geomspace(1, 1+max_value, num=samples//2, endpoint=True)-1
-            samples = np.concatenate([samples1, samples2])
-        else:
-            raise Exception(f"Invalid distribution {distribution}")
-
-        samples.sort()
-        if force_first_and_last:
-            samples[0] = 0
-            samples[-1] = max_value
-        return np.rint(samples).astype(int)
-
-    @torch.no_grad()
-    def generate_return_sample(self, force_first_and_last: bool = False):
-        """
-        Generates return estimates for current batch of data.
-
-        force_first_and_last: if true always includes first and last horizon
-
-        Note: could roll this into calculate_sampled_returns, and just have it return the horizons as well?
-
-        returns:
-            returns: ndarray of dims [N,A,K] containing the return estimates using tvf_gamma discounting
-            returns_m2: ndarray of dims [N,A,K] containing the squared return estimate using tvf_gamma discounting (or None)
-            horizon_samples: ndarray of dims [N,A,K] containing the horizons used
-        """
-
-        # max horizon to train on
-        H = args.tvf_max_horizon
-        N, A, *state_shape = self.prev_obs.shape
-
-        horizon_samples = Runner.generate_horizon_sample(
-            N, H,
-            args.tvf_horizon_samples,
-            distribution=args.tvf_horizon_distribution,
-            force_first_and_last=force_first_and_last,
-        )
-
-        value_samples = Runner.generate_horizon_sample(
-            N, H,
-            args.tvf_value_samples,
-            distribution=args.tvf_value_distribution,
-            force_first_and_last=True
-        )
-
-
-        returns = self.calculate_sampled_returns(
-            value_sample_horizons=value_samples,
-            required_horizons=horizon_samples,
-            include_second_moment=False
-        )
-        returns_m2 = None
-
-        horizon_samples = horizon_samples[None, None, :]
-        horizon_samples = np.repeat(horizon_samples, N, axis=0)
-        horizon_samples = np.repeat(horizon_samples, A, axis=1)
-        return returns, returns_m2, horizon_samples
 
     @property
     def current_entropy_bonus(self):
@@ -2158,11 +1732,12 @@ class Runner:
     def train_value_heads(self, model_out, data):
         """
         Calculates loss for each value head, then returns their sum.
+        This can be done by either the policy of value update.
         """
         loss = torch.zeros([len(data["prev_state"])], dtype=torch.float32, device=self.model.device)
-        for value_head in self.value_heads:
-            value_prediction = model_out["{}_value".format(value_head)]
-            returns = data["{}_returns".format(value_head)]
+        for i, value_head in enumerate(self.value_heads):
+            value_prediction = model_out["value"][:, i]
+            returns = data["returns"][:, i]
             value_loss = args.ppo_vf_coef * torch.square(value_prediction - returns)
             self.log.watch_mean("loss_v_" + value_head, value_loss.mean(), history_length=64, display_name="ls_v_" + value_head)
             loss = loss + value_loss
@@ -2409,7 +1984,7 @@ class Runner:
 
         if args.architecture == "single":
             # ppo trains value during policy update
-            batch_data["ext_returns"] = self.ext_returns.reshape([B])
+            batch_data["returns"] = self.returns.reshape([B, self.VH])
 
         # sort out advantages
         advantages = self.advantage.reshape(B).copy()
@@ -2425,10 +2000,6 @@ class Runner:
 
         self.log.watch_stats("advantages", advantages, display_width=0, history_length=1)
         batch_data["advantages"] = advantages
-
-        if args.use_intrinsic_rewards:
-            batch_data["int_returns"] = self.int_returns.reshape(B)
-            batch_data["int_value"] = self.int_value[:N].reshape(B)
 
         epochs = 0
         for epoch in range(args.policy.epochs):
@@ -2459,49 +2030,38 @@ class Runner:
             return
 
         batch_data = {}
-        B = args.batch_size
         N, A, *state_shape = self.prev_obs.shape
+        K = self.K
 
-        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])
-        batch_data["ext_returns"] = self.ext_returns.reshape(B)
-
-        if args.use_intrinsic_rewards:
-            batch_data["int_returns"] = self.int_returns.reshape(B)
-            batch_data["int_value"] = self.int_value[:N].reshape(B) # only needed for clipped objective
-
-        def get_value_estimate(prev_states, times):
-            assert args.use_tvf, "replay_restraint require use_tvf=true (for the moment)"
-            aux_features = package_aux_features(np.asarray([args.tvf_max_horizon]), times)
-            return self.detached_batch_forward(
-                prev_states, output="value", aux_features=aux_features
-            )["tvf_value"][..., 0].detach().cpu().numpy()
+        batch_data["prev_state"] = self.prev_obs.reshape([N*A, *state_shape])
+        batch_data["returns"] = self.returns.reshape(N*A, self.VH)
 
         if args.use_tvf:
-            # we do this once at the start, generate one returns estimate for each epoch on different horizons then
-            # during epochs take a random mixture from this. This helps shuffle the horizons, and also makes sure that
-            # we don't drift, as the updates will modify our model and change the value estimates.
-            # it is possible that instead we should be updating our return estimates as we go though
-            returns, returns_m2, horizons = self.generate_return_sample(force_first_and_last=True)
-            batch_data["tvf_returns"] = returns.reshape([B, -1])
-            batch_data["tvf_horizons"] = horizons.reshape([B, -1])
-            batch_data["tvf_time"] = self.prev_time.reshape([B])
+            # just train ext head for the moment
+            batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
 
-        N, A = self.prev_time.shape
-        B = N * A
-
-        if args.sns_generate_horizon_estimates:
+        if args.use_tvf and  args.sns_max_heads > 0:
 
             # generate our per-horizon estimates
             if args.upload_batch:
                 self.upload_batch(batch_data)
 
-            def train_value_minibatch_single_horizon(i:int, data, loss_scale=1.0):
+            def train_value_minibatch_single_horizon(i: int, data, loss_scale=1.0):
                 _data = data.copy()
-                _data["tvf_horizons"] = data["tvf_horizons"][:, i:i + 1]
-                _data["tvf_returns"] = data["tvf_returns"][:, i:i + 1]
+                if i < 0:
+                    # just train main head
+                    del _data["tvf_returns"]
+                else:
+                    _data["tvf_returns"] = data["tvf_returns"][:, i:i + 1]
+                    del _data["returns"] # make sure to not also learn main value head
                 self.train_value_minibatch(_data, loss_scale)
 
-            for i, h in enumerate(self.tvf_debug_horizons):
+            if len(self.tvf_horizons) > args.sns_max_heads:
+                sample = np.linspace(1, len(self.tvf_horizons), args.sns_max_heads)
+            else:
+                sample = np.arange(len(self.tvf_horizons))
+
+            for i in sample:
                 self.estimate_noise_scale(
                     batch_data,
                     lambda data, loss_scale: train_value_minibatch_single_horizon(i, data, loss_scale),
@@ -2509,7 +2069,14 @@ class Runner:
                     label=f"head_{i}",
                     verbose=False,
                 )
-            self.value_optimizer.zero_grad(set_to_none=True)
+
+            self.estimate_noise_scale(
+                batch_data,
+                lambda data, loss_scale: train_value_minibatch_single_horizon(-1, data, loss_scale),
+                optimizer=self.value_optimizer,
+                label=f"head_ext",
+                verbose=False,
+            )
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(
@@ -2529,8 +2096,7 @@ class Runner:
         Output will be [N, A, 16] of type float64
         """
         return ExperienceReplayBuffer.create_aux_buffer(
-            shape=self.prev_time.shape,
-            time=self.prev_time,
+            shape=self.ext_rewards.shape,
             reward=self.ext_rewards,
             action=self.actions,
         )
@@ -2582,36 +2148,23 @@ class Runner:
         """
 
         obs, distil_aux = self.get_replay_sample(samples_wanted)
-        time = distil_aux[:, ExperienceReplayBuffer.AUX_TIME].astype(np.float32)
 
         batch_data = {}
         B, *state_shape = obs.shape
 
         batch_data["prev_state"] = obs
 
-        if args.use_tvf:
-            assert not args.tvf_force_ext_value_distil, "tvf_force_ext_value_distil not supported yet."
-
-            horizons = Runner.generate_horizon_sample(
-                self.N, args.tvf_max_horizon,
-                args.tvf_horizon_samples,
-                args.tvf_horizon_distribution
-            )
-            H = len(horizons)
-            batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
-            batch_data["tvf_time"] = time.reshape([B])
-            aux_features = package_aux_features(horizons, time)
-        else:
-            aux_features = None
-
         # forward through model to get targets from model
         model_out = self.detached_batch_forward(
             obs=obs,
-            aux_features=aux_features,
             output="full",
         )
 
-        batch_data["distil_targets"] = model_out['value_'+self.get_distil_target_name()]
+        if args.use_tvf:
+            # we could skip this if we trained on rollout rather then replay
+            batch_data["distil_targets"] = model_out["value_tvf_value"][:, :, 0].detach().cpu().numpy()
+        else:
+            batch_data["distil_targets"] = model_out["value_value"][:, 0].detach().cpu().numpy()
 
         # get old policy
         batch_data["old_raw_policy"] = model_out["policy_raw_policy"].detach().cpu().numpy()
@@ -2692,7 +2245,7 @@ class Runner:
     def train(self):
 
         if args.disable_logging:
-            self.log.experiment_name = self.log.LM_MUTE
+            self.log.mode = self.log.LM_MUTE
 
         self.model.eval()
 
@@ -2874,74 +2427,6 @@ def get_rediscounted_value_estimate(
 
     return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
 
-def package_aux_features(horizons: Union[np.ndarray, torch.Tensor], time: Union[np.ndarray, torch.Tensor]):
-    """
-    Return aux features for given horizons and time fraction.
-    Output is [B, H, 2] where final dim is (horizon, time)
-
-    Horizons should be floats from 0..tvf_max_horizons
-    Time should be floats from 0..tvf_max_horizons
-
-    horizons: [B, H] or [H]
-    time: [B]
-
-    """
-
-    if len(horizons.shape) == 1:
-        # duplicate out horizon list for each batch entry
-        assert type(horizons) is np.ndarray, "Horizon duplication only implemented with numpy arrays for the moment sorry."
-        horizons = np.repeat(horizons[None, :], len(time), axis=0)
-
-    B, H = horizons.shape
-    assert time.shape == (B,)
-
-    # horizons might be int16, so cast it to float.
-    if type(horizons) is np.ndarray:
-        assert type(time) == np.ndarray
-        horizons = horizons.astype(np.float32)
-        aux_features = np.concatenate([
-            horizons.reshape([B, H, 1]),
-            np.repeat(time.reshape([B, 1, 1]), H, axis=1)
-        ], axis=-1)
-    elif type(horizons) is torch.Tensor:
-        assert type(time) == torch.Tensor
-        horizons = horizons.to(dtype=torch.float32)
-        aux_features = torch.cat([
-            horizons.reshape([B, H, 1]),
-            torch.repeat_interleave(time.reshape([B, 1, 1]), H, dim=1)
-        ], dim=-1)
-    else:
-        raise TypeError("Input must be of type np.ndarray or torch.Tensor")
-
-    return aux_features
-
-
-def _scale_function(x, method):
-    if method == "default":
-        return x / args.tvf_max_horizon
-    elif method == "zero":
-        return x*0
-    elif method == "log":
-        return (10+x).log10()-1
-    elif method == "sqrt":
-        return x.sqrt()
-    elif method == "centered":
-        # this will be roughly unit normal
-        return ((x / args.tvf_max_horizon) - 0.5) * 3.0
-    elif method == "wide":
-        # this will be roughly 10x normal
-        return ((x / args.tvf_max_horizon) - 0.5) * 30.0
-    elif method == "wider":
-        # this will be roughly 30x normal
-        return ((x / args.tvf_max_horizon) - 0.5) * 100.0
-    else:
-        raise ValueError(f"Invalid scale mode {method}. Please use [zero|log|sqrt|centered|wide|wider]")
-
-def horizon_scale_function(x):
-    return _scale_function(x, args.tvf_horizon_scale)
-
-def time_scale_function(x):
-    return _scale_function(x, args.tvf_time_scale)
 
 def expand_to_na(n,a,x):
     """
@@ -2962,20 +2447,6 @@ def expand_to_h(h,x):
     x = np.repeat(x, h, axis=2)
     return x
 
-
-# todo: remove this?
-class RolloutBuffer():
-    """ Saves a rollout """
-    def __init__(self, runner:Runner, copy:bool = True):
-
-        copy_fn = np.copy if copy else lambda x: x
-
-        self.all_obs = copy_fn(runner.all_obs)
-        self.all_time = copy_fn(runner.all_time)
-        self.ext_rewards = copy_fn(runner.ext_rewards)
-        self.terminals = copy_fn(runner.terminals)
-        self.tvf_gamma = runner.tvf_gamma
-        self.gamma = runner.gamma
 
 def make_env(env_type, env_id, **kwargs):
     if env_type == "atari":

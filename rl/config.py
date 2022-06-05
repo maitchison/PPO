@@ -1,10 +1,7 @@
 import ast
-import logging
 import uuid
 import socket
 import argparse
-import random
-from typing import Union, Optional
 
 """
     Colors class for use with terminal.
@@ -95,12 +92,7 @@ class TVFConfig(BaseConfig):
             return
 
         parser.add_argument("--use_tvf", type=str2bool, default=False)
-        parser.add_argument("--tvf_mode", type=str, default="dynamic", help="[dynamic|fixed]")
 
-        parser.add_argument("--tvf_gae", type=str2bool, default=False, help="Uses TVF aware GAE (with support for alternative discounts)")
-        parser.add_argument("--tvf_value_scale_fn", type=str, default="identity", help="Model predicts value/f(x) instead of value. For example setting f(x) to h predicts average_reward. [identity|linear|log|sqrt]")
-        parser.add_argument("--tvf_value_scale_norm", type=str, default="max", help="Return prediction is normed, e.g. when using h model predicts = value/(h/max_h) [none|max|half_max] ")
-        parser.add_argument("--tvf_force_ext_value_distil", type=str2bool, default=False)
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
         parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
@@ -108,18 +100,10 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
         parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
         parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
-        parser.add_argument("--tvf_value_samples", type=int, default=64,
-                            help="Number of values to sample during training.")
-        parser.add_argument("--tvf_horizon_samples", type=int, default=64,
-                            help="Number of horizons to sample during training. (-1 = all)")
-        parser.add_argument("--tvf_value_distribution", type=str, default="fixed_linear",
-                            help="Sampling distribution to use when generating value samples.")
-        parser.add_argument("--tvf_horizon_distribution", type=str, default="fixed_linear",
-                            help="Sampling distribution to use when generating horizon samples.")
+        parser.add_argument("--tvf_value_heads", type=int, default=64, help="Number of value heads to use.")
+        parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="geometric|linear")
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
-        parser.add_argument("--tvf_horizon_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
-        parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
-        parser.add_argument("--tvf_hidden_units", type=int, default=512, help="units used for value prediction")
+
 
 
 class OptimizerConfig(BaseConfig):
@@ -161,15 +145,11 @@ class OptimizerConfig(BaseConfig):
         self.adam_beta2 = float()
 
 
-
 class Config(BaseConfig):
 
     def __init__(self):
 
         super().__init__()
-
-        # mapping
-        # use_compression -> obs_compression
 
         self._parser = parser = argparse.ArgumentParser(description="Trainer for RL")
 
@@ -179,7 +159,7 @@ class Config(BaseConfig):
         parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
         parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
         parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
-        parser.add_argument("--restore", type=str, default='auto', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
+        parser.add_argument("--restore", type=str, default='never', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
         parser.add_argument("--reference_policy", type=str, default=None, help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
         parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
         parser.add_argument("--threads", type=int, default=2, help="Number of numpy/torch threads. Usually does not improve performance.")
@@ -220,8 +200,7 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Rewards
-        parser.add_argument("--reward_scale_ext", type=float, default=1.0, help="Extrinsic reward scale.")
-        parser.add_argument("--reward_scale_int", type=float, default=0.3, help="Intrinsic reward scale.")
+        parser.add_argument("--intrinsic_reward_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--return_estimator_mode", type=str, default="default",
                             help='Allows the use of the reference return estimator (very slow). [default|reference|verify]')
         parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None, help="allows intrinsic returns to propagate through end of episode.")
@@ -309,7 +288,11 @@ class Config(BaseConfig):
         # --------------------------------
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
-        parser.add_argument("--sns_generate_horizon_estimates", type=str2bool, default=False, help="Generates noise level estimates for each value head (requires TVF) - very slow!")
+        parser.add_argument("--sns_period", type=int, default=4, help="Generate estimates every n updates.")
+        parser.add_argument("--sns_max_heads", type=int, default=8, help="Limit to this number of heads when doing per head noise estimate.")
+        parser.add_argument("--sns_b_big", type=int, default=8096, help="")
+        parser.add_argument("--sns_b_small", type=int, default=32, help="")
+        parser.add_argument("--sns_small_samples", type=int, default=32, help="")
 
         # --------------------------------
         # Auxiliary phase
@@ -378,8 +361,7 @@ class Config(BaseConfig):
         self.max_micro_batch_size = int()
         self.sync_envs = bool()
         self.benchmark_mode = bool()
-        self.reward_scale_ext = float()
-        self.reward_scale_int = float()
+        self.intrinsic_reward_scale = float()
         self.return_estimator_mode = str()
         self.intrinsic_reward_propagation = object()
         self.override_reward_normalization_gamma = object()
@@ -423,11 +405,6 @@ class Config(BaseConfig):
         self.advantage_epsilon = float()
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
-        self.tvf_mode = str()
-        self.tvf_gae = bool()
-        self.tvf_value_scale_fn = str()
-        self.tvf_value_scale_norm = str()
-        self.tvf_force_ext_value_distil = bool()
         self.tvf_gamma = object()
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
@@ -435,19 +412,19 @@ class Config(BaseConfig):
         self.tvf_return_n_step = int()
         self.tvf_return_use_log_interpolation = bool()
         self.tvf_max_horizon = int()
-        self.tvf_value_samples = int()
-        self.tvf_horizon_samples = int()
-        self.tvf_value_distribution = str()
-        self.tvf_horizon_distribution = str()
-        self.tvf_activation = str()
-        self.tvf_horizon_scale = str()
-        self.tvf_time_scale = str()
-        self.tvf_hidden_units = int()
+        self.tvf_value_heads = int()
+        self.tvf_head_spacing = str()
         self.use_ag = bool()
         self.ag_strategy = str()
         self.ag_mode = str()
+
         self.use_sns = bool()
-        self.sns_generate_horizon_estimates = bool()
+        self.sns_period = int()
+        self.sns_max_heads = int()
+        self.sns_b_big = int()
+        self.sns_b_small = int()
+        self.sns_small_samples = int()
+
         self.aux_target = str()
         self.aux_source = str()
         self.aux_period = int()
@@ -494,10 +471,6 @@ class Config(BaseConfig):
             return self.mutex_key
 
     @property
-    def full_curve_distil(self):
-        return self.use_tvf and not self.tvf_force_ext_value_distil
-
-    @property
     def normalize_intrinsic_rewards(self):
         return self.use_intrinsic_rewards
 
@@ -523,6 +496,17 @@ def parse_args(args_override=None):
         'use_compression': 'obs_compression',
         'export_video': None,
         'tvf_coef': None,
+        'tvf_value_distribution': None,
+        'tvf_horizon_distribution': None,
+        'tvf_value_samples': None,
+        'tvf_horizon_samples': 'tvf_value_heads',
+        'tvf_hidden_units': None,
+        'tvf_force_ext_value_distil': None,
+        'tvf_horizon_scale': None,
+        'tvf_time_scale': None,
+        'policy_network': "encoder",
+        'value_network': "encoder",
+        'tvf_mode': None,
     }
 
     for k,v in REMAPPED_PARAMS.items():
@@ -539,25 +523,28 @@ def parse_args(args_override=None):
 
     # mappings
     for old_name, new_name in REMAPPED_PARAMS.items():
+        if vars(args).get(old_name, None) is None:
+            continue
+
         if new_name is None:
             print(f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being ignored.")
             continue
-        if old_name in vars(args).keys():
-            legacy_value = vars(args)[old_name]
-            new_type = type(vars(args)[new_name])
-            if new_type is bool:
-                cast_legacy_value = str2bool(legacy_value)
-            else:
-                cast_legacy_value = new_type(legacy_value)
-            if vars(args)[new_name] is None:
-                print(f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being mapped to {BOLD}{new_name}{ENDC} with value {legacy_value}")
-                vars(args)[new_name] = cast_legacy_value
-                del vars(args)[old_name]
-            else:
-                non_legacy_value = vars(args)[new_name]
-                print(
-                    f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
-                vars(args)[new_name] = cast_legacy_value
+
+        legacy_value = vars(args)[old_name]
+        new_type = type(vars(args)[new_name])
+        if new_type is bool:
+            cast_legacy_value = str2bool(legacy_value)
+        else:
+            cast_legacy_value = new_type(legacy_value)
+        if vars(args)[new_name] is None:
+            print(f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being mapped to {BOLD}{new_name}{ENDC} with value {legacy_value}")
+            vars(args)[new_name] = cast_legacy_value
+            del vars(args)[old_name]
+        else:
+            non_legacy_value = vars(args)[new_name]
+            print(
+                f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
+            vars(args)[new_name] = cast_legacy_value
 
     # conversions
     try:
@@ -586,9 +573,6 @@ def parse_args(args_override=None):
         args.tvf_gamma = args.gamma
     if args.distil_batch_size is None:
         args.distil_batch_size = args.batch_size
-
-    if args.sns_generate_horizon_estimates:
-        assert args.use_sns and args.use_tvf
 
     # smart config
     buffer_size = args.replay_size if args.replay_size > 0 else args.batch_size

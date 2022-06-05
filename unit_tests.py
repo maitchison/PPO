@@ -118,7 +118,7 @@ def test_vtrace():
     # first calculate the returns
     returns = rollout.calculate_returns(rewards, dones, final_value_estimate, gamma)
 
-    gae = rollout.calculate_gae(rewards, value_estimates, final_value_estimate, dones, gamma, lamb=lamb, normalize=False)
+    gae = rollout.gae(rewards, value_estimates, final_value_estimate, dones, gamma, lamb=lamb, normalize=False)
 
     behaviour_log_policy = np.zeros([5,2,1], dtype=np.float)
     target_log_policy = np.zeros([5,2,1], dtype=np.float)
@@ -229,7 +229,7 @@ def test_gae():
     dones = np.asarray( [0, 0, 1, 0, 0], dtype=np.float32)[:, None]
     final_value_estimate = np.asarray(5, dtype=np.float32)
     value_estimates = np.asarray([0, 0.5, 0.5, 3, 4], dtype=np.float32)[:, None]
-    result = rollout.calculate_gae(rewards, value_estimates, final_value_estimate, dones, gamma=0.5, lamb=1.0)
+    result = rollout.gae(rewards, value_estimates, final_value_estimate, dones, gamma=0.5, lamb=1.0)
     assert_is_similar(result, np.asarray([1.5, 0.5, 1.5, 5.25, 4.5])[:, None])
     return True
 

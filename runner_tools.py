@@ -571,7 +571,7 @@ class Job:
         details = self.get_details()
 
         if details is None and status == "running":
-            status = "no_details"
+            status = "..."
 
         # stub: should be 1.0, but due to a bug in one version we consider 99.9 complete.
         if details is not None and details["fraction_complete"] >= 0.999:
