@@ -1117,14 +1117,14 @@ def auto_gamma(priority:int = 0):
     }
 
     for mode in [
-        'off',
+        # 'off',
         # 'episode_length',
         # 'training',
         'sns'
         ]:
         add_run(
             run_name=f"mode={mode}",
-            use_ag=mode != "off",
+            use_ag=True,
             ag_mode=mode,
             **COMMON_ARGS
         )
@@ -1151,4 +1151,4 @@ def setup():
     samples(-100)
     truncation(0)
     auto_gamma(0)
-    adaptive(10)
+    adaptive(-10)

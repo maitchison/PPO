@@ -1995,7 +1995,7 @@ class Runner:
         elif args.ag_mode == "training":
             return (1/1000) * self.step # todo make this a parameter
         elif args.ag_mode == "sns":
-            return self.stats.get('ag_sns_horizon', 10)
+            return self.noise_stats.get('ag_sns_horizon', 10)
         else:
             raise ValueError(f"Invalid auto_strategy {args.ag_mode}")
 
@@ -2391,8 +2391,11 @@ class Runner:
                 new_target = max(h, new_target)
 
         # step 2: move towards target
-        self.stats.get('ag_sns_horizon', 10) * args.ag_sns_alpha + (1-args.ag_sns_alpha) * new_target
+        self.noise_stats['ag_sns_horizon'] = \
+            args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', 10) + (1-args.ag_sns_alpha) * new_target
+
         self.log.watch_mean('ag_sns_target', new_target)
+        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'])
 
     def train(self):
 
