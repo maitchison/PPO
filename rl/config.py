@@ -288,6 +288,7 @@ class Config(BaseConfig):
         # --------------------------------
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
+        parser.add_argument("--sns_labels", type=str, default="['policy', 'value', 'distil']"),
         parser.add_argument("--sns_period", type=int, default=4, help="Generate estimates every n updates.")
         parser.add_argument("--sns_max_heads", type=int, default=8, help="Limit to this number of heads when doing per head noise estimate.")
         parser.add_argument("--sns_b_big", type=int, default=8192, help="")
@@ -419,6 +420,7 @@ class Config(BaseConfig):
         self.ag_mode = str()
 
         self.use_sns = bool()
+        self.sns_labels = str()
         self.sns_period = int()
         self.sns_max_heads = int()
         self.sns_b_big = int()

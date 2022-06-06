@@ -305,11 +305,135 @@ TVF2_ARGS = {
     'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
 }
 
+# going back to more standard args
+TVF2_STANDARD_ARGS = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'hostname': '',
+    'architecture': 'dual',
+    'epochs': 50,
+    'obs_compression': False,
+    'upload_batch': True,  # much faster
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+    'mutex_key': "DEVICE",
+
+    'max_micro_batch_size': 2048,   # might help now that we upload the entire batch?
+
+    'max_grad_norm': 5.0,
+    'agents': 128,                  # HPS
+    'n_steps': 128,                 # HPS
+    'policy_mini_batch_size': 2048, # Trying larger
+    'value_mini_batch_size': 512,   # should be 256, but 512 for performance (maybe needs to be larger for tvf?)
+    'distil_mini_batch_size': 512,  #
+    'policy_epochs': 2,             # reasonable guess
+    'value_epochs': 1,              # reasonable guess
+    'distil_epochs': 2,             # reasonable guess
+    'ppo_epsilon': 0.2,             # allows faster policy movement
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
+    'entropy_bonus': 1e-2,          # standard
+    'hidden_units': 512,            # standard
+
+    'lambda_policy': 0.8,
+    'lambda_value': 0.95,           # note used! (right?)
+
+    # tvf
+    'use_tvf': True,
+    'tvf_return_n_step': 20,        # should be 20 maybe, or higher maybe?
+    'tvf_return_samples': 32,
+    'tvf_value_heads': 128,         # maybe need more?
+
+    # stuck
+    'repeated_action_penalty': 0.01,
+    'max_repeated_actions': 30,
+
+    # distil / replay buffer
+    'distil_period': 1,
+    'replay_size': 1*128*128,
+    'distil_batch_size': 1*128*128,
+    'distil_beta': 1.0,
+    'replay_mode': "uniform",
+
+    # horizon
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+    'tvf_max_horizon': 30000,
+
+    # other
+    'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
+}
+
 
 def merge_dict(a, b):
     x = a.copy()
     x.update(b)
     return x
+
+def spacing(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_1_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF2_SPACING",
+        # noise
+        'use_sns': True,
+        'sns_max_heads': 16,
+    }
+
+    add_run(
+        run_name="reference (30k)",
+        default_args=TVF2_STANDARD_ARGS,
+        gamma=0.99997,
+        tvf_gamma=1.0,
+        tvf_max_horizon=30000,
+        **COMMON_ARGS
+    )
+
+    # this 1k reference run should have heads spaced appropriately...
+    add_run(
+        run_name="tvf reference (1k)",
+        default_args=TVF2_STANDARD_ARGS,
+        gamma=0.997,
+        tvf_gamma=1.0,
+        tvf_max_horizon=1000,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name="dna reference (1k)",
+        default_args=DNA_TUNED_ARGS,
+        gamma=0.997,
+        **COMMON_ARGS
+    )
+
+    # spacing runs, this should have high noise on the last one, if T2 is true
+    add_run(
+        run_name="tvf heads=16 td=20 (1k)",
+        default_args=TVF2_STANDARD_ARGS,
+        gamma=0.997,
+        tvf_gamma=1.0,
+        tvf_max_horizon=1000,
+        tvf_value_heads=16,
+        **COMMON_ARGS
+    )
+    # low n_step might also cause problems.
+    add_run(
+        run_name="tvf heads=16 nstep=4 (1k)",
+        default_args=TVF2_STANDARD_ARGS,
+        gamma=0.997,
+        tvf_gamma=1.0,
+        tvf_max_horizon=1000,
+        tvf_value_heads=128,
+        tvf_return_n_step=4,
+        **COMMON_ARGS
+    )
+
 
 def valueheads(priority: int = 0):
 
@@ -871,4 +995,5 @@ def setup():
 
     reference(0)
     valueheads(0)
+    spacing(0)
     noise(100)

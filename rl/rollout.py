@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import ast
 import time as clock
 import json
 import gzip
@@ -1165,10 +1166,6 @@ class Runner:
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
 
-        if self.batch_counter % args.sns_period != 0:
-            # only evaluate every so often.
-            return
-
         self.log.mode = self.log.LM_MUTE
         result = {}
 
@@ -2030,6 +2027,19 @@ class Runner:
         self.log.watch(f"time_train_policy", (clock.time() - start_time) * 1000,
                        display_width=8, display_name='t_policy', display_precision=1)
 
+    def wants_noise_estimate(self, label:str):
+
+        if not args.use_sns:
+            return False
+        if self.batch_counter % args.sns_period != 0:
+            # only evaluate every so often.
+            return False
+        if label.lower() not in ast.literal_eval(args.sns_labels):
+            return False
+        return True
+
+
+
     def train_value(self):
 
         # ----------------------------------------------------
@@ -2051,7 +2061,8 @@ class Runner:
             # just train ext head for the moment
             batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
 
-        if args.use_tvf and args.sns_max_heads > 0:
+        # per horizon noise estimates
+        if self.wants_noise_estimate('value') and args.sns_max_heads > 0:
 
             # generate our per-horizon estimates
             if args.upload_batch:
@@ -2313,7 +2324,7 @@ class Runner:
             assert batch_data["prev_state"].dtype != object, "obs_compression can no be enabled with upload_batch."
             self.upload_batch(batch_data)
 
-        if epoch == 0 and args.use_sns: # check noise of first update only
+        if epoch == 0 and self.wants_noise_estimate(label): # check noise of first update only
             self.estimate_noise_scale(batch_data, mini_batch_func, optimizer, label)
 
         assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"
