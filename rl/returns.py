@@ -2,6 +2,7 @@ import numpy as np
 import time as clock
 import bisect
 import math
+from typing import Union, Optional
 from collections import defaultdict
 from .logger import Logger
 
@@ -82,6 +83,7 @@ def get_return_estimate(
     value_samples_m3: np.ndarray = None,
     n_step: int = 40,
     max_samples: int = 40,
+    max_h: Optional[int] = None,
     estimator_mode:str = "default",
     log:Logger = None,
     use_log_interpolation: bool=False,
@@ -134,6 +136,8 @@ def get_return_estimate(
         samples = [n_step]
     elif mode == "adaptive":
         # we do this by repeated calling exponential, which can be a bit slow...
+        # note: we cut the curve off after h steps, otherwise we end up repeating the same
+        # value estimate. That is R_{>h}=R_{h}
         result = np.zeros([N, A, K], dtype=np.float32)
         target_n_step = n_step
         for h_index, h in enumerate(required_horizons):
@@ -143,25 +147,17 @@ def get_return_estimate(
             args_copy['estimator_mode'] = estimator_mode
             args_copy['log'] = log
             n_step = int(np.clip(h, 1, target_n_step))  # the magic heuristic...
-            result[:, :, h_index] = get_return_estimate(mode="exponential", n_step=n_step, **args_copy)[:, :, 0]
-        return result
-    elif mode == "adaptive_cap":
-        # we do this by repeated calling exponential, which can be a bit slow...
-        result = np.zeros([N, A, K], dtype=np.float32)
-        target_n_step = n_step
-        for h_index, h in enumerate(required_horizons):
-            args_copy = args.copy()
-            args_copy['required_horizons'] = [h]
-            args_copy['max_samples'] = max_samples
-            args_copy['estimator_mode'] = estimator_mode
-            args_copy['log'] = log
-            n_step = int(np.clip(h, 1, target_n_step))  # the magic heuristic...
-            result[:, :, h_index] = get_return_estimate(mode="exponential_cap", n_step=n_step, **args_copy)[:, :, 0]
+            result[:, :, h_index] = get_return_estimate(
+                mode="exponential",
+                n_step=n_step,
+                max_h=max(h, 1), **args_copy
+            )[:, :, 0]
         return result
     elif mode == "exponential":
         # this just makes things a bit faster for small n_step horizons
         # essentially we ignore the very rare, very long n_steps.
-        max_h = min(n_step * 3, N)
+        if max_h is None:
+            max_h = min(n_step * 3, N)
         lamb = 1-(1/n_step)
         weights = np.asarray([lamb ** x for x in range(max_h)], dtype=np.float32)
     elif mode == "hyperbolic":

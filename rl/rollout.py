@@ -2386,7 +2386,7 @@ class Runner:
         new_target = 10
         for i, h in enumerate(self.tvf_horizons):
             # early on noise values will not be there, so just set them very high
-            noise = self.noise_stats.get(f'sns_head_{i}', 999)
+            noise = max(0, self.noise_stats.get(f'head_{i}_ratio', 999)) ** 0.5
             if noise < args.ag_sns_threshold:
                 new_target = max(h, new_target)
 

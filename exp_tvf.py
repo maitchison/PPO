@@ -1067,6 +1067,38 @@ def truncation(priority:int = 0):
         **COMMON_ARGS
     )
 
+
+def adaptive(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF2_ADAPTIVE",
+        'default_args': TVF2_STANDARD_ARGS,
+
+        # light noise measurement
+        'use_sns': True,
+        'sns_period': 8,
+        # trimming is great
+        'tvf_trimming': True,
+    }
+
+    add_run(
+        run_name=f"adaptive 120",
+        tvf_return_mode="adaptive",
+        tvf_return_n_step=120,
+        **COMMON_ARGS
+    )
+    add_run(
+        run_name=f"adaptive 40",
+        tvf_return_mode="adaptive",
+        tvf_return_n_step=40,
+        **COMMON_ARGS
+    )
+
 def auto_gamma(priority:int = 0):
 
     COMMON_ARGS = {
@@ -1080,18 +1112,20 @@ def auto_gamma(priority:int = 0):
         # fast noise
         'use_sns': True,
         'sns_period': 8,
+        'sns_max_heads': 16, # increasing the number of heads we generate noise estimates for allows for more precise
+                             # gamma adjustment
     }
 
-    for ag_mode in [
+    for mode in [
         'off',
         # 'episode_length',
         # 'training',
         'sns'
         ]:
         add_run(
-            run_name=f"ag_mode={ag_mode}",
-            use_ag=ag_mode != "off",
-            ag_mode=ag_mode,
+            run_name=f"mode={mode}",
+            use_ag=mode != "off",
+            ag_mode=mode,
             **COMMON_ARGS
         )
 
@@ -1117,3 +1151,4 @@ def setup():
     samples(-100)
     truncation(0)
     auto_gamma(0)
+    adaptive(10)
