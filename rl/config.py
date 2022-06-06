@@ -286,7 +286,7 @@ class Config(BaseConfig):
         parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns]")
         parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
         parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="horizon heads with noise levels below this threshold are considered low noise.")
-        parser.add_argument("--ag_sns_alpha", type=float, default=0.99,
+        parser.add_argument("--ag_sns_alpha", type=float, default=0.999,
                             help="alpha value used in EMA for horizon.")
 
         # --------------------------------
