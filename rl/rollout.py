@@ -1986,16 +1986,18 @@ class Runner:
 
     @property
     def _auto_horizon(self):
-        if args.ag_strategy == "episode_length":
+        if args.ag_mode == "episode_length":
             if len(self.episode_length_buffer) == 0:
                 auto_horizon = 0
             else:
                 auto_horizon = self.episode_length_mean + (2 * self.episode_length_std)
             return auto_horizon
-        elif args.ag_strategy == "agent_age_slow":
+        elif args.ag_mode == "training":
             return (1/1000) * self.step # todo make this a parameter
+        elif args.ag_mode == "sns":
+            return self.stats.get('ag_sns_horizon', 10)
         else:
-            raise ValueError(f"Invalid auto_strategy {args.ag_strategy}")
+            raise ValueError(f"Invalid auto_strategy {args.ag_mode}")
 
     @property
     def _auto_gamma(self):
@@ -2004,14 +2006,14 @@ class Runner:
 
     @property
     def gamma(self):
-        if args.use_ag and args.ag_mode in ["policy", "both"]:
+        if args.use_ag and args.ag_target in ["policy", "both"]:
             return self._auto_gamma
         else:
             return args.gamma
 
     @property
     def tvf_gamma(self):
-        if args.use_ag and args.ag_mode in ["value", "both"]:
+        if args.use_ag and args.ag_target in ["value", "both"]:
             return self._auto_gamma
         else:
             return args.tvf_gamma
@@ -2376,6 +2378,22 @@ class Runner:
         self.log.watch(f"time_train_aux", (clock.time() - start_time) * 1000,
                        display_width=8, display_name='t_aux', display_precision=1)
 
+    def update_sns_horizon_target(self):
+        assert args.use_sns
+        assert args.use_tvf
+
+        # step 1: work out our target (with a cap at 10)
+        new_target = 10
+        for i, h in enumerate(self.tvf_horizons):
+            # early on noise values will not be there, so just set them very high
+            noise = self.noise_stats.get(f'sns_head_{i}', 999)
+            if noise < args.ag_sns_threshold:
+                new_target = max(h, new_target)
+
+        # step 2: move towards target
+        self.stats.get('ag_sns_horizon', 10) * args.ag_sns_alpha + (1-args.ag_sns_alpha) * new_target
+        self.log.watch_mean('ag_sns_target', new_target)
+
     def train(self):
 
         if args.disable_logging:
@@ -2404,6 +2422,9 @@ class Runner:
 
         if args.use_rnd:
             self.train_rnd()
+
+        if args.ag_mode == "sns":
+            self.update_sns_horizon_target()
 
         self.batch_counter += 1
 

@@ -21,6 +21,12 @@ Todo:
  [ ] add replay back in
  [ ] revert back to 512 units (from 256)
  [x] make sure gae_lambda and td_lambda are all good (they are)
+ [ ] find out why distil is so slow
+ [ ] reduce t_re down to 400ms
+ [ ] benchmarking
+ [ ] a good trimming run
+ [ ] auto gamma
+ [ ] auto GAE (maybe?)
  
  bonus ideas:
   - replay?
@@ -1053,14 +1059,41 @@ def truncation(priority:int = 0):
     )
 
     add_run(
-        run_name=f"trunc (30k)",
+        run_name=f"trim (30k)",
         # noise, but fast noise
-        tvf_truncating=True,
+        tvf_trimming=True,
         use_sns=True,
         sns_period=8,
         **COMMON_ARGS
     )
 
+def auto_gamma(priority:int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF2_AUTOGAMMA",
+        'default_args': TVF2_STANDARD_ARGS,
+        # fast noise
+        'use_sns': True,
+        'sns_period': 8,
+    }
+
+    for ag_mode in [
+        'off',
+        # 'episode_length',
+        # 'training',
+        'sns'
+        ]:
+        add_run(
+            run_name=f"ag_mode={ag_mode}",
+            use_ag=ag_mode != "off",
+            ag_mode=ag_mode,
+            **COMMON_ARGS
+        )
 
 def setup():
 
@@ -1083,3 +1116,4 @@ def setup():
     # low priority
     samples(-100)
     truncation(0)
+    auto_gamma(0)

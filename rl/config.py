@@ -283,8 +283,11 @@ class Config(BaseConfig):
         # --------------------------------
         # Auto Gamma
         parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
-        parser.add_argument("--ag_strategy", type=str, default="episode_length", help="[episode_length|agent_age_slow|sa_return|sa_reward]")
-        parser.add_argument("--ag_mode", type=str, default="policy", help="[policy|value|both]")
+        parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns]")
+        parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
+        parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="horizon heads with noise levels below this threshold are considered low noise.")
+        parser.add_argument("--ag_sns_alpha", type=float, default=0.99,
+                            help="alpha value used in EMA for horizon.")
 
         # --------------------------------
         # Simple Noise Scale
@@ -418,8 +421,10 @@ class Config(BaseConfig):
         self.tvf_value_heads = int()
         self.tvf_head_spacing = str()
         self.use_ag = bool()
-        self.ag_strategy = str()
         self.ag_mode = str()
+        self.ag_target = str()
+        self.ag_sns_threshold = float()
+        self.ag_sns_alpha = float()
 
         self.use_sns = bool()
         self.sns_labels = str()
