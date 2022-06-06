@@ -1552,12 +1552,9 @@ class Runner:
             predictions = model_out["tvf_value"][:, :, 0]
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
-            distil_filter = slice(None, None)
-            B, K = targets.shape
-            if args.distil_head_skip != 1:
-                distil_filter = np.arange(K)[::-args.distil_head_skip][::-1]
-            predictions = predictions[:, distil_filter]
-            targets = targets[:, distil_filter]
+            head_sample = utils.even_sample_down(np.arange(args.tvf_value_heads), max_values=args.distil_max_heads)
+            predictions = predictions[:, head_sample]
+            targets = targets[:, head_sample]
         else:
             predictions = model_out["value"][:, 0]
 
@@ -2028,17 +2025,18 @@ class Runner:
                        display_width=8, display_name='t_policy', display_precision=1)
 
     def wants_noise_estimate(self, label:str):
+        """
+        Returns if given label wants a noise update on this step.
+        """
 
         if not args.use_sns:
             return False
-        if self.batch_counter % args.sns_period != 0:
+        if self.batch_counter % args.sns_period != args.sns_period-1:
             # only evaluate every so often.
             return False
         if label.lower() not in ast.literal_eval(args.sns_labels):
             return False
         return True
-
-
 
     def train_value(self):
 
@@ -2061,45 +2059,42 @@ class Runner:
             # just train ext head for the moment
             batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
 
-        # per horizon noise estimates
-        if self.wants_noise_estimate('value') and args.sns_max_heads > 0:
+            # per horizon noise estimates
+            if self.wants_noise_estimate('value') and args.sns_max_heads > 0:
 
-            # generate our per-horizon estimates
-            if args.upload_batch:
-                self.upload_batch(batch_data)
+                # generate our per-horizon estimates
+                if args.upload_batch:
+                    self.upload_batch(batch_data)
 
-            def train_value_minibatch_single_horizon(i: int, data, loss_scale=1.0):
-                _data = data.copy()
-                if i < 0:
-                    # just train main head
-                    del _data["tvf_returns"]
-                    self.train_value_minibatch(_data, loss_scale)
-                else:
-                    # make sure to not also learn main value head
-                    del _data["returns"]
-                    self.train_value_minibatch(_data, loss_scale, single_value_head=i)
+                def train_value_minibatch_single_horizon(i: int, data, loss_scale=1.0):
+                    _data = data.copy()
+                    if i < 0:
+                        # just train main head
+                        del _data["tvf_returns"]
+                        self.train_value_minibatch(_data, loss_scale)
+                    else:
+                        # make sure to not also learn main value head
+                        del _data["returns"]
+                        self.train_value_minibatch(_data, loss_scale, single_value_head=i)
 
-            if len(self.tvf_horizons) > args.sns_max_heads:
-                sample = np.linspace(0, len(self.tvf_horizons)-1, args.sns_max_heads, dtype=np.int32)
-            else:
-                sample = np.arange(len(self.tvf_horizons))
+                sample = utils.even_sample_down(np.arange(len(self.tvf_horizons)), max_values=args.sns_max_heads)
 
-            for i in sample:
+                for i in sample:
+                    self.estimate_noise_scale(
+                        batch_data,
+                        lambda data, loss_scale: train_value_minibatch_single_horizon(i, data, loss_scale),
+                        optimizer=self.value_optimizer,
+                        label=f"head_{i}",
+                        verbose=False,
+                    )
+
                 self.estimate_noise_scale(
                     batch_data,
-                    lambda data, loss_scale: train_value_minibatch_single_horizon(i, data, loss_scale),
+                    lambda data, loss_scale: train_value_minibatch_single_horizon(-1, data, loss_scale),
                     optimizer=self.value_optimizer,
-                    label=f"head_{i}",
+                    label=f"head_ext",
                     verbose=False,
                 )
-
-            self.estimate_noise_scale(
-                batch_data,
-                lambda data, loss_scale: train_value_minibatch_single_horizon(-1, data, loss_scale),
-                optimizer=self.value_optimizer,
-                label=f"head_ext",
-                verbose=False,
-            )
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(

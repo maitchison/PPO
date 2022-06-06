@@ -38,6 +38,31 @@ class Color:
 # Utils
 # -------------------------------------------------------------
 
+def even_sample_down(X, max_values:int):
+    """
+    Takes a list of n elements and returns a new list containing at most max_values of them.
+    This is done determanistically, they are spaced as evenly as they can, and last value is always included
+
+    @param max_values: A negative value returns all samples
+    """
+
+    assert type(max_values) is int
+    X = list(X)[:] # enforce the copy
+
+    if max_values < 0:
+        return X
+    if max_values == 0:
+        return []
+    if max_values == 1:
+        # special case otherwise we would return X[0]
+        return [X[-1]]
+    if len(X) > max_values:
+        sample = np.linspace(0, len(X) - 1, max_values, dtype=np.int32)
+        return [X[i] for i in sample]
+    else:
+        return X
+
+
 
 def get_disallowed_devices():
     """

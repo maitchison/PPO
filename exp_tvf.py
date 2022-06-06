@@ -414,21 +414,24 @@ def spacing(priority: int = 0):
 
     # spacing runs, this should have high noise on the last one, if T2 is true
     add_run(
-        run_name="tvf heads=16 td=20 (1k)",
+        run_name="tvf heads=16 nstep=20 (1k)",
         default_args=TVF2_STANDARD_ARGS,
         gamma=0.997,
         tvf_gamma=1.0,
         tvf_max_horizon=1000,
+
         tvf_value_heads=16,
+        tvf_return_n_step=20,
         **COMMON_ARGS
     )
     # low n_step might also cause problems.
     add_run(
-        run_name="tvf heads=16 nstep=4 (1k)",
+        run_name="tvf heads=128 nstep=4 (1k)",
         default_args=TVF2_STANDARD_ARGS,
         gamma=0.997,
         tvf_gamma=1.0,
         tvf_max_horizon=1000,
+
         tvf_value_heads=128,
         tvf_return_n_step=4,
         **COMMON_ARGS
