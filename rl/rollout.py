@@ -1063,7 +1063,39 @@ class Runner:
         else:
             raise ValueError(f"invalid action distribution {self.action_dist}")
 
+    def trim_values(self, tvf_value_estimates, time, enabled=True):
+        """
+        Adjusts horizons by reducing horizons that extend over the timeout back to the timeout.
+        This is for a few reasons.
+        1. it makes use of the other heads, which means errors might average out
+        2. it can be that shorter horizons get learned more quickly, and this will make use of them earlier on
+        so long as the episodes are fairly long. If episodes are short compared to max_horizon this might not
+        help at all.
 
+        @param tvf_value_estimates: np array of dims [A, K]
+        @param time: np array of dims [A] containing time assosicated with the states that generated these estimates.
+
+        @returns new trimmed estimates of [A, K]
+        """
+
+        if not enabled:
+            return tvf_value_estimates
+
+        tvf_value_estimates = tvf_value_estimates.copy() # don't want to modify input
+        old_tvf_value_estimates = tvf_value_estimates.copy()
+        A, K, VH = tvf_value_estimates.shape
+        for k, h in enumerate(self.tvf_horizons):
+            target_horizons = np.minimum(h, (args.timeout / args.frame_skip) - time)
+            if np.min(target_horizons) < h:
+                # these are some horizons than can be shortened
+                for vh in range(VH):
+                    # note: all value heads could be done at once...
+                    tvf_value_estimates[:, k, vh] = interpolate(
+                        np.asarray(self.tvf_horizons, dtype=np.int32),
+                        old_tvf_value_estimates[..., vh],
+                        target_horizons
+                    )
+        return tvf_value_estimates
 
     @torch.no_grad()
     def generate_rollout(self):
@@ -1161,30 +1193,10 @@ class Runner:
 
             # take advantage of the fact that V_h = V_min(h, remaining_time).
             if args.use_tvf:
-                if args.tvf_truncating and args.use_tvf:
-                    # Case 2: use shorter horizons based on the number of remaining timesteps in the environment
-                    # This is for a few reasons.
-                    # 1. it makes use of the other heads, which means errors might average out
-                    # 2. it can be that shorter horizons get learned more quickly, and this will make use of them earlier on
-                    # so long as the episodes are fairly long. If episodes are short compared to max_horizon this might not
-                    # help at all.
-                    raw_tvf_value_estimates = model_out["tvf_value"].cpu().numpy()
-                    tvf_value_estimates = raw_tvf_value_estimates.copy()
-                    A, K, VH = tvf_value_estimates.shape
-                    for k, h in enumerate(self.tvf_horizons):
-                        target_horizons = np.minimum(h, (args.timeout/args.frame_skip) - prev_time)
-                        if np.min(target_horizons) < h:
-                            # these are some horizons than can be shortened
-                            for vh in range(VH):
-                                # note: all value heads could be done at once...
-                                tvf_value_estimates[:, k, vh] = interpolate(
-                                    np.asarray(self.tvf_horizons, dtype=np.int32),
-                                    raw_tvf_value_estimates[..., vh],
-                                    target_horizons
-                                )
-                else:
-                    tvf_value_estimates = model_out["tvf_value"].cpu().numpy()
-                self.tvf_value[t] = tvf_value_estimates
+                self.tvf_value[t] = self.trim_values(
+                    model_out["tvf_value"].cpu().numpy(),
+                    prev_time, enabled=args.tvf_trimming
+                )
 
             # get all the information we need from the model
             self.all_obs[t] = upload_if_needed(prev_obs)
@@ -1206,7 +1218,12 @@ class Runner:
         self.all_time[-1] = self.time
         final_model_out = self.detached_batch_forward(self.obs, output="default")
         self.value[-1] = final_model_out["value"].cpu().numpy()
-        self.tvf_value[-1] = final_model_out["tvf_value"].cpu().numpy()
+
+        if args.use_tvf:
+            self.tvf_value[-1] = self.trim_values(
+                final_model_out["tvf_value"].cpu().numpy(),
+                self.time, enabled=args.tvf_trimming
+            )
 
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
