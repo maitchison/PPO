@@ -24,6 +24,52 @@ from .replay import ExperienceReplayBuffer
 
 import collections
 
+def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
+    """
+    Returns linearly interpolated value from source_values
+
+    horizons: sorted ndarray of shape [K] of horizons, must be in ascending order
+    values: ndarray of shape [*shape, K] where values[...,h] corresponds to horizon horizons[h]
+    target_horizons: np array of dims [*shape], the horizon we would like to know the interpolated value of for each
+        example
+
+    """
+
+    # I did this custom, as I could not find a way to get numpy to interpolate the way I needed it to.
+    # the issue is we interpolate nd data with non-uniform target x's.
+
+    # remove duplicates
+    old_horizons = horizons
+    new_horizons = np.asarray(sorted(set(old_horizons)))
+    horizon_mapping = np.searchsorted(old_horizons, new_horizons)
+    values = values[..., horizon_mapping]
+    horizons = horizons[horizon_mapping]
+
+    *shape, K = values.shape
+    shape = tuple(shape)
+    assert horizons.shape == (K,)
+    assert target_horizons.shape == shape, f"{target_horizons.shape} != {shape}"
+
+    # put everything into 1d
+    N = np.prod(shape)
+    values = values.reshape(N, K)
+    target_horizons = target_horizons.reshape(N)
+
+    index = np.searchsorted(horizons, target_horizons, side='left')
+
+    # select out our values
+    pre_index = np.maximum(index-1, 0)
+    post_index = index
+    value_pre = values[range(N), pre_index]
+    value_post = values[range(N), post_index]
+
+    dx = (horizons[post_index] - horizons[pre_index])
+    factor = (target_horizons - horizons[index - 1]) / dx
+    result = value_pre * (1 - factor) + value_post * factor
+    result[post_index == 0] = value_pre[post_index == 0] # these are nan otherwise.
+    return result.reshape(*shape)
+
+
 def get_value_head_horizons(n_heads:int, max_horizon: int, spacing:str="geometric"):
     """
     Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = max_horizon.
@@ -506,6 +552,9 @@ class Runner:
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
         self.advantage = np.zeros([N, A], dtype=np.float32)  # advantage estimates
 
+        self.all_time = np.zeros([N+1, A], dtype=np.int32)  # time for each step in rollout
+        self.time = np.zeros([A], dtype=np.int32)  # current step for all agents
+
         self.replay_value_estimates = np.zeros([N, A], dtype=np.float32) # what is this?
 
         # intrinsic rewards
@@ -794,6 +843,7 @@ class Runner:
         self.episode_score *= 0
         self.episode_len *= 0
         self.step = 0
+        self.time *= 0
 
         # reset stats
         for k in list(self.stats.keys()):
@@ -1031,6 +1081,7 @@ class Runner:
         self.ext_rewards *= 0
         self.value *= 0
         self.tvf_value *= 0
+        self.all_time *= 0
 
         for k in self.stats.keys():
             if k.startswith("batch_"):
@@ -1039,6 +1090,7 @@ class Runner:
         for t in range(self.N):
 
             prev_obs = self.obs.copy()
+            prev_time = self.time.copy()
 
             # forward state through model, then detach the result and convert to numpy.
             model_out = self.detached_batch_forward(
@@ -1051,6 +1103,7 @@ class Runner:
             # sample actions and run through environment.
             actions = self.sample_actions(model_out)
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
+            self.time = np.asarray([info["time"] for info in infos], dtype=np.int32)
 
             if args.use_rnd:
                 # update the intrinsic rewards
@@ -1106,10 +1159,37 @@ class Runner:
             if args.obs_compression:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
 
+            # take advantage of the fact that V_h = V_min(h, remaining_time).
+            if args.use_tvf:
+                if args.tvf_truncating and args.use_tvf:
+                    # Case 2: use shorter horizons based on the number of remaining timesteps in the environment
+                    # This is for a few reasons.
+                    # 1. it makes use of the other heads, which means errors might average out
+                    # 2. it can be that shorter horizons get learned more quickly, and this will make use of them earlier on
+                    # so long as the episodes are fairly long. If episodes are short compared to max_horizon this might not
+                    # help at all.
+                    raw_tvf_value_estimates = model_out["tvf_value"].cpu().numpy()
+                    tvf_value_estimates = raw_tvf_value_estimates.copy()
+                    A, K, VH = tvf_value_estimates.shape
+                    for k, h in enumerate(self.tvf_horizons):
+                        target_horizons = np.minimum(h, (args.timeout/args.frame_skip) - prev_time)
+                        if np.min(target_horizons) < h:
+                            # these are some horizons than can be shortened
+                            for vh in range(VH):
+                                # note: all value heads could be done at once...
+                                tvf_value_estimates[:, k, vh] = interpolate(
+                                    np.asarray(self.tvf_horizons, dtype=np.int32),
+                                    raw_tvf_value_estimates[..., vh],
+                                    target_horizons
+                                )
+                else:
+                    tvf_value_estimates = model_out["tvf_value"].cpu().numpy()
+                self.tvf_value[t] = tvf_value_estimates
+
             # get all the information we need from the model
             self.all_obs[t] = upload_if_needed(prev_obs)
+            self.all_time[t] = prev_time
             self.value[t] = model_out["value"].cpu().numpy()
-            self.tvf_value[t] = model_out["tvf_value"].cpu().numpy()
             self.actions[t] = actions
             self.ext_rewards[t] = ext_rewards
             self.log_policy[t] = model_out["log_policy"].cpu().numpy()
@@ -1123,6 +1203,7 @@ class Runner:
         else:
             last_obs = self.obs
         self.all_obs[-1] = upload_if_needed(last_obs)
+        self.all_time[-1] = self.time
         final_model_out = self.detached_batch_forward(self.obs, output="default")
         self.value[-1] = final_model_out["value"].cpu().numpy()
         self.tvf_value[-1] = final_model_out["tvf_value"].cpu().numpy()
@@ -1154,6 +1235,7 @@ class Runner:
                 self.replay_buffer.create_aux_buffer(
                     (len(steps),),
                     reward=utils.merge_down(self.ext_rewards),
+                    time=utils.merge_down(self.prev_time),
                     action=utils.merge_down(self.actions),
                     step=steps,
                     **aux_fields,
@@ -1320,6 +1402,19 @@ class Runner:
         """
         return self.all_obs[-1]
 
+    @property
+    def prev_time(self):
+        """
+        Returns prev_time with size [N,A] (i.e. missing final state)
+        """
+        return self.all_time[:-1]
+
+    def final_time(self):
+        """
+        Returns final time
+        """
+        return self.all_time[-1]
+
     def generate_sampled_return_targets(self, ext_value_estimates: np.ndarray):
         """
         Generates targets for value function, used only in PPO and DNA.
@@ -1352,7 +1447,7 @@ class Runner:
         return np.take_along_axis(values, sample[None, :, :], axis=0)
 
     @torch.no_grad()
-    def get_tvf_rediscounted_value_estimates(self, new_gamma: float, value_head="ext"):
+    def get_tvf_ext_value_estimate(self, new_gamma: float):
         """
 
         Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
@@ -1367,14 +1462,18 @@ class Runner:
         assert args.use_tvf
         N, A, K, VH = self.tvf_value[:self.N].shape
 
-        # [N, A, K]
-        tvf_values = self.tvf_value[:, :, :, self.value_heads.index(value_head)]
+        VALUE_HEAD_INDEX = self.value_heads.index('ext')
 
-        if abs(new_gamma - args.tvf_gamma) < 1e-8:
-            # no rediscounting required, just use final head
+        # [N, A, K]
+        tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
+
+        gamma_are_close = abs(new_gamma - args.tvf_gamma) < 1e-8
+
+        if gamma_are_close:
             return tvf_values[:, :, -1]
 
         # otherwise... we need to rediscount...
+        # note: this does not support truncation yet...
         return get_rediscounted_value_estimate(
             values=tvf_values.reshape([(N + 1) * A, -1]),
             old_gamma=self.tvf_gamma,
@@ -1434,7 +1533,7 @@ class Runner:
 
         # 1. first we calculate 'ext_value' estimate, which is the primarly value estimate
         if args.use_tvf:
-            ext_value_estimates = self.get_tvf_rediscounted_value_estimates(new_gamma=self.gamma)
+            ext_value_estimates = self.get_tvf_ext_value_estimate(new_gamma=self.gamma)
         else:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value

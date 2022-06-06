@@ -46,7 +46,10 @@ def make_model(args, log=None):
     if log is not None:
         log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
-    tvf_fixed_head_horizons = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing)
+    if args.use_tvf:
+        tvf_fixed_head_horizons = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing)
+    else:
+        tvf_fixed_head_horizons = None
 
     model = models.TVFModel(
         encoder=args.encoder,

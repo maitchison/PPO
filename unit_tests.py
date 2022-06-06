@@ -5,6 +5,7 @@ import numpy as np
 from rl import ppo, rollout
 from rl.vtrace import importance_sampling_v_trace, v_trace_trust_region
 from rl.utils import entropy, log_entropy, log_kl, kl
+from rl.rollout import  interpolate
 
 def is_similar(a, b):
     delta = np.abs(a-b)
@@ -257,6 +258,23 @@ def test_calculate_tvf_n_step():
 
     return True
 
+def test_interpolate():
+    h = np.asarray([0, 0, 1500, 30000])
+    values = np.zeros(shape=(2, 2, len(h)), dtype=np.float32)
+    targets = np.zeros(shape=(2, 2), dtype=np.float32)
+
+    targets[0, 0] = 0
+    targets[0, 1] = 25
+    targets[1, 0] = 51
+    targets[1, 1] = 30000
+
+    values[:, :, 0] = 0
+    values[:, :, 1] = 100
+    values[:, :, 2] = 3000
+    values[:, :, 3] = 60000
+
+    interpolate(h, values, targets)
+
 
 # def test_calculate_tvf_lambda():
 #
@@ -318,14 +336,18 @@ def test_calculate_tvf_td():
 # print("Information Theory Functions: ", end='')
 # print("Pass" if test_information_theory_functions() else "Fail!")
 
-print("TVF_MC: ", end='')
-print("Pass" if test_calculate_tvf_mc() else "Fail!")
-print("TVF_TD: ", end='')
-print("Pass" if test_calculate_tvf_td() else "Fail!")
-print("TVF_N_STEP: ", end='')
-print("Pass" if test_calculate_tvf_n_step() else "Fail!")
-print("GAE: ", end='')
-print("Pass" if test_gae() else "Fail!")
+print("ROLLOUT_INTERPOLATE: ", end='')
+print("Pass" if test_interpolate() else "Fail!")
+
+
+# print("TVF_MC: ", end='')
+# print("Pass" if test_calculate_tvf_mc() else "Fail!")
+# print("TVF_TD: ", end='')
+# print("Pass" if test_calculate_tvf_td() else "Fail!")
+# print("TVF_N_STEP: ", end='')
+# print("Pass" if test_calculate_tvf_n_step() else "Fail!")
+# print("GAE: ", end='')
+# print("Pass" if test_gae() else "Fail!")
 #print("Rediscount: ", end='')
 #print("Pass" if test_rediscounted_value_estimate() else "Fail!")
 #print("TVF_Lambda: ", end='')

@@ -365,13 +365,8 @@ class DualHeadNet(nn.Module):
         @device: the device to allocate model to
         """
 
-        # network was the old parameter name.
-        if "network" in kwargs:
-            encoder = encoder
-            del kwargs["network"]
-
         if len(kwargs) > 0:
-            # this is just to checkwe didn't accidently ignore some parameters
+            # this is just to check didn't accidently ignore some parameters
             print(f" - additional encoder args: {kwargs}")
 
         super().__init__()
@@ -462,7 +457,7 @@ class DualHeadNet(nn.Module):
             value_values = self.value_head(encoder_features)
             result[f'value'] = value_values
 
-            if not exclude_tvf:
+            if not exclude_tvf and self.use_tvf:
                 tvf_values = self.tvf_head(encoder_features)
                 n = len(self.tvf_fixed_head_horizons)
                 result[f'tvf_value'] = tvf_values.reshape([-1, n, len(self.value_head_names)])

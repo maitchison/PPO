@@ -424,6 +424,7 @@ def spacing(priority: int = 0):
         tvf_return_n_step=20,
         **COMMON_ARGS
     )
+
     # low n_step might also cause problems.
     add_run(
         run_name="tvf heads=128 nstep=4 (1k)",
@@ -434,6 +435,32 @@ def spacing(priority: int = 0):
 
         tvf_value_heads=128,
         tvf_return_n_step=4,
+        **COMMON_ARGS
+    )
+
+    # try spacing closer together... but keep long horizons (this will be slow!)
+    add_run(
+        run_name="tvf heads=512 nstep=20 (30k)",
+        default_args=TVF2_STANDARD_ARGS,
+        gamma=0.99997,
+        tvf_gamma=1.0,
+        tvf_max_horizon=30000,
+
+        tvf_value_heads=512,
+        tvf_return_n_step=20,
+        **COMMON_ARGS
+    )
+
+    # just want to see what happens with really long n_step
+    add_run(
+        run_name="tvf heads=128 nstep=120 (30k)",
+        default_args=TVF2_STANDARD_ARGS,
+        gamma=0.99997,
+        tvf_gamma=1.0,
+        tvf_max_horizon=30000,
+
+        tvf_value_heads=128,
+        tvf_return_n_step=120,
         **COMMON_ARGS
     )
 
@@ -982,6 +1009,58 @@ def noise(priority: int = 0):
         **COMMON_ARGS
     )
 
+def samples(priority:int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF2_SAMPLES",
+        'default_args': TVF2_STANDARD_ARGS,
+    }
+
+    for tvf_return_samples in [1, 4, 16, 64, 256]:
+        add_run(
+            run_name=f"tvf_return_samples={tvf_return_samples}",
+            tvf_return_samples=tvf_return_samples,
+            # noise, but fast noise
+            use_sns=True,
+            sns_period=8,
+            **COMMON_ARGS
+        )
+
+
+def truncation(priority:int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF2_TRUNCATING",
+        'default_args': TVF2_STANDARD_ARGS,
+    }
+
+    add_run(
+        run_name=f"reference (30k)",
+        # noise, but fast noise
+        use_sns=True,
+        sns_period=8,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"trunc (30k)",
+        # noise, but fast noise
+        tvf_truncating=True,
+        use_sns=True,
+        sns_period=8,
+        **COMMON_ARGS
+    )
+
 
 def setup():
 
@@ -997,6 +1076,10 @@ def setup():
     # cluster_dropout(200)
 
     reference(0)
-    valueheads(0)
+    #valueheads(0)
     spacing(0)
     noise(100)
+
+    # low priority
+    samples(-100)
+    truncation(0)

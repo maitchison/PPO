@@ -94,6 +94,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--use_tvf", type=str2bool, default=False)
 
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
+        parser.add_argument("--tvf_truncating", type=str2bool, default=False, help="Uses shorter horizons when able.")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
         parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
         parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
@@ -407,6 +408,7 @@ class Config(BaseConfig):
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
         self.tvf_gamma = object()
+        self.tvf_truncating = bool()
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
         self.tvf_return_samples = int()
