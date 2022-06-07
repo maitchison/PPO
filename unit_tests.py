@@ -259,16 +259,16 @@ def test_calculate_tvf_n_step():
     return True
 
 def test_interpolate():
-    h = np.asarray([0, 0, 1500, 30000])
+    h = np.asarray([0, 300, 1500, 30000])
     values = np.zeros(shape=(2, 2, len(h)), dtype=np.float32)
     targets = np.zeros(shape=(2, 2), dtype=np.float32)
 
-    targets[0, 0] = 0
+    targets[0, 0] = -100
     targets[0, 1] = 25
     targets[1, 0] = 51
     targets[1, 1] = 30000
 
-    values[:, :, 0] = 0
+    values[:, :, 0] = 50
     values[:, :, 1] = 100
     values[:, :, 2] = 3000
     values[:, :, 3] = 60000

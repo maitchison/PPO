@@ -288,6 +288,10 @@ class Config(BaseConfig):
         parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="horizon heads with noise levels below this threshold are considered low noise.")
         parser.add_argument("--ag_sns_alpha", type=float, default=0.999,
                             help="alpha value used in EMA for horizon.")
+        parser.add_argument("--ag_sns_delay", type=int, default=int(5e6),
+                            help="alpha value used in EMA for horizon.")
+        parser.add_argument("--ag_sns_min_h", type=int, default=100,
+                            help="Minimum auto gamma horizon.")
 
         # --------------------------------
         # Simple Noise Scale
@@ -425,6 +429,8 @@ class Config(BaseConfig):
         self.ag_target = str()
         self.ag_sns_threshold = float()
         self.ag_sns_alpha = float()
+        self.ag_sns_delay = int()
+        self.ag_sns_min_h = int()
 
         self.use_sns = bool()
         self.sns_labels = str()

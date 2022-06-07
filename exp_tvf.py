@@ -373,6 +373,73 @@ TVF2_STANDARD_ARGS = {
 }
 
 
+TVF3_ARGS = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'hostname': '',
+    'architecture': 'dual',
+    'epochs': 50,
+    'obs_compression': False,
+    'upload_batch': True,  # much faster
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+    'mutex_key': "DEVICE",
+
+    'max_micro_batch_size': 2048,   # might help now that we upload the entire batch?
+
+    'max_grad_norm': 5.0,
+    'agents': 128,                  # HPS
+    'n_steps': 128,                 # HPS
+    'policy_mini_batch_size': 2048, # Trying larger
+    'value_mini_batch_size': 512,   # should be 256, but 512 for performance (maybe needs to be larger for tvf?)
+    'distil_mini_batch_size': 512,  #
+    'policy_epochs': 2,             # reasonable guess
+    'value_epochs': 1,              # reasonable guess
+    'distil_epochs': 2,             # reasonable guess
+    'ppo_epsilon': 0.2,             # allows faster policy movement
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
+    'entropy_bonus': 1e-2,          # standard
+    'hidden_units': 512,            # standard
+
+    'lambda_policy': 0.8,
+    'lambda_value': 0.95,
+
+    # tvf
+    'use_tvf': True,
+    'tvf_return_n_step': 20,        # should be 20 maybe, or higher maybe?
+    'tvf_return_samples': 32,
+    'tvf_value_heads': 128,         # maybe need more?
+    'tvf_trimming': True,
+
+    # noise is on by default
+    'use_sns': True,
+    'sns_max_heads': 16,
+    'sns_period': 8,
+
+    # stuck
+    'repeated_action_penalty': 0.01,
+    'max_repeated_actions': 50,
+
+    # distil / replay buffer
+    'distil_period': 1,
+    'replay_size': 1*128*128,
+    'distil_batch_size': 1*128*128,
+    'distil_beta': 1.0,
+    'replay_mode': "uniform",
+
+    # horizon
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+    'tvf_max_horizon': 30000,
+
+    # other
+    'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
+}
+
+
 def merge_dict(a, b):
     x = a.copy()
     x.update(b)
@@ -1098,6 +1165,24 @@ def adaptive(priority: int = 0):
         tvf_return_n_step=40,
         **COMMON_ARGS
     )
+    add_run(
+        run_name=f"adaptive 20",
+        tvf_return_mode="adaptive",
+        tvf_return_n_step=20,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"ref 20",
+        tvf_return_n_step=20,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"ref 120",
+        tvf_return_n_step=120,
+        **COMMON_ARGS
+    )
 
 def auto_gamma(priority:int = 0):
 
@@ -1117,7 +1202,6 @@ def auto_gamma(priority:int = 0):
     }
 
     for mode in [
-        # 'off',
         # 'episode_length',
         # 'training',
         'sns'
@@ -1128,6 +1212,36 @@ def auto_gamma(priority:int = 0):
             ag_mode=mode,
             **COMMON_ARGS
         )
+
+    add_run(
+        run_name=f"mode=sns_v2",
+        use_ag=True,
+        ag_mode='sns',
+        ag_sns_alpha=0.995,
+        ag_sns_threshold=7.5,
+        **COMMON_ARGS
+    )
+
+def t3_samples(priority:int=0):
+    # how many samples do we need? 64 should be the same as 128 with the new system?
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "",
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_SAMPLES",
+        'default_args': TVF3_ARGS,
+    }
+
+    for tvf_return_samples in [1, 4, 16, 64]:
+        add_run(
+            run_name=f"tvf_return_samples={tvf_return_samples}",
+            tvf_return_samples=tvf_return_samples,
+            **COMMON_ARGS
+        )
+
 
 def setup():
 
@@ -1142,13 +1256,16 @@ def setup():
 
     # cluster_dropout(200)
 
-    reference(0)
-    #valueheads(0)
-    spacing(0)
-    noise(100)
+    # reference(0)
+    # #valueheads(0)
+    # spacing(0)
+    # noise(100)
+    #
+    # # low priority
+    # samples(-25)
+    # truncation(0)
+    # auto_gamma(0)
+    # adaptive(-10)
 
-    # low priority
-    samples(-100)
-    truncation(0)
-    auto_gamma(0)
-    adaptive(-10)
+    # try again...
+    t3_samples()

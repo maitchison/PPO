@@ -38,12 +38,17 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     # I did this custom, as I could not find a way to get numpy to interpolate the way I needed it to.
     # the issue is we interpolate nd data with non-uniform target x's.
 
+    # todo: check interpolation at edge
+    # also error on duplicates, rather than try to fix it.
+
     # remove duplicates
     old_horizons = horizons
     new_horizons = np.asarray(sorted(set(old_horizons)))
     horizon_mapping = np.searchsorted(old_horizons, new_horizons)
     values = values[..., horizon_mapping]
     horizons = horizons[horizon_mapping]
+
+    assert horizons[0] == 0, "first horizon must be 0"
 
     *shape, K = values.shape
     shape = tuple(shape)
@@ -66,21 +71,36 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     dx = (horizons[post_index] - horizons[pre_index])
     factor = (target_horizons - horizons[index - 1]) / dx
     result = value_pre * (1 - factor) + value_post * factor
-    result[post_index == 0] = value_pre[post_index == 0] # these are nan otherwise.
+    result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
     return result.reshape(*shape)
 
 
-def get_value_head_horizons(n_heads:int, max_horizon: int, spacing:str="geometric"):
+def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geometric"):
     """
     Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = max_horizon.
     Some early horizons may be duplicated due to rounding.
     """
-    if spacing == "geometric":
-        return np.asarray(np.round(np.geomspace(1, max_horizon+1, n_heads))-1, dtype=np.int)
-    elif spacing == "linear":
-        return np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int)
-    else:
-        raise ValueError(f"Invalid spacing value {spacing}")
+
+    result = []
+    target_n_heads = n_heads
+
+    # the idea here is to remove duplicates.
+    while len(result) < target_n_heads:
+        if spacing == "geometric":
+            result = np.asarray(np.round(np.geomspace(1, max_horizon+1, n_heads))-1, dtype=np.int)
+        elif spacing == "linear":
+            result = np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int)
+        else:
+            raise ValueError(f"Invalid spacing value {spacing}")
+        result = np.asarray(sorted(set(result)))
+        n_heads += 1
+
+    if len(result) != target_n_heads:
+        # this can fail sometimes...
+        print("Warning, head distribution not even, trying to fix...")
+        return get_value_head_horizons(n_heads-1, max_horizon, spacing)
+
+    return result
 
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
@@ -937,7 +957,6 @@ class Runner:
         assert rewards.shape == (N, A)
         assert dones.shape == (N, A)
 
-
         # step 2: calculate the returns
         start_time = clock.time()
 
@@ -1073,7 +1092,7 @@ class Runner:
         help at all.
 
         @param tvf_value_estimates: np array of dims [A, K]
-        @param time: np array of dims [A] containing time assosicated with the states that generated these estimates.
+        @param time: np array of dims [A] containing time associated with the states that generated these estimates.
 
         @returns new trimmed estimates of [A, K]
         """
@@ -1484,9 +1503,7 @@ class Runner:
         # [N, A, K]
         tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
 
-        gamma_are_close = abs(new_gamma - args.tvf_gamma) < 1e-8
-
-        if gamma_are_close:
+        if abs(new_gamma - args.tvf_gamma) < 1e-8:
             return tvf_values[:, :, -1]
 
         # otherwise... we need to rediscount...
@@ -2283,6 +2300,23 @@ class Runner:
 
         """
 
+        if self.replay_buffer is None and samples_wanted == args.batch_size:
+            # fast path... only requires policy module to evaluate, can reuse value estimates from rollout.
+            obs = utils.merge_down(self.prev_obs)
+            batch_data = {"prev_state": obs}
+            model_out = self.detached_batch_forward(
+                obs=obs,
+                output="policy",
+            )
+            if args.use_tvf:
+                batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0])
+            else:
+                batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
+            batch_data["old_raw_policy"] = model_out["raw_policy"].detach().cpu().numpy()
+            batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+            return batch_data
+
+        # slower path...
         obs, distil_aux = self.get_replay_sample(samples_wanted)
 
         batch_data = {}
@@ -2382,17 +2416,23 @@ class Runner:
         assert args.use_sns
         assert args.use_tvf
 
-        # step 1: work out our target (with a cap at 10)
-        new_target = 10
+        if self.step < args.ag_sns_delay:
+            self.noise_stats['ag_sns_horizon'] = args.ag_sns_min_h
+            self.log.watch_mean('ag_sns_target', args.ag_sns_min_h)
+            self.log.watch_mean('ag_sns_horizon', args.ag_sns_min_h)
+            return
+
+        # step 1: work out our target (with a cap at min_h)
+        new_target = args.ag_sns_min_h
         for i, h in enumerate(self.tvf_horizons):
             # early on noise values will not be there, so just set them very high
-            noise = max(0, self.noise_stats.get(f'head_{i}_ratio', 999)) ** 0.5
+            noise = max(0, self.noise_stats.get(f'head_{i}_ratio', 999**2)) ** 0.5
             if noise < args.ag_sns_threshold:
                 new_target = max(h, new_target)
 
         # step 2: move towards target
         self.noise_stats['ag_sns_horizon'] = \
-            args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', 10) + (1-args.ag_sns_alpha) * new_target
+            args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_min_h) + (1-args.ag_sns_alpha) * new_target
 
         self.log.watch_mean('ag_sns_target', new_target)
         self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'])
@@ -2417,7 +2457,7 @@ class Runner:
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
-            if args.distil.epochs > 0 and self.batch_counter % args.distil_period == 0:
+            if args.distil.epochs > 0 and self.batch_counter % args.distil_period == args.distil_period-1:
                 self.train_distil()
 
         if args.aux.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period-1):
@@ -2553,7 +2593,8 @@ class Runner:
 def get_rediscounted_value_estimate(
         values: Union[np.ndarray, torch.Tensor],
         old_gamma: float,
-        new_gamma: float, horizons
+        new_gamma: float,
+        horizons
 ):
     """
     Returns rediscounted return at horizon H
@@ -2566,6 +2607,8 @@ def get_rediscounted_value_estimate(
 
     if old_gamma == new_gamma:
         return values[:, -1]
+
+    assert H == len(horizons), f"missmatch {H} {horizons}"
 
     if type(values) is np.ndarray:
         values = torch.from_numpy(values)

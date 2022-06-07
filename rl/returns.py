@@ -183,9 +183,18 @@ def get_return_estimate(
         raise ValueError(f"Invalid returns mode {mode}")
 
     if samples is None:
+
         max_n = len(weights)
         probs = weights / weights.sum()
-        samples = np.random.choice(range(1, max_n + 1), max_samples, replace=True, p=probs)
+
+        if max_samples >= max_n:
+            # in this case we can just calculate each n_step individually. No sampling needed.
+            # the fast return estimator will simply weight these accordingly, but not recalculate them.
+            samples = list(range(1, max_n + 1))
+            args['n_step_weights'] = weights
+        else:
+            # otherwise just select some samples...
+            samples = np.random.choice(range(1, max_n + 1), max_samples, replace=True, p=probs)
 
     if estimator_mode == 'default':
         return _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
