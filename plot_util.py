@@ -26,6 +26,29 @@ def safe_float(x):
     except:
         return None
 
+def safe_mean(x):
+    if x is None:
+        return None
+    x = [z for z in x if z is not None]
+    if len(x) == 0:
+        return None
+    return np.mean(x)
+
+def safe_std(x):
+    if x is None:
+        return None
+    x = [z for z in x if z is not None]
+    if len(x) == 0:
+        return None
+    return np.std(x)
+
+def safe_len(x):
+    if x is None:
+        return 0
+    x = [z for z in x if z is not None]
+    if len(x) == 0:
+        return 0
+    return len(x)
 
 def read_log(file_path):
     if not os.path.exists(file_path + "/params.txt"):
@@ -517,7 +540,6 @@ def compare_runs(
                     group_data[group][1].append(ys[x_start:])
                 continue
 
-
         plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color, linestyle=ls)
         plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
@@ -536,8 +558,19 @@ def compare_runs(
         xs = group_xs[0]
         all_ys = [get_y(i) for i in range(len(xs))]
 
-        ys = np.asarray([np.mean(y_sample) for y_sample in all_ys])
-        ys_std_err = np.asarray([np.std(y_sample) / (len(y_sample)**0.5) for y_sample in all_ys])
+        ys = []
+        ys_std_err = []
+        for y_sample in all_ys:
+            y_sample = [x for x in y_sample if x is not None]
+            if len(y_sample) == 0:
+                ys.append(0)
+                ys_std_err.append(0)
+            else:
+                ys.append(np.mean(y_sample))
+                ys_std_err.append(np.std(y_sample) / (len(y_sample)**0.5))
+        ys = np.asarray(ys)
+        ys_std_err = np.asarray(ys_std_err)
+
         #ys_low = [np.max(y_sample) for y_sample in all_ys]
         #ys_high = [np.min(y_sample) for y_sample in all_ys]
         ys_low = ys - ys_std_err

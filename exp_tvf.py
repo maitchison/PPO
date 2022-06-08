@@ -10,6 +10,8 @@ ATARI_3_VAL = ['Assault', 'MsPacman', 'YarsRevenge']
 ATARI_1_VAL = ['Assault']
 ATARI_5 = ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert']
 
+SEED_PENALITY = 10 # how much to deprioritise seeds
+
 
 # proposed changes
 # microbatch down to 256
@@ -54,7 +56,7 @@ def add_run(experiment: str, run_name: str, default_args, env_args, subset:list,
             run_name=f"game={env} {run_name} ({seed})",
             env_name=env,
             seed=seed,
-            priority=priority - ((seed - 1) * 100),
+            priority=priority - ((seed - 1) * SEED_PENALITY),
             default_params=args,
             epochs=0.1,
             **seed_params.get(seed, {}),
@@ -69,7 +71,7 @@ def add_run(experiment: str, run_name: str, default_args, env_args, subset:list,
                 run_name=f"game={env} {run_name} ({seed})",
                 env_name=env,
                 seed=seed,
-                priority=priority - ((seed - 1) * 100),
+                priority=priority - ((seed - 1) * SEED_PENALITY),
                 default_params=args,
                 **seed_params.get(seed, {}),
                 **kwargs,
@@ -1226,7 +1228,7 @@ def t3_samples(priority:int=0):
     # how many samples do we need? 64 should be the same as 128 with the new system?
 
     COMMON_ARGS = {
-        'seeds': 1,
+        'seeds': 2,
         'subset': ATARI_3_VAL,
         'priority': priority,
         'hostname': "",
@@ -1239,6 +1241,30 @@ def t3_samples(priority:int=0):
         add_run(
             run_name=f"tvf_return_samples={tvf_return_samples}",
             tvf_return_samples=tvf_return_samples,
+            **COMMON_ARGS
+        )
+
+
+def t3_heads(priority: int = 0):
+    # how many samples do we need? 64 should be the same as 128 with the new system?
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "cluster",
+        'device': 'cuda',
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_HEADS",
+        'default_args': TVF3_ARGS,
+        # improved args
+        'tvf_return_samples': 4,
+    }
+
+    for tvf_value_heads in [1, 64, 128, 256, 512]:
+        add_run(
+            run_name=f"tvf_value_heads={tvf_value_heads}",
+            tvf_value_heads=tvf_value_heads,
             **COMMON_ARGS
         )
 
@@ -1269,3 +1295,4 @@ def setup():
 
     # try again...
     t3_samples()
+    t3_heads()
