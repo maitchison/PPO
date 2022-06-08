@@ -1249,7 +1249,7 @@ def t3_bw(priority: int = 0):
     # quick check to see if using cv2 black and white filter makes ghosts more visible in ms.pacman.
 
     COMMON_ARGS = {
-        'seeds': 1,
+        'seeds': 3,
         'subset': ["MsPacman"],
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
@@ -1257,6 +1257,7 @@ def t3_bw(priority: int = 0):
         'default_args': TVF3_ARGS,
         # improved args
         'tvf_return_samples': 4,
+        'epochs': 5,
     }
 
     for cv2_bw in [True, False]:
@@ -1268,6 +1269,7 @@ def t3_bw(priority: int = 0):
 
 
 def t3_heads(priority: int = 0):
+
     # how many samples do we need? 64 should be the same as 128 with the new system?
 
     COMMON_ARGS = {
@@ -1289,6 +1291,64 @@ def t3_heads(priority: int = 0):
             tvf_value_heads=tvf_value_heads,
             **COMMON_ARGS
         )
+
+
+def t3_distil(priority: int = 0):
+    # how many samples do we need? 64 should be the same as 128 with the new system?
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "cluster",
+        'device': 'cuda',
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_DISTIL",
+        'default_args': TVF3_ARGS,
+        # improved args
+        'tvf_return_samples': 4,
+    }
+
+    # does distil help, how much is needed?
+    add_run(
+        run_name=f"distil off",
+        replay_size=0,
+        distil_epochs=0,
+        distil_batch_size=0,
+        **COMMON_ARGS
+    )
+    add_run(
+        run_name=f"distil replay",
+        **COMMON_ARGS
+    )
+    add_run(
+        run_name=f"distil rollout",
+        replay_size=0,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"distil_max_heads={128}",
+        distil_max_heads=128,
+        replay_size=0,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"distil_period={4}",
+        distil_period=4,
+        replay_size=0,
+        **COMMON_ARGS,
+    )
+
+    # lightweight distillation
+    add_run(
+        run_name=f"distil fast",
+        distil_period=4,
+        replay_size=0,
+        distil_max_heads=8,
+        **COMMON_ARGS,
+    )
 
 
 def setup():
@@ -1319,3 +1379,4 @@ def setup():
     t3_samples()
     t3_heads()
     t3_bw(200)
+    t3_distil(0)

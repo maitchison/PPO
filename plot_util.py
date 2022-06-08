@@ -413,6 +413,7 @@ def compare_runs(
         x_transform=None,
         jitter=0.0,
         figsize=(16, 4),
+        show_group_runs=False,
         run_filter=None, # not used
 ):
     """
@@ -489,6 +490,7 @@ def compare_runs(
         small = (i - 1) % len(cmap.colors)
         big = (i - 1) // len(cmap.colors)
         auto_color = cmap.colors[small]
+
         if style_filter is not None:
             auto_style = style_filter(run_name)
         else:
@@ -519,8 +521,11 @@ def compare_runs(
             ys = xs[:len(xs)]
             print(f"Warning, missmatched data on {path}:{run_name}")
 
+        group_color = None
+
         if color_filter is not None:
             color = color_filter(run_name, color)
+            group_color = color_filter(run_name, color)
 
         # make sure we don't duplicate labels
         if run_label in run_labels_so_far:
@@ -534,7 +539,7 @@ def compare_runs(
             group = group_filter(run_name, run_data)
             if group != None:
                 if group not in group_data:
-                    group_data[group] = ([xs], [ys], run_label, alpha, color, zorder, ls)
+                    group_data[group] = ([xs], [ys], run_label, alpha, group_color, zorder, ls)
                 else:
                     group_data[group][0].append(xs[x_start:])
                     group_data[group][1].append(ys[x_start:])
@@ -550,6 +555,7 @@ def compare_runs(
         plt.ylabel(y_axis_name or y_axis)
 
     # show groups
+    default_color_index = 0
     for k, (group_xs, group_ys, run_label, alpha, color, zorder, ls) in group_data.items():
 
         def get_y(index):
@@ -576,14 +582,18 @@ def compare_runs(
         ys_low = ys - ys_std_err
         ys_high = ys + ys_std_err
 
-        for x_raw, y_raw in zip(group_xs, group_ys):
-            # raw curves
-            #plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
-            pass
+        if color is None:
+            color = cmap.colors[default_color_index]
+
+        if show_group_runs:
+            for x_raw, y_raw in zip(group_xs, group_ys):
+                plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
 
         plt.fill_between(xs, smooth(ys_low, smooth_factor), smooth(ys_high, smooth_factor), alpha=0.15 * alpha, color=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
+
+        default_color_index += 1
 
     standard_grid()
 

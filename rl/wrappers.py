@@ -376,8 +376,6 @@ class FrameSkipWrapper(gym.Wrapper):
         self._t = 0
         return self.env.reset(**kwargs)
 
-
-
 class ClipRewardWrapper(gym.Wrapper):
     """ Clips reward to given range"""
 

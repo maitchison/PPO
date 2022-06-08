@@ -727,7 +727,7 @@ class Runner:
 
         if verbose:
             model_total_size = self.model.model_size(trainable_only=False)/1e6
-            self.log.important("Generated {} agents ({}) using {} ({:.1f}M params) {} model.".
+            self.log.important("Generated {} agents ({}) using {} ({:.2f}M params) {} model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
                                   model_total_size, self.model.dtype))
 
