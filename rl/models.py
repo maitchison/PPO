@@ -418,19 +418,19 @@ class DualHeadNet(nn.Module):
         encoder_features = encoder_features.float(memory_format=torch.contiguous_format)
 
         if self.encoder_activation_fn == "relu":
-            af = F.relu
+            activation_function = F.relu
         elif self.encoder_activation_fn == "tanh":
-            af = torch.tanh
+            activation_function = torch.tanh
         else:
             raise ValueError(f"Invalid activation function {self.encoder_activation_fn}")
 
         if include_features:
             # used for debugging sometimes
             result['raw_features'] = encoder_features
-            encoder_features = af(encoder_features)
+            encoder_features = activation_function(encoder_features)
             result['features'] = encoder_features
         else:
-            encoder_features = af(encoder_features)
+            encoder_features = activation_function(encoder_features)
 
         if not exclude_policy:
             unscaled_policy = self.policy_head(encoder_features)

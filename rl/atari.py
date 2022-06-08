@@ -131,7 +131,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = gym.make(
         env_name,
-        obs_type='rgb' if (monitor_video or args.color) else 'grayscale',
+        obs_type='rgb' if (monitor_video or args.color or args.cv2_bw) else 'grayscale',
         # ALE will skip over frames without applying max, so we handle the frameskip with our own wrapper
         frameskip=1,
         repeat_action_probability=args.repeat_action_probability,

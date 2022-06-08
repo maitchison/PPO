@@ -337,19 +337,19 @@ class FrameSkipWrapper(gym.Wrapper):
 
         for i in range(skip):
             obs, reward, done, _info = self.env.step(action)
+            if i >= skip - 2:
+                t = i - (skip - 2)
+                self._obs_buffer[t] = obs
 
             # combine infos, with overwriting
             if _info is not None:
-                for k, v in _info.items():
-                    info[k] = v
+                info.update(_info)
 
-            if i == skip - 2:
-                self._obs_buffer[0] = obs
-            if i == skip - 1:
-                self._obs_buffer[1] = obs
             total_reward += reward
+
             if done:
                 break
+
         # Note that the observation on the done=True frame
         # doesn't matter
         reduce_frame = self._reduce_op(self._obs_buffer, axis=0)

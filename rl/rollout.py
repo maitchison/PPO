@@ -28,7 +28,7 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     """
     Returns linearly interpolated value from source_values
 
-    horizons: sorted ndarray of shape [K] of horizons, must be in ascending order
+    horizons: sorted ndarray of shape [K] of horizons, must be in *strictly* ascending order
     values: ndarray of shape [*shape, K] where values[...,h] corresponds to horizon horizons[h]
     target_horizons: np array of dims [*shape], the horizon we would like to know the interpolated value of for each
         example
@@ -38,17 +38,13 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     # I did this custom, as I could not find a way to get numpy to interpolate the way I needed it to.
     # the issue is we interpolate nd data with non-uniform target x's.
 
-    # todo: check interpolation at edge
-    # also error on duplicates, rather than try to fix it.
-
-    # remove duplicates
-    old_horizons = horizons
-    new_horizons = np.asarray(sorted(set(old_horizons)))
-    horizon_mapping = np.searchsorted(old_horizons, new_horizons)
-    values = values[..., horizon_mapping]
-    horizons = horizons[horizon_mapping]
+    assert len(set(horizons)) == len(horizons), f"Horizons duplicates not supported {horizons}"
+    assert np.all(np.diff(horizons) >= 0), f"Horizons must be sorted {horizons}"
 
     assert horizons[0] == 0, "first horizon must be 0"
+
+    # we do not extrapolate...
+    target_horizons = np.clip(target_horizons, min(horizons), max(horizons))
 
     *shape, K = values.shape
     shape = tuple(shape)
@@ -1082,7 +1078,7 @@ class Runner:
         else:
             raise ValueError(f"invalid action distribution {self.action_dist}")
 
-    def trim_values(self, tvf_value_estimates, time, enabled=True):
+    def trim_values(self, tvf_value_estimates, time, enabled:bool = True):
         """
         Adjusts horizons by reducing horizons that extend over the timeout back to the timeout.
         This is for a few reasons.
@@ -1175,7 +1171,7 @@ class Runner:
             if 'max_repeats' in infos[0]:
                 self.log.watch_mean('max_repeats', infos[0]['max_repeats'])
             if 'mean_repeats' in infos[0]:
-                self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'])
+                self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'], display_width=0)
 
             # process each environment, check if they have finished
             for i, (done, info) in enumerate(zip(dones, infos)):
@@ -1212,9 +1208,14 @@ class Runner:
 
             # take advantage of the fact that V_h = V_min(h, remaining_time).
             if args.use_tvf:
+                tvf_values = model_out["tvf_value"].cpu().numpy()
+                # by definition h=0 is 0.0
+                assert self.tvf_horizons[0] == 0, "First horizon must be zero"
+                tvf_values[:, 0] = 0
                 self.tvf_value[t] = self.trim_values(
-                    model_out["tvf_value"].cpu().numpy(),
-                    prev_time, enabled=args.tvf_trimming
+                    tvf_values,
+                    prev_time,
+                    enabled=args.tvf_trimming
                 )
 
             # get all the information we need from the model

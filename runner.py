@@ -15,6 +15,7 @@ class SlurmTemplate:
         self.n_gpus = n_gpus
         self.n_jobs = n_jobs
 
+
 TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
 #SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)

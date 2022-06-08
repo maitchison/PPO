@@ -1245,6 +1245,28 @@ def t3_samples(priority:int=0):
         )
 
 
+def t3_bw(priority: int = 0):
+    # quick check to see if using cv2 black and white filter makes ghosts more visible in ms.pacman.
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'subset': ["MsPacman"],
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_BW",
+        'default_args': TVF3_ARGS,
+        # improved args
+        'tvf_return_samples': 4,
+    }
+
+    for cv2_bw in [True, False]:
+        add_run(
+            run_name=f"cv2_bw={cv2_bw}",
+            cv2_bw=cv2_bw,
+            **COMMON_ARGS
+        )
+
+
 def t3_heads(priority: int = 0):
     # how many samples do we need? 64 should be the same as 128 with the new system?
 
@@ -1252,8 +1274,8 @@ def t3_heads(priority: int = 0):
         'seeds': 2,
         'subset': ATARI_3_VAL,
         'priority': priority,
-        'hostname': "cluster",
-        'device': 'cuda',
+        #'hostname': "cluster",
+        #'device': 'cuda',
         'env_args': HARD_MODE_ARGS,
         'experiment': "T3_HEADS",
         'default_args': TVF3_ARGS,
@@ -1261,7 +1283,7 @@ def t3_heads(priority: int = 0):
         'tvf_return_samples': 4,
     }
 
-    for tvf_value_heads in [1, 64, 128, 256, 512]:
+    for tvf_value_heads in [2, 64, 128, 256, 512]:
         add_run(
             run_name=f"tvf_value_heads={tvf_value_heads}",
             tvf_value_heads=tvf_value_heads,
@@ -1296,3 +1318,4 @@ def setup():
     # try again...
     t3_samples()
     t3_heads()
+    t3_bw(200)
