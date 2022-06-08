@@ -1847,11 +1847,11 @@ class Runner:
                 tvf_loss = tvf_loss * mask
 
             if args.tvf_sum_horizons:
-                tvf_loss = tvf_loss.mean(dim=-1) # mean over horizon
+                tvf_loss = tvf_loss.sum(dim=-1) # mean over horizon
             else:
                 # sum over horizon, with lots of heads this will be extremely large early on.
                 # make sure gradient clipping is enabled.
-                tvf_loss = tvf_loss.sum(dim=-1)
+                tvf_loss = tvf_loss.mean(dim=-1)
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64*args.value.epochs, display_name="ls_tvf", display_width=8)

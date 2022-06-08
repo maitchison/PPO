@@ -45,7 +45,8 @@ def test_return_estimators(log=None):
         r1_time = clock.time() - start_time
 
         start_time = clock.time()
-        m1 = _calculate_sampled_return_multi_threaded(**args)
+        #m1 = _calculate_sampled_return_multi_threaded(**args)
+        m1 = _calculate_sampled_return_multi_fast(**args)
         r2_time = clock.time() - start_time
 
         delta_m1 = np.abs(m1_ref - m1)
@@ -197,9 +198,9 @@ def get_return_estimate(
             # otherwise just select some samples...
             samples = np.random.choice(range(1, max_n + 1), max_samples, replace=True, p=probs)
 
-    if estimator_mode == 'default':
+    if estimator_mode == 'historic':
         return _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
-    elif estimator_mode == "threaded":
+    elif estimator_mode == "default":
         return _calculate_sampled_return_multi_threaded(n_step_list=samples, **args)
     elif estimator_mode == 'reference':
         return _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
@@ -679,23 +680,33 @@ def _n_step_estimate(params):
     Processes rewards [N, A] and value_estimates [N+1, A, K] into returns [N, A]
     """
 
-    (rewards, gamma, value_sample_horizons, value_samples, dones) = GLOBAL_CACHE
+    (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache) = GLOBAL_CACHE
     target_n_step, idx, target_h, weight = params
 
     N, A = rewards.shape
 
+    if target_h == 0:
+        # happens sometimes, always return 0.
+        zeros = np.zeros([N, A], dtype=np.float32)
+        return idx, target_h, zeros
+
     if target_n_step > target_h:
         target_n_step = target_h
 
-    s = np.zeros([N, A], dtype=np.float32)
+    # s = np.zeros([N, A], dtype=np.float32)
     m = np.zeros([N, A], dtype=np.float32)
-    discount = np.ones([N, A], dtype=np.float32)
 
-    # add up the discounted rewards,
-    # that is cum_rewards[n, a] = sum_{t=n}^{n+n_step} r_t
-    for i in range(target_n_step):
-        s[:N-i] += rewards[i:] * discount[:N-i]
-        discount[:N-i] *= gamma * (1 - dones[i:])
+    # discount = np.ones([N, A], dtype=np.float32)
+    #
+    # # add up the discounted rewards,
+    # # that is cum_rewards[n, a] = sum_{t=n}^{n+n_step} r_t
+    # for i in range(target_n_step):
+    #     s[:N-i] += rewards[i:] * discount[:N-i]
+    #     discount[:N-i] *= gamma * (1 - dones[i:])
+
+    # much quicker to use the cached version of these
+    s = reward_cache[target_n_step]
+    discount = discount_cache[target_n_step]
 
     # add the bootstrap estimate
     h_remaining = target_h - target_n_step
@@ -711,8 +722,6 @@ def _n_step_estimate(params):
 
     returns = s + m
     return idx, target_h, returns * weight
-
-
 
 def _calculate_sampled_return_multi_threaded(
     n_step_list: list,
@@ -746,20 +755,61 @@ def _calculate_sampled_return_multi_threaded(
 
     # todo: support different n_steps for different horizons...
     jobs = []
+
     total_weight = np.sum(list(n_step_weights.values()))
+
     for i, h in enumerate(required_horizons):
-        for n_step in n_step_list:
-            jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight))
+        for j, n_step in enumerate(n_step_list):
+            if n_step >= h:
+                # from this point on we can just weight the last n_step higher
+                # might actually make more sense to delete these?
+                remaining_weights = [n_step_weights[n] / total_weight for n in n_step_list[j:]]
+                target_n_step = min(h, n_step)
+                jobs.append((target_n_step, i, h, sum(remaining_weights)))
+                break
+            else:
+                jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight))
+
+    # build our discount / reward sum cache...
+    # quicker to do the needed ones as we go
+    # add up the discounted rewards,
+    # that is s[n, a] = sum_{t=n}^{n+n_step} r_t
+    n_step_set = set(n_step_list)
+    required_horizons_set = set(required_horizons)
+    s = np.zeros([N, A], dtype=np.float32)
+    discount = np.ones([N, A], dtype=np.float32)
+    discount_cache = {}
+    reward_cache = {}
+    for i in range(max(n_step_list)):
+        s[:N - i] += rewards[i:] * discount[:N - i]
+        discount[:N - i] *= gamma * (1 - dones[i:])
+        if i+1 in n_step_set or i+1 in required_horizons_set:
+            reward_cache[i + 1] = s.copy()
+            discount_cache[i+1] = discount.copy()
 
     # simple way to get this data to all the workers without having to pickle it (which would be too slow)
     global GLOBAL_CACHE
-    GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones)
+    GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache)
 
-    from multiprocessing.pool import ThreadPool
-    _pool = ThreadPool if len(jobs) < 100 else Pool
+    # from multiprocessing.pool import ThreadPool
+    # if len(jobs) < 1000:
+    #     _pool = ThreadPool
+    #     n_processes = 1
+    # else:
+    #     # overhead to start this up is a bit I guess, so use threadpool for small jobs
+    #     _pool = Pool
+    #     n_processes = 24
+    #
+    # _pool = ThreadPool
+    # n_processes = 2
 
-    with _pool(processes=4) as pool:
-        result = pool.map(_n_step_estimate, jobs, chunksize=10)
+    # with _pool(processes=n_processes) as pool:
+    #     result = pool.map(_n_step_estimate, jobs, chunksize=100)
+
+    # no threads
+    result = []
+    for params in jobs:
+        result.append(_n_step_estimate(params))
 
     all_results = np.zeros([N, A, K], dtype=np.float32)
     for idx, h, returns in result:

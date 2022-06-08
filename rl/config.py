@@ -205,7 +205,7 @@ class Config(BaseConfig):
         # Rewards
         parser.add_argument("--intrinsic_reward_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--return_estimator_mode", type=str, default="default",
-                            help='Allows the use of the reference return estimator (very slow). [default|reference|verify|threaded]')
+                            help='Allows the use of the reference return estimator (very slow). [default|reference|verify|historic]')
         parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
@@ -582,7 +582,7 @@ def parse_args(args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-    assert args.return_estimator_mode in ["default", "reference", "verify", "threaded"]
+    assert args.return_estimator_mode in ["default", "reference", "verify", "historic"]
 
     # set defaults
     if args.intrinsic_reward_propagation is None:
