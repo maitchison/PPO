@@ -1285,13 +1285,40 @@ def t3_heads(priority: int = 0):
         'tvf_return_samples': 4,
     }
 
-    for tvf_value_heads in [2, 64, 128, 256, 512]:
+    for tvf_value_heads in [2, 32, 64, 128, 256, 512, 1024]:
         add_run(
             run_name=f"tvf_value_heads={tvf_value_heads}",
             tvf_value_heads=tvf_value_heads,
             **COMMON_ARGS
         )
 
+    # ---------------------------------------------
+    # additional value head experiments
+    COMMON_ARGS['experiment'] = 'T3_HEADSx'
+
+    # really trying here...
+    # the idea is to get heads about 20-50 apart, so they don't reference themselves very often.
+    add_run(
+        run_name=f"2048_weighted_linear",
+        tvf_value_heads=2048,
+        tvf_head_spacing="linear",
+        tvf_head_weighting="h_weighted",
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"2048_linear",
+        tvf_value_heads=2048,
+        tvf_head_spacing="linear",
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"128_sum",
+        tvf_value_heads=128,
+        tvf_sum_horizons=True,
+        **COMMON_ARGS
+    )
 
 def t3_distil(priority: int = 0):
     # how many samples do we need? 64 should be the same as 128 with the new system?

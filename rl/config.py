@@ -94,6 +94,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--use_tvf", type=str2bool, default=False)
 
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
+        parser.add_argument("--tvf_sum_horizons", type=str2bool, default=False, help="Sum horizon errors instead of mean.")
         parser.add_argument("--tvf_trimming", type=str2bool, default=False, help="Uses shorter horizons when able.")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
         parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
@@ -102,7 +103,8 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
         parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
         parser.add_argument("--tvf_value_heads", type=int, default=64, help="Number of value heads to use.")
-        parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="geometric|linear")
+        parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="[geometric|linear]")
+        parser.add_argument("--tvf_head_weighting", type=str, default="off", help="[off|h_weighted]")
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
 
@@ -203,7 +205,7 @@ class Config(BaseConfig):
         # Rewards
         parser.add_argument("--intrinsic_reward_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--return_estimator_mode", type=str, default="default",
-                            help='Allows the use of the reference return estimator (very slow). [default|reference|verify]')
+                            help='Allows the use of the reference return estimator (very slow). [default|reference|verify|threaded]')
         parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
@@ -417,6 +419,7 @@ class Config(BaseConfig):
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
         self.tvf_gamma = object()
+        self.tvf_sum_horizons = bool()
         self.tvf_trimming = bool()
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
@@ -426,6 +429,7 @@ class Config(BaseConfig):
         self.tvf_max_horizon = int()
         self.tvf_value_heads = int()
         self.tvf_head_spacing = str()
+        self.tvf_head_weighting = str()
         self.use_ag = bool()
         self.ag_mode = str()
         self.ag_target = str()
@@ -578,7 +582,7 @@ def parse_args(args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-    assert args.return_estimator_mode in ["default", "reference", "verify"]
+    assert args.return_estimator_mode in ["default", "reference", "verify", "threaded"]
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

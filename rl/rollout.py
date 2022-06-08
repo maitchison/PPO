@@ -1561,7 +1561,7 @@ class Runner:
         """
 
         self.returns *= 0
-
+        self.tvf_returns *= 0
         N, A, *state_shape = self.prev_obs.shape
 
         self.model.eval()
@@ -1630,7 +1630,7 @@ class Runner:
             if args.replay_size > 0:
                 self.replay_buffer.log_stats(self.log)
 
-        if not args.disable_ev and self.batch_counter % 2 == 1:
+        if not args.disable_ev and self.batch_counter % 4 == 3:
             # only about 3% slower with this on.
             self.log_value_quality()
             if args.use_tvf:
@@ -1829,13 +1829,29 @@ class Runner:
                 predictions = predictions[:, single_value_head]
 
             tvf_loss = 0.5 * torch.square(targets - predictions)
+
+            # h_weighting adjustment
+            if args.tvf_head_weighting == "h_weighted" and single_value_head is None:
+                def h_weight(h):
+                    # roughly the number of times an error will be copied, plus the original error
+                    return 1 + ((args.tvf_max_horizon - h) / args.tvf_return_n_step)
+                weighting = np.asarray([h_weight(h) for h in self.tvf_horizons], dtype=np.float32)[None, :]
+                adjustment = 2 / (np.min(weighting) + np.max(weighting)) # try to make MSE roughly the same scale as before
+                tvf_loss = tvf_loss * torch.tensor(weighting).to(device=tvf_loss.device) * adjustment
+
             if args.tvf_horizon_dropout > 0:
                 # note: we weight the mask so that after the average the loss per example will be approximately the same
                 # magnitude.
                 keep_prob = (1-args.tvf_horizon_dropout)
                 mask = torch.bernoulli(torch.ones_like(tvf_loss)*keep_prob) / keep_prob
                 tvf_loss = tvf_loss * mask
-            tvf_loss = tvf_loss.mean(dim=-1) # mean over horizon
+
+            if args.tvf_sum_horizons:
+                tvf_loss = tvf_loss.mean(dim=-1) # mean over horizon
+            else:
+                # sum over horizon, with lots of heads this will be extremely large early on.
+                # make sure gradient clipping is enabled.
+                tvf_loss = tvf_loss.sum(dim=-1)
             loss = loss + tvf_loss
 
             self.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64*args.value.epochs, display_name="ls_tvf", display_width=8)

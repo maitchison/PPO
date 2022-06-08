@@ -2,10 +2,13 @@ import numpy as np
 import time as clock
 import bisect
 import math
+from multiprocessing import Pool
 from typing import Union, Optional
 from collections import defaultdict
 from .logger import Logger
 
+# memory sharing between workers for efficent return estimation
+GLOBAL_CACHE = None
 
 def test_return_estimators(log=None):
     """
@@ -24,11 +27,11 @@ def test_return_estimators(log=None):
         'required_horizons': np.geomspace(1, 1024, num=K).astype('int32'),
         'value_sample_horizons': np.geomspace(1, 1024+1, num=V).astype('int32')-1,
         'value_samples': np.random.normal(0.1, 0.4, [N+1, A, V]).astype('float32'),
-        'value_samples_m2': np.random.normal(0.1, 1.0, [N+1, A, V]).astype('float32') ** 2,
+        #'value_samples_m2': np.random.normal(0.1, 1.0, [N+1, A, V]).astype('float32') ** 2,
     }
 
     default_args['value_samples'][:, :, 0] *= 0 # h=0 must be zero
-    default_args['value_samples_m2'][:, :, 0] *= 0  # h=0 must be zero
+    #default_args['value_samples_m2'][:, :, 0] *= 0  # h=0 must be zero
 
     m3 = np.random.normal(0.1, 0.4, [N+1, A, V]) ** 3,
 
@@ -38,24 +41,22 @@ def test_return_estimators(log=None):
         args.update(kwargs)
 
         start_time = clock.time()
-        m1_ref, m2_ref = _calculate_sampled_return_multi_reference(**args)
+        m1_ref = _calculate_sampled_return_multi_reference(**args)
         r1_time = clock.time() - start_time
 
         start_time = clock.time()
-        m1, m2 = _calculate_sampled_return_multi_fast(**args)
+        m1 = _calculate_sampled_return_multi_threaded(**args)
         r2_time = clock.time() - start_time
 
         delta_m1 = np.abs(m1_ref - m1)
-        delta_m2 = np.abs(m2_ref - m2)
 
         e_m1 = delta_m1.max()
-        e_m2 = delta_m2.max()
 
         ratio = r1_time / r2_time
 
         # note fp32 has about 6 sg fig, so rel error of around 1e-6 is expected.
 
-        print(f"Times {r1_time:.2f}s / {r2_time:.2f}s ({ratio:.1f}x), error for {label} = {e_m1:.6f}/{e_m2:.6f}")
+        print(f"Times {r1_time:.2f}s / {r2_time:.2f}s ({ratio:.1f}x), error for {label} = {e_m1:.6f}")
 
     n_step = 8
     eff_h = min(n_step * 3, N)
@@ -198,6 +199,8 @@ def get_return_estimate(
 
     if estimator_mode == 'default':
         return _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
+    elif estimator_mode == "threaded":
+        return _calculate_sampled_return_multi_threaded(n_step_list=samples, **args)
     elif estimator_mode == 'reference':
         return _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
     elif estimator_mode == 'verify':
@@ -544,14 +547,19 @@ def calculate_second_moment_estimate_td(
     return rewards**2 + 2*gamma*rewards * first_moment_estimates[1:] + (gamma**2)*second_moment_estimates[1:]
 
 
-def reweigh_samples(n_step_list:list, weights=None):
+def reweigh_samples(n_step_list:list, weights=None, max_n: Optional[int] = None):
     """
     Takes a list of n_step lengths, and (optinally) their weights, and returns a new list of samples / weights
     such that duplicate n_steps have had their weight added together.
     I.e. reweigh_samples = [1,1,1,2] -> ([1,2], [1:3,2:1])
     """
+
+    n_step_list = np.clip(n_step_list, 1, max_n)
+    n_step_list = list(n_step_list)
+
     if weights is None:
         weights = [1.0 for _ in n_step_list]
+
     n_step_weight = defaultdict(float)
     for n, weight in zip(n_step_list, weights):
         n_step_weight[n] += weight
@@ -666,6 +674,98 @@ def _calculate_sampled_return_multi_reference(
     else:
         return returns_m1, returns_m2, returns_m3
 
+def _n_step_estimate(params):
+    """
+    Processes rewards [N, A] and value_estimates [N+1, A, K] into returns [N, A]
+    """
+
+    (rewards, gamma, value_sample_horizons, value_samples, dones) = GLOBAL_CACHE
+    target_n_step, idx, target_h, weight = params
+
+    N, A = rewards.shape
+
+    if target_n_step > target_h:
+        target_n_step = target_h
+
+    s = np.zeros([N, A], dtype=np.float32)
+    m = np.zeros([N, A], dtype=np.float32)
+    discount = np.ones([N, A], dtype=np.float32)
+
+    # add up the discounted rewards,
+    # that is cum_rewards[n, a] = sum_{t=n}^{n+n_step} r_t
+    for i in range(target_n_step):
+        s[:N-i] += rewards[i:] * discount[:N-i]
+        discount[:N-i] *= gamma * (1 - dones[i:])
+
+    # add the bootstrap estimate
+    h_remaining = target_h - target_n_step
+
+    if h_remaining > 0:
+        m[:N-target_n_step] = _interpolate(value_sample_horizons, value_samples[target_n_step:-1], h_remaining) * discount[:N-target_n_step]
+    else:
+        pass
+
+    # process the final n_step estimates, this can be slow for large target_n_step
+    for i in range(target_n_step):
+        m[N-i-1] = _interpolate(value_sample_horizons, value_samples[-1], target_h - i - 1) * discount[N-i-1]
+
+    returns = s + m
+    return idx, target_h, returns * weight
+
+
+
+def _calculate_sampled_return_multi_threaded(
+    n_step_list: list,
+    gamma: float,
+    rewards: np.ndarray,
+    dones: np.ndarray,
+    required_horizons: np.ndarray,
+    value_sample_horizons: np.ndarray,
+    value_samples: np.ndarray,
+    value_samples_m2: np.ndarray = None,
+    value_samples_m3: np.ndarray = None,
+    n_step_weights: list = None,
+    use_log_interpolation: bool = False,
+):
+    """
+    New strategy, just generate these returns in parallel, and simplify the algorithm *alot*.
+    """
+
+    assert value_samples_m2 is None, "Not supported"
+    assert value_samples_m3 is None, "Not supported"
+    assert use_log_interpolation is False, "Not supported"
+
+    # calculate the weight for each n_step
+    # if we have n_step requests that exceed the longest horizon we can cap these to the longest horizon.
+    max_h = max(required_horizons)
+    max_n = len(rewards)
+    n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights, max_n=min(max_h, max_n))
+
+    N, A = rewards.shape
+    K = len(required_horizons)
+
+    # todo: support different n_steps for different horizons...
+    jobs = []
+    total_weight = np.sum(list(n_step_weights.values()))
+    for i, h in enumerate(required_horizons):
+        for n_step in n_step_list:
+            jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight))
+
+    # simple way to get this data to all the workers without having to pickle it (which would be too slow)
+    global GLOBAL_CACHE
+    GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones)
+
+    from multiprocessing.pool import ThreadPool
+    _pool = ThreadPool if len(jobs) < 100 else Pool
+
+    with _pool(processes=4) as pool:
+        result = pool.map(_n_step_estimate, jobs, chunksize=10)
+
+    all_results = np.zeros([N, A, K], dtype=np.float32)
+    for idx, h, returns in result:
+        all_results[:, :, idx] += returns
+
+    return all_results
 
 def _calculate_sampled_return_multi_fast(
     n_step_list: list,
@@ -708,19 +808,11 @@ def _calculate_sampled_return_multi_fast(
     # I also take advantage of the fact that nstep(n`,h) = nstep(n,h) for all n`>=n. This allows me to eliminate
     # many of the horizon updates once we get into the high n_steps.
 
+    # calculate the weight for each n_step
     # if we have n_step requests that exceed the longest horizon we can cap these to the longest horizon.
     max_h = max(required_horizons)
     max_n = len(rewards)
-    n_step_list = np.clip(n_step_list, 1, max_h)
-    n_step_list = np.clip(n_step_list, 1, max_n)
-    n_step_list = list(n_step_list)
-
-    # calculate the weight for each n_step
-    n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights)
-
-    # remove any duplicates (these will be handled by the weight calculation)
-    n_step_list = list(set(n_step_list))
-    n_step_list.sort()
+    n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights, max_n=min(max_h, max_n))
 
     moment = 1
     if value_samples_m2 is not None:
@@ -763,7 +855,7 @@ def _calculate_sampled_return_multi_fast(
         return _interpolate(log_value_sample_horizons, value_estimates, np.log10(10+horizon)-1)
 
     interpolate = interpolate_log if use_log_interpolation else interpolate_linear
-
+    reverse_sorted_h_lookup_keys = sorted(list(h_lookup.keys()), reverse=True)
     # S [N, A, K], sum_{i=0}^{current_n_step} [ gamma^i r_{t+i} ]
 
     for n_step in n_step_list:
@@ -771,11 +863,11 @@ def _calculate_sampled_return_multi_fast(
         # step 1, update our cumulative reward count
         while current_n_step < n_step:
             cumulative_rewards[:(N-current_n_step)] += rewards[current_n_step:] * discount[:(N-current_n_step)]
-            for h in h_lookup.keys():
+            for h in reverse_sorted_h_lookup_keys:
                 if h >= (current_n_step+1):
                     for i in h_lookup[h]:
                         S[:(N-current_n_step), :, i] += rewards[current_n_step:] * discount[:(N-current_n_step)]
-
+                else: break
             discount[:(N - current_n_step)] *= gamma
             discount[:(N - current_n_step)] *= (1 - dones[current_n_step:])
 
@@ -859,26 +951,26 @@ def _calculate_sampled_return_multi_fast(
                     discount[:block_size] * \
                     weight
 
-        # # next do the remaining few steps
-        # # this is a bit slow for large n_step, but most of the estimates are low n_step anyway
-        # # (this could be improved by simply ignoring these n-step estimates
-        # # the problem with this is that it places *a lot* of emphasis on the final value estimate
-        for t in range(1 + N - current_n_step, N):
-            steps_made = min(current_n_step, N - t)
-            if t + steps_made > N:
-                continue
-            for h_index, h in enumerate(required_horizons):
-                if h - steps_made <= 0:
+            # # next do the remaining few steps
+            # # this is a bit slow for large n_step, but most of the estimates are low n_step anyway
+            # # (this could be improved by simply ignoring these n-step estimates
+            # # the problem with this is that it places *a lot* of emphasis on the final value estimate
+            for t in range(1 + N - current_n_step, N):
+                steps_made = min(current_n_step, N - t)
+                if t + steps_made > N:
                     continue
-                interpolated_value = interpolate(
-                    value_samples[t + steps_made],
-                    h - steps_made
-                )
-                returns_m2[t, :, h_index] += \
-                    2 * S[t, :, h_index] * \
-                    interpolated_value * \
-                    discount[t] * \
-                    weight
+                for h_index, h in enumerate(required_horizons):
+                    if h - steps_made <= 0:
+                        continue
+                    interpolated_value = interpolate(
+                        value_samples[t + steps_made],
+                        h - steps_made
+                    )
+                    returns_m2[t, :, h_index] += \
+                        2 * S[t, :, h_index] * \
+                        interpolated_value * \
+                        discount[t] * \
+                        weight
 
         remaining_weight -= weight
 
