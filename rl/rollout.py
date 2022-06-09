@@ -957,7 +957,7 @@ class Runner:
         start_time = clock.time()
 
         # setup return estimator mode, but only verify occasionally.
-        re_mode = args.return_estimator_mode
+        re_mode = args.tvf_return_estimator_mode
         if re_mode == "verify" and self.batch_counter % 31 != 1:
             re_mode = "default"
 
@@ -1910,7 +1910,7 @@ class Runner:
         old_log_pac = data["log_pac"]
         advantages = data["advantages"]
 
-        model_out = self.model.forward(prev_states, output="policy")
+        model_out = self.model.forward(prev_states, output="policy", exclude_tvf=True)
 
         gain = torch.scalar_tensor(0, dtype=torch.float32, device=prev_states.device)
 

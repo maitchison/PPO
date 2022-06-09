@@ -136,6 +136,38 @@ def get_return_estimate(
     # fixed is a special case
     if mode == "fixed":
         samples = [n_step]
+    elif mode == "advanced":
+        # the idea here is that each agent and horizon gets a different set of n-step estimates
+
+        # get our distribution
+        lamb = 1-(1/n_step)
+        weights = np.asarray([lamb ** x for x in range(N)], dtype=np.float32)
+        weights /= np.sum(weights)
+
+        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
+
+        return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
+    elif mode == "advanced_uniform":
+        # the idea here is that each agent and horizon gets a different set of n-step estimates
+
+        # get our distribution
+        weights = np.asarray([1 for x in range(N)], dtype=np.float32)
+        weights /= np.sum(weights)
+
+        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
+
+        return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
+    elif mode == "advanced_hyperbolic":
+        # the idea here is that each agent and horizon gets a different set of n-step estimates
+
+        # get our distribution
+        weights = np.asarray([1 / x for x in range(1, N + 1)], dtype=np.float32)
+        weights /= np.sum(weights)
+
+        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
+
+        return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
+
     elif mode == "adaptive":
         # we do this by repeated calling exponential, which can be a bit slow...
         # note: we cut the curve off after h steps, otherwise we end up repeating the same
@@ -148,7 +180,7 @@ def get_return_estimate(
             args_copy['max_samples'] = max_samples
             args_copy['estimator_mode'] = estimator_mode
             args_copy['log'] = log
-            n_step = int(np.clip(h, 1, target_n_step))  # the magic heuristic...
+            n_step = int(np.clip(h, 1, 0.5*target_n_step))  # the magic heuristic...
             result[:, :, h_index] = get_return_estimate(
                 mode="exponential",
                 n_step=n_step,
@@ -724,7 +756,7 @@ def _n_step_estimate(params):
     return idx, target_h, returns * weight
 
 def _calculate_sampled_return_multi_threaded(
-    n_step_list: list,
+    n_step_list: Optional[list],
     gamma: float,
     rewards: np.ndarray,
     dones: np.ndarray,
@@ -733,59 +765,79 @@ def _calculate_sampled_return_multi_threaded(
     value_samples: np.ndarray,
     value_samples_m2: np.ndarray = None,
     value_samples_m3: np.ndarray = None,
-    n_step_weights: list = None,
+    n_step_weights: Optional[list] = None,
     use_log_interpolation: bool = False,
+    n_step_samples: Optional[np.ndarray] = None,
 ):
     """
     New strategy, just generate these returns in parallel, and simplify the algorithm *alot*.
+
+    @param n_step_list: List of n_step estimates to use for all trajectories,
+    @param n_step_weights: Weights corresponding to n_step_list
+    @param n_step_samples: nd array of dims [K, C] with C samples for each of K horizons.
     """
 
     assert value_samples_m2 is None, "Not supported"
     assert value_samples_m3 is None, "Not supported"
     assert use_log_interpolation is False, "Not supported"
 
-    # calculate the weight for each n_step
-    # if we have n_step requests that exceed the longest horizon we can cap these to the longest horizon.
-    max_h = max(required_horizons)
-    max_n = len(rewards)
-    n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights, max_n=min(max_h, max_n))
+    assert n_step_samples is not None or n_step_list is not None
 
     N, A = rewards.shape
     K = len(required_horizons)
 
-    # todo: support different n_steps for different horizons...
     jobs = []
+    n_step_set = set()
 
-    total_weight = np.sum(list(n_step_weights.values()))
+    if n_step_samples is not None:
+        # this is the per horizon n_step version
+        C = n_step_samples.shape[1]
+        assert n_step_samples.shape == (K, C)
+        for i, h in enumerate(required_horizons):
+            for n_step in n_step_samples[i]:
+                target_n_step = min(n_step, h)
+                jobs.append((target_n_step, i, h, 1/C))
+                n_step_set.add(target_n_step)
+    else:
+        # the standard, one set of n_steps for all examples
 
-    for i, h in enumerate(required_horizons):
-        for j, n_step in enumerate(n_step_list):
-            if n_step >= h:
-                # from this point on we can just weight the last n_step higher
-                # might actually make more sense to delete these?
-                remaining_weights = [n_step_weights[n] / total_weight for n in n_step_list[j:]]
-                target_n_step = min(h, n_step)
-                jobs.append((target_n_step, i, h, sum(remaining_weights)))
-                break
-            else:
-                jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight))
+        # calculate the weight for each n_step
+        # if we have n_step requests that exceed the longest horizon we can cap these to the longest horizon.
+        max_h = max(required_horizons)
+        max_n = len(rewards)
+        n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights, max_n=min(max_h, max_n))
+
+        total_weight = np.sum(list(n_step_weights.values()))
+        for i, h in enumerate(required_horizons):
+            for j, n_step in enumerate(n_step_list):
+                if n_step >= h:
+                    # from this point on we can just weight the last n_step higher
+                    # might actually make more sense to delete these?
+                    # note: this hardly makes a difference, as most horizons are very long compared to n_step.
+                    remaining_weights = [n_step_weights[n] / total_weight for n in n_step_list[j:]]
+                    target_n_step = min(h, n_step)
+                    jobs.append((target_n_step, i, h, sum(remaining_weights)))
+                    n_step_set.add(target_n_step)
+                    break
+                else:
+                    jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight))
+                    n_step_set.add(n_step)
 
     # build our discount / reward sum cache...
     # quicker to do the needed ones as we go
     # add up the discounted rewards,
     # that is s[n, a] = sum_{t=n}^{n+n_step} r_t
-    n_step_set = set(n_step_list)
     required_horizons_set = set(required_horizons)
     s = np.zeros([N, A], dtype=np.float32)
     discount = np.ones([N, A], dtype=np.float32)
     discount_cache = {}
     reward_cache = {}
-    for i in range(max(n_step_list)):
+    for i in range(max(n_step_set)):
         s[:N - i] += rewards[i:] * discount[:N - i]
         discount[:N - i] *= gamma * (1 - dones[i:])
         if i+1 in n_step_set or i+1 in required_horizons_set:
             reward_cache[i + 1] = s.copy()
-            discount_cache[i+1] = discount.copy()
+            discount_cache[i + 1] = discount.copy()
 
     # simple way to get this data to all the workers without having to pickle it (which would be too slow)
     global GLOBAL_CACHE

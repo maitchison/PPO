@@ -663,6 +663,7 @@ class TVFModel(nn.Module):
             include_rnd=False,
             include_features=False,
             update_normalization=False,
+            **kwargs,
         ):
         """
         Forward input through model and return dictionary containing
@@ -692,6 +693,7 @@ class TVFModel(nn.Module):
             'include_features': include_features,
             'policy_temperature': policy_temperature,
         }
+        args.update(kwargs)
 
         result = {}
         x = self.prep_for_model(x)

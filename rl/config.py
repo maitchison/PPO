@@ -98,7 +98,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_sum_horizons", type=str2bool, default=False, help="Sum horizon errors instead of mean.")
         parser.add_argument("--tvf_trimming", type=str2bool, default=False, help="Uses shorter horizons when able.")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
-        parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric]")
+        parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric|advanced]")
         parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
         parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
         parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
@@ -205,7 +205,7 @@ class Config(BaseConfig):
         # --------------------------------
         # Rewards
         parser.add_argument("--intrinsic_reward_scale", type=float, default=0.3, help="Intrinsic reward scale.")
-        parser.add_argument("--return_estimator_mode", type=str, default="default",
+        parser.add_argument("--tvf_return_estimator_mode", type=str, default="default",
                             help='Allows the use of the reference return estimator (very slow). [default|reference|verify|historic]')
         parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
@@ -375,7 +375,6 @@ class Config(BaseConfig):
         self.sync_envs = bool()
         self.benchmark_mode = bool()
         self.intrinsic_reward_scale = float()
-        self.return_estimator_mode = str()
         self.intrinsic_reward_propagation = object()
         self.override_reward_normalization_gamma = object()
         self.encoder = str()
@@ -419,6 +418,7 @@ class Config(BaseConfig):
         self.advantage_epsilon = float()
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
+        self.tvf_return_estimator_mode = str()
         self.tvf_gamma = object()
         self.tvf_coef = float()
         self.tvf_sum_horizons = bool()
@@ -583,7 +583,7 @@ def parse_args(args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-    assert args.return_estimator_mode in ["default", "reference", "verify", "historic"]
+    assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
 
     # set defaults
     if args.intrinsic_reward_propagation is None:

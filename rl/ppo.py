@@ -168,7 +168,7 @@ def train(model: models.TVFModel, log: Logger):
     save_progress(log)
 
     # just to make sure everything is ok...
-    if args.return_estimator_mode == "verify":
+    if args.tvf_return_estimator_mode == "verify":
         test_return_estimators(runner.log)
 
     old_header = None

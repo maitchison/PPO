@@ -1447,6 +1447,33 @@ def t3_distil(priority: int = 0):
     )
 
 
+def t3_returns(priority: int = 0):
+
+    # check out my new cool sampler, also see if these other distributions are any good?
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_RETURNS",
+        'default_args': TVF3_ARGS,
+        # improved args
+        'tvf_return_samples': 4,
+        'distil_period': 4,
+        'replay_size': 0,
+        'distil_max_heads': -1,
+        # cluster it
+        'hostname': "cluster",
+        'device': 'cuda',
+    }
+
+    for tvf_return_mode in ["advanced", "advanced_uniform", "advanced_hyperbolic"]:
+        add_run(
+            run_name=tvf_return_mode,
+            tvf_return_mode=tvf_return_mode,
+            **COMMON_ARGS
+        )
 
 def setup():
 
@@ -1477,3 +1504,5 @@ def setup():
     t3_heads()
     t3_bw(200)
     t3_distil(0)
+    t3_rediscount(0)
+    t3_returns(0)
