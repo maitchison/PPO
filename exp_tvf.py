@@ -1475,6 +1475,16 @@ def t3_returns(priority: int = 0):
             **COMMON_ARGS
         )
 
+    del COMMON_ARGS['device']
+    COMMON_ARGS['hostname'] = ''
+
+    # just to make sure everything is fine.
+    add_run(
+        run_name="exponential",
+        tvf_return_mode="exponential",
+        **COMMON_ARGS
+    )
+
 def setup():
 
     # reference(25)

@@ -96,7 +96,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
         parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss is multiplied by this")
         parser.add_argument("--tvf_sum_horizons", type=str2bool, default=False, help="Sum horizon errors instead of mean.")
-        parser.add_argument("--tvf_trimming", type=str2bool, default=False, help="Uses shorter horizons when able.")
+        parser.add_argument("--tvf_horizon_trimming", type=str, default='False', help="off|interpolate|average")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
         parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric|advanced]")
         parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
@@ -422,7 +422,7 @@ class Config(BaseConfig):
         self.tvf_gamma = object()
         self.tvf_coef = float()
         self.tvf_sum_horizons = bool()
-        self.tvf_trimming = bool()
+        self.tvf_horizon_trimming = str()
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
         self.tvf_return_samples = int()
@@ -523,6 +523,7 @@ def parse_args(args_override=None):
         'tvf_value_samples': None,
         'tvf_horizon_samples': 'tvf_value_heads',
         'tvf_hidden_units': None,
+        'tvf_trimming': "tvf_horizon_trimming",
         'tvf_force_ext_value_distil': None,
         'tvf_horizon_scale': None,
         'tvf_time_scale': None,
@@ -612,6 +613,12 @@ def parse_args(args_override=None):
 
     if args.replay_mode == "off":
         args.replay_size = 0
+
+    # fixup horizon trimming
+    if str(args.tvf_horizon_trimming) == 'False':
+        args.tvf_horizon_trimming = "off"
+    if str(args.tvf_horizon_trimming) == 'True':
+        args.tvf_horizon_trimming = "interpolate"
 
 
 if __name__ == "__main__":
