@@ -1093,8 +1093,6 @@ class Runner:
         @returns new trimmed estimates of [A, K]
         """
 
-        start_time = clock.time()
-
         if mode == "off":
             return tvf_value_estimates
         elif mode == "interpolate":
@@ -1112,26 +1110,23 @@ class Runner:
                             old_tvf_value_estimates[..., vh],
                             target_horizons
                         )
-            #print('interpolate', 1000 * (clock.time() - start_time))
             return tvf_value_estimates
         elif mode == "average":
             # we can use any horizon with h > remaining_time interchangeably with h.
             # so may as well average over them.
             tvf_value_estimates = tvf_value_estimates.copy()  # don't want to modify input
             old_tvf_value_estimates = tvf_value_estimates.copy()
-
             for k, h in enumerate(self.tvf_horizons):
                 target_horizons = np.minimum(h, (args.timeout / args.frame_skip) - time)
                 if np.min(target_horizons) < h:
                     ids = np.searchsorted(self.tvf_horizons, target_horizons)
                     if np.min(ids) == np.max(ids):
                         # fast path when ids all match
-                        tvf_value_estimates[:, k, :] = np.mean(old_tvf_value_estimates[:, ids[0]:, :])
-                        continue
-                    for i, idx in enumerate(ids):
-                        tvf_value_estimates[i, k, :] = np.mean(old_tvf_value_estimates[i, idx:, :])
+                        tvf_value_estimates[:, k, :] = np.mean(old_tvf_value_estimates[:, ids[0]:, :], axis=1)
+                    else:
+                        for i, idx in enumerate(ids):
+                            tvf_value_estimates[i, k, :] = np.mean(old_tvf_value_estimates[i, idx:, :])
 
-            #print('average', 1000*(clock.time()-start_time))
             return tvf_value_estimates
 
     @torch.no_grad()

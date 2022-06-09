@@ -441,6 +441,17 @@ TVF3_ARGS = {
     'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
 }
 
+TVF3_IMPROVED_ARGS = TVF3_ARGS.copy()
+del TVF3_IMPROVED_ARGS["tvf_trimming"]
+TVF3_IMPROVED_ARGS.update({
+    # improved args
+    'tvf_return_samples': 4,
+    'distil_period': 4,
+    'replay_size': 0,
+    'distil_max_heads': -1,
+    'tvf_coef': 10,
+    'tvf_horizon_trimming': 'interpolate',
+})
 
 def merge_dict(a, b):
     x = a.copy()
@@ -1276,6 +1287,7 @@ def t3_heads(priority: int = 0):
         'seeds': 2,
         'subset': ATARI_3_VAL,
         'priority': priority,
+        'hostname': "desktop", # this is just much faster for the large number of heads
         #'hostname': "cluster",
         #'device': 'cuda',
         'env_args': HARD_MODE_ARGS,
@@ -1296,22 +1308,24 @@ def t3_heads(priority: int = 0):
     # additional value head experiments
     COMMON_ARGS['experiment'] = 'T3_HEADSx'
 
-    # really trying here...
-    # the idea is to get heads about 20-50 apart, so they don't reference themselves very often.
-    add_run(
-        run_name=f"2048_weighted_linear",
-        tvf_value_heads=2048,
-        tvf_head_spacing="linear",
-        tvf_head_weighting="h_weighted",
-        **COMMON_ARGS
-    )
+    # these were too slow to finish...
 
-    add_run(
-        run_name=f"2048_linear",
-        tvf_value_heads=2048,
-        tvf_head_spacing="linear",
-        **COMMON_ARGS
-    )
+    # # really trying here...
+    # # the idea is to get heads about 20-50 apart, so they don't reference themselves very often.
+    # add_run(
+    #     run_name=f"2048_weighted_linear",
+    #     tvf_value_heads=2048,
+    #     tvf_head_spacing="linear",
+    #     tvf_head_weighting="h_weighted",
+    #     **COMMON_ARGS
+    # )
+    #
+    # add_run(
+    #     run_name=f"2048_linear",
+    #     tvf_value_heads=2048,
+    #     tvf_head_spacing="linear",
+    #     **COMMON_ARGS
+    # )
 
     add_run(
         run_name=f"128_sum",
@@ -1447,6 +1461,35 @@ def t3_distil(priority: int = 0):
     )
 
 
+def t3_trim(priority: int = 0):
+    # how many samples do we need? 64 should be the same as 128 with the new system?
+
+    COMMON_ARGS = {
+        # this puts the job on the cluster
+
+        # 'hostname': "cluster",
+        # 'device': 'cuda',
+
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_TRIM",
+        'default_args': TVF3_IMPROVED_ARGS,
+    }
+
+    # extra... just want to see if averaging helps or not?
+    # note: we also bumped up the tvf_coef
+
+    for mode in ['off', 'interpolate', 'average']:
+        add_run(
+            run_name=f"trim={mode}",
+            tvf_horizon_trimming=mode,
+            **COMMON_ARGS,
+        )
+
+
 def t3_returns(priority: int = 0):
 
     # check out my new cool sampler, also see if these other distributions are any good?
@@ -1516,3 +1559,7 @@ def setup():
     t3_distil(0)
     t3_rediscount(0)
     t3_returns(0)
+
+    # bonus...
+
+    t3_trim(0)
