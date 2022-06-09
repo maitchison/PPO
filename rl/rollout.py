@@ -1692,7 +1692,7 @@ class Runner:
         else:
             predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets - predictions)
+        loss_value = 0.5 * torch.square(targets - predictions) * args.tvf_coef
 
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.

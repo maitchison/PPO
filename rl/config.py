@@ -94,6 +94,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--use_tvf", type=str2bool, default=False)
 
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
+        parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss is multiplied by this")
         parser.add_argument("--tvf_sum_horizons", type=str2bool, default=False, help="Sum horizon errors instead of mean.")
         parser.add_argument("--tvf_trimming", type=str2bool, default=False, help="Uses shorter horizons when able.")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
@@ -419,6 +420,7 @@ class Config(BaseConfig):
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
         self.tvf_gamma = object()
+        self.tvf_coef = float()
         self.tvf_sum_horizons = bool()
         self.tvf_trimming = bool()
         self.tvf_horizon_dropout = float()
@@ -516,7 +518,6 @@ def parse_args(args_override=None):
         'td_lambda': 'lambda_value',
         'use_compression': 'obs_compression',
         'export_video': None,
-        'tvf_coef': None,
         'tvf_value_distribution': None,
         'tvf_horizon_distribution': None,
         'tvf_value_samples': None,

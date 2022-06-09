@@ -1320,6 +1320,63 @@ def t3_heads(priority: int = 0):
         **COMMON_ARGS
     )
 
+    add_run(
+        run_name=f"128_10x", # halfway between sum and no...
+        tvf_value_heads=128,
+        tvf_coef=10,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"128_1x",  # halfway between sum and no...
+        tvf_value_heads=128,
+        tvf_coef=1,
+        **COMMON_ARGS
+    )
+
+def t3_rediscount(priority: int = 0):
+    # how many samples do we need? 64 should be the same as 128 with the new system?
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "cluster",
+        'device': 'cuda',
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_REDISCOUNT",
+        'default_args': TVF3_ARGS,
+        # improved args
+        'tvf_return_samples': 4,
+        'distil_period': 4,
+        'replay_size': 0,
+        'distil_max_heads': -1,
+    }
+
+    # can we improve performance by redicounting down to 10k?
+    add_run(
+        run_name=f"30k_30k",
+        gamma=0.99997,
+        tvf_gamma=0.99997,
+        tvf_max_horizon=30000,
+        **COMMON_ARGS
+    )
+    add_run(
+        run_name=f"30k_10k",
+        gamma=0.9999,
+        tvf_gamma=0.99997,
+        tvf_max_horizon=30000,
+        **COMMON_ARGS
+    )
+    add_run(
+        run_name=f"10k_10k",
+        gamma=0.9999,
+        tvf_gamma=0.9999,
+        tvf_max_horizon=30000,
+        **COMMON_ARGS
+    )
+
+
 def t3_distil(priority: int = 0):
     # how many samples do we need? 64 should be the same as 128 with the new system?
 
@@ -1376,6 +1433,19 @@ def t3_distil(priority: int = 0):
         distil_max_heads=8,
         **COMMON_ARGS,
     )
+
+    COMMON_ARGS['hostname'] = ""
+    del COMMON_ARGS['device']
+
+    # extra...
+    add_run(
+        run_name=f"distil fast2",
+        distil_period=4,
+        replay_size=0,
+        distil_max_heads=-1, # looks like learning all heads is a good idea.
+        **COMMON_ARGS,
+    )
+
 
 
 def setup():
