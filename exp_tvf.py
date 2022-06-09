@@ -1297,7 +1297,7 @@ def t3_heads(priority: int = 0):
         'tvf_return_samples': 4,
     }
 
-    for tvf_value_heads in [2, 32, 64, 128, 256, 512, 1024]:
+    for tvf_value_heads in [2, 4, 32, 64, 128, 256, 512, 1024]:
         add_run(
             run_name=f"tvf_value_heads={tvf_value_heads}",
             tvf_value_heads=tvf_value_heads,
@@ -1461,6 +1461,43 @@ def t3_distil(priority: int = 0):
     )
 
 
+def t3_distil2(priority: int = 0):
+
+    # additional distil experiments
+    # trying to find a good beta...
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "cluster",
+        'device': 'cuda',
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_DISTIL2",
+        'default_args': TVF3_IMPROVED_ARGS,
+    }
+
+    for beta in [0.1, 1.0, 10.0]:
+        add_run(
+            run_name=f"distil beta={beta} heads=all",
+            distil_beta=beta,
+            **COMMON_ARGS,
+        )
+
+    # afterwards search over heads... but only once beta is found.
+
+    # reference run on my machine
+    COMMON_ARGS['hostname'] = ""
+    del COMMON_ARGS['device']
+
+    # add_run(
+    #     run_name=f"distil off",
+    #     distil_epochs=0,
+    #     **COMMON_ARGS,
+    # )
+
+
+
 def t3_trim(priority: int = 0):
     # how many samples do we need? 64 should be the same as 128 with the new system?
 
@@ -1563,3 +1600,4 @@ def setup():
     # bonus...
 
     t3_trim(0)
+    t3_distil2(0)

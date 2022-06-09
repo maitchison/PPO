@@ -95,7 +95,6 @@ class TVFConfig(BaseConfig):
 
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
         parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss is multiplied by this")
-        parser.add_argument("--tvf_sum_horizons", type=str2bool, default=False, help="Sum horizon errors instead of mean.")
         parser.add_argument("--tvf_horizon_trimming", type=str, default='False', help="off|interpolate|average")
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
         parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric|advanced]")
@@ -421,7 +420,6 @@ class Config(BaseConfig):
         self.tvf_return_estimator_mode = str()
         self.tvf_gamma = object()
         self.tvf_coef = float()
-        self.tvf_sum_horizons = bool()
         self.tvf_horizon_trimming = str()
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
@@ -530,6 +528,7 @@ def parse_args(args_override=None):
         'policy_network': "encoder",
         'value_network': "encoder",
         'tvf_mode': None,
+        'tvf_sum_horizons': None,
     }
 
     for k,v in REMAPPED_PARAMS.items():
