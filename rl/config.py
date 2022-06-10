@@ -301,7 +301,7 @@ class Config(BaseConfig):
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
         parser.add_argument("--sns_labels", type=str, default="['policy', 'value', 'distil']"),
         parser.add_argument("--sns_period", type=int, default=4, help="Generate estimates every n updates.")
-        parser.add_argument("--sns_max_heads", type=int, default=8, help="Limit to this number of heads when doing per head noise estimate.")
+        parser.add_argument("--sns_max_heads", type=int, default=8+1, help="Limit to this number of heads when doing per head noise estimate.")
         parser.add_argument("--sns_b_big", type=int, default=8192, help="")
         parser.add_argument("--sns_b_small", type=int, default=32, help="")
         parser.add_argument("--sns_small_samples", type=int, default=32, help="")
@@ -316,11 +316,11 @@ class Config(BaseConfig):
         # Distil phase
         parser.add_argument("--distil_beta", type=float, default=1.0)
         parser.add_argument("--distil_period", type=int, default=1)
-        parser.add_argument("--distil_loss", type=str, default="mse_logit", help="[mse_logit|mse_policy|kl_policy]")
+        parser.add_argument("--distil_loss", type=str, default="kl_policy", help="[mse_logit|mse_policy|kl_policy]")
         parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
         parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
         parser.add_argument("--distil_batch_size_ratio", type=float, default=None, help="Sets distil_batch_size to rollout_size * distil_batch_size_ratio")
-        parser.add_argument("--distil_max_heads", type=int, default=8, help="Max number of heads to apply distillation to.")
+        parser.add_argument("--distil_max_heads", type=int, default=8+1, help="Max number of heads to apply distillation to.")
 
         # --------------------------------
         # Replay

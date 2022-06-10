@@ -963,7 +963,7 @@ class Runner:
 
         returns = get_return_estimate(
             mode=tvf_return_mode,
-            gamma=args.tvf_gamma,
+            gamma=self.tvf_gamma,
             rewards=rewards,
             dones=dones,
             required_horizons=np.asarray(self.tvf_horizons),
@@ -1093,10 +1093,15 @@ class Runner:
         @returns new trimmed estimates of [A, K]
         """
 
+        tvf_value_estimates = tvf_value_estimates.copy() # don't modify input
+
+        # by definition h=0 is 0.0
+        assert self.tvf_horizons[0] == 0, "First horizon must be zero"
+        tvf_value_estimates[:, 0] = 0 # always make sure h=0 is fixed to zero.
+
         if mode == "off":
             return tvf_value_estimates
         elif mode == "interpolate":
-            tvf_value_estimates = tvf_value_estimates.copy() # don't want to modify input
             old_tvf_value_estimates = tvf_value_estimates.copy()
             A, K, VH = tvf_value_estimates.shape
             for k, h in enumerate(self.tvf_horizons):
@@ -1114,7 +1119,6 @@ class Runner:
         elif mode == "average":
             # we can use any horizon with h > remaining_time interchangeably with h.
             # so may as well average over them.
-            tvf_value_estimates = tvf_value_estimates.copy()  # don't want to modify input
             old_tvf_value_estimates = tvf_value_estimates.copy()
             for k, h in enumerate(self.tvf_horizons):
                 target_horizons = np.minimum(h, (args.timeout / args.frame_skip) - time)
@@ -1226,9 +1230,6 @@ class Runner:
             # take advantage of the fact that V_h = V_min(h, remaining_time).
             if args.use_tvf:
                 tvf_values = model_out["tvf_value"].cpu().numpy()
-                # by definition h=0 is 0.0
-                assert self.tvf_horizons[0] == 0, "First horizon must be zero"
-                tvf_values[:, 0] = 0
                 self.tvf_value[t] = self.trim_horizons(
                     tvf_values,
                     prev_time,
@@ -1521,7 +1522,7 @@ class Runner:
         # [N, A, K]
         tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
 
-        if abs(new_gamma - args.tvf_gamma) < 1e-8:
+        if abs(new_gamma - self.tvf_gamma) < 1e-8:
             return tvf_values[:, :, -1]
 
         # otherwise... we need to rediscount...
@@ -1714,6 +1715,10 @@ class Runner:
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
         loss = loss_value
+
+        # note: mse on logits is a very bad idea. The reason is we might get logits of -40 for settings where a policy
+        # must be determanistic. The reality is there isn't much difference between exp(-40) and exp(-30) so don't do
+        # mse on it.
 
         if args.distil_loss == "mse_logit":
             loss_policy = args.distil_beta * 0.5 * torch.square(data["old_raw_policy"] - model_out["raw_policy"]).mean(dim=-1)
@@ -2638,6 +2643,7 @@ def get_rediscounted_value_estimate(
         return values[:, -1]
 
     assert H == len(horizons), f"missmatch {H} {horizons}"
+    assert horizons[0] == 0
 
     if type(values) is np.ndarray:
         values = torch.from_numpy(values)
@@ -2646,12 +2652,19 @@ def get_rediscounted_value_estimate(
         is_numpy = False
 
     device = values.device
-    prev = torch.zeros([B], dtype=torch.float32, device=device)
+    prev = values[:, 0] # should be zero
+    prev_h = 0
     discounted_reward_sum = torch.zeros([B], dtype=torch.float32, device=device)
-    for i, h in enumerate(horizons):
-        reward = (values[:, i] - prev) / (old_gamma ** h)
+    for i_minus_one, h in enumerate(horizons[1:]):
+        i = i_minus_one + 1
+        # rewards occurred at some point after prev_h and before h, so just average them. Remembering that
+        # v_h includes up to and including h timesteps.
+        # also, we subtract 1 as the reward given by V_h=1 occurs at t=0
+        mid_h = ((prev_h+1 + h) / 2) - 1
+        discounted_reward = (values[:, i] - prev)
         prev = values[:, i]
-        discounted_reward_sum += reward * (new_gamma ** h)
+        prev_h = h
+        discounted_reward_sum += discounted_reward * (new_gamma ** mid_h) / (old_gamma ** mid_h)
 
     return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
 

@@ -448,9 +448,9 @@ TVF3_IMPROVED_ARGS.update({
     'tvf_return_samples': 4,
     'distil_period': 4,
     'replay_size': 0,
-    'distil_max_heads': -1,
+    'distil_max_heads': -1, # this should be 8, but too late to change...
     'tvf_coef': 10,
-    'tvf_horizon_trimming': 'interpolate',
+    'tvf_horizon_trimming': 'interpolate', # maybe this should be average or off?
 })
 
 def merge_dict(a, b):
@@ -1297,7 +1297,7 @@ def t3_heads(priority: int = 0):
         'tvf_return_samples': 4,
     }
 
-    for tvf_value_heads in [2, 4, 32, 64, 128, 256, 512, 1024]:
+    for tvf_value_heads in [2, 4, 8, 32, 64, 128, 256, 512, 1024]:
         add_run(
             run_name=f"tvf_value_heads={tvf_value_heads}",
             tvf_value_heads=tvf_value_heads,
@@ -1387,6 +1387,27 @@ def t3_rediscount(priority: int = 0):
         gamma=0.9999,
         tvf_gamma=0.9999,
         tvf_max_horizon=30000,
+        **COMMON_ARGS
+    )
+
+    # extra...
+
+    COMMON_ARGS['hostname'] = ""
+    del COMMON_ARGS['device']
+
+    add_run(
+        run_name=f"30k_3k",
+        gamma=0.9997,
+        tvf_gamma=0.99997,
+        tvf_max_horizon=30000,
+        **COMMON_ARGS
+    )
+
+    add_run(
+        run_name=f"3k_1k",
+        gamma=0.999,
+        tvf_gamma=0.9997,
+        tvf_max_horizon=10000,
         **COMMON_ARGS
     )
 
@@ -1490,15 +1511,53 @@ def t3_distil2(priority: int = 0):
     COMMON_ARGS['hostname'] = ""
     del COMMON_ARGS['device']
 
-    # add_run(
-    #     run_name=f"distil off",
-    #     distil_epochs=0,
-    #     **COMMON_ARGS,
-    # )
+    add_run(
+        run_name=f"distil off",
+        distil_epochs=0,
+        **COMMON_ARGS,
+    )
 
 
+def t3_distil3(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'hostname': "cluster",
+        'device': 'cuda',
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_DISTIL3",
+        'default_args': TVF3_IMPROVED_ARGS,
+        # updates
+
+        'tvf_horizon_trimming': 'average',
+        'tvf_return_mode': "advanced2",
+        'distil_loss': 'kl_policy', # this is much safer
+    }
+
+    # for heads in [1, 8, 128]:
+    #     add_run(
+    #         run_name=f"distil heads={heads} tvf_coef={10}",
+    #         tvf_coef=10,
+    #         distil_max_heads=heads,
+    #         distil_beta=1.0, # might need tuning
+    #         **COMMON_ARGS,
+    #     )
+
+    # reference run on my machine
+    COMMON_ARGS['hostname'] = ""
+    del COMMON_ARGS['device']
+
+    add_run(
+        run_name=f"distil off",
+        tvf_coef=10,
+        distil_epochs=0,
+        **COMMON_ARGS,
+    )
 
 def t3_trim(priority: int = 0):
+
     # how many samples do we need? 64 should be the same as 128 with the new system?
 
     COMMON_ARGS = {
@@ -1565,6 +1624,16 @@ def t3_returns(priority: int = 0):
         **COMMON_ARGS
     )
 
+    # super bonus one
+    add_run(
+        run_name="advanced2",
+        tvf_return_mode="advanced2",
+        **COMMON_ARGS
+    )
+
+
+
+
 def setup():
 
     # reference(25)
@@ -1601,3 +1670,4 @@ def setup():
 
     t3_trim(0)
     t3_distil2(0)
+    t3_distil3(0)

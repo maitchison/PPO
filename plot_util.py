@@ -355,7 +355,7 @@ class RunLog():
 
         for ev in evs:
             if None in result[ev]:
-                print(f"Warning, None found in {ev} on file {file_path}")
+                #print(f"Warning, None found in {ev} on file {file_path}")
                 result[ev] = np.asarray([x if x is not None else 0 for x in result[ev]])
 
         if len(evs) > 0:

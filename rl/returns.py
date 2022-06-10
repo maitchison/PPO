@@ -136,6 +136,26 @@ def get_return_estimate(
     # fixed is a special case
     if mode == "fixed":
         samples = [n_step]
+    elif mode == "advanced2":
+        # the idea here is that each agent and horizon gets a different set of n-step estimates
+
+        # get our distribution
+        lamb = 1-(1/n_step)
+        weights = np.asarray([lamb ** x for x in range(N)], dtype=np.float32)
+        weights /= np.sum(weights)
+
+        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
+
+        # redo samples for short horizons, (otherwise it's all just MC for the shorter horizons)
+        # for example horizon 10 will get lambda with an expected n_step of 5.
+        for i, h in enumerate(required_horizons):
+            factor = (0.5 * h) / n_step
+            if factor > 1:
+                # only apply to short horizons
+                break
+            n_step_samples[i] = np.clip(np.round(n_step_samples[i]*factor), 1, N+1)
+
+        return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
     elif mode == "advanced":
         # the idea here is that each agent and horizon gets a different set of n-step estimates
 
