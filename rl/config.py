@@ -106,6 +106,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="[geometric|linear]")
         parser.add_argument("--tvf_head_weighting", type=str, default="off", help="[off|h_weighted]")
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
+        parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
 
 
 
@@ -421,6 +422,7 @@ class Config(BaseConfig):
         self.advantage_epsilon = float()
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
+
         self.tvf_return_estimator_mode = str()
         self.tvf_gamma = object()
         self.tvf_coef = float()
@@ -434,6 +436,8 @@ class Config(BaseConfig):
         self.tvf_value_heads = int()
         self.tvf_head_spacing = str()
         self.tvf_head_weighting = str()
+        self.tvf_per_head_hidden_units = int()
+
         self.use_ag = bool()
         self.ag_mode = str()
         self.ag_target = str()

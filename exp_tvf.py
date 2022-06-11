@@ -498,8 +498,10 @@ TVF3_FINAL_ARGS = {
 
     # noise is on by default
     'use_sns': True,
-    'sns_max_heads': 16,
+    'sns_max_heads': 9,                   # these are slow, and now we have interpolation less are needed.
     'sns_period': 8,
+    'sns_labels': "['value', 'distil']",  # no need to work out noise on policy, it's just not accurate enough with
+                                          # a period of 8.
 
     # by default work out auto_horizon in background
     'ag_mode': 'shadow',
@@ -513,7 +515,7 @@ TVF3_FINAL_ARGS = {
     'distil_period': 2,             # not sure if this is right?
     'distil_batch_size': 1*128*128,
     'distil_beta': 1.0,
-    'distil_max_heads': 8,
+    'distil_max_heads': 9,          # no idea about this parameter...
 
     # horizon
     'gamma': 0.99997,
@@ -1369,12 +1371,21 @@ def t3_heads(priority: int = 0):
         'tvf_return_samples': 4,
     }
 
-    for tvf_value_heads in [2, 4, 8, 32, 64, 128, 256, 512, 1024]:
+    for tvf_value_heads in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
         add_run(
             run_name=f"tvf_value_heads={tvf_value_heads}",
             tvf_value_heads=tvf_value_heads,
             **COMMON_ARGS
         )
+
+    COMMON_ARGS['priority'] = 100
+
+    # for reference
+    add_run(
+        run_name=f"dna",
+        use_tvf=False,
+        **COMMON_ARGS
+    )
 
     # ---------------------------------------------
     # additional value head experiments
@@ -1399,26 +1410,26 @@ def t3_heads(priority: int = 0):
     #     **COMMON_ARGS
     # )
 
-    add_run(
-        run_name=f"128_sum",
-        tvf_value_heads=128,
-        tvf_sum_horizons=True,
-        **COMMON_ARGS
-    )
-
-    add_run(
-        run_name=f"128_10x", # halfway between sum and no...
-        tvf_value_heads=128,
-        tvf_coef=10,
-        **COMMON_ARGS
-    )
-
-    add_run(
-        run_name=f"128_1x",  # halfway between sum and no...
-        tvf_value_heads=128,
-        tvf_coef=1,
-        **COMMON_ARGS
-    )
+    # add_run(
+    #     run_name=f"128_sum",
+    #     tvf_value_heads=128,
+    #     tvf_sum_horizons=True,
+    #     **COMMON_ARGS
+    # )
+    #
+    # add_run(
+    #     run_name=f"128_10x", # halfway between sum and no...
+    #     tvf_value_heads=128,
+    #     tvf_coef=10,
+    #     **COMMON_ARGS
+    # )
+    #
+    # add_run(
+    #     run_name=f"128_1x",  # halfway between sum and no...
+    #     tvf_value_heads=128,
+    #     tvf_coef=1,
+    #     **COMMON_ARGS
+    # )
 
 def t3_rediscount(priority: int = 0):
     # how many samples do we need? 64 should be the same as 128 with the new system?
@@ -1635,19 +1646,13 @@ def t3_distil4(priority: int = 0):
 
     COMMON_ARGS = {
         'seeds': 2,
-        'epochs': 6, # stub...
         'subset': ATARI_3_VAL,
         'priority': priority,
-        # 'hostname': "cluster",
-        # 'device': 'cuda',
+        'hostname': "cluster",
+        'device': 'cuda',
         'env_args': HARD_MODE_ARGS,
         'experiment': "T3_DISTIL4",
         'default_args': TVF3_FINAL_ARGS,
-        # updates
-
-        # also think about
-        # distil_max_heads
-        # distil
     }
 
     # look at heads again...
@@ -1679,16 +1684,10 @@ def t3_distil4(priority: int = 0):
     # look at period again
     for period in [1, 4]: # 2 is default
         add_run(
-            run_name=f"distil period={beta}",
+            run_name=f"distil period={period}",
             distil_period=period,
             **COMMON_ARGS,
         )
-
-    # reference run on my machine
-    COMMON_ARGS['hostname'] = ""
-    del COMMON_ARGS['device']
-
-
 
 
 def t3_trim(priority: int = 0):
@@ -1767,6 +1766,29 @@ def t3_returns(priority: int = 0):
     )
 
 
+def th_heads(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TH_HEADS",
+        'default_args': TVF3_FINAL_ARGS,
+    }
+
+    add_run(
+        run_name=f"reference",
+        tvf_value_heads=64,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"hidden=32",
+        tvf_value_heads=64,
+        tvf_per_head_hidden_units=32, # this should really be 32 I think
+        **COMMON_ARGS,
+    )
 
 
 def setup():
@@ -1793,16 +1815,26 @@ def setup():
     # auto_gamma(0)
     # adaptive(-10)
 
-    # try again...
-    t3_samples()
-    t3_heads(25)
-    t3_bw(200)
-    t3_distil(0)
-    t3_rediscount(0)
-    t3_returns(0)
 
-    # bonus...
+    #
+    # # try again...
+    # t3_samples()
+    # t3_heads(25)
+    # t3_bw(200)
+    # t3_distil(0)
+    # t3_rediscount(0)
+    # t3_returns(0)
+    #
+    # # bonus...
+    #
+    # t3_trim(0)
+    # t3_distil2(0)
+    # t3_distil3(0)
 
-    t3_trim(0)
-    t3_distil2(0)
-    t3_distil3(0)
+    #t3_heads()
+
+    #t3_distil4(0)
+
+    # TVF-Heads experiments
+
+    th_heads()

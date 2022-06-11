@@ -341,6 +341,7 @@ class DualHeadNet(nn.Module):
             activation_fn="relu",
 
             tvf_fixed_head_horizons: Union[None, list] = None,
+            tvf_per_head_hidden_units:int = 0,
 
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
@@ -386,11 +387,34 @@ class DualHeadNet(nn.Module):
         self.value_head_names = list(value_head_names)
         self.tvf_fixed_head_horizons = tvf_fixed_head_horizons
 
+        def make_value_head(in_features:int, out_features:int):
+            if tvf_per_head_hidden_units > 0:
+                return torch.nn.Sequential(
+                    torch.nn.Linear(in_features, tvf_per_head_hidden_units),
+                    torch.nn.ReLU(),
+                    torch.nn.Linear(tvf_per_head_hidden_units, out_features)
+                )
+            else:
+                return torch.nn.Linear(in_features, out_features)
+
         # value net can also output a basic value estimate using this head
-        self.value_head = nn.Linear(self.encoder.hidden_units, len(value_head_names))
+        self.value_head = make_value_head(self.encoder.hidden_units, len(value_head_names))
+
+        self.tvf_head = None
+        self.tvf_heads = None
 
         if self.tvf_fixed_head_horizons is not None:
-            self.tvf_head = nn.Linear(self.encoder.hidden_units, len(tvf_fixed_head_horizons) * len(value_head_names))
+            if tvf_per_head_hidden_units == 0:
+                # faster path, calculate all heads in one go
+                # todo: remove this, probably not needed?
+                self.tvf_head = nn.Linear(self.encoder.hidden_units,
+                                          len(tvf_fixed_head_horizons) * len(value_head_names))
+            else:
+                # processing each head individually can be a bit slow, I might be able to fix this though
+                # maybe using jit? (for the moment I'll just reduce the number of heads and hidden units)
+                self.tvf_heads = torch.nn.ModuleList(
+                    [make_value_head(self.encoder.hidden_units, len(value_head_names)) for _ in self.tvf_fixed_head_horizons]
+                )
 
     @property
     def use_tvf(self):
@@ -458,9 +482,17 @@ class DualHeadNet(nn.Module):
             result[f'value'] = value_values
 
             if not exclude_tvf and self.use_tvf:
-                tvf_values = self.tvf_head(encoder_features)
-                n = len(self.tvf_fixed_head_horizons)
-                result[f'tvf_value'] = tvf_values.reshape([-1, n, len(self.value_head_names)])
+                if self.tvf_head is not None:
+                    # process all heads as a batch if we can
+                    tvf_values = self.tvf_head(encoder_features)
+                    n = len(self.tvf_fixed_head_horizons)
+                    result[f'tvf_value'] = tvf_values.reshape([-1, n, len(self.value_head_names)])
+                else:
+                    # process individual heads, will be a bit slower
+                    # output will be B, K, VH
+                    result[f'tvf_value'] = torch.stack([head(encoder_features) for head in self.tvf_heads], dim=1)
+
+
 
         return result
 
@@ -482,6 +514,7 @@ class TVFModel(nn.Module):
             observation_normalization=False,
             freeze_observation_normalization=False,
             tvf_fixed_head_horizons: Union[None, list] = None,
+            tvf_per_head_hidden_units: int = 0,
     ):
         """
             Truncated Value Function model
@@ -533,6 +566,7 @@ class TVFModel(nn.Module):
                 hidden_units=hidden_units,
                 activation_fn=encoder_activation_fn,
                 tvf_fixed_head_horizons=tvf_fixed_head_horizons,
+                tvf_per_head_hidden_units=tvf_per_head_hidden_units,
                 n_actions=actions,
                 device=device,
                 **(encoder_args or {})

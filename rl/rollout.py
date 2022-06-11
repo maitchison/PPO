@@ -1394,12 +1394,22 @@ class Runner:
         return self.noise_stats[f'{label}_ratio']
 
     @torch.no_grad()
-    def log_value_quality(self):
+    def log_dna_value_quality(self):
         targets = calculate_bootstrapped_returns(
             self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
         )
         values = self.ext_value[:self.N]
-        self.log.watch_mean("ev_ext", utils.explained_variance(values.ravel(), targets.ravel()), history_length=1)
+        ev = utils.explained_variance(values.ravel(), targets.ravel())
+        self.log.watch_mean("ev_ext", ev, history_length=1)
+
+        # use ev_ext for ev_average when not using tvf
+        self.log.watch_mean(
+            f"ev_average", ev,
+            display_width=8,
+            display_name="ev_avg",
+            history_length=1
+        )
+
 
     def _log_curve_quality(self, estimates, targets, postfix: str = ''):
         """
@@ -1412,7 +1422,7 @@ class Runner:
         """
         total_not_explained_var = 0
         total_var = 0
-        for h_index, h in enumerate(self.tvf_horizons):
+        for h_index in utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads):
             value = estimates[:, :, h_index].reshape(-1)
             target = targets[:, :, h_index].reshape(-1)
 
@@ -1459,6 +1469,14 @@ class Runner:
         first_moment_targets = targets
         first_moment_estimates = self.tvf_value[:N, :, :, 0].reshape(N, A, K)
         self._log_curve_quality(first_moment_estimates, first_moment_targets)
+
+        # also log ev_ext
+        targets = calculate_bootstrapped_returns(
+            self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
+        )
+        values = self.ext_value[:self.N]
+        ev = utils.explained_variance(values.ravel(), targets.ravel())
+        self.log.watch_mean("ev_ext", ev, history_length=1)
 
     @property
     def prev_obs(self):
@@ -1667,9 +1685,10 @@ class Runner:
 
         if not args.disable_ev and self.batch_counter % 4 == 3:
             # only about 3% slower with this on.
-            self.log_value_quality()
             if args.use_tvf:
                 self.log_tvf_curve_quality()
+            else:
+                self.log_dna_value_quality()
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -2468,14 +2487,18 @@ class Runner:
 
         if self.step < args.ag_sns_delay:
             self.noise_stats['ag_sns_horizon'] = args.ag_sns_min_h
-            self.log.watch_mean('ag_sns_target', args.ag_sns_min_h)
-            self.log.watch_mean('ag_sns_clipped_target', args.ag_sns_min_h)
-            self.log.watch_mean('ag_sns_horizon', args.ag_sns_min_h)
+            self.log.watch_mean('ag_sns_target', args.ag_sns_min_h, display_name="auto_horizon")
+            self.log.watch_mean('ag_sns_clipped_target', args.ag_sns_min_h, display_width=0)
+            self.log.watch_mean('ag_sns_horizon', args.ag_sns_min_h, display_width=0)
+            return
+
+        if len(self.noise_stats.get('active_heads', [])) <= 0:
+            # no noise levels logged...
             return
 
         # data used to interpolate noise levels
         logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
-        logged_noise_levels = np.asarray([self.noise_stats.get(f'head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads])
+        logged_noise_levels = np.asarray([self.noise_stats.get(f'head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads])[None, :]
 
         # step 1: work out our target (with a cap at min_h)
 
@@ -2492,9 +2515,9 @@ class Runner:
         self.noise_stats['ag_sns_horizon'] = \
             args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_min_h) + (1-args.ag_sns_alpha) * clipped_target
 
-        self.log.watch_mean('ag_sns_target', new_target)
-        self.log.watch_mean('ag_sns_clipped_target', clipped_target)
-        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon']) # this is the only one that is used.
+        self.log.watch_mean('ag_sns_target', new_target, display_name="auto_horizon")
+        self.log.watch_mean('ag_sns_clipped_target', clipped_target, display_width=0)
+        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_width=0) # this is the only one that is used.
 
     def train(self):
 
@@ -2525,7 +2548,7 @@ class Runner:
         if args.use_rnd:
             self.train_rnd()
 
-        if args.ag_mode in ["sns", "shadow"]:
+        if args.use_tvf and args.ag_mode in ["sns", "shadow"]:
             self.update_sns_horizon_target()
 
         self.batch_counter += 1

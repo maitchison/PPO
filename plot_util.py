@@ -350,7 +350,7 @@ class RunLog():
                 result[k] = np.asarray(v)
 
         # calculate average ev as ev_av seems to not work well right now...
-        evs = [k for k in result.keys() if "ev_" in k and "ev_av" not in k]
+        evs = [k for k in result.keys() if k.startswith("ev_") and "ev_av" not in k]
         evs.sort()
 
         for ev in evs:
@@ -359,8 +359,8 @@ class RunLog():
                 result[ev] = np.asarray([x if x is not None else 0 for x in result[ev]])
 
         if len(evs) > 0:
-            result["ev_average"] = np.mean(np.stack([result[ev] for ev in evs]), axis=0)
-            result["ev_max"] = result[evs[-1]]
+            result["ev_auto_average"] = np.mean(np.stack([result[ev] for ev in evs]), axis=0)
+            result["ev_auto_max"] = result[evs[-1]]
 
         try:
             params = read_params(os.path.split(file_path)[0]+"/params.txt")

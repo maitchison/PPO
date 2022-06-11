@@ -63,6 +63,7 @@ def make_model(args, log=None):
         tvf_fixed_head_horizons=tvf_fixed_head_horizons,
         architecture=args.architecture,
         hidden_units=args.hidden_units,
+        tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
     )
