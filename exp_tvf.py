@@ -453,6 +453,78 @@ TVF3_IMPROVED_ARGS.update({
     'tvf_horizon_trimming': 'interpolate', # maybe this should be average or off?
 })
 
+TVF3_FINAL_ARGS = {
+    'checkpoint_every': int(5e6),
+    'workers': WORKERS,
+    'hostname': '',
+    'architecture': 'dual',
+    'epochs': 50,
+    'obs_compression': False,
+    'upload_batch': True,  # much faster
+    'warmup_period': 1000,
+    'disable_ev': False,
+    'seed': 0,
+    'mutex_key': "DEVICE",
+
+    'max_micro_batch_size': 1024,   # might help now that we upload the entire batch?
+
+    'max_grad_norm': 5.0,
+    'agents': 128,                  # HPS
+    'n_steps': 128,                 # HPS
+    'policy_mini_batch_size': 2048, # Trying larger
+    'value_mini_batch_size': 512,   # should be 256, but 512 for performance (maybe needs to be larger for tvf?)
+    'distil_mini_batch_size': 512,  #
+    'policy_epochs': 2,             # reasonable guess
+    'value_epochs': 1,              # reasonable guess
+    'distil_epochs': 2,             # reasonable guess
+    'ppo_epsilon': 0.2,             # allows faster policy movement
+    'policy_lr': 2.5e-4,
+    'value_lr': 2.5e-4,
+    'distil_lr': 2.5e-4,
+    'entropy_bonus': 1e-2,          # standard
+    'hidden_units': 512,            # standard
+
+    'lambda_policy': 0.8,
+    'lambda_value': 0.95,
+
+    # tvf
+    'use_tvf': True,
+    'tvf_coef': 10,                 # 10 might be too much
+    'tvf_return_n_step': 20,        # should be 20 maybe, or higher maybe?
+    'tvf_return_samples': 4,        # 4 samples is much faster
+    'tvf_value_heads': 128,         # maybe need more?
+    'tvf_horizon_trimming': 'average',
+    'tvf_return_mode': "advanced2",
+
+    # noise is on by default
+    'use_sns': True,
+    'sns_max_heads': 16,
+    'sns_period': 8,
+
+    # by default work out auto_horizon in background
+    'ag_mode': 'shadow',
+
+    # stuck
+    'repeated_action_penalty': 0.01,
+    'max_repeated_actions': 50,
+
+    # distil, but no replay buffer
+    'replay_size': 0,
+    'distil_period': 2,             # not sure if this is right?
+    'distil_batch_size': 1*128*128,
+    'distil_beta': 1.0,
+    'distil_max_heads': 8,
+
+    # horizon
+    'gamma': 0.99997,
+    'tvf_gamma': 0.99997,
+    'tvf_max_horizon': 30000,
+
+    # other
+    'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
+}
+
+
 def merge_dict(a, b):
     x = a.copy()
     x.update(b)
@@ -1555,6 +1627,69 @@ def t3_distil3(priority: int = 0):
         distil_epochs=0,
         **COMMON_ARGS,
     )
+
+
+def t3_distil4(priority: int = 0):
+
+    # now with horizon tracking
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'epochs': 6, # stub...
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        # 'hostname': "cluster",
+        # 'device': 'cuda',
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "T3_DISTIL4",
+        'default_args': TVF3_FINAL_ARGS,
+        # updates
+
+        # also think about
+        # distil_max_heads
+        # distil
+    }
+
+    # look at heads again...
+    for heads in [1, 3, 128]: # 8 is default
+        add_run(
+            run_name=f"distil heads={heads}",
+            distil_max_heads=heads,
+            **COMMON_ARGS,
+        )
+    add_run(
+        run_name=f"distil heads=ext",
+        distil_force_ext=True,
+        **COMMON_ARGS,
+    )
+    add_run(
+        run_name=f"distil off",
+        distil_epochs=0,
+        **COMMON_ARGS,
+    )
+
+    # look at beta again
+    for beta in [0.1, 10.0]: # 1 is default
+        add_run(
+            run_name=f"distil beta={beta}",
+            distil_beta=beta,
+            **COMMON_ARGS,
+        )
+
+    # look at period again
+    for period in [1, 4]: # 2 is default
+        add_run(
+            run_name=f"distil period={beta}",
+            distil_period=period,
+            **COMMON_ARGS,
+        )
+
+    # reference run on my machine
+    COMMON_ARGS['hostname'] = ""
+    del COMMON_ARGS['device']
+
+
+
 
 def t3_trim(priority: int = 0):
 
