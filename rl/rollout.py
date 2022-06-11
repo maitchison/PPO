@@ -24,6 +24,13 @@ from .replay import ExperienceReplayBuffer
 
 import collections
 
+def add_relative_noise(X:np.ndarray, rel_error:float):
+    # does not change the expectation.
+    if rel_error <= 0:
+        return X
+    factors = np.clip(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), 0, float('inf'))
+    return X * factors
+
 def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
     """
     Returns linearly interpolated value from source_values
@@ -1185,8 +1192,8 @@ class Runner:
                 self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
 
             # per step reward noise
-            if args.per_step_reward_noise > 0:
-                ext_rewards += np.random.normal(0, args.per_step_reward_noise, size=ext_rewards.shape)
+            if args.noisy_reward > 0:
+                ext_rewards = add_relative_noise(ext_rewards, args.noisy_reward)
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
@@ -1311,7 +1318,6 @@ class Runner:
             optimizer: torch.optim.Optimizer,
             label,
             verbose:bool=True,
-            smoothing="ema", # [ema|avg]
     ):
         """
         Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
@@ -1358,7 +1364,7 @@ class Runner:
 
         self.log.mode = self.log.LM_DEFAULT
 
-        if smoothing == "avg":
+        if args.sns_smoothing == "avg":
             # add these samples to the mix
             for var_name, var_value in zip(['s', 'g2'], [est_s, est_g2]):
                 if f'{label}_{var_name}_history' not in self.noise_stats:
@@ -1368,11 +1374,11 @@ class Runner:
                     self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=buffer_len)
                 self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
                 self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
-        elif smoothing == "ema":
+        elif args.sns_smoothing == "ema":
             self.noise_stats[f'{label}_s'] = 0.9 * self.noise_stats.get(f'{label}_s', 1.0) + 0.1 * est_s
             self.noise_stats[f'{label}_g2'] = 0.9 * self.noise_stats.get(f'{label}_g2', 1.0) + 0.1 * est_g2
         else:
-            raise ValueError(f"Invalid smoothing mode {smoothing}.")
+            raise ValueError(f"Invalid smoothing mode {args.sns_smoothing}.")
 
         smooth_s = float(self.noise_stats[f'{label}_s'])
         smooth_g2 = float(self.noise_stats[f'{label}_g2'])
@@ -1637,7 +1643,7 @@ class Runner:
 
         self.model.eval()
 
-        # 1. first we calculate 'ext_value' estimate, which is the primarly value estimate
+        # 1. first we calculate 'ext_value' estimate, which is the primarily value estimate
         if args.use_tvf:
             ext_value_estimates = self.get_tvf_ext_value_estimate(new_gamma=self.gamma)
         else:
@@ -1708,6 +1714,12 @@ class Runner:
             else:
                 self.log_dna_value_quality()
 
+        if args.noisy_return > 0:
+            self.returns = add_relative_noise(self.returns, args.noisy_return)
+            self.tvf_returns = add_relative_noise(self.tvf_returns, args.noisy_return)
+            self.tvf_returns[:, :, 0] = 0 # by definition...
+
+
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
         # get parameters
@@ -1747,30 +1759,36 @@ class Runner:
 
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
 
+        if args.use_tvf and not args.distil_force_ext:
+            # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
+            # learning a very complex function. We go backwards so that the final head is always included.
+            head_sample = utils.even_sample_down(np.arange(args.tvf_value_heads), max_values=args.distil_max_heads)
+        else:
+            head_sample = None
+
         model_out = self.model.forward(
             data["prev_state"],
             output="policy",
+            exclude_tvf=not args.use_tvf or args.distil_force_ext,
+            required_tvf_heads=head_sample,
         )
 
         targets = data["distil_targets"] # targets are [B or B, K]
 
         if args.use_tvf and not args.distil_force_ext:
-            predictions = model_out["tvf_value"][:, :, 0]
-            # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
-            # learning a very complex function. We go backwards so that the final head is always included.
-            head_sample = utils.even_sample_down(np.arange(args.tvf_value_heads), max_values=args.distil_max_heads)
-            predictions = predictions[:, head_sample]
-            targets = targets[:, head_sample]
+            predictions = model_out["tvf_value"][:, :, 0] # [B, K, VH] -> [B, K]
+            if head_sample is not None:
+                targets = targets[:, head_sample]
         else:
             predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets - predictions)
+        loss_value = 0.5 * torch.square(targets - predictions) * args.tvf_coef
 
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
         loss = loss_value
 
-        # note: mse on logits is a very bad idea. The reason is we might get logits of -40 for settings where a policy
+        # note: mse on logits is a bad idea. The reason is we might get logits of -40 for settings where a policy
         # must be determanistic. The reality is there isn't much difference between exp(-40) and exp(-30) so don't do
         # mse on it.
 
@@ -1883,7 +1901,12 @@ class Runner:
         @param single_value_head: if given trains on just this indexed tvf value head.
         """
 
-        model_out = self.model.forward(data["prev_state"], output="value")
+        model_out = self.model.forward(
+            data["prev_state"],
+            output="value",
+            # saves a bit of time to only fetch one head when only one is needed.
+            required_tvf_heads=[single_value_head] if single_value_head is not None else None,
+        )
 
         B = len(data["prev_state"])
 
@@ -1897,12 +1920,12 @@ class Runner:
             # targets "tvf_returns" are [B, K]
             # predictions "tvf_value" are [B, K, VH]
             # predictions need to be generated... this could take a lot of time so just sample a few..
-            targets = data["tvf_returns"] # locked to "ext" head for the moment
-            predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment
+            targets = data["tvf_returns"] # locked to "ext" head for the moment [B, K]
+            predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment [B, K, VH] -> [B, K]
 
             if single_value_head is not None:
                 targets = targets[:, single_value_head]
-                predictions = predictions[:, single_value_head]
+                predictions = predictions[:, 0] # only one horizon was generated, so just grab this
 
             tvf_loss = 0.5 * torch.square(targets - predictions) * args.tvf_coef
 

@@ -259,7 +259,7 @@ def get_return_estimate(
     elif estimator_mode == 'verify':
         assert log is not None
         if value_samples_m2 is None:
-            m1 = _calculate_sampled_return_multi_fast(n_step_list=samples, **args)
+            m1 = _calculate_sampled_return_multi_threaded(n_step_list=samples, **args)
             verified_m1 = _calculate_sampled_return_multi_reference(n_step_list=samples, **args)
             delta_m1 = np.abs(verified_m1 - m1).max()
             if delta_m1 > 1e-4:
@@ -765,13 +765,17 @@ def _n_step_estimate(params):
 
     if h_remaining > 0:
         m[:N-target_n_step] = _interpolate(value_sample_horizons, value_samples[target_n_step:-1], h_remaining) * discount[:N-target_n_step]
+        #m[:N-target_n_step] = _interpolate(value_sample_horizons, value_samples[target_n_step:-1], h_remaining)
     else:
         pass
 
     # process the final n_step estimates, this can be slow for large target_n_step
     for i in range(target_n_step):
+        # small chance we have a bug here, need to test this...
         m[N-i-1] = _interpolate(value_sample_horizons, value_samples[-1], target_h - i - 1) * discount[N-i-1]
+        #m[N-i-1] = _interpolate(value_sample_horizons, value_samples[-1], target_h - i - 1)
 
+    #returns = s + m * discount
     returns = s + m
     return idx, target_h, returns * weight
 

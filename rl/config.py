@@ -233,8 +233,6 @@ class Config(BaseConfig):
                             help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
         parser.add_argument("--repeat_action_probability", type=float, default=0.0)
         parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
-        parser.add_argument("--per_step_reward_noise", type=float, default=0.0,
-                            help="Standard deviation of noise added to (normalized) reward each step.")
         parser.add_argument("--per_step_termination_probability", type=float, default=0.0,
                             help="Probability that each step will result in unexpected termination (used to add noise to value).")
         parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
@@ -255,6 +253,11 @@ class Config(BaseConfig):
         # (stuck)
         parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
         parser.add_argument("--repeated_action_penalty", type=float, default=0.0, help="Penalty if agent repeats the same action more than this many times.")
+
+        # -----------------
+        # Noisy environments
+        parser.add_argument("--noisy_return", type=float, default=0, help="Relative error applied after return calculations. Used to simulate a noisy environment.")
+        parser.add_argument("--noisy_rewards", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
 
         # --------------------------------
 
@@ -294,7 +297,7 @@ class Config(BaseConfig):
                             help="alpha value used in EMA for horizon.")
         parser.add_argument("--ag_sns_delay", type=int, default=int(1e6),
                             help="alpha value used in EMA for horizon.")
-        parser.add_argument("--ag_sns_min_h", type=int, default=100,
+        parser.add_argument("--ag_sns_min_h", type=int, default=100, # todo make this shorter
                             help="Minimum auto gamma horizon.")
         parser.add_argument("--ag_sns_max_h", type=int, default=10000,
                             help="Maximum auto gamma horizon.")
@@ -302,12 +305,13 @@ class Config(BaseConfig):
         # --------------------------------
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
-        parser.add_argument("--sns_labels", type=str, default="['policy', 'value', 'distil']"),
+        parser.add_argument("--sns_labels", type=str, default="['value', 'distil']"), # policy is also an option
         parser.add_argument("--sns_period", type=int, default=4, help="Generate estimates every n updates.")
         parser.add_argument("--sns_max_heads", type=int, default=8+1, help="Limit to this number of heads when doing per head noise estimate.")
-        parser.add_argument("--sns_b_big", type=int, default=8192, help="")
+        parser.add_argument("--sns_b_big", type=int, default=128*128, help="")
         parser.add_argument("--sns_b_small", type=int, default=32, help="")
-        parser.add_argument("--sns_small_samples", type=int, default=32, help="")
+        parser.add_argument("--sns_smoothing", type=str, default="ema", help="ema|avg")
+        parser.add_argument("--sns_small_samples", type=int, default=16, help="")
 
         # --------------------------------
         # Auxiliary phase
@@ -317,7 +321,7 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Distil phase
-        parser.add_argument("--distil_beta", type=float, default=1.0)
+        parser.add_argument("--distil_beta", type=float, default=10.0)
         parser.add_argument("--distil_period", type=int, default=1)
         parser.add_argument("--distil_loss", type=str, default="kl_policy", help="[mse_logit|mse_policy|kl_policy]")
         parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
@@ -396,7 +400,6 @@ class Config(BaseConfig):
         self.timeout = int()
         self.repeat_action_probability = float()
         self.noop_duration = int()
-        self.per_step_reward_noise = float()
         self.per_step_termination_probability = float()
         self.reward_clipping = str()
         self.reward_normalization = bool()
@@ -454,6 +457,7 @@ class Config(BaseConfig):
         self.sns_b_big = int()
         self.sns_b_small = int()
         self.sns_small_samples = int()
+        self.sns_smoothing = str()
 
         self.aux_target = str()
         self.aux_source = str()
@@ -472,6 +476,10 @@ class Config(BaseConfig):
         self.replay_thinning = float()
         self.use_rnd = bool()
         self.rnd_experience_proportion = float()
+
+        # noise stuff
+        self.noisy_return = float()
+        self.noisy_reward = float()
 
     def get_env_name(self, n: int=0):
         """

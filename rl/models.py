@@ -426,9 +426,12 @@ class DualHeadNet(nn.Module):
             exclude_policy=False,
             exclude_tvf=False,
             include_features: bool = False,
+            required_tvf_heads: list = None
         ):
         """
         x is [B, *state_shape]
+
+        @param required_tvf_heads: list of tvf heads required, none evaluates all heads
         """
 
         result = {}
@@ -485,14 +488,18 @@ class DualHeadNet(nn.Module):
                 if self.tvf_head is not None:
                     # process all heads as a batch if we can
                     tvf_values = self.tvf_head(encoder_features)
-                    n = len(self.tvf_fixed_head_horizons)
-                    result[f'tvf_value'] = tvf_values.reshape([-1, n, len(self.value_head_names)])
+                    K = len(self.tvf_fixed_head_horizons)
+                    result[f'tvf_value'] = tvf_values.reshape([-1, K, len(self.value_head_names)])
+                    if required_tvf_heads is not None:
+                        # select on the heads needed
+                        result[f'tvf_value'] = result[f'tvf_value'][:, required_tvf_heads]
                 else:
                     # process individual heads, will be a bit slower
                     # output will be B, K, VH
-                    result[f'tvf_value'] = torch.stack([head(encoder_features) for head in self.tvf_heads], dim=1)
-
-
+                    if required_tvf_heads is None:
+                        # get all heads
+                        required_tvf_heads = range(len(self.tvf_heads))
+                    result[f'tvf_value'] = torch.stack([self.tvf_heads[i](encoder_features) for i in required_tvf_heads], dim=1)
 
         return result
 

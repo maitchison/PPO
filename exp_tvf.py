@@ -10,7 +10,7 @@ ATARI_3_VAL = ['Assault', 'MsPacman', 'YarsRevenge']
 ATARI_1_VAL = ['Assault']
 ATARI_5 = ['BattleZone', 'DoubleDunk', 'NameThisGame', 'Phoenix', 'Qbert']
 
-SEED_PENALITY = 10 # how much to deprioritise seeds
+SEED_PENALITY = 25 # how much to deprioritise seeds
 
 
 # proposed changes
@@ -1128,46 +1128,46 @@ def reference(priority: int = 0):
 #
 
 
-def noise(priority: int = 0):
-
-    # improved "always on" noise system...
-
-    COMMON_ARGS = {
-        'seeds': 1,
-        'subset': ATARI_1_VAL,
-        'priority': priority,
-        'hostname': "",
-        'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF2_NOISE",
-    }
-
-    add_run(
-        run_name=f"tvf",
-        use_sns=True,
-        default_args=TVF2_ARGS,
-        replay_size=128 * 128,
-        distil_period=1,
-        tvf_return_samples=32,
-        policy_mini_batch_size=2048,
-        value_mini_batch_size=512,
-        distil_mini_batch_size=512,
-        tvf_value_heads=128, # this is the default, but I think it's too many.
-        **COMMON_ARGS
-    )
-
-    add_run(
-        run_name=f"dna",
-        use_sns=True,
-        default_args=DNA_TUNED_ARGS,
-        **COMMON_ARGS
-    )
-
-    add_run(
-        run_name=f"ppo",
-        use_sns=True,
-        default_args=PPO_TUNED_ARGS,
-        **COMMON_ARGS
-    )
+# def noise(priority: int = 0):
+#
+#     # improved "always on" noise system...
+#
+#     COMMON_ARGS = {
+#         'seeds': 1,
+#         'subset': ATARI_1_VAL,
+#         'priority': priority,
+#         'hostname': "",
+#         'env_args': HARD_MODE_ARGS,
+#         'experiment': "TVF2_NOISE",
+#     }
+#
+#     add_run(
+#         run_name=f"tvf",
+#         use_sns=True,
+#         default_args=TVF2_ARGS,
+#         replay_size=128 * 128,
+#         distil_period=1,
+#         tvf_return_samples=32,
+#         policy_mini_batch_size=2048,
+#         value_mini_batch_size=512,
+#         distil_mini_batch_size=512,
+#         tvf_value_heads=128, # this is the default, but I think it's too many.
+#         **COMMON_ARGS
+#     )
+#
+#     add_run(
+#         run_name=f"dna",
+#         use_sns=True,
+#         default_args=DNA_TUNED_ARGS,
+#         **COMMON_ARGS
+#     )
+#
+#     add_run(
+#         run_name=f"ppo",
+#         use_sns=True,
+#         default_args=PPO_TUNED_ARGS,
+#         **COMMON_ARGS
+#     )
 
 def samples(priority:int = 0):
 
@@ -1789,11 +1789,101 @@ def th_heads(priority: int = 0):
     )
 
     add_run(
+        run_name=f"factory", # these are the old setting used in the spacing experiment
+        tvf_value_heads=128,
+        tvf_gamma=1.0,
+        tvf_horizon_trimming="off",
+        tvf_return_mode="exponential",
+        tvf_return_samples=32,
+        tvf_return_n_step=20,
+        tvf_return_estimator_mode="historic",
+        **merge_dict(COMMON_ARGS, {'subset':['Assault']}),
+    )
+
+    add_run(
+        run_name=f"factory2",  # as close as I can get it to old 'factory' settings
+        tvf_value_heads=128,
+        tvf_gamma=0.99997,
+        tvf_horizon_trimming="off",
+        tvf_return_mode="exponential",
+        tvf_return_samples=32,
+        tvf_return_n_step=20,
+        tvf_return_estimator_mode="historic",
+        value_epochs=2,
+        sns_b_big=64*128,
+        sns_small_samples=16,
+        sns_smoothing="avg",
+        max_micro_batch_size=2048, # should not matter (unless noise is very wrong...)
+        **merge_dict(COMMON_ARGS, {'subset': ['Assault']}),
+    )
+
+    add_run(
         run_name=f"hidden=32",
         tvf_value_heads=64,
         tvf_per_head_hidden_units=32, # this should really be 32 I think
         **COMMON_ARGS,
     )
+
+
+def th_noise(priority: int = 0):
+
+    # a deep look into how TVF handles noisy environments
+    # (case study on breakout...)
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ['Breakout'],         # only breakout
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_NOISE",
+        'default_args': TVF3_FINAL_ARGS,
+        'epochs': 25, # need to make this quick, but really want 50
+
+        # better quality sns is needed in this experiment
+        # note sure the best way to deal with as it's quite slow
+        # maybe only evaluate 5 heads? And ignore head 0.
+        'sns_period': 4,
+
+        # make life a bit easier on all the algorithms by reducing gamma
+        # these should be good for breakout, which is a bit shorter
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,
+        'tvf_max_horizon': 3000,
+    }
+
+    def triple_run(run_name, **kwargs):
+        add_run(
+            run_name=f"tvf {run_name}",
+            tvf_value_heads=64,
+            tvf_per_head_hidden_units=16,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"dna {run_name}",
+            use_tvf=False,
+            tvf_value_heads=64,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"ppo {run_name}",
+            use_tvf=False,
+            archtecture="single",
+            tvf_value_heads=64,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+
+    # reference run has rap=0.25
+    triple_run(f'ref')
+
+    for noise in [0.01, 0.1]:
+        triple_run(f'rew={noise}', noisy_reward=noise)
+        triple_run(f'ret={noise}', noisy_return=noise)
+    for rap in [0, 0.5]:
+        triple_run(f'rap={rap}', repeat_action_probability=rap)
+
 
 
 def setup():
@@ -1843,3 +1933,4 @@ def setup():
     # TVF-Heads experiments
 
     th_heads()
+    th_noise(-100)
