@@ -1119,17 +1119,23 @@ class Runner:
         elif mode == "average":
             # we can use any horizon with h > remaining_time interchangeably with h.
             # so may as well average over them.
-            old_tvf_value_estimates = tvf_value_estimates.copy()
-            for k, h in enumerate(self.tvf_horizons):
-                target_horizons = np.minimum(h, (args.timeout / args.frame_skip) - time)
-                if np.min(target_horizons) < h:
-                    ids = np.searchsorted(self.tvf_horizons, target_horizons)
-                    if np.min(ids) == np.max(ids):
-                        # fast path when ids all match
-                        tvf_value_estimates[:, k, :] = np.mean(old_tvf_value_estimates[:, ids[0]:, :], axis=1)
-                    else:
-                        for i, idx in enumerate(ids):
-                            tvf_value_estimates[i, k, :] = np.mean(old_tvf_value_estimates[i, idx:, :])
+
+            # first compute the averaged values
+            averaged_tvf_value_estimates = tvf_value_estimates.copy()
+            accumulator = averaged_tvf_value_estimates[:, -1].copy()
+            counter = 1
+            for k in reversed(range(len(self.tvf_horizons)-1)):
+                accumulator += averaged_tvf_value_estimates[:, k]
+                counter += 1
+                averaged_tvf_value_estimates[:, k] = accumulator / counter
+
+            trimmed_horizon = (args.timeout / args.frame_skip) - time
+            trimmed_ks = np.searchsorted(self.tvf_horizons, trimmed_horizon)
+
+            for a, trimmed_k in enumerate(trimmed_ks):
+                if trimmed_k >= len(self.tvf_horizons)-1:
+                    continue
+                tvf_value_estimates[a, trimmed_k:] = averaged_tvf_value_estimates[a, trimmed_k]
 
             return tvf_value_estimates
 

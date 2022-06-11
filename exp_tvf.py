@@ -1536,14 +1536,14 @@ def t3_distil3(priority: int = 0):
         'distil_loss': 'kl_policy', # this is much safer
     }
 
-    # for heads in [1, 8, 128]:
-    #     add_run(
-    #         run_name=f"distil heads={heads} tvf_coef={10}",
-    #         tvf_coef=10,
-    #         distil_max_heads=heads,
-    #         distil_beta=1.0, # might need tuning
-    #         **COMMON_ARGS,
-    #     )
+    for heads in [1, 8, 128]:
+        add_run(
+            run_name=f"distil heads={heads} tvf_coef={10}",
+            tvf_coef=10,
+            distil_max_heads=heads,
+            distil_beta=1.0, # might need tuning
+            **COMMON_ARGS,
+        )
 
     # reference run on my machine
     COMMON_ARGS['hostname'] = ""
@@ -1660,7 +1660,7 @@ def setup():
 
     # try again...
     t3_samples()
-    t3_heads()
+    t3_heads(25)
     t3_bw(200)
     t3_distil(0)
     t3_rediscount(0)
