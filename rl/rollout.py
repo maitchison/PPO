@@ -1367,7 +1367,18 @@ class Runner:
         ratio = (max(av_s, 0) + epsilon) / (max(av_g2, 0) + epsilon) # we bias this a bit towards a ratio of 1.
 
         self.noise_stats[f'{label}_ratio'] = ratio
+        if 'head' in label:
+            # keep track of which heads we have results for
+            try:
+                idx = int(label.split("_")[-1])
+                if 'active_heads' not in self.noise_stats:
+                    self.noise_stats['active_heads'] = set()
+                self.noise_stats['active_heads'].add(idx)
+            except:
+                # this is fine
+                pass
 
+        # maybe this is too much logging?
         self.log.watch(f'sns_{label}_smooth_s', av_s, display_precision=0, display_width=0, display_name=f"sns_{label}_s")
         self.log.watch(f'sns_{label}_smooth_g2', av_g2, display_precision=0, display_width=0, display_name=f"sns_{label}_g2")
         self.log.watch(f'sns_{label}_s', s_mean, display_precision=0, display_width=0)
@@ -1706,7 +1717,7 @@ class Runner:
 
         targets = data["distil_targets"] # targets are [B or B, K]
 
-        if args.use_tvf:
+        if args.use_tvf and not args.distil_force_ext:
             predictions = model_out["tvf_value"][:, :, 0]
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
@@ -1716,7 +1727,7 @@ class Runner:
         else:
             predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets - predictions) * args.tvf_coef
+        loss_value = 0.5 * torch.square(targets - predictions)
 
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
@@ -2348,7 +2359,7 @@ class Runner:
                 obs=obs,
                 output="policy",
             )
-            if args.use_tvf:
+            if args.use_tvf and not args.distil_force_ext:
                 batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0])
             else:
                 batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
@@ -2360,7 +2371,6 @@ class Runner:
         obs, distil_aux = self.get_replay_sample(samples_wanted)
 
         batch_data = {}
-        B, *state_shape = obs.shape
 
         batch_data["prev_state"] = obs
 
@@ -2370,7 +2380,7 @@ class Runner:
             output="full",
         )
 
-        if args.use_tvf:
+        if args.use_tvf and not args.distil_force_ext:
             # we could skip this if we trained on rollout rather then replay
             batch_data["distil_targets"] = model_out["value_tvf_value"][:, :, 0].detach().cpu().numpy()
         else:
@@ -2459,23 +2469,32 @@ class Runner:
         if self.step < args.ag_sns_delay:
             self.noise_stats['ag_sns_horizon'] = args.ag_sns_min_h
             self.log.watch_mean('ag_sns_target', args.ag_sns_min_h)
+            self.log.watch_mean('ag_sns_clipped_target', args.ag_sns_min_h)
             self.log.watch_mean('ag_sns_horizon', args.ag_sns_min_h)
             return
 
+        # data used to interpolate noise levels
+        logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
+        logged_noise_levels = np.asarray([self.noise_stats.get(f'head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads])
+
         # step 1: work out our target (with a cap at min_h)
-        new_target = args.ag_sns_min_h
+
+        new_target = 0
         for i, h in enumerate(self.tvf_horizons):
             # early on noise values will not be there, so just set them very high
-            noise = max(0, self.noise_stats.get(f'head_{i}_ratio', 999**2)) ** 0.5
-            if noise < args.ag_sns_threshold:
+            noise_level = interpolate(logged_heads, logged_noise_levels, np.asarray([i]))[0]
+            if noise_level < args.ag_sns_threshold:
                 new_target = max(h, new_target)
 
-        # step 2: move towards target
+        clipped_target = np.clip(new_target, args.ag_sns_min_h, args.ag_sns_max_h)
+
+        # step 2: move towards (clipped) target
         self.noise_stats['ag_sns_horizon'] = \
-            args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_min_h) + (1-args.ag_sns_alpha) * new_target
+            args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_min_h) + (1-args.ag_sns_alpha) * clipped_target
 
         self.log.watch_mean('ag_sns_target', new_target)
-        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'])
+        self.log.watch_mean('ag_sns_clipped_target', clipped_target)
+        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon']) # this is the only one that is used.
 
     def train(self):
 
@@ -2506,7 +2525,7 @@ class Runner:
         if args.use_rnd:
             self.train_rnd()
 
-        if args.ag_mode == "sns":
+        if args.ag_mode in ["sns", "shadow"]:
             self.update_sns_horizon_target()
 
         self.batch_counter += 1

@@ -286,15 +286,17 @@ class Config(BaseConfig):
         # --------------------------------
         # Auto Gamma
         parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
-        parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns]")
+        parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow]")
         parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
-        parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="horizon heads with noise levels below this threshold are considered low noise.")
-        parser.add_argument("--ag_sns_alpha", type=float, default=0.999,
+        parser.add_argument("--ag_sns_threshold", type=float, default=7.5, help="horizon heads with noise levels below this threshold are considered low noise.")
+        parser.add_argument("--ag_sns_alpha", type=float, default=0.998,
                             help="alpha value used in EMA for horizon.")
         parser.add_argument("--ag_sns_delay", type=int, default=int(5e6),
                             help="alpha value used in EMA for horizon.")
         parser.add_argument("--ag_sns_min_h", type=int, default=100,
                             help="Minimum auto gamma horizon.")
+        parser.add_argument("--ag_sns_max_h", type=int, default=10000,
+                            help="Maximum auto gamma horizon.")
 
         # --------------------------------
         # Simple Noise Scale
@@ -321,6 +323,8 @@ class Config(BaseConfig):
         parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
         parser.add_argument("--distil_batch_size_ratio", type=float, default=None, help="Sets distil_batch_size to rollout_size * distil_batch_size_ratio")
         parser.add_argument("--distil_max_heads", type=int, default=8+1, help="Max number of heads to apply distillation to.")
+        parser.add_argument("--distil_force_ext", type=str2bool, default=False,
+                            help="use value_ext instead of tvf heads for distilation.")
 
         # --------------------------------
         # Replay
@@ -437,6 +441,7 @@ class Config(BaseConfig):
         self.ag_sns_alpha = float()
         self.ag_sns_delay = int()
         self.ag_sns_min_h = int()
+        self.ag_sns_max_h = int()
 
         self.use_sns = bool()
         self.sns_labels = str()
@@ -456,6 +461,7 @@ class Config(BaseConfig):
         self.distil_freq_ratio = float()
         self.distil_batch_size_ratio = float()
         self.distil_max_heads = int()
+        self.distil_force_ext = bool()
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()
