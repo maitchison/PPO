@@ -39,7 +39,7 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     # the issue is we interpolate nd data with non-uniform target x's.
 
     assert len(set(horizons)) == len(horizons), f"Horizons duplicates not supported {horizons}"
-    assert np.all(np.diff(horizons) >= 0), f"Horizons must be sorted {horizons}"
+    assert np.all(np.diff(horizons) > 0), f"Horizons must be sorted and unique horizons:{horizons}, targets:{target_horizons}"
 
     assert horizons[0] == 0, "first horizon must be 0"
 
@@ -65,6 +65,7 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     value_post = values[range(N), post_index]
 
     dx = (horizons[post_index] - horizons[pre_index])
+    dx[dx == 0] = 1.0 # this only happens when we are at the boundaries, in whic case we have 0/dx, and we just want 0.
     factor = (target_horizons - horizons[index - 1]) / dx
     result = value_pre * (1 - factor) + value_post * factor
     result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
@@ -1303,9 +1304,20 @@ class Runner:
                 )
             )
 
-    def estimate_noise_scale(self, batch_data, mini_batch_func, optimizer: torch.optim.Optimizer, label, verbose:bool=True):
+    def estimate_noise_scale(
+            self,
+            batch_data,
+            mini_batch_func,
+            optimizer: torch.optim.Optimizer,
+            label,
+            verbose:bool=True,
+            smoothing="ema", # [ema|avg]
+    ):
         """
         Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
+
+        ema smoothing produces cleaner results, but is biased.
+
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
 
@@ -1341,30 +1353,36 @@ class Runner:
             g2s.append((b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small))
             ss.append((g_b_small_squared - g_b_big_squared) / (1 / b_small - 1 / b_big))
 
-        s_mean = np.mean(ss)
-        g2_mean = np.mean(g2s)
+        est_s = np.mean(ss)
+        est_g2 = np.mean(g2s)
 
         self.log.mode = self.log.LM_DEFAULT
 
-        # add these samples to the mix
-        for var_name, var_value in zip(['s', 'g2'], [s_mean, g2_mean]):
-            if f'{label}_{var_name}_history' not in self.noise_stats:
-                history_frames = 5e6 # 5 million frames should be about right
-                ideal_updates_length = history_frames / (self.N*self.A)
-                buffer_len = int(max(10, math.ceil(ideal_updates_length / args.sns_period)))
-                self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=buffer_len)
-            self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
-            self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
+        if smoothing == "avg":
+            # add these samples to the mix
+            for var_name, var_value in zip(['s', 'g2'], [est_s, est_g2]):
+                if f'{label}_{var_name}_history' not in self.noise_stats:
+                    history_frames = 5e6 # 5 million frames should be about right
+                    ideal_updates_length = history_frames / (self.N*self.A)
+                    buffer_len = int(max(10, math.ceil(ideal_updates_length / args.sns_period)))
+                    self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=buffer_len)
+                self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
+                self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
+        elif smoothing == "ema":
+            self.noise_stats[f'{label}_s'] = 0.9 * self.noise_stats.get(f'{label}_s', 1.0) + 0.1 * est_s
+            self.noise_stats[f'{label}_g2'] = 0.9 * self.noise_stats.get(f'{label}_g2', 1.0) + 0.1 * est_g2
+        else:
+            raise ValueError(f"Invalid smoothing mode {smoothing}.")
 
-        av_s = float(np.mean(self.noise_stats[f'{label}_s_history']))
-        av_g2 = float(np.mean(self.noise_stats[f'{label}_g2_history']))
+        smooth_s = float(self.noise_stats[f'{label}_s'])
+        smooth_g2 = float(self.noise_stats[f'{label}_g2'])
 
         # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
         # to avoid this we clip the *smoothed* g2 to epsilon.
         # alternative include larger batch_sizes, and / or larger EMA horizon.
         # noise levels above 1000 will not be very accurate, but around 20 should be fine.
-        epsilon = 1e-3
-        ratio = (max(av_s, 0) + epsilon) / (max(av_g2, 0) + epsilon) # we bias this a bit towards a ratio of 1.
+        epsilon = 1e-4 # we can't really measure noise above this level anyway (which is around a ratio of 10k:1)
+        ratio = smooth_s / max(smooth_g2, epsilon)
 
         self.noise_stats[f'{label}_ratio'] = ratio
         if 'head' in label:
@@ -1379,10 +1397,10 @@ class Runner:
                 pass
 
         # maybe this is too much logging?
-        self.log.watch(f'sns_{label}_smooth_s', av_s, display_precision=0, display_width=0, display_name=f"sns_{label}_s")
-        self.log.watch(f'sns_{label}_smooth_g2', av_g2, display_precision=0, display_width=0, display_name=f"sns_{label}_g2")
-        self.log.watch(f'sns_{label}_s', s_mean, display_precision=0, display_width=0)
-        self.log.watch(f'sns_{label}_g2', g2_mean, display_precision=0, display_width=0)
+        self.log.watch(f'sns_{label}_smooth_s', smooth_s, display_precision=0, display_width=0, display_name=f"sns_{label}_s")
+        self.log.watch(f'sns_{label}_smooth_g2', smooth_g2, display_precision=0, display_width=0, display_name=f"sns_{label}_g2")
+        self.log.watch(f'sns_{label}_s', est_s, display_precision=0, display_width=0)
+        self.log.watch(f'sns_{label}_g2', est_g2, display_precision=0, display_width=0)
         self.log.watch(f'sns_{label}_b', ratio, display_precision=0, display_width=0)
         self.log.watch(
             f'sns_{label}',
@@ -2498,13 +2516,14 @@ class Runner:
 
         # data used to interpolate noise levels
         logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
+        # early on noise values will not be there, so just set them very high
         logged_noise_levels = np.asarray([self.noise_stats.get(f'head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads])[None, :]
 
         # step 1: work out our target (with a cap at min_h)
 
         new_target = 0
         for i, h in enumerate(self.tvf_horizons):
-            # early on noise values will not be there, so just set them very high
+
             noise_level = interpolate(logged_heads, logged_noise_levels, np.asarray([i]))[0]
             if noise_level < args.ag_sns_threshold:
                 new_target = max(h, new_target)

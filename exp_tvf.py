@@ -1775,6 +1775,11 @@ def th_heads(priority: int = 0):
         'env_args': HARD_MODE_ARGS,
         'experiment': "TH_HEADS",
         'default_args': TVF3_FINAL_ARGS,
+
+        # better quality sns is needed in this experiment
+        # note sure the best way to deal with as it's quite slow
+        # maybe only evaluate 5 heads? And ignore head 0.
+        'sns_period': 4,
     }
 
     add_run(
