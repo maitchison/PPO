@@ -1825,6 +1825,72 @@ def th_heads(priority: int = 0):
     )
 
 
+def tvf_bonus(priority: int = 0):
+
+    # seems like this might help...?
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ATARI_3_VAL,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_BONUS",
+        'default_args': TVF3_FINAL_ARGS,
+        'epochs': 50, # need to make this quick, but really want 50
+    }
+
+    add_run(
+        run_name=f"reference",
+        tvf_per_head_hidden_units=32,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"reward_noise=0.1",
+        noisy_reward=0.1, # see if this helps...
+        tvf_per_head_hidden_units=32,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"return_noise=1.0",
+        noisy_return=1.0,  # see if this helps...
+        tvf_per_head_hidden_units=32,
+        **COMMON_ARGS,
+    )
+
+    # try again with 999 settings
+
+    COMMON_ARGS.update({
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,
+        'tvf_max_horizon': 3000,
+        'hostname': "cluster",
+        'device': 'cuda',
+        'tvf_value_heads': 64,
+        'tvf_per_head_hidden_units': 16,
+        'experiment': "TVF_BONUS2",
+    })
+
+    add_run(
+        run_name=f"reference",
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"reward_noise=0.1",
+        noisy_reward=0.1, # see if this helps...
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"return_noise=1.0",
+        noisy_return=1.0,  # see if this helps...
+        **COMMON_ARGS,
+    )
+
+
+
 def th_noise(priority: int = 0):
 
     # a deep look into how TVF handles noisy environments
@@ -1862,15 +1928,15 @@ def th_noise(priority: int = 0):
         add_run(
             run_name=f"dna {run_name}",
             use_tvf=False,
-            tvf_value_heads=64,
+            tvf_value_heads=64, #ops, should be 0, won't make a difference though...
             **kwargs,
             **COMMON_ARGS,
         )
         add_run(
             run_name=f"ppo {run_name}",
             use_tvf=False,
-            archtecture="single",
-            tvf_value_heads=64,
+            architecture="single",
+            tvf_value_heads=64, #ops, should be 0, won't make a difference though...
             **kwargs,
             **COMMON_ARGS,
         )
@@ -1878,12 +1944,66 @@ def th_noise(priority: int = 0):
     # reference run has rap=0.25
     triple_run(f'ref')
 
-    for noise in [0.01, 0.1]:
+    for noise in [0.01, 0.1, 0.5, 1.0, 2.0]:
         triple_run(f'rew={noise}', noisy_reward=noise)
+
+    for noise in [0.01, 0.1, 0.5, 1.0, 2.0]:
         triple_run(f'ret={noise}', noisy_return=noise)
-    for rap in [0, 0.5]:
+
+    for rap in [0, 0.125, 0.5, 0.75]:
         triple_run(f'rap={rap}', repeat_action_probability=rap)
 
+
+
+def tvf_gamma(priority: int = 0):
+
+    # trying to get an idea for what gamma should look like on some games.
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_GAMMA",
+        'default_args': TVF3_FINAL_ARGS,
+        'epochs': 25, # need to make this quick, but really want 50
+
+        # better quality sns is needed in this experiment
+        # note sure the best way to deal with as it's quite slow
+        # maybe only evaluate 5 heads? And ignore head 0.
+        'sns_period': 4,
+    }
+
+    def double_run(env, run_name, **kwargs):
+        add_run(
+            run_name=f"tvf {run_name}",
+            subset=[env],
+            tvf_value_heads=64,
+            tvf_per_head_hidden_units=16,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"dna {run_name}",
+            subset=[env],
+            use_tvf=False,
+            tvf_value_heads=64,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        kwargs["tvf_gamma"] = 0.99997
+
+        add_run(
+            run_name=f"tvf rediscount {run_name}",
+            subset=[env],
+            tvf_value_heads=64,
+            tvf_per_head_hidden_units=16,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+
+    for env in ['Surround', 'CrazyClimber', 'Skiing', 'SpaceInvaders', 'BeamRider', 'Zaxxon']:
+        for gamma in [0.9, 0.99, 0.999, 0.9999]:
+            double_run(env, f'gamma={gamma}', gamma=gamma, tvf_gamma=gamma)
 
 
 def setup():
@@ -1928,9 +2048,11 @@ def setup():
 
     #t3_heads()
 
-    #t3_distil4(0)
+    t3_distil4(0)
 
     # TVF-Heads experiments
 
     th_heads()
-    th_noise(-100)
+    th_noise(100)
+    tvf_gamma(0)
+    tvf_bonus(150)

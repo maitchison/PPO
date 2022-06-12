@@ -296,13 +296,13 @@ class RunLog():
             'exp_': lambda x: np.exp(x),
             '1m_': lambda x: 1 - x,
             '1p_': lambda x: 1 + x,
+            'nz_': lambda x: np.nan_to_num(np.asarray(x, dtype=np.float)) # convert none to 0
         }
 
         self._fields = {}
         self.load(filename, skip_rows=skip_rows)
 
     def __getitem__(self, key: str):
-
         for pattern, func in self._patterns.items():
             if key.startswith(pattern):
                 return func(self[key[len(pattern):]])
@@ -398,7 +398,6 @@ def compare_runs(
         x_start=None,
         show_legend=True,
         title=None,
-        highlight=None,
         label_filter=None,
         color_filter=None,
         style_filter=None,
@@ -421,11 +420,6 @@ def compare_runs(
         group_filter: If defined, all runs with same group will be plotted together.
     """
 
-    if highlight is not None and isinstance(highlight, str):
-        highlight = [highlight]
-
-    if title is None and highlight is not None:
-        title = "".join(highlight) + " by " + y_axis
     if title is None:
         title = "Training Graph"
 
@@ -448,6 +442,9 @@ def compare_runs(
     run_labels_so_far = set()
 
     group_data = {}
+    group_style_names = defaultdict(set)
+
+    i_per_style = defaultdict(int)
 
     for run_name, run_data, run_params in runs:
 
@@ -487,45 +484,29 @@ def compare_runs(
         if smooth_factor is None:
             smooth_factor = 0.995 ** (run_data["batch_size"] / 2048)
 
-        small = (i - 1) % len(cmap.colors)
-        big = (i - 1) // len(cmap.colors)
-        auto_color = cmap.colors[small]
-
+        # figure out style and color
         if style_filter is not None:
-            auto_style = style_filter(run_name)
+            line_style = style_filter(run_name)
         else:
-            auto_style = ["-", "--"][big % 2]
+            line_style = "-"
 
-        ls = "-"
+        color_index = i_per_style[line_style]
+        i_per_style[line_style] += 1
+        color = cmap.colors[color_index]
+        if color_filter is not None:
+            color = color_filter(run_name, color)
 
-        if highlight:
-            if any([x in run_name for x in highlight]):
-                color = cmap.colors[counter]
-                counter += 1
-                zorder = counter + 100
-                alpha = 1.0
-            else:
-                color = "gray"
-                alpha = 0.33
-                zorder = 0
-        else:
-            color = auto_color
-            ls = auto_style
-            alpha = 1.0
-            zorder = None if zorder_filter is None else zorder_filter(run_name, run_params)
+        # -----
+
+        alpha = 1.0
+        zorder = None if zorder_filter is None else zorder_filter(run_name, run_params)
 
         if run_data is reference_run:
             color = "gray"
 
         if len(xs) != len(ys):
             ys = xs[:len(xs)]
-            print(f"Warning, missmatched data on {path}:{run_name}")
-
-        group_color = None
-
-        if color_filter is not None:
-            color = color_filter(run_name, color)
-            group_color = color_filter(run_name, color)
+            print(f"Warning, missmatched data on {run_name}")
 
         # make sure we don't duplicate labels
         if run_label in run_labels_so_far:
@@ -539,15 +520,19 @@ def compare_runs(
             group = group_filter(run_name, run_data)
             if group != None:
                 if group not in group_data:
-                    group_data[group] = ([xs], [ys], run_label, alpha, group_color, zorder, ls)
+                    # redo color...
+                    if color_filter is None:
+                        color = cmap.colors[len(group_style_names[line_style]) % len(cmap.colors)]
+                    group_data[group] = ([xs], [ys], run_label, alpha, color, zorder, line_style)
                 else:
                     group_data[group][0].append(xs[x_start:])
                     group_data[group][1].append(ys[x_start:])
+                group_style_names[line_style].add(group)
                 continue
 
-        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color, linestyle=ls)
+        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color, linestyle=line_style)
         plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
-                 linestyle=ls, zorder=zorder)
+                 linestyle=line_style, zorder=zorder)
 
     if x_axis_name != '':
         plt.xlabel(x_axis_name or x_axis)

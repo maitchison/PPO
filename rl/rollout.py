@@ -28,7 +28,7 @@ def add_relative_noise(X:np.ndarray, rel_error:float):
     # does not change the expectation.
     if rel_error <= 0:
         return X
-    factors = np.clip(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), 0, float('inf'))
+    factors = np.clip(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), 0, float('inf'), dtype=np.float32)
     return X * factors
 
 def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
