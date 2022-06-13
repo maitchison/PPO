@@ -210,9 +210,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.embed_state:
         env = wrappers.StateHistoryWrapper(env)
 
-
-
-
     env = wrappers.NullActionWrapper(env)
 
     return env

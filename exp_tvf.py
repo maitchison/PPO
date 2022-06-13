@@ -530,9 +530,9 @@ TVF4_INITIAL_ARGS = TVF3_FINAL_ARGS.copy()
 TVF4_INITIAL_ARGS.update({
     # taken from distil4
     # note, we are using shallow heads here...
-    'distil_beta': 100.0,           # 10x tvf_coef
+    'distil_beta': 100.0,           # 10x tvf_coef (this should be beta=10...)
     'distil_max_heads': 128,
-    'distil_period': 2,             # maybe 1 is better?
+    'distil_period': 2,
 })
 
 
@@ -1971,7 +1971,7 @@ def th_noise(priority: int = 0):
 
 
 
-def tvf_gamma(priority: int = 0):
+def tvf_red(priority: int = 0):
 
     # trying to get an idea for what gamma should look like on some games.
 
@@ -2016,15 +2016,120 @@ def tvf_gamma(priority: int = 0):
         add_run(
             run_name=f"red gamma={gamma}",
             subset=[env],
+            distil_rediscount=True, # not enabled for crazyclimber
             **kwargs,
             **COMMON_ARGS,
         )
 
     # do more games later...
     #for env in ['Surround', 'CrazyClimber', 'Skiing', 'SpaceInvaders', 'BeamRider', 'Zaxxon']:
-    for env in ['CrazyClimber']:
+    #for env in ['CrazyClimber', 'Skiing']:
+    for env in ['Skiing']:
         for gamma in [0.99, 0.999, 0.9999]:
             multi_run(env, gamma=gamma)
+
+    # try new rediscounting
+    COMMON_ARGS['hostname'] = ""
+    COMMON_ARGS['experiment'] = "TVF_RED2"
+    del COMMON_ARGS['device']
+
+    add_run(
+        run_name=f"red2 gamma=0.99",
+        subset=['CrazyClimber'],
+        gamma=0.99,
+        tvf_gamma=0.99997,
+        distil_rediscount=True,
+        **COMMON_ARGS,
+    )
+
+
+def tvf_zero(priority: int = 0):
+
+    # trying to get an idea for what gamma should look like on some games.
+
+    COMMON_ARGS = {
+        'seeds': 2, # important to see if it's a seed problem
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_ZERO",
+        'default_args': TVF4_INITIAL_ARGS,
+        'epochs': 20,
+
+        # better quality sns is needed in this experiment
+        # note sure the best way to deal with as it's quite slow
+        # maybe only evaluate 5 heads? And ignore head 0.
+        'sns_period': 4,
+        'noisy_zero': 0.1,
+    }
+    for env in ['Pong']:
+        add_run(
+            run_name=f"heads=512",
+            subset=[env],
+            tvf_value_heads=512,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"heads=2048",
+            subset=[env],
+            tvf_value_heads=2048,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"heads=32",
+            subset=[env],
+            tvf_value_heads=32,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"trim=interpolate",
+            subset=[env],
+            tvf_horizon_trimming="interpolate",
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"trim=off",
+            subset=[env],
+            tvf_horizon_trimming="off",
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"state_history",
+            subset=[env],
+            embed_state=True,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"h=3000",
+            subset=[env],
+            tvf_max_horizon=3000,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"gamma=0.999",
+            subset=[env],
+            tvf_gamma=0.999,
+            gamma=0.999,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"gamma=1.0",
+            subset=[env],
+            tvf_gamma=1.0,
+            gamma=1.0,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"tvf_n_step=40",
+            subset=[env],
+            tvf_return_n_step=40,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"tvf_return_samples=32",
+            subset=[env],
+            tvf_return_samples=32,
+            **COMMON_ARGS,
+        )
 
 
 def tvf_history(priority: int = 0):
@@ -2131,6 +2236,7 @@ def setup():
 
     th_heads()
     th_noise(100)
-    tvf_gamma(0)
+    tvf_red(250)
     tvf_bonus(-50)
-    tvf_history(999)
+    tvf_history(200)
+    tvf_zero(200)

@@ -198,14 +198,6 @@ def load_checkpoint(checkpoint_path, device=None):
 
     if "reward_scale" in checkpoint:
         REWARD_SCALE = checkpoint["reward_scale"]
-    else:
-        # old method...
-        normalizers = env_state['VecNormalizeRewardWrapper']['normalizers']
-        # print("Reward normalizers are:")
-        # for k, v in normalizers.items():
-        #     print(f"  -{k:<30}: {v.ret_rms.mean:<10.3f} {v.ret_rms.var ** 0.5:<10.3f} {v.ret_rms.count:<10.0f}")
-        REWARD_SCALE = (normalizers[args.get_env_name()].ret_rms.var + 1e-8) ** 0.5
-        print(f"Reward scale set to {REWARD_SCALE:.2f}")
 
     return model
 
@@ -676,6 +668,9 @@ def generate_rollouts(
             # 1. first do the simple stuff... rewards etc
             append_buffer('is_running', is_running[i])
             raw_reward = infos[i].get("raw_reward", rewards[i])
+            if args.noisy_zero > 0:
+                rewards *= 0
+                raw_reward *= 0
             append_buffer('rewards', rewards[i])
             append_buffer('raw_rewards', raw_reward)
 

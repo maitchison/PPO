@@ -1199,6 +1199,11 @@ class Runner:
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
 
+            if args.noisy_zero >= 0:
+                ext_rewards = np.random.normal(0, args.noisy_zero, size=ext_rewards.shape).astype(np.float32)
+                raw_rewards *= 0
+
+
             self.episode_score += raw_rewards
             self.episode_len += 1
 
@@ -1444,25 +1449,67 @@ class Runner:
         where K is the length of tvf_debug_horizons
 
         """
-        total_not_explained_var = 0
-        total_var = 0
-        for h_index in utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads):
-            value = estimates[:, :, h_index].reshape(-1)
-            target = targets[:, :, h_index].reshape(-1)
+
+        def log_head(head_index:int, name:str = None):
+
+            if name is None:
+                name = str(head_index)
+
+            value = estimates[:, :, head_index].reshape(-1)
+            target = targets[:, :, head_index].reshape(-1)
 
             this_var = np.var(target)
             this_not_explained_var = np.var(target - value)
-            total_var += this_var
-            total_not_explained_var += this_not_explained_var
 
             ev = 0 if (this_var == 0) else np.clip(1 - this_not_explained_var / this_var, -1, 1)
 
             self.log.watch_mean(
-                f"ev_{h_index}"+postfix,
+                f"ev_{name}" + postfix,
                 ev,
                 display_width=0,
                 history_length=1
             )
+
+            if args.noisy_zero > 0:
+                # special stats for learning zero rewards
+                self.log.watch_mean(
+                    f"z_value_bias_{name}" + postfix,
+                    np.mean(value),
+                    display_width=0,
+                    history_length=1
+                )
+                self.log.watch_mean(
+                    f"z_target_bias_{name}" + postfix,
+                    np.mean(target),
+                    display_width=0,
+                    history_length=1
+                )
+                self.log.watch_mean(
+                    f"z_value_var_{name}" + postfix,
+                    np.var(value),
+                    display_width=0,
+                    history_length=1
+                )
+                self.log.watch_mean(
+                    f"z_target_var_{name}" + postfix,
+                    np.var(target),
+                    display_width=0,
+                    history_length=1
+                )
+            return total_var, this_not_explained_var
+
+        total_not_explained_var = 0
+        total_var = 0
+        heads_to_log = utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads)
+        for i, head_index in enumerate(heads_to_log):
+            this_var, this_not_explained_var = log_head(head_index)
+            total_var += this_var
+            total_not_explained_var += this_not_explained_var
+
+        # log first, last, and mid
+        log_head(heads_to_log[0], "first")
+        log_head(heads_to_log[-1], "last")
+        log_head(heads_to_log[len(heads_to_log)//2], "mid")
 
         self.log.watch_mean(
             f"ev_average"+postfix,
@@ -1471,6 +1518,8 @@ class Runner:
             display_name="ev_avg"+postfix,
             history_length=1
         )
+
+
 
     @torch.no_grad()
     def log_tvf_curve_quality(self):
@@ -2149,6 +2198,10 @@ class Runner:
     @property
     def reward_scale(self):
         """ The amount rewards have been multiplied by. """
+        if args.noisy_zero:
+            # no reward scaling for noisy zero rewards.
+            return 1.0
+
         if args.reward_normalization:
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
@@ -2767,10 +2820,9 @@ def get_rediscounted_value_estimate(
     else:
         is_numpy = False
 
-    device = values.device
     prev = values[:, 0] # should be zero
     prev_h = 0
-    discounted_reward_sum = torch.zeros([B], dtype=torch.float32, device=device)
+    discounted_reward_sum = torch.zeros([B], dtype=torch.float32, device=values.device)
     for i_minus_one, h in enumerate(horizons[1:]):
         i = i_minus_one + 1
         # rewards occurred at some point after prev_h and before h, so just average them. Remembering that

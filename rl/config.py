@@ -259,6 +259,7 @@ class Config(BaseConfig):
         # Noisy environments
         parser.add_argument("--noisy_return", type=float, default=0, help="Relative error applied after return calculations. Used to simulate a noisy environment.")
         parser.add_argument("--noisy_reward", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
+        parser.add_argument("--noisy_zero", type=float, default=-1, help="Instead of environment rewards, agent is given random rewards drawn from gausian with this std.")
 
         # --------------------------------
 
@@ -331,8 +332,7 @@ class Config(BaseConfig):
         parser.add_argument("--distil_max_heads", type=int, default=8+1, help="Max number of heads to apply distillation to.")
         parser.add_argument("--distil_force_ext", type=str2bool, default=False,
                             help="use value_ext instead of tvf heads for distilation.")
-        parser.add_argument("--distil_rediscount", type=str2bool, default=False,
-                            help="uses rediscounted targets for distilation.")
+        parser.add_argument("--distil_rediscount", type=str2bool, default=False, help="uses rediscounted targets for distillation.")
 
         # --------------------------------
         # Replay
@@ -485,6 +485,7 @@ class Config(BaseConfig):
         # noise stuff
         self.noisy_return = float()
         self.noisy_reward = float()
+        self.noisy_zero = float()
 
     def get_env_name(self, n: int=0):
         """

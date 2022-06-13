@@ -296,6 +296,7 @@ class RunLog():
             'exp_': lambda x: np.exp(x),
             '1m_': lambda x: 1 - x,
             '1p_': lambda x: 1 + x,
+            'abs_': lambda x: np.abs(x),
             'nz_': lambda x: np.nan_to_num(np.asarray(x, dtype=np.float)) # convert none to 0
         }
 
@@ -410,6 +411,7 @@ def compare_runs(
         ref_level=None,
         hold=False,
         x_transform=None,
+        ghost_alpha:float=0.1,
         jitter=0.0,
         figsize=(16, 4),
         show_group_runs=False,
@@ -530,7 +532,7 @@ def compare_runs(
                 group_style_names[line_style].add(group)
                 continue
 
-        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color, linestyle=line_style)
+        plt.plot(xs[x_start:], ys[x_start:], alpha=ghost_alpha * alpha, c=color, linestyle=line_style)
         plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=line_style, zorder=zorder)
 
