@@ -535,6 +535,14 @@ TVF4_INITIAL_ARGS.update({
     'distil_period': 2,
 })
 
+TVF4_TWEAKED_ARGS = TVF4_INITIAL_ARGS.copy()
+TVF4_TWEAKED_ARGS.update({
+    # taken from distil4
+    # note, we are using shallow heads here...
+    'distil_beta': 10.0,
+    'distil_rediscount': True,
+})
+
 
 def merge_dict(a, b):
     x = a.copy()
@@ -1841,73 +1849,7 @@ def th_heads(priority: int = 0):
     )
 
 
-def tvf_bonus(priority: int = 0):
-
-    # seems like this might help...?
-
-    COMMON_ARGS = {
-        'seeds': 2,
-        'subset': ATARI_3_VAL,
-        'priority': priority,
-        'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF_BONUS",
-        'default_args': TVF3_FINAL_ARGS,
-        'epochs': 50, # need to make this quick, but really want 50
-    }
-
-    add_run(
-        run_name=f"reference",
-        tvf_per_head_hidden_units=32,
-        **COMMON_ARGS,
-    )
-
-    add_run(
-        run_name=f"reward_noise=0.1",
-        noisy_reward=0.1, # see if this helps...
-        tvf_per_head_hidden_units=32,
-        **COMMON_ARGS,
-    )
-
-    add_run(
-        run_name=f"return_noise=1.0",
-        noisy_return=1.0,  # see if this helps...
-        tvf_per_head_hidden_units=32,
-        **COMMON_ARGS,
-    )
-
-    # try again with 999 settings
-
-    COMMON_ARGS.update({
-        'gamma': 0.999,
-        'tvf_gamma': 0.999,
-        'tvf_max_horizon': 3000,
-        'hostname': "cluster",
-        'device': 'cuda',
-        'tvf_value_heads': 64,
-        'tvf_per_head_hidden_units': 16,
-        'experiment': "TVF_BONUS2",
-    })
-
-    add_run(
-        run_name=f"reference",
-        **COMMON_ARGS,
-    )
-
-    add_run(
-        run_name=f"reward_noise=0.1",
-        noisy_reward=0.1, # see if this helps...
-        **COMMON_ARGS,
-    )
-
-    add_run(
-        run_name=f"return_noise=1.0",
-        noisy_return=1.0,  # see if this helps...
-        **COMMON_ARGS,
-    )
-
-
-
-def th_noise(priority: int = 0):
+def tvf_noise(priority: int = 0):
 
     # a deep look into how TVF handles noisy environments
     # (case study on breakout...)
@@ -1918,13 +1860,16 @@ def th_noise(priority: int = 0):
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
         'experiment': "TVF_NOISE",
-        'default_args': TVF3_FINAL_ARGS,
-        'epochs': 25, # need to make this quick, but really want 50
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 20, # need to make this quick, but really want 50
 
         # better quality sns is needed in this experiment
         # note sure the best way to deal with as it's quite slow
         # maybe only evaluate 5 heads? And ignore head 0.
         'sns_period': 4,
+
+        'hostname': "cluster",
+        'device': 'cuda',
 
         # make life a bit easier on all the algorithms by reducing gamma
         # these should be good for breakout, which is a bit shorter
@@ -1936,15 +1881,12 @@ def th_noise(priority: int = 0):
     def triple_run(run_name, **kwargs):
         add_run(
             run_name=f"tvf {run_name}",
-            tvf_value_heads=64,
-            tvf_per_head_hidden_units=16,
             **kwargs,
             **COMMON_ARGS,
         )
         add_run(
             run_name=f"dna {run_name}",
             use_tvf=False,
-            tvf_value_heads=64, #ops, should be 0, won't make a difference though...
             **kwargs,
             **COMMON_ARGS,
         )
@@ -1952,7 +1894,6 @@ def th_noise(priority: int = 0):
             run_name=f"ppo {run_name}",
             use_tvf=False,
             architecture="single",
-            tvf_value_heads=64, #ops, should be 0, won't make a difference though...
             **kwargs,
             **COMMON_ARGS,
         )
@@ -1960,10 +1901,10 @@ def th_noise(priority: int = 0):
     # reference run has rap=0.25
     triple_run(f'ref')
 
-    for noise in [0.01, 0.1, 0.5, 1.0, 2.0]:
+    for noise in [0.1, 0.5]:
         triple_run(f'rew={noise}', noisy_reward=noise)
 
-    for noise in [0.01, 0.1, 0.5, 1.0, 2.0]:
+    for noise in [0.1, 0.5, 1.0, 2.0]:
         triple_run(f'ret={noise}', noisy_return=noise)
 
     for rap in [0, 0.125, 0.5, 0.75]:
@@ -2075,6 +2016,12 @@ def tvf_zero(priority: int = 0):
             **COMMON_ARGS,
         )
         add_run(
+            run_name=f"heads=8192",
+            subset=[env],
+            tvf_value_heads=8192, # this should tell me what I want to know...
+            **COMMON_ARGS,
+        )
+        add_run(
             run_name=f"heads=32",
             subset=[env],
             tvf_value_heads=32,
@@ -2125,67 +2072,104 @@ def tvf_zero(priority: int = 0):
             **COMMON_ARGS,
         )
         add_run(
+            run_name=f"tvf_n_step=10",
+            subset=[env],
+            tvf_return_n_step=10,
+            **COMMON_ARGS,
+        )
+        add_run(
             run_name=f"tvf_return_samples=32",
             subset=[env],
             tvf_return_samples=32,
             **COMMON_ARGS,
         )
-
-
-def tvf_history(priority: int = 0):
-
-    # trying to get an idea for what gamma should look like on some games.
-
-    COMMON_ARGS = {
-        'seeds': 1,
-        'priority': priority,
-        'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF_HISTORY",
-        'default_args': TVF4_INITIAL_ARGS,
-        'epochs': 20, # need to make this quick, but really want 50
-
-        # better quality sns is needed in this experiment
-        # note sure the best way to deal with as it's quite slow
-        # maybe only evaluate 5 heads? And ignore head 0.
-        'sns_period': 4,
-    }
-    for env in ['MontezumaRevenge']:
-        for embed_state in [True, False]:
-            add_run(
-                run_name=f"embed_state={embed_state}",
-                subset=[env],
-                embed_state=embed_state,
-                **COMMON_ARGS,
-            )
-        embed_state = True
         add_run(
-            run_name=f"embed_state={embed_state} heads=256",
+            run_name=f"tvf_return_mode=advanced",
             subset=[env],
-            tvf_value_heads=256,
-            embed_state=embed_state,
+            tvf_return_mode="advanced",
             **COMMON_ARGS,
         )
         add_run(
-            run_name=f"embed_state={embed_state} heads=64",
+            run_name=f"tvf_return_mode=exponential",
             subset=[env],
-            tvf_value_heads=64,
-            embed_state=embed_state,
+            tvf_return_mode="exponential",
             **COMMON_ARGS,
         )
         add_run(
-            run_name=f"embed_state={embed_state} trim=interpolate",
+            run_name=f"tvf_return_mode=fixed",
             subset=[env],
-            tvf_horizon_trimming="interpolate",
-            embed_state=embed_state,
+            tvf_return_mode="fixed",
             **COMMON_ARGS,
         )
         add_run(
-            run_name=f"embed_state={embed_state} trim=off",
+            run_name=f"tvf_return_mode=mc",
             subset=[env],
-            tvf_horizon_trimming="off",
-            embed_state=embed_state,
+            tvf_return_mode="fixed",
+            tvf_return_n_step=128,
             **COMMON_ARGS,
         )
+        add_run(
+            run_name=f"tvf_head_spacing=linear",
+            subset=[env],
+            tvf_head_spacing="linear",
+            **COMMON_ARGS,
+        )
+
+
+# def tvf_history(priority: int = 0):
+#
+#     # trying to get an idea for what gamma should look like on some games.
+#
+#     COMMON_ARGS = {
+#         'seeds': 1,
+#         'priority': priority,
+#         'env_args': HARD_MODE_ARGS,
+#         'experiment': "TVF_HISTORY",
+#         'default_args': TVF4_INITIAL_ARGS,
+#         'epochs': 20, # need to make this quick, but really want 50
+#
+#         # better quality sns is needed in this experiment
+#         # note sure the best way to deal with as it's quite slow
+#         # maybe only evaluate 5 heads? And ignore head 0.
+#         'sns_period': 4,
+#     }
+#     for env in ['MontezumaRevenge']:
+#         for embed_state in [True, False]:
+#             add_run(
+#                 run_name=f"embed_state={embed_state}",
+#                 subset=[env],
+#                 embed_state=embed_state,
+#                 **COMMON_ARGS,
+#             )
+#         embed_state = True
+#         add_run(
+#             run_name=f"embed_state={embed_state} heads=256",
+#             subset=[env],
+#             tvf_value_heads=256,
+#             embed_state=embed_state,
+#             **COMMON_ARGS,
+#         )
+#         add_run(
+#             run_name=f"embed_state={embed_state} heads=64",
+#             subset=[env],
+#             tvf_value_heads=64,
+#             embed_state=embed_state,
+#             **COMMON_ARGS,
+#         )
+#         add_run(
+#             run_name=f"embed_state={embed_state} trim=interpolate",
+#             subset=[env],
+#             tvf_horizon_trimming="interpolate",
+#             embed_state=embed_state,
+#             **COMMON_ARGS,
+#         )
+#         add_run(
+#             run_name=f"embed_state={embed_state} trim=off",
+#             subset=[env],
+#             tvf_horizon_trimming="off",
+#             embed_state=embed_state,
+#             **COMMON_ARGS,
+#         )
 
 
 def setup():
@@ -2235,8 +2219,6 @@ def setup():
     # TVF-Heads experiments
 
     th_heads()
-    th_noise(100)
     tvf_red(250)
-    tvf_bonus(-50)
-    tvf_history(200)
     tvf_zero(200)
+    tvf_noise(100)

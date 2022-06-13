@@ -1458,10 +1458,10 @@ class Runner:
             value = estimates[:, :, head_index].reshape(-1)
             target = targets[:, :, head_index].reshape(-1)
 
-            this_var = np.var(target)
-            this_not_explained_var = np.var(target - value)
+            var = np.var(target)
+            not_explained_var = np.var(target - value)
 
-            ev = 0 if (this_var == 0) else np.clip(1 - this_not_explained_var / this_var, -1, 1)
+            ev = 0 if (var == 0) else np.clip(1 - not_explained_var / var, -1, 1)
 
             self.log.watch_mean(
                 f"ev_{name}" + postfix,
@@ -1496,7 +1496,7 @@ class Runner:
                     display_width=0,
                     history_length=1
                 )
-            return total_var, this_not_explained_var
+            return var, not_explained_var
 
         total_not_explained_var = 0
         total_var = 0
