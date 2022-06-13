@@ -492,7 +492,7 @@ def compare_runs(
 
         color_index = i_per_style[line_style]
         i_per_style[line_style] += 1
-        color = cmap.colors[color_index]
+        color = cmap.colors[color_index % len(cmap.colors)]
         if color_filter is not None:
             color = color_filter(run_name, color)
 

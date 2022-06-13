@@ -249,6 +249,7 @@ class Config(BaseConfig):
         parser.add_argument("--frame_skip", type=int, default=4)
         parser.add_argument("--embed_time", type=str2bool, default=True, help="Encodes time into observation")
         parser.add_argument("--embed_action", type=str2bool, default=True, help="Encodes actions into observation")
+        parser.add_argument("--embed_state", type=str2bool, default=False, help="Encodes state history into observation")
         parser.add_argument("--atari_rom_check", type=str2bool, default=True, help="Verifies on load, that the MD5 of atari ROM matches the ALE.")
         # (stuck)
         parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
@@ -330,6 +331,8 @@ class Config(BaseConfig):
         parser.add_argument("--distil_max_heads", type=int, default=8+1, help="Max number of heads to apply distillation to.")
         parser.add_argument("--distil_force_ext", type=str2bool, default=False,
                             help="use value_ext instead of tvf heads for distilation.")
+        parser.add_argument("--distil_rediscount", type=str2bool, default=False,
+                            help="uses rediscounted targets for distilation.")
 
         # --------------------------------
         # Replay
@@ -415,6 +418,7 @@ class Config(BaseConfig):
         self.frame_skip = int()
         self.embed_time = bool()
         self.embed_action = bool()
+        self.embed_state = bool()
         self.atari_rom_check = bool()
 
         self.ppo_vf_coef = float()
@@ -470,6 +474,7 @@ class Config(BaseConfig):
         self.distil_batch_size_ratio = float()
         self.distil_max_heads = int()
         self.distil_force_ext = bool()
+        self.distil_rediscount = bool()
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()

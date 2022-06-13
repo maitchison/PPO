@@ -60,8 +60,10 @@ def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_2
     Generate slurm scripts for jobs
     """
 
+    cluster_filter = lambda job: job.hostname == "cluster" and (job_filter is None or job_filter(job))
+
     cmds = get_experiment_cmds(
-        job_filter,
+        cluster_filter,
         force_params={
             'mutex_key': '',
             'ignore_lock': True,

@@ -205,8 +205,12 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         env = wrappers.TimeAwareWrapper(env)
 
     if args.embed_action:
-        # this one is better
         env = wrappers.ActionHistoryWrapper(env)
+
+    if args.embed_state:
+        env = wrappers.StateHistoryWrapper(env)
+
+
 
 
     env = wrappers.NullActionWrapper(env)

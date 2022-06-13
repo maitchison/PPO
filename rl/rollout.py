@@ -2399,6 +2399,26 @@ class Runner:
 
         return obs, aux
 
+    def rediscount_horizons(self, old_value_estimates):
+        """
+        Input is [B, K]
+        Output is [B, K]
+        """
+        if self.tvf_gamma == self.gamma:
+            return old_value_estimates
+
+        # old_distil_targets = batch_data["distil_targets"].copy()  # B, K
+        new_value_estimates = old_value_estimates.copy()
+        B, K = old_value_estimates.shape
+        for k in range(K):
+            new_value_estimates[:, k] = get_rediscounted_value_estimate(
+                old_value_estimates[:, :k+1],
+                self.tvf_gamma,
+                self.gamma,
+                self.tvf_horizons[:k+1]
+            )
+        return new_value_estimates
+
     def get_distil_batch(self, samples_wanted:int):
         """
         Creates a batch of data to train on during distil phase.
@@ -2421,6 +2441,8 @@ class Runner:
             )
             if args.use_tvf and not args.distil_force_ext:
                 batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0])
+                if args.distil_rediscount:
+                    batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
             else:
                 batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
             batch_data["old_raw_policy"] = model_out["raw_policy"].detach().cpu().numpy()
@@ -2443,6 +2465,8 @@ class Runner:
         if args.use_tvf and not args.distil_force_ext:
             # we could skip this if we trained on rollout rather then replay
             batch_data["distil_targets"] = model_out["value_tvf_value"][:, :, 0].detach().cpu().numpy()
+            if args.distil_rediscount:
+                batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
         else:
             batch_data["distil_targets"] = model_out["value_value"][:, 0].detach().cpu().numpy()
 
@@ -2463,6 +2487,7 @@ class Runner:
             return
 
         batch_data = self.get_distil_batch(args.distil_batch_size)
+
 
         for distil_epoch in range(args.distil.epochs):
 
@@ -2721,18 +2746,19 @@ def get_rediscounted_value_estimate(
         horizons
 ):
     """
-    Returns rediscounted return at horizon H
+    Returns rediscounted return at horizon h
 
-    values: float tensor of shape [B, H]
+    values: float tensor of shape [B, K]
+    horizons: int tensor of shape [K] giving horizon for value [:, k]
     returns float tensor of shape [B]
     """
 
-    B, H = values.shape
+    B, K = values.shape
 
     if old_gamma == new_gamma:
         return values[:, -1]
 
-    assert H == len(horizons), f"missmatch {H} {horizons}"
+    assert K == len(horizons), f"missmatch {K} {horizons}"
     assert horizons[0] == 0
 
     if type(values) is np.ndarray:

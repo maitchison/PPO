@@ -1979,7 +1979,7 @@ def tvf_gamma(priority: int = 0):
         'seeds': 2,
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF_GAMMA",
+        'experiment': "TVF_RED",
         'default_args': TVF4_INITIAL_ARGS,
         'epochs': 25, # need to make this quick, but really want 50
 
@@ -2020,9 +2020,67 @@ def tvf_gamma(priority: int = 0):
             **COMMON_ARGS,
         )
 
-    for env in ['Surround', 'CrazyClimber', 'Skiing', 'SpaceInvaders', 'BeamRider', 'Zaxxon']:
-        for gamma in [0.9, 0.99, 0.999, 0.9999]:
+    # do more games later...
+    #for env in ['Surround', 'CrazyClimber', 'Skiing', 'SpaceInvaders', 'BeamRider', 'Zaxxon']:
+    for env in ['CrazyClimber']:
+        for gamma in [0.99, 0.999, 0.9999]:
             multi_run(env, gamma=gamma)
+
+
+def tvf_history(priority: int = 0):
+
+    # trying to get an idea for what gamma should look like on some games.
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF_HISTORY",
+        'default_args': TVF4_INITIAL_ARGS,
+        'epochs': 20, # need to make this quick, but really want 50
+
+        # better quality sns is needed in this experiment
+        # note sure the best way to deal with as it's quite slow
+        # maybe only evaluate 5 heads? And ignore head 0.
+        'sns_period': 4,
+    }
+    for env in ['MontezumaRevenge']:
+        for embed_state in [True, False]:
+            add_run(
+                run_name=f"embed_state={embed_state}",
+                subset=[env],
+                embed_state=embed_state,
+                **COMMON_ARGS,
+            )
+        embed_state = True
+        add_run(
+            run_name=f"embed_state={embed_state} heads=256",
+            subset=[env],
+            tvf_value_heads=256,
+            embed_state=embed_state,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"embed_state={embed_state} heads=64",
+            subset=[env],
+            tvf_value_heads=64,
+            embed_state=embed_state,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"embed_state={embed_state} trim=interpolate",
+            subset=[env],
+            tvf_horizon_trimming="interpolate",
+            embed_state=embed_state,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"embed_state={embed_state} trim=off",
+            subset=[env],
+            tvf_horizon_trimming="off",
+            embed_state=embed_state,
+            **COMMON_ARGS,
+        )
 
 
 def setup():
@@ -2075,3 +2133,4 @@ def setup():
     th_noise(100)
     tvf_gamma(0)
     tvf_bonus(-50)
+    tvf_history(999)

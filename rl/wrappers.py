@@ -219,6 +219,57 @@ class ActionHistoryWrapper(gym.Wrapper):
         self.action_history = buffer["action_history"]
 
 
+class StateHistoryWrapper(gym.Wrapper):
+    """
+    Includes markings on final frame in stack indicating (compressed) history of states
+
+    Assumes input is
+    [C, H, W]
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.state_history = collections.deque(maxlen=100)
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self.action_history.clear()
+        return self._process_obs(obs)
+
+    def _process_obs(self, obs):
+        assert obs.dtype == np.uint8
+        *_, C, H, W = obs.shape
+
+        # draw history of actions at bottom final state
+        n_actions = self.action_space.n
+        # we leave space for n_actions...
+        obs[0, n_actions:n_actions + 49, :] = 0
+        for x, state in enumerate(list(self.state_history)[:W]):
+            obs[0, n_actions:n_actions+49, x] = state
+        return obs
+
+    def compressed_state(self, x):
+        """
+        Returns the compressed version of the state
+        Input should be [C,H,W]
+        Output will be [49]
+        """
+        x = x[-1] # take most recent on stack
+        x_resized = cv2.resize(x, (7, 7), interpolation=cv2.INTER_AREA)
+        assert x_resized.dtype == np.uint8
+        return x_resized.ravel()
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.state_history.appendleft(self.compressed_state(obs))
+        return self._process_obs(obs), reward, done, info
+
+    def save_state(self, buffer):
+        buffer["state_history"] = self.state_history
+
+    def restore_state(self, buffer):
+        self.state_history = buffer["state_history"]
+
 
 
 class HashWrapper(gym.Wrapper):
