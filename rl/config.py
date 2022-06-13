@@ -257,7 +257,7 @@ class Config(BaseConfig):
         # -----------------
         # Noisy environments
         parser.add_argument("--noisy_return", type=float, default=0, help="Relative error applied after return calculations. Used to simulate a noisy environment.")
-        parser.add_argument("--noisy_rewards", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
+        parser.add_argument("--noisy_reward", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
 
         # --------------------------------
 

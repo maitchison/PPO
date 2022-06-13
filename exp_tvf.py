@@ -526,6 +526,15 @@ TVF3_FINAL_ARGS = {
     'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
 }
 
+TVF4_INITIAL_ARGS = TVF3_FINAL_ARGS.copy()
+TVF4_INITIAL_ARGS.update({
+    # taken from distil4
+    # note, we are using shallow heads here...
+    'distil_beta': 100.0,           # 10x tvf_coef
+    'distil_max_heads': 128,
+    'distil_period': 2,             # maybe 1 is better?
+})
+
 
 def merge_dict(a, b):
     x = a.copy()
@@ -1648,46 +1657,53 @@ def t3_distil4(priority: int = 0):
         'seeds': 2,
         'subset': ATARI_3_VAL,
         'priority': priority,
-        'hostname': "cluster",
-        'device': 'cuda',
+        # 'hostname': "cluster",
+        # 'device': 'cuda',
         'env_args': HARD_MODE_ARGS,
         'experiment': "T3_DISTIL4",
         'default_args': TVF3_FINAL_ARGS,
     }
 
-    # look at heads again...
-    for heads in [1, 3, 128]: # 8 is default
-        add_run(
-            run_name=f"distil heads={heads}",
-            distil_max_heads=heads,
-            **COMMON_ARGS,
-        )
+    # # look at heads again...
+    # for heads in [1, 3, 128]: # 9 is default
+    #     add_run(
+    #         run_name=f"distil heads={heads}",
+    #         distil_max_heads=heads,
+    #         **COMMON_ARGS,
+    #     )
+    # add_run(
+    #     run_name=f"distil heads=ext",
+    #     distil_force_ext=True,
+    #     **COMMON_ARGS,
+    # )
+    # add_run(
+    #     run_name=f"distil off",
+    #     distil_epochs=0,
+    #     **COMMON_ARGS,
+    # )
+    #
+    # # look at beta again
+    # for beta in [0.1, 10.0]: # 1 is default
+    #     add_run(
+    #         run_name=f"distil beta={beta}",
+    #         distil_beta=beta,
+    #         **COMMON_ARGS,
+    #     )
+    #
+    # # look at period again
+    # for period in [1, 4]: # 2 is default
+    #     add_run(
+    #         run_name=f"distil period={period}",
+    #         distil_period=period,
+    #         **COMMON_ARGS,
+    #     )
+
+    # ops... forgot this...
     add_run(
-        run_name=f"distil heads=ext",
-        distil_force_ext=True,
-        **COMMON_ARGS,
-    )
-    add_run(
-        run_name=f"distil off",
-        distil_epochs=0,
+        run_name=f"distil reference",
         **COMMON_ARGS,
     )
 
-    # look at beta again
-    for beta in [0.1, 10.0]: # 1 is default
-        add_run(
-            run_name=f"distil beta={beta}",
-            distil_beta=beta,
-            **COMMON_ARGS,
-        )
-
-    # look at period again
-    for period in [1, 4]: # 2 is default
-        add_run(
-            run_name=f"distil period={period}",
-            distil_period=period,
-            **COMMON_ARGS,
-        )
 
 
 def t3_trim(priority: int = 0):
@@ -1964,8 +1980,11 @@ def tvf_gamma(priority: int = 0):
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
         'experiment': "TVF_GAMMA",
-        'default_args': TVF3_FINAL_ARGS,
+        'default_args': TVF4_INITIAL_ARGS,
         'epochs': 25, # need to make this quick, but really want 50
+
+        'hostname': "cluster",
+        'device': 'cuda',
 
         # better quality sns is needed in this experiment
         # note sure the best way to deal with as it's quite slow
@@ -1973,37 +1992,37 @@ def tvf_gamma(priority: int = 0):
         'sns_period': 4,
     }
 
-    def double_run(env, run_name, **kwargs):
+    def multi_run(env, gamma:float, **kwargs):
+
+        kwargs["gamma"] = gamma
+        kwargs["tvf_gamma"] = gamma
+
         add_run(
-            run_name=f"tvf {run_name}",
+            run_name=f"tvf gamma={gamma}",
             subset=[env],
-            tvf_value_heads=64,
-            tvf_per_head_hidden_units=16,
             **kwargs,
             **COMMON_ARGS,
         )
         add_run(
-            run_name=f"dna {run_name}",
+            run_name=f"dna gamma={gamma}",
             subset=[env],
             use_tvf=False,
-            tvf_value_heads=64,
             **kwargs,
             **COMMON_ARGS,
         )
+
         kwargs["tvf_gamma"] = 0.99997
 
         add_run(
-            run_name=f"tvf rediscount {run_name}",
+            run_name=f"red gamma={gamma}",
             subset=[env],
-            tvf_value_heads=64,
-            tvf_per_head_hidden_units=16,
             **kwargs,
             **COMMON_ARGS,
         )
 
     for env in ['Surround', 'CrazyClimber', 'Skiing', 'SpaceInvaders', 'BeamRider', 'Zaxxon']:
         for gamma in [0.9, 0.99, 0.999, 0.9999]:
-            double_run(env, f'gamma={gamma}', gamma=gamma, tvf_gamma=gamma)
+            multi_run(env, gamma=gamma)
 
 
 def setup():
@@ -2048,11 +2067,11 @@ def setup():
 
     #t3_heads()
 
-    t3_distil4(0)
+    t3_distil4(300)
 
     # TVF-Heads experiments
 
     th_heads()
     th_noise(100)
     tvf_gamma(0)
-    tvf_bonus(150)
+    tvf_bonus(-50)
