@@ -1742,7 +1742,7 @@ def setup_plot(title=None):
     #plt.title(title)
 
 
-def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None):
+def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None, figure=True, color_filter=None):
 
     if type(key_filter) is str:
         mask = key_filter
@@ -1763,12 +1763,17 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
                 pass
         keys = sorted(set(keys))
 
-    setup_plot(title)
+    if figure:
+        setup_plot(title)
     for i, key in enumerate(keys):
+        if color_filter is not None:
+            c = color_filter(key)
+        else:
+            c = cm(i)
         plot_seeded_validation(
             path,
             key,
-            color=cm(i),
+            color=c,
             subset=subset,
             seeds=seeds,
             check_seeds=check_seeds,

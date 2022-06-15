@@ -540,7 +540,7 @@ TVF4_TWEAKED_ARGS.update({
     # taken from distil4
     # note, we are using shallow heads here...
     'distil_beta': 1.0,
-    'distil_max_heads': 128,
+    'distil_max_heads': -1,
     'distil_period': 2,
     'distil_rediscount': True,
     # tweaked noise
@@ -1669,7 +1669,7 @@ def t3_distil4(priority: int = 0):
     # now with horizon tracking
 
     COMMON_ARGS = {
-        'seeds': 2,
+        'seeds': 3,
         'subset': ATARI_3_VAL,
         'priority': priority,
         # 'hostname': "cluster",
@@ -1678,6 +1678,27 @@ def t3_distil4(priority: int = 0):
         'experiment': "T3_DISTIL4",
         'default_args': TVF3_FINAL_ARGS,
     }
+
+    # extra seed
+    for heads in [128]: # 9 is default
+        add_run(
+            run_name=f"distil heads={heads}",
+            distil_max_heads=heads,
+            **COMMON_ARGS,
+        )
+
+    # redo up to 10...
+    for heads in [128]: # 9 is default
+        COMMON_ARGS['hostname'] = 'desktop'
+        COMMON_ARGS['subset'] = ['MsPacman']
+        COMMON_ARGS['experiment'] = "DEBUG4"
+        COMMON_ARGS['seeds'] = 3
+        COMMON_ARGS['epochs'] = 10
+        add_run(
+            run_name=f"redo_1",
+            distil_max_heads=heads,
+            **COMMON_ARGS,
+        )
 
     # # look at heads again...
     # for heads in [1, 3, 128]: # 9 is default
@@ -1714,10 +1735,10 @@ def t3_distil4(priority: int = 0):
     #     )
 
     # ops... forgot this...
-    add_run(
-        run_name=f"distil reference",
-        **COMMON_ARGS,
-    )
+    # add_run(
+    #     run_name=f"distil reference",
+    #     **COMMON_ARGS,
+    # )
 
 
 
@@ -1936,7 +1957,7 @@ def tvf4_noise(priority: int = 0):
 
         # make life a bit easier on all the algorithms by reducing gamma
         # these should be good for breakout, which is a bit shorter
-        'gamma': 0.999,
+        'gamma': 0.999, # making this higher might have been a good idea?
         'tvf_gamma': 0.999,
         'tvf_max_horizon': 3000,
     }
@@ -1971,6 +1992,76 @@ def tvf4_noise(priority: int = 0):
     for noise in [0.5, 1.0, 2.0, 4.0]:
         multi_run(f'ret={noise}', noisy_return=noise)
 
+    # extra...
+    COMMON_ARGS['hostname'] = ""
+    del COMMON_ARGS['device']
+    for noise in [8.0]: # we need a lot of noise to make a difference
+        multi_run(f'rew={noise}', noisy_reward=noise)
+        multi_run(f'ret={noise}', noisy_return=noise)
+    for noise in [4.0, 8.0]:  # we need a lot of noise to make a difference
+        add_run(
+            run_name=f"lin rew={noise}",
+
+            noisy_reward=noise,
+            tvf_head_spacing="linear",
+            tvf_value_heads=256,
+
+            **COMMON_ARGS,
+        )
+
+    # noise 2
+    # changes:
+    # * more gamma
+    # * added lin
+    # * focus on
+
+    COMMON_ARGS = {
+        'seeds': 3,
+        'subset': ['Breakout'],  # only breakout
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_NOISE2",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 20,  # need to make this quick, but really want 50
+
+        'hostname': "cluster",
+        'device': 'cuda',
+
+        # make life a bit easier on all the algorithms by reducing gamma
+        # these should be good for breakout, which is a bit shorter
+        'gamma': 0.99997,  # making this higher might have been a good idea?
+        'tvf_gamma': 0.99997,
+        'tvf_max_horizon': 30000,
+    }
+
+    def multi_run2(run_name, **kwargs):
+        # red would be noise...
+        add_run(
+            run_name=f"tvf {run_name}",
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"dna {run_name}",
+            use_tvf=False,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"lin {run_name}",
+            tvf_head_spacing="linear",
+            tvf_value_heads=1024,
+            **kwargs,
+            **merge_dict(COMMON_ARGS, {'tvf_max_horizon':10000}),  # owch... nothin I can really do about this though
+        )
+
+    for noise in [4.0]:
+        multi_run2(f'rew={noise}', noisy_reward=noise)
+
+    for rap in [0.5]:
+        multi_run2(f'rap={rap}', repeat_action_probability=rap)
+
+
 
 def tvf4_initial(priority: int = 0):
 
@@ -1989,6 +2080,187 @@ def tvf4_initial(priority: int = 0):
         run_name=f"reference",
         **COMMON_ARGS,
     )
+
+    COMMON_ARGS['seeds'] = 2
+
+    # just make sure sns is not causing problems
+    add_run(
+        run_name=f"no_sns",
+        ag_mode="off",
+        use_sns=False,
+        **COMMON_ARGS,
+    )
+
+    # try with old code, new settings
+    COMMON_ARGS['experiment'] = "TVF4_OLD"
+    add_run(
+        run_name=f"old_code",
+        distil_max_heads=128,
+        **COMMON_ARGS,
+    )
+
+def tvf4_tweak(priority: int = 0):
+
+
+
+    # lets see how well our new settings work...
+    COMMON_ARGS = {
+        'seeds': 3,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_TWEAK",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 50,  # need to make this quick, but really want 50
+        'subset': ATARI_3_VAL,
+    }
+
+    add_run(
+        run_name=f"reference",
+        **merge_dict(COMMON_ARGS, {'priority': priority+50}),
+    )
+
+    for heads in [32, 512, 2048]:
+        add_run(
+            run_name=f"heads={heads}",
+            tvf_value_heads=heads,
+            **COMMON_ARGS,
+        )
+
+    for samples in [1, 16]:
+        add_run(
+            run_name=f"samples={samples}",
+            tvf_return_samples=samples,
+            **COMMON_ARGS,
+        )
+
+    for trimming in ["off", "interpolate"]:
+        add_run(
+            run_name=f"trim={trimming}",
+            tvf_horizon_trimming=trimming,
+            **COMMON_ARGS,
+        )
+
+    # last try at linear
+    add_run(
+        run_name=f"linear_10k",
+        tvf_head_spacing="linear",
+        tvf_value_heads=1024,
+        gamma=0.9999,
+        tvf_gamma=0.9999,
+        tvf_max_horizon=10000,
+        **COMMON_ARGS,
+    )
+
+    # rediscounting...
+    add_run(
+        run_name=f"red_1",
+        gamma=0.99997,
+        tvf_gamma=1,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_2",
+        gamma=0.9999,
+        tvf_gamma=0.99997,
+        **COMMON_ARGS,
+    )
+
+    for beta in [0.1, 10]:
+        add_run(
+            run_name=f"beta={beta}",
+            distil_beta=beta,
+            **COMMON_ARGS,
+        )
+
+    # new return estimators
+    for mode in ["exponential", "advanced", "advanced3", "advanced4"]:
+        add_run(
+            run_name=f"tvf_return_mode={mode}",
+            tvf_return_mode=mode,
+            **COMMON_ARGS,
+        )
+
+    # feature blocking
+    for tvf_head_sparsity in [0.5, 0.9]:
+        add_run(
+            run_name=f"tvf_head_sparsity={tvf_head_sparsity}",
+            tvf_head_sparsity=tvf_head_sparsity,
+            **COMMON_ARGS,
+        )
+
+
+def debug1(priority: int = 0):
+
+    # try to figure this out
+    COMMON_ARGS = {
+        'seeds': 4,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 10,
+        'subset': ["MsPacman"],
+        'experiment': "DEBUG1"
+    }
+
+    add_run(
+        run_name=f"desktop",
+        distil_max_heads=128,
+        hostname='desktop',
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"mlrig",
+        distil_max_heads=128,
+        hostname='ML',
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"no_sns",
+        distil_max_heads=128,
+        ag_mode="off",
+        use_sns=False,
+        hostname='desktop',
+        **COMMON_ARGS,
+    )
+
+    COMMON_ARGS['experiment'] = "DEBUG3"
+
+    add_run(
+        run_name=f"desktop_11",
+        distil_max_heads=128,
+        hostname='desktop',
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"mlrig_11",
+        distil_max_heads=128,
+        hostname='ML',
+        **COMMON_ARGS,
+    )
+
+    COMMON_ARGS['experiment'] = "DEBUG2"
+    COMMON_ARGS['default_args'] = COMMON_ARGS['default_args'].copy()
+    del COMMON_ARGS['default_args']['distil_rediscount']
+
+    add_run(
+        run_name=f"desktop_old",
+        distil_max_heads=128,
+        hostname='desktop',
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"mlrig_old",
+        distil_max_heads=128,
+        hostname='ML',
+        **COMMON_ARGS,
+    )
+
+
 
 def tvf4_zero(priority: int = 0):
 
@@ -2036,71 +2308,6 @@ def tvf4_zero(priority: int = 0):
             tvf_gamma=gamma,
             **COMMON_ARGS,
         )
-
-
-
-
-def tvf4_heads(priority: int = 0):
-
-    COMMON_ARGS = {
-        'seeds': 2,
-        'priority': priority,
-        'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF4_HEADS",
-        'default_args': TVF4_TWEAKED_ARGS,
-        'epochs': 50,  # need to make this quick, but really want 50
-        'subset': ATARI_3_VAL,
-    }
-
-    # add_run(
-    #     run_name=f"reference",
-    #     **COMMON_ARGS,
-    # )
-
-    # deeper heads
-    for tvf_per_head_hidden_units in [16, 32]:
-        add_run(
-            run_name=f"tvf_per_head_hidden_units={tvf_per_head_hidden_units}",
-            tvf_per_head_hidden_units=tvf_per_head_hidden_units,
-            **COMMON_ARGS,
-        )
-
-    # add_run(
-    #     run_name=f"beta=100",
-    #     distil_beta=100,
-    #     **COMMON_ARGS,
-    # )
-    # add_run(
-    #     run_name=f"beta=1",
-    #     distil_beta=1,
-    #     **COMMON_ARGS,
-    # )
-    # # new return estimators
-    # for mode in ["exponential", "advanced", "advanced3", "advanced4"]:
-    #     add_run(
-    #         run_name=f"tvf_return_mode={mode}",
-    #         tvf_return_mode=mode,
-    #         **COMMON_ARGS,
-    #     )
-    # # feature blocking
-    # for tvf_head_sparsity in [0.5, 0.9]:
-    #     add_run(
-    #         run_name=f"tvf_head_sparsity={tvf_head_sparsity}",
-    #         tvf_head_sparsity=tvf_head_sparsity,
-    #         **COMMON_ARGS,
-    #     )
-
-    # # see if less heads is ok
-    # for tvf_value_heads in [32, 64]:
-    #     add_run(
-    #         run_name=f"tvf_value_heads={tvf_value_heads}",
-    #         tvf_per_head_hidden_units=tvf_value_heads,
-    #         **COMMON_ARGS,
-    #     )
-    # samples 1, 4, 16
-
-
-
 
 def tvf_red(priority: int = 0):
 
@@ -2499,8 +2706,10 @@ def setup():
 
     # ------------------------------
     # tvf 3...
+
+    t3_distil4(0)
     tvf_red(0)
-    tvf_noise(0)
+    #tvf_noise(0)
 
     # still waiting on red, and noise I guess
 
@@ -2508,5 +2717,9 @@ def setup():
     # tvf 4...
 
     tvf4_initial(0)
-    #tvf4_heads(-100)
-    #tvf4_zero(100)
+    tvf4_noise(25)
+    tvf4_tweak(0)
+    #tvf4_heads(0)
+    #tvf4_zero(0)
+
+    #debug1(100)

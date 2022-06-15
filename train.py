@@ -3,6 +3,8 @@ import os
 import uuid
 import multiprocessing
 
+import gym.version
+
 resolution_map = {
     "full": (210, 160),
     "nature": (84, 84),
@@ -99,6 +101,7 @@ def main():
         exit()
 
     log.info(f"Using device: <white>{args.device}<end>")
+    log.info(f"System is host:{args.hostname} torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
 
     # check to see if the device we are using has been disallowed
     if args.device in utils.get_disallowed_devices():

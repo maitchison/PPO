@@ -31,6 +31,55 @@ def add_relative_noise(X:np.ndarray, rel_error:float):
     factors = np.asarray(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), dtype=np.float32)
     return X * factors
 
+def old_interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
+    """
+    Returns linearly interpolated value from source_values
+
+    horizons: sorted ndarray of shape [K] of horizons, must be in *strictly* ascending order
+    values: ndarray of shape [*shape, K] where values[...,h] corresponds to horizon horizons[h]
+    target_horizons: np array of dims [*shape], the horizon we would like to know the interpolated value of for each
+        example
+
+    """
+
+    # todo: remove this, it's just here for checking at the moment.
+
+    # I did this custom, as I could not find a way to get numpy to interpolate the way I needed it to.
+    # the issue is we interpolate nd data with non-uniform target x's.
+
+    assert len(set(horizons)) == len(horizons), f"Horizons duplicates not supported {horizons}"
+    assert np.all(np.diff(horizons) > 0), f"Horizons must be sorted and unique horizons:{horizons}, targets:{target_horizons}"
+
+    assert horizons[0] == 0, "first horizon must be 0"
+
+    # we do not extrapolate...
+    target_horizons = np.clip(target_horizons, min(horizons), max(horizons))
+
+    *shape, K = values.shape
+    shape = tuple(shape)
+    assert horizons.shape == (K,)
+    assert target_horizons.shape == shape, f"{target_horizons.shape} != {shape}"
+
+    # put everything into 1d
+    N = np.prod(shape)
+    values = values.reshape(N, K)
+    target_horizons = target_horizons.reshape(N)
+
+    index = np.searchsorted(horizons, target_horizons, side='left')
+
+    # select out our values
+    pre_index = np.maximum(index-1, 0)
+    post_index = index
+    value_pre = values[range(N), pre_index]
+    value_post = values[range(N), post_index]
+
+    dx = (horizons[post_index] - horizons[pre_index])
+    dx[dx == 0] = 1.0 # this only happens when we are at the boundaries, in whic case we have 0/dx, and we just want 0.
+    factor = (target_horizons - horizons[index - 1]) / dx
+    result = value_pre * (1 - factor) + value_post * factor
+    result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
+    return result.reshape(*shape)
+
 def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
     """
     Returns linearly interpolated value from source_values
@@ -76,7 +125,13 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     factor = (target_horizons - horizons[index - 1]) / dx
     result = value_pre * (1 - factor) + value_post * factor
     result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
-    return result.reshape(*shape)
+    result = result.reshape(*shape)
+
+    # sub: check result
+    old_result = old_interpolate(horizons, values, target_horizons)
+    assert np.max(np.abs(old_result - result)) < 1e6
+
+    return result
 
 
 def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geometric"):
@@ -2254,10 +2309,9 @@ class Runner:
     @property
     def reward_scale(self):
         """ The amount rewards have been multiplied by. """
-        if args.noisy_zero:
+        if args.noisy_zero > 0:
             # no reward scaling for noisy zero rewards.
             return 1.0
-
         if args.reward_normalization:
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
@@ -2680,7 +2734,6 @@ class Runner:
 
         new_target = 0
         for i, h in enumerate(self.tvf_horizons):
-
             noise_level = interpolate(logged_heads, logged_noise_levels, np.asarray([i]))[0]
             if noise_level < args.ag_sns_threshold:
                 new_target = max(h, new_target)
