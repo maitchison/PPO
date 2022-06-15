@@ -287,6 +287,8 @@ class RunLog():
     Results from a training run
     """
 
+    generators = {}
+
     def __init__(self, filename, skip_rows=0):
 
         self._patterns = {
@@ -304,6 +306,11 @@ class RunLog():
         self.load(filename, skip_rows=skip_rows)
 
     def __getitem__(self, key: str):
+
+        # stub: support var+bias
+        if key in self.generators.keys():
+            return self.generators[key](self)
+
         for pattern, func in self._patterns.items():
             if key.startswith(pattern):
                 return func(self[key[len(pattern):]])
@@ -314,6 +321,10 @@ class RunLog():
         return self._fields[key]
 
     def __contains__(self, key: str):
+
+        if key in self.generators.keys():
+            return True
+
 
         for pattern, func in self._patterns.items():
             if key.startswith(pattern):

@@ -66,6 +66,8 @@ def make_model(args, log=None):
         tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
+        tvf_head_bias=args.tvf_head_bias,
+        tvf_head_sparsity=args.tvf_head_sparsity,
     )
     return model
 

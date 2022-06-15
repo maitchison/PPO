@@ -668,9 +668,12 @@ def generate_rollouts(
             # 1. first do the simple stuff... rewards etc
             append_buffer('is_running', is_running[i])
             raw_reward = infos[i].get("raw_reward", rewards[i])
-            if args.noisy_zero > 0:
-                rewards *= 0
-                raw_reward *= 0
+            try:
+                if args.noisy_zero >= 0:
+                    rewards *= 0
+                    raw_reward *= 0
+            except:
+                pass
             append_buffer('rewards', rewards[i])
             append_buffer('raw_rewards', raw_reward)
 

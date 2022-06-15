@@ -28,7 +28,7 @@ def add_relative_noise(X:np.ndarray, rel_error:float):
     # does not change the expectation.
     if rel_error <= 0:
         return X
-    factors = np.clip(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), 0, float('inf'), dtype=np.float32)
+    factors = np.asarray(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), dtype=np.float32)
     return X * factors
 
 def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
@@ -91,9 +91,9 @@ def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geomet
     # the idea here is to remove duplicates.
     while len(result) < target_n_heads:
         if spacing == "geometric":
-            result = np.asarray(np.round(np.geomspace(1, max_horizon+1, n_heads))-1, dtype=np.int)
+            result = np.asarray(np.round(np.geomspace(1, max_horizon+1, n_heads))-1, dtype=np.int32)
         elif spacing == "linear":
-            result = np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int)
+            result = np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int32)
         else:
             raise ValueError(f"Invalid spacing value {spacing}")
         result = np.asarray(sorted(set(result)))
@@ -976,7 +976,7 @@ class Runner:
             dones=dones,
             required_horizons=np.asarray(self.tvf_horizons),
             value_sample_horizons=np.asarray(self.tvf_horizons),
-            value_samples=self.tvf_value[..., self.value_heads.index(value_head)],
+            value_samples=self.tvf_value[..., self.value_heads.index(value_head)] * args.debug_bootstrap_bias,
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
             estimator_mode=re_mode,
@@ -1439,6 +1439,31 @@ class Runner:
             history_length=1
         )
 
+        self.log.watch_mean(
+            f"z_value_bias",
+            np.mean(values),
+            display_width=0,
+            history_length=1
+        )
+        self.log.watch_mean(
+            f"z_target_bias",
+            np.mean(targets),
+            display_width=0,
+            history_length=1
+        )
+        self.log.watch_mean(
+            f"z_value_var",
+            np.var(values),
+            display_width=0,
+            history_length=1
+        )
+        self.log.watch_mean(
+            f"z_target_var",
+            np.var(targets),
+            display_width=0,
+            history_length=1
+        )
+
 
     def _log_curve_quality(self, estimates, targets, postfix: str = ''):
         """
@@ -1470,7 +1495,7 @@ class Runner:
                 history_length=1
             )
 
-            if args.noisy_zero > 0:
+            if args.noisy_zero >= 0:
                 # special stats for learning zero rewards
                 self.log.watch_mean(
                     f"z_value_bias_{name}" + postfix,
@@ -1518,6 +1543,37 @@ class Runner:
             display_name="ev_avg"+postfix,
             history_length=1
         )
+
+        if args.noisy_zero >= 0:
+            # todo: clean this up..
+            targets = calculate_bootstrapped_returns(
+                self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
+            )
+            values = self.ext_value[:self.N]
+            self.log.watch_mean(
+                f"z_value_bias",
+                np.mean(values),
+                display_width=0,
+                history_length=1
+            )
+            self.log.watch_mean(
+                f"z_target_bias",
+                np.mean(targets),
+                display_width=0,
+                history_length=1
+            )
+            self.log.watch_mean(
+                f"z_value_var",
+                np.var(values),
+                display_width=0,
+                history_length=1
+            )
+            self.log.watch_mean(
+                f"z_target_var",
+                np.var(targets),
+                display_width=0,
+                history_length=1
+            )
 
 
 
@@ -1831,7 +1887,7 @@ class Runner:
         else:
             predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets - predictions) * args.tvf_coef
+        loss_value = 0.5 * torch.square(targets - predictions)
 
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.

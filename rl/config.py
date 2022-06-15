@@ -107,6 +107,8 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_head_weighting", type=str, default="off", help="[off|h_weighted]")
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
         parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
+        parser.add_argument("--tvf_head_bias", type=str2bool, default=True, help="Enables bias for tvf heads")
+        parser.add_argument("--tvf_head_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
 
 
 
@@ -287,7 +289,8 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Debugging
-        # ...
+        parser.add_argument("--debug_bootstrap_bias", type=float, default=1.0, help="")
+        parser.add_argument("--debug_zero_obs", type=str2bool, default=False, help="")
 
         # --------------------------------
         # Auto Gamma
@@ -444,6 +447,11 @@ class Config(BaseConfig):
         self.tvf_head_spacing = str()
         self.tvf_head_weighting = str()
         self.tvf_per_head_hidden_units = int()
+        self.tvf_head_bias = bool()
+        self.tvf_head_sparsity = float()
+
+        self.debug_bootstrap_bias = float()
+        self.debug_zero_obs = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()

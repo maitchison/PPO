@@ -539,9 +539,16 @@ TVF4_TWEAKED_ARGS = TVF4_INITIAL_ARGS.copy()
 TVF4_TWEAKED_ARGS.update({
     # taken from distil4
     # note, we are using shallow heads here...
-    'distil_beta': 10.0,
+    'distil_beta': 1.0,
+    'distil_max_heads': 128,
+    'distil_period': 2,
     'distil_rediscount': True,
+    # tweaked noise
+    "sns_b_big": 8192,
+    "sns_b_small": 32,
+    "sns_small_samples": 32,
 })
+del TVF4_TWEAKED_ARGS['sns_labels']
 
 
 def merge_dict(a, b):
@@ -1910,6 +1917,189 @@ def tvf_noise(priority: int = 0):
     for rap in [0, 0.125, 0.5, 0.75]:
         triple_run(f'rap={rap}', repeat_action_probability=rap)
 
+def tvf4_noise(priority: int = 0):
+
+    # a deep look into how TVF handles noisy environments
+    # (case study on breakout...)
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'subset': ['Breakout'],         # only breakout
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_NOISE",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 20, # need to make this quick, but really want 50
+
+        'hostname': "cluster",
+        'device': 'cuda',
+
+        # make life a bit easier on all the algorithms by reducing gamma
+        # these should be good for breakout, which is a bit shorter
+        'gamma': 0.999,
+        'tvf_gamma': 0.999,
+        'tvf_max_horizon': 3000,
+    }
+
+    def multi_run(run_name, **kwargs):
+        # red would be noise...
+        add_run(
+            run_name=f"tvf {run_name}",
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"dna {run_name}",
+            use_tvf=False,
+            **kwargs,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"red {run_name}",
+            **kwargs,
+            **merge_dict(COMMON_ARGS, {
+                'tvf_gamma': 0.9997,
+                'tvf_max_horizon': 10000,
+            }),
+        )
+
+    multi_run(f'ref')
+
+    for noise in [0.5, 1.0, 2.0, 4.0]:
+        multi_run(f'rew={noise}', noisy_reward=noise)
+
+    for noise in [0.5, 1.0, 2.0, 4.0]:
+        multi_run(f'ret={noise}', noisy_return=noise)
+
+
+def tvf4_initial(priority: int = 0):
+
+    # lets see how well our new settings work...
+    COMMON_ARGS = {
+        'seeds': 3,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_INITIAL",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 50,  # need to make this quick, but really want 50
+        'subset': ATARI_3_VAL,
+    }
+
+    add_run(
+        run_name=f"reference",
+        **COMMON_ARGS,
+    )
+
+def tvf4_zero(priority: int = 0):
+
+    # see if TVF is better than DNA / PPO on zero game.
+
+    COMMON_ARGS = {
+        'seeds': 2, # important to see if it's a seed problem
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_ZERO",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 10,
+
+        'noisy_zero': 0.1,
+        'subset': ['Pong']
+    }
+
+    for gamma in [0.99997]:
+        zero_obs = False
+        add_run(
+            run_name=f"red gamma={gamma}",
+            gamma=gamma,
+            tvf_gamma=1.0,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"tvf gamma={gamma}",
+            debug_zero_obs=zero_obs,
+            gamma=gamma,
+            tvf_gamma=gamma,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"dna gamma={gamma}",
+            use_tvf=False,
+            gamma=gamma,
+            tvf_gamma=gamma,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"ppo gamma={gamma}",
+            use_tvf=False,
+            architecture='single',
+            gamma=gamma,
+            tvf_gamma=gamma,
+            **COMMON_ARGS,
+        )
+
+
+
+
+def tvf4_heads(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_HEADS",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 50,  # need to make this quick, but really want 50
+        'subset': ATARI_3_VAL,
+    }
+
+    # add_run(
+    #     run_name=f"reference",
+    #     **COMMON_ARGS,
+    # )
+
+    # deeper heads
+    for tvf_per_head_hidden_units in [16, 32]:
+        add_run(
+            run_name=f"tvf_per_head_hidden_units={tvf_per_head_hidden_units}",
+            tvf_per_head_hidden_units=tvf_per_head_hidden_units,
+            **COMMON_ARGS,
+        )
+
+    # add_run(
+    #     run_name=f"beta=100",
+    #     distil_beta=100,
+    #     **COMMON_ARGS,
+    # )
+    # add_run(
+    #     run_name=f"beta=1",
+    #     distil_beta=1,
+    #     **COMMON_ARGS,
+    # )
+    # # new return estimators
+    # for mode in ["exponential", "advanced", "advanced3", "advanced4"]:
+    #     add_run(
+    #         run_name=f"tvf_return_mode={mode}",
+    #         tvf_return_mode=mode,
+    #         **COMMON_ARGS,
+    #     )
+    # # feature blocking
+    # for tvf_head_sparsity in [0.5, 0.9]:
+    #     add_run(
+    #         run_name=f"tvf_head_sparsity={tvf_head_sparsity}",
+    #         tvf_head_sparsity=tvf_head_sparsity,
+    #         **COMMON_ARGS,
+    #     )
+
+    # # see if less heads is ok
+    # for tvf_value_heads in [32, 64]:
+    #     add_run(
+    #         run_name=f"tvf_value_heads={tvf_value_heads}",
+    #         tvf_per_head_hidden_units=tvf_value_heads,
+    #         **COMMON_ARGS,
+    #     )
+    # samples 1, 4, 16
+
+
 
 
 def tvf_red(priority: int = 0):
@@ -1989,10 +2179,10 @@ def tvf_zero(priority: int = 0):
     # trying to get an idea for what gamma should look like on some games.
 
     COMMON_ARGS = {
-        'seeds': 2, # important to see if it's a seed problem
+        'seeds': 1, # important to see if it's a seed problem
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF_ZERO",
+        'experiment': "TVF4_INITIAL",
         'default_args': TVF4_INITIAL_ARGS,
         'epochs': 20,
 
@@ -2003,29 +2193,17 @@ def tvf_zero(priority: int = 0):
         'noisy_zero': 0.1,
     }
     for env in ['Pong']:
+        for heads in [16, 32, 512, 2048, 4096, 8192]:
+            add_run(
+                run_name=f"heads={heads}",
+                subset=[env],
+                tvf_value_heads=heads,
+                **COMMON_ARGS,
+            )
         add_run(
-            run_name=f"heads=512",
+            run_name=f"reference",
             subset=[env],
-            tvf_value_heads=512,
-            **COMMON_ARGS,
-        )
-        add_run(
-            run_name=f"heads=2048",
-            subset=[env],
-            tvf_value_heads=2048,
-            **COMMON_ARGS,
-        )
-        add_run(
-            run_name=f"heads=8192",
-            subset=[env],
-            tvf_value_heads=8192, # this should tell me what I want to know...
-            **COMMON_ARGS,
-        )
-        add_run(
-            run_name=f"heads=32",
-            subset=[env],
-            tvf_value_heads=32,
-            **COMMON_ARGS,
+            **merge_dict(COMMON_ARGS, {'seeds': 3}),
         )
         add_run(
             run_name=f"trim=interpolate",
@@ -2052,41 +2230,105 @@ def tvf_zero(priority: int = 0):
             **COMMON_ARGS,
         )
         add_run(
-            run_name=f"gamma=0.999",
+            run_name=f"h=300",
             subset=[env],
-            tvf_gamma=0.999,
-            gamma=0.999,
+            tvf_max_horizon=300,
             **COMMON_ARGS,
+        )
+        for gamma in [0.999, 1.0]:
+            add_run(
+                run_name=f"gamma={gamma}",
+                subset=[env],
+                tvf_gamma=gamma,
+                gamma=gamma,
+                **COMMON_ARGS,
+            )
+        for units in [16, 32, 64]:
+            add_run(
+                run_name=f"phhu={units}",
+                subset=[env],
+                tvf_per_head_hidden_units=units,
+                **COMMON_ARGS,
+            )
+        # new ideas
+        add_run(
+            run_name=f"no_bias",
+            subset=[env],
+            tvf_head_bias=False,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO2"}),
         )
         add_run(
-            run_name=f"gamma=1.0",
+            run_name=f"no_boostrap",
             subset=[env],
-            tvf_gamma=1.0,
-            gamma=1.0,
-            **COMMON_ARGS,
+            bootstrap_bias=0.0,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO3"}),
         )
         add_run(
-            run_name=f"tvf_n_step=40",
+            run_name=f"less_boostrap",
             subset=[env],
-            tvf_return_n_step=40,
-            **COMMON_ARGS,
+            bootstrap_bias=0.9,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO3"}),
         )
         add_run(
-            run_name=f"tvf_n_step=10",
+            run_name=f"log_interpolation",
             subset=[env],
-            tvf_return_n_step=10,
-            **COMMON_ARGS,
+            tvf_return_use_log_interpolation=True,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO3"}),
         )
         add_run(
-            run_name=f"tvf_return_samples=32",
+            run_name=f"tvf_head_sparsity=0.5",
             subset=[env],
-            tvf_return_samples=32,
-            **COMMON_ARGS,
+            tvf_head_sparsity=0.5,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO2"}),
         )
+        add_run(
+            run_name=f"tvf_head_sparsity=0.9",
+            subset=[env],
+            tvf_head_sparsity=0.9,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO2"}),
+        )
+        add_run(
+            run_name=f"tvf_head_sparsity=0.9x",
+            subset=[env],
+            tvf_head_sparsity=0.9999999,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO2"}),
+        )
+        for n_step in [10, 40, 80]:
+            add_run(
+                run_name=f"tvf_n_step={n_step}",
+                subset=[env],
+                tvf_return_n_step=n_step,
+                **COMMON_ARGS,
+            )
+        for return_samples in [4, 8, 16, 32, 64]:
+            add_run(
+                run_name=f"tvf_return_samples={return_samples}",
+                subset=[env],
+                tvf_return_samples=return_samples,
+                **COMMON_ARGS,
+            )
         add_run(
             run_name=f"tvf_return_mode=advanced",
             subset=[env],
             tvf_return_mode="advanced",
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"no repeat_action_penality",
+            subset=[env],
+            repeated_action_penalty=0,
+            **COMMON_ARGS,
+        )
+        add_run(
+            run_name=f"zero_reward",
+            subset=[env],
+            **merge_dict(COMMON_ARGS, {'noisy_zero': 0.0}),
+        )
+        add_run(
+            run_name=f"tvf_return_mode=historic_exp",
+            subset=[env],
+            tvf_return_mode="exponential",
+            tvf_return_estimator_mode="historic",
             **COMMON_ARGS,
         )
         add_run(
@@ -2113,6 +2355,40 @@ def tvf_zero(priority: int = 0):
             subset=[env],
             tvf_head_spacing="linear",
             **COMMON_ARGS,
+        )
+        # even more tests...
+        add_run(
+            run_name=f"adv4",
+            subset=[env],
+            tvf_return_mode="advanced4",
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO5"}),
+        )
+        add_run(
+            run_name=f"adv3 no_bootstrap",
+            subset=[env],
+            tvf_return_mode="advanced3",
+            debug_bootstrap_bias=0,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO4"}),
+        )
+        add_run(
+            run_name=f"no_obs no_bootstrap", # if this doesn't work something is very odd.
+            subset=[env],
+            tvf_return_mode="advanced3",
+            debug_bootstrap_bias=0,
+            debug_zero_obs=True,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO4"}),
+        )
+        add_run(
+            run_name=f"adv3",
+            subset=[env],
+            tvf_return_mode="advanced3",
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO4"}),
+        )
+        add_run(
+            run_name=f"no_obs",
+            subset=[env],
+            debug_zero_obs=True,
+            **merge_dict(COMMON_ARGS, {'experiment': "TVF_ZERO4"}),
         )
 
 
@@ -2214,11 +2490,23 @@ def setup():
 
     #t3_heads()
 
-    t3_distil4(300)
+    # t3_distil4(300)
 
     # TVF-Heads experiments
 
-    th_heads()
-    tvf_red(250)
-    tvf_zero(200)
-    tvf_noise(100)
+    # th_heads()
+    #tvf_zero(200)
+
+    # ------------------------------
+    # tvf 3...
+    tvf_red(0)
+    tvf_noise(0)
+
+    # still waiting on red, and noise I guess
+
+    # ------------------------------
+    # tvf 4...
+
+    tvf4_initial(0)
+    #tvf4_heads(-100)
+    #tvf4_zero(100)

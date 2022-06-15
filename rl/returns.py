@@ -156,6 +156,43 @@ def get_return_estimate(
             n_step_samples[i] = np.clip(np.round(n_step_samples[i]*factor), 1, N+1)
 
         return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
+    elif mode == "advanced3":
+        # the idea here is to include 0-step estimates. This might with noisy environments
+        # this method supports n_step non-integer n_step targets.
+        # actually this is wrong. a 0-step estimate is biased, even if the value function is perfect (it's
+        # an average over the policy). This would work for estimating V(s) though, just not Q(s,a)
+        K = len(required_horizons)
+        C = max_samples
+        n_step_samples = np.zeros(shape=[K, C], dtype=np.int32)
+        for i, h in enumerate(required_horizons):
+            max_n_step = n_step
+            target_n_step = np.clip((0.5 * h), 0, max_n_step)
+            # get our distribution (could be done faster by using random.exponential
+            lamb = 1-(1/(target_n_step+1))
+            weights = np.asarray([lamb ** x for x in range(N + 1)], dtype=np.float32)
+            weights /= np.sum(weights)
+            n_step_samples[i] = np.random.choice(range(N + 1), size=C, replace=True, p=weights)
+        return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
+    elif mode == "advanced4":
+        # this one makes use of short horizon estimates to sum up rewards
+        K = len(required_horizons)
+        C = max_samples
+        n_step_samples = np.zeros(shape=[K, C], dtype=np.int32)
+        for i, h in enumerate(required_horizons):
+            max_n_step = n_step
+            target_n_step = np.clip((0.5 * h), 0, max_n_step)
+            # get our distribution (could be done faster by using random.exponential
+            lamb = 1-(1/(target_n_step+1))
+            weights = np.asarray([lamb ** x for x in range(N + 1)], dtype=np.float32)
+            weights /= np.sum(weights)
+            n_step_samples[i] = np.random.choice(range(N + 1), size=C, replace=True, p=weights)
+
+            # some of the samples should use expected rewards
+            mask = ((np.random.randint(0, 2, size=C)-0.5)*2).astype(np.int32)
+            n_step_samples[i] *= mask
+
+
+        return _calculate_sampled_return_multi_threaded(n_step_list=None, n_step_samples=n_step_samples, **args)
     elif mode == "advanced":
         # the idea here is that each agent and horizon gets a different set of n-step estimates
 
@@ -309,19 +346,23 @@ def _interpolate(horizons, values, target_horizon: float):
         # by definition value of a 0 horizon is 0.
         return values[..., 0] * 0
 
+    if target_horizon in horizons:
+        return values[..., horizons.searchsorted(target_horizon)].copy() # easy
+
     index = bisect.bisect_left(horizons, target_horizon)
     if index == 0:
-        return values[..., 0]
+        return values[..., 0].copy()
     if index == len(horizons):
-        return values[..., -1]
+        return values[..., -1].copy()
     value_pre = values[..., index - 1]
     value_post = values[..., index]
     dx = (horizons[index] - horizons[index - 1])
     if dx == 0:
         # this happens if there are repeated values, in this case just take leftmost result
-        return value_pre
+        return value_pre.copy()
     factor = (target_horizon - horizons[index - 1]) / dx
-
+    assert factor >= 0
+    assert factor <= 1.0
     return value_pre * (1 - factor) + value_post * factor
 
 
@@ -732,8 +773,21 @@ def _n_step_estimate(params):
     Processes rewards [N, A] and value_estimates [N+1, A, K] into returns [N, A]
     """
 
-    (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache) = GLOBAL_CACHE
-    target_n_step, idx, target_h, weight = params
+    (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, log_interpolation,
+     expected_reward_cache) = GLOBAL_CACHE
+
+    target_n_step, idx, target_h, weight, method2 = params
+
+    log_value_sample_horizons = np.log10(10+value_sample_horizons)-1
+
+
+    def interpolate_linear(value_estimates: np.ndarray, horizon: int):
+        return _interpolate(value_sample_horizons, value_estimates, horizon)
+
+    def interpolate_log(value_estimates: np.ndarray, horizon: int):
+        return _interpolate(log_value_sample_horizons, value_estimates, np.log10(10+horizon)-1)
+
+    interpolate = interpolate_log if log_interpolation else interpolate_linear
 
     N, A = rewards.shape
 
@@ -745,38 +799,34 @@ def _n_step_estimate(params):
     if target_n_step > target_h:
         target_n_step = target_h
 
-    # s = np.zeros([N, A], dtype=np.float32)
+    if target_n_step == 0:
+        # by definition
+        return idx, target_h, interpolate(value_samples[:-1], target_h) * weight
+
+
     m = np.zeros([N, A], dtype=np.float32)
 
-    # discount = np.ones([N, A], dtype=np.float32)
-    #
-    # # add up the discounted rewards,
-    # # that is cum_rewards[n, a] = sum_{t=n}^{n+n_step} r_t
-    # for i in range(target_n_step):
-    #     s[:N-i] += rewards[i:] * discount[:N-i]
-    #     discount[:N-i] *= gamma * (1 - dones[i:])
-
     # much quicker to use the cached version of these
-    s = reward_cache[target_n_step]
+    if method2:
+        s = expected_reward_cache[target_n_step]
+    else:
+        s = reward_cache[target_n_step]
     discount = discount_cache[target_n_step]
 
     # add the bootstrap estimate
     h_remaining = target_h - target_n_step
 
     if h_remaining > 0:
-        m[:N-target_n_step] = _interpolate(value_sample_horizons, value_samples[target_n_step:-1], h_remaining) * discount[:N-target_n_step]
-        #m[:N-target_n_step] = _interpolate(value_sample_horizons, value_samples[target_n_step:-1], h_remaining)
+        m[:N-target_n_step] = interpolate(value_samples[target_n_step:-1], h_remaining)
     else:
         pass
 
     # process the final n_step estimates, this can be slow for large target_n_step
     for i in range(target_n_step):
         # small chance we have a bug here, need to test this...
-        m[N-i-1] = _interpolate(value_sample_horizons, value_samples[-1], target_h - i - 1) * discount[N-i-1]
-        #m[N-i-1] = _interpolate(value_sample_horizons, value_samples[-1], target_h - i - 1)
+        m[N-i-1] = interpolate(value_samples[-1], target_h - i - 1)
 
-    #returns = s + m * discount
-    returns = s + m
+    returns = s + m * discount
     return idx, target_h, returns * weight
 
 def _calculate_sampled_return_multi_threaded(
@@ -803,7 +853,6 @@ def _calculate_sampled_return_multi_threaded(
 
     assert value_samples_m2 is None, "Not supported"
     assert value_samples_m3 is None, "Not supported"
-    assert use_log_interpolation is False, "Not supported"
 
     assert n_step_samples is not None or n_step_list is not None
 
@@ -819,8 +868,13 @@ def _calculate_sampled_return_multi_threaded(
         assert n_step_samples.shape == (K, C)
         for i, h in enumerate(required_horizons):
             for n_step in n_step_samples[i]:
+                if n_step < 0:
+                    n_step = -n_step
+                    method2 = True
+                else:
+                    method2 = False
                 target_n_step = min(n_step, h)
-                jobs.append((target_n_step, i, h, 1/C))
+                jobs.append((target_n_step, i, h, 1/C, method2))
                 n_step_set.add(target_n_step)
     else:
         # the standard, one set of n_steps for all examples
@@ -840,11 +894,11 @@ def _calculate_sampled_return_multi_threaded(
                     # note: this hardly makes a difference, as most horizons are very long compared to n_step.
                     remaining_weights = [n_step_weights[n] / total_weight for n in n_step_list[j:]]
                     target_n_step = min(h, n_step)
-                    jobs.append((target_n_step, i, h, sum(remaining_weights)))
+                    jobs.append((target_n_step, i, h, sum(remaining_weights), False))
                     n_step_set.add(target_n_step)
                     break
                 else:
-                    jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight))
+                    jobs.append((n_step, i, h, n_step_weights[n_step] / total_weight, False))
                     n_step_set.add(n_step)
 
     # build our discount / reward sum cache...
@@ -856,16 +910,23 @@ def _calculate_sampled_return_multi_threaded(
     discount = np.ones([N, A], dtype=np.float32)
     discount_cache = {}
     reward_cache = {}
+    expected_reward_cache = {}
+
+
     for i in range(max(n_step_set)):
+        # method 1: just add up the discounted rewards
         s[:N - i] += rewards[i:] * discount[:N - i]
         discount[:N - i] *= gamma * (1 - dones[i:])
-        if i+1 in n_step_set or i+1 in required_horizons_set:
+        if i + 1 in n_step_set or i + 1 in required_horizons_set:
             reward_cache[i + 1] = s.copy()
             discount_cache[i + 1] = discount.copy()
+            # method 2: use our horizon estimate
+            # note: this will never converge, so it needs to be mixed with method 1.
+            expected_reward_cache[i + 1] = _interpolate(value_sample_horizons, value_samples[:N], i + 1)
 
     # simple way to get this data to all the workers without having to pickle it (which would be too slow)
     global GLOBAL_CACHE
-    GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache)
+    GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, use_log_interpolation, expected_reward_cache)
 
     # from multiprocessing.pool import ThreadPool
     # if len(jobs) < 1000:

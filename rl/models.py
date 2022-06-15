@@ -342,6 +342,8 @@ class DualHeadNet(nn.Module):
 
             tvf_fixed_head_horizons: Union[None, list] = None,
             tvf_per_head_hidden_units:int = 0,
+            tvf_head_bias: bool = True,
+            tvf_head_sparsity: float = 0.0,
 
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
@@ -390,25 +392,33 @@ class DualHeadNet(nn.Module):
         def make_value_head(in_features:int, out_features:int):
             if tvf_per_head_hidden_units > 0:
                 return torch.nn.Sequential(
-                    torch.nn.Linear(in_features, tvf_per_head_hidden_units),
+                    torch.nn.Linear(in_features, tvf_per_head_hidden_units, bias=tvf_head_bias),
                     torch.nn.ReLU(),
-                    torch.nn.Linear(tvf_per_head_hidden_units, out_features)
+                    torch.nn.Linear(tvf_per_head_hidden_units, out_features, bias=tvf_head_bias)
                 )
             else:
-                return torch.nn.Linear(in_features, out_features)
+                return torch.nn.Linear(in_features, out_features, bias=tvf_head_bias)
 
         # value net can also output a basic value estimate using this head
         self.value_head = make_value_head(self.encoder.hidden_units, len(value_head_names))
 
         self.tvf_head = None
         self.tvf_heads = None
+        self.tvf_features_mask = None
+
+        self.tvf_head_sparsity = tvf_head_sparsity
+        if self.tvf_head_sparsity > 0:
+            keep_prob = (1 - self.tvf_head_sparsity)
+            g = torch.Generator(device=device)
+            g.manual_seed(99)
+            self.tvf_features_mask = torch.bernoulli(torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32, device=device) * keep_prob, generator=g) / keep_prob
+            self.tvf_features_mask.requires_grad = False
 
         if self.tvf_fixed_head_horizons is not None:
-            if tvf_per_head_hidden_units == 0:
+            if tvf_per_head_hidden_units == 0 and self.tvf_head_sparsity == 0:
                 # faster path, calculate all heads in one go
-                # todo: remove this, probably not needed?
                 self.tvf_head = nn.Linear(self.encoder.hidden_units,
-                                          len(tvf_fixed_head_horizons) * len(value_head_names))
+                                          len(tvf_fixed_head_horizons) * len(value_head_names), bias=tvf_head_bias)
             else:
                 # processing each head individually can be a bit slow, I might be able to fix this though
                 # maybe using jit? (for the moment I'll just reduce the number of heads and hidden units)
@@ -499,7 +509,13 @@ class DualHeadNet(nn.Module):
                     if required_tvf_heads is None:
                         # get all heads
                         required_tvf_heads = range(len(self.tvf_heads))
-                    result[f'tvf_value'] = torch.stack([self.tvf_heads[i](encoder_features) for i in required_tvf_heads], dim=1)
+
+                    if self.tvf_head_sparsity > 0:
+                        maybe_sparse = lambda i, X: self.tvf_features_mask[i] * X
+                    else:
+                        maybe_sparse = lambda i, X: X
+
+                    result[f'tvf_value'] = torch.stack([self.tvf_heads[i](maybe_sparse(i, encoder_features)) for i in required_tvf_heads], dim=1)
 
         return result
 
@@ -522,6 +538,8 @@ class TVFModel(nn.Module):
             freeze_observation_normalization=False,
             tvf_fixed_head_horizons: Union[None, list] = None,
             tvf_per_head_hidden_units: int = 0,
+            tvf_head_bias: bool = True,
+            tvf_head_sparsity: float = 0.0,
     ):
         """
             Truncated Value Function model
@@ -574,6 +592,8 @@ class TVFModel(nn.Module):
                 activation_fn=encoder_activation_fn,
                 tvf_fixed_head_horizons=tvf_fixed_head_horizons,
                 tvf_per_head_hidden_units=tvf_per_head_hidden_units,
+                tvf_head_bias=tvf_head_bias,
+                tvf_head_sparsity=tvf_head_sparsity,
                 n_actions=actions,
                 device=device,
                 **(encoder_args or {})

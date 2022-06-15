@@ -665,6 +665,20 @@ class LabelEnvWrapper(gym.Wrapper):
         info['env_id'] = self.label
         return obs, reward, done, info
 
+
+class ZeroObsWrapper(gym.Wrapper):
+    def __init__(self, env:gym.Env):
+        super().__init__(env)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        return obs*0, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        return obs*0
+
+
 class ReturnTracker():
     """
     Tracks returns for normalization accross a (masked) vector of environmentst
