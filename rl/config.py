@@ -103,7 +103,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
         parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
         parser.add_argument("--tvf_value_heads", type=int, default=64, help="Number of value heads to use.")
-        parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="[geometric|linear]")
+        parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="[geometric|linear|even_x]")
         parser.add_argument("--tvf_head_weighting", type=str, default="off", help="[off|h_weighted]")
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
         parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
@@ -297,13 +297,15 @@ class Config(BaseConfig):
         parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
         parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow]")
         parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
-        parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="horizon heads with noise levels below this threshold are considered low noise.")
-        parser.add_argument("--ag_sns_alpha", type=float, default=0.998,
+        parser.add_argument("--ag_sns_threshold", type=float, default=10.0, help="target noise level for gamma.")
+        parser.add_argument("--ag_sns_ema_horizon", type=float, default=int(3e6),
+                            help="horizon used in EMA for horizon.")
+        parser.add_argument("--ag_sns_delay", type=int, default=int(2.5e6),
                             help="alpha value used in EMA for horizon.")
-        parser.add_argument("--ag_sns_delay", type=int, default=int(1e6),
-                            help="alpha value used in EMA for horizon.")
-        parser.add_argument("--ag_sns_min_h", type=int, default=100, # todo make this shorter
+        parser.add_argument("--ag_sns_min_h", type=int, default=100, # I'd like to make this 50
                             help="Minimum auto gamma horizon.")
+        parser.add_argument("--ag_sns_initial_h", type=int, default=1000,
+                            help="Initial auto gamma horizon.")
         parser.add_argument("--ag_sns_max_h", type=int, default=10000,
                             help="Maximum auto gamma horizon.")
 
@@ -457,9 +459,10 @@ class Config(BaseConfig):
         self.ag_mode = str()
         self.ag_target = str()
         self.ag_sns_threshold = float()
-        self.ag_sns_alpha = float()
+        self.ag_sns_ema_horizon = float()
         self.ag_sns_delay = int()
         self.ag_sns_min_h = int()
+        self.ag_sns_initial_h = int()
         self.ag_sns_max_h = int()
 
         self.use_sns = bool()

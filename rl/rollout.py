@@ -143,6 +143,19 @@ def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geomet
     result = []
     target_n_heads = n_heads
 
+    # special case for even distribution
+    if spacing.startswith("even"):
+        # format should be even_x, where x is an integer
+        # we take the first n heads, then every n after that.
+        n = int(spacing.split("_")[1])
+        result = []
+        result.extend(range(n))
+        current = n
+        while current <= max_horizon:
+            result.append(current)
+            current += n
+        return np.asarray(result, dtype=np.int32)
+
     # the idea here is to remove duplicates.
     while len(result) < target_n_heads:
         if spacing == "geometric":
@@ -1371,58 +1384,22 @@ class Runner:
                 )
             )
 
-    def estimate_noise_scale(
+    def process_noise_scale(
             self,
-            batch_data,
-            mini_batch_func,
-            optimizer: torch.optim.Optimizer,
-            label,
-            verbose:bool=True,
-    ):
+            g_b_big_squared: float,
+            g_b_small_squared: float,
+            label: str,
+            verbose: bool = True,
+        ):
         """
-        Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
-
-        ema smoothing produces cleaner results, but is biased.
-
-        See: https://arxiv.org/pdf/1812.06162.pdf
+        Logs noise levels using provided gradients
         """
-
-        self.log.mode = self.log.LM_MUTE
-        result = {}
-
-        def process_gradient(context):
-            # calculate norm of gradient
-            parameters = []
-            for group in optimizer.param_groups:
-                for p in group['params']:
-                    if p.grad is not None:
-                        parameters.append(p)
-
-            result['grad_magnitude'] = nn.utils.clip_grad_norm_(parameters, 99999)
-            optimizer.zero_grad(set_to_none=True)
-            return True  # make sure to not apply the gradient!
-
-        hook = {'after_mini_batch': process_gradient}
 
         b_small = args.sns_b_small
-        b_big = min(args.sns_b_big, len(batch_data["prev_state"]))
+        b_big = args.sns_b_big
 
-        g2s = []
-        ss = []
-
-        self.train_batch(batch_data, mini_batch_func, b_big, optimizer, label, hooks=hook)
-        g_b_big_squared = float(result['grad_magnitude']) ** 2
-
-        for sample in range(args.sns_small_samples):
-            self.train_batch(batch_data, mini_batch_func, b_small, optimizer, label, hooks=hook)
-            g_b_small_squared = float(result['grad_magnitude']) ** 2
-            g2s.append((b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small))
-            ss.append((g_b_small_squared - g_b_big_squared) / (1 / b_small - 1 / b_big))
-
-        est_s = np.mean(ss)
-        est_g2 = np.mean(g2s)
-
-        self.log.mode = self.log.LM_DEFAULT
+        est_s = (g_b_small_squared - g_b_big_squared) / (1 / b_small - 1 / b_big)
+        est_g2 = (b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small)
 
         if args.sns_smoothing == "avg":
             # add these samples to the mix
@@ -1476,6 +1453,53 @@ class Runner:
         )
 
         return self.noise_stats[f'{label}_ratio']
+
+
+    def estimate_noise_scale(
+            self,
+            batch_data,
+            mini_batch_func,
+            optimizer: torch.optim.Optimizer,
+            label,
+            verbose:bool=True,
+    ):
+        """
+        Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
+
+        ema smoothing produces cleaner results, but is biased.
+
+        See: https://arxiv.org/pdf/1812.06162.pdf
+        """
+
+        self.log.mode = self.log.LM_MUTE
+        result = {}
+
+        def process_gradient(context):
+            # calculate norm of gradient
+            result['grad_magnitude'] = utils.optimizer_grad_norm(optimizer)
+            optimizer.zero_grad(set_to_none=True)
+            return True  # make sure to not apply the gradient!
+
+        hook = {'after_mini_batch': process_gradient}
+
+        assert(len(batch_data["prev_state"]) >= args.sns_b_big)
+
+        b_small = args.sns_b_small
+        b_big = args.sns_b_big
+
+        self.train_batch(batch_data, mini_batch_func, b_big, optimizer, label, hooks=hook)
+        g_b_big_squared = float(result['grad_magnitude']) ** 2
+
+        g_b_small_squared = []
+        for sample in range(args.sns_small_samples):
+            self.train_batch(batch_data, mini_batch_func, b_small, optimizer, label, hooks=hook)
+            g_b_small_squared.append(float(result['grad_magnitude']) ** 2)
+        g_b_small_squared = float(np.mean(g_b_small_squared))
+
+        self.log.mode = self.log.LM_DEFAULT
+
+        self.process_noise_scale(g_b_big_squared, g_b_small_squared, label, verbose)
+
 
     @torch.no_grad()
     def log_dna_value_quality(self):
@@ -2056,16 +2080,95 @@ class Runner:
             value_heads.append("int")
         return value_heads
 
+    def _get_value_head_accumulated_gradient_norms(self, optimizer, data, required_heads):
+        """
+        Compatability version.
+        """
+
+        B, K = data["tvf_returns"].shape
+
+        data = data.copy()
+        if "returns" in data:
+            del data["returns"]
+
+        norms = []
+        for k in required_heads:
+            optimizer.zero_grad(set_to_none=True)
+            self.train_value_minibatch(data, single_value_head=-k)
+            grad_magnitude = utils.optimizer_grad_norm(optimizer)
+            norms.append(grad_magnitude)
+
+        optimizer.zero_grad(set_to_none=True)
+        return np.asarray(norms)
+
+    def get_value_head_accumulated_gradient_norms(self, optimizer, prev_state, targets, required_heads):
+        """
+        Custom function to evaluate noise of training value heads. We process all heads, but not ext_value.
+        No updates are applied.
+        Does not support all features (h_weighting, dropout)
+        Also no micro-batching is done, so we need a lot of gpu ram for large rollouts
+
+        Note: produces identical results to compatability version, but is 2x faster (because we don't have to forward
+        the obs each time)
+        """
+
+        optimizer.zero_grad(set_to_none=True)
+
+        prev_state = prev_state.to(self.model.device)
+        targets = targets.to(self.model.device)
+
+        assert all(np.diff(required_heads)) > 0, "required heads must be strictly increasing"
+
+        # forward all data...
+        model_out = self.model.forward(
+            prev_state,
+            output="value",
+        )
+
+        predictions = model_out["tvf_value"]
+        B, K, VH = predictions.shape
+        assert targets.shape == (B, K)
+
+        norms = []
+
+        prev_k:int = -1
+
+        for k in required_heads:
+            final = (k == required_heads[-1])
+            # accumulate all new heads up to and including k
+            #print(prev_k, k, targets[:, prev_k+1:k+1].shape, predictions[:, prev_k+1:k, 0].shape)
+            head_loss = 0.5 * torch.square(targets[:, prev_k+1:k+1] - predictions[:, prev_k+1:k+1, 0]) * args.tvf_coef
+            head_loss = head_loss.sum(dim=-1) # sum over horizons, apply mean later.
+            head_loss = head_loss.mean() # mean over examples
+            head_loss.backward(retain_graph=not final)
+            # note: we divide by k here because we should be calculating the mean,
+            # in the end a scalar multiple of loss comes out as a scalar multiple of the grad norm so
+            # there's no real issue here so long as k is small enough to not affect precision
+            grad_magnitude = utils.optimizer_grad_norm(optimizer) / (k+1)
+            norms.append(grad_magnitude)
+            prev_k = k
+
+        optimizer.zero_grad(set_to_none=True)
+        return np.asarray(norms)
+
     def train_value_minibatch(self, data, loss_scale=1.0, single_value_head: Optional[int] = None):
         """
         @param single_value_head: if given trains on just this indexed tvf value head.
         """
 
+        required_tvf_heads = []
+        if single_value_head is None:
+            required_tvf_heads = None
+        elif single_value_head >= 0:
+            required_tvf_heads = [single_value_head]
+        elif single_value_head < 0:
+            required_tvf_heads = list(range(-single_value_head+1))
+
         model_out = self.model.forward(
             data["prev_state"],
             output="value",
             # saves a bit of time to only fetch one head when only one is needed.
-            required_tvf_heads=[single_value_head] if single_value_head is not None else None,
+            required_tvf_heads=required_tvf_heads,
         )
 
         B = len(data["prev_state"])
@@ -2083,9 +2186,8 @@ class Runner:
             targets = data["tvf_returns"] # locked to "ext" head for the moment [B, K]
             predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment [B, K, VH] -> [B, K]
 
-            if single_value_head is not None:
-                targets = targets[:, single_value_head]
-                predictions = predictions[:, 0] # only one horizon was generated, so just grab this
+            targets = targets[:, required_tvf_heads]
+            predictions = predictions[:, :] # predictions should match as we only generated the ones needed
 
             tvf_loss = 0.5 * torch.square(targets - predictions) * args.tvf_coef
 
@@ -2283,7 +2385,7 @@ class Runner:
         elif args.ag_mode == "training":
             return (1/1000) * self.step # todo make this a parameter
         elif args.ag_mode == "sns":
-            return self.noise_stats.get('ag_sns_horizon', 10)
+            return self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h)
         else:
             raise ValueError(f"Invalid auto_strategy {args.ag_mode}")
 
@@ -2294,14 +2396,14 @@ class Runner:
 
     @property
     def gamma(self):
-        if args.use_ag and args.ag_target in ["policy", "both"]:
+        if args.use_ag and args.ag_target in ["policy", "both"] and args.ag_mode != "shadow":
             return self._auto_gamma
         else:
             return args.gamma
 
     @property
     def tvf_gamma(self):
-        if args.use_ag and args.ag_target in ["value", "both"]:
+        if args.use_ag and args.ag_target in ["value", "both"] and args.ag_mode != "shadow":
             return self._auto_gamma
         else:
             return args.tvf_gamma
@@ -2364,8 +2466,7 @@ class Runner:
             if type(v) is np.ndarray:
                 v = torch.from_numpy(v)
             # todo: handle decompression...
-            v.to(device=self.model.device, non_blocking=True)
-            batch_data[k] = v
+            batch_data[k] = v.to(device=self.model.device, non_blocking=True)
 
     def train_policy(self):
 
@@ -2469,41 +2570,46 @@ class Runner:
             batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
 
             # per horizon noise estimates
+            # note: it's about 2x faster to generate accumulated noise all at one go, but this means
+            # the generic code for noise estimation no longer works well.
             if self.wants_noise_estimate('value') and args.sns_max_heads > 0:
 
+                required_heads = utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads)
+
                 # generate our per-horizon estimates
-                if args.upload_batch:
-                    self.upload_batch(batch_data)
+                # uploading takes too much memory :(
+                #if args.upload_batch:
+                #    self.upload_batch(batch_data)
 
-                def train_value_minibatch_single_horizon(i: int, data, loss_scale=1.0):
-                    _data = data.copy()
-                    if i < 0:
-                        # just train main head
-                        del _data["tvf_returns"]
-                        self.train_value_minibatch(_data, loss_scale)
-                    else:
-                        # make sure to not also learn main value head
-                        del _data["returns"]
-                        self.train_value_minibatch(_data, loss_scale, single_value_head=i)
-
-                sample = utils.even_sample_down(np.arange(len(self.tvf_horizons)), max_values=args.sns_max_heads)
-
-                for i in sample:
-                    self.estimate_noise_scale(
-                        batch_data,
-                        lambda data, loss_scale: train_value_minibatch_single_horizon(i, data, loss_scale),
+                def generate_squared_norms(batch_size: int):
+                    assert batch_size <= N*A, f"Can not take {batch_size} samples from rollout of size {N}x{A}"
+                    sample = np.random.choice(range(N*A), batch_size, replace=False)
+                    result = self.get_value_head_accumulated_gradient_norms(
                         optimizer=self.value_optimizer,
-                        label=f"head_{i}",
-                        verbose=False,
+                        prev_state=batch_data["prev_state"][sample],
+                        targets=batch_data["tvf_returns"][sample],
+                        required_heads=required_heads,
                     )
+                    return np.asarray(result) ** 2
 
-                self.estimate_noise_scale(
-                    batch_data,
-                    lambda data, loss_scale: train_value_minibatch_single_horizon(-1, data, loss_scale),
-                    optimizer=self.value_optimizer,
-                    label=f"head_ext",
-                    verbose=False,
-                )
+                start_time = clock.time()
+                g_big = generate_squared_norms(args.sns_b_big)
+                s = clock.time()-start_time
+                print(f"Big took {s:.1f}")
+
+                start_time = clock.time()
+                g_small = []
+                for i in range(args.sns_small_samples):
+                    g_small.append(generate_squared_norms(args.sns_b_small))
+                g_small = np.asarray(g_small)
+
+                s = clock.time() - start_time
+                print(f"Small took {s:.1f}")
+
+                for i, head_id in enumerate(required_heads):
+                    self.process_noise_scale(
+                        g_big[i], g_small[:, i].mean(), label=f"acc_head_{head_id}"
+                    )
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(
@@ -2711,6 +2817,53 @@ class Runner:
                        display_width=8, display_name='t_aux', display_precision=1)
 
     def update_sns_horizon_target(self):
+        """
+        New version of sns_horizon estimation
+
+        The idea is to work out the noise level for training up to k heads, then force it to be montonic, then
+        use interpolation to find the first horizon that has a noise level above some threshold.
+        """
+
+        assert args.use_sns, "SNS must be enabled."
+        assert args.use_tvf, "TVF must be enabled"
+
+        if self.step < args.ag_sns_delay:
+            # it's too early to modify gamma, but log what we can anyway.
+            self.noise_stats['ag_sns_horizon'] = args.ag_sns_initial_h
+            self.log.watch_mean('ag_sns_target', args.ag_sns_initial_h, display_name="auto_horizon")
+            self.log.watch_mean('ag_sns_horizon', args.ag_sns_initial_h, display_width=0)
+            return
+
+        if len(self.noise_stats.get('active_heads', [])) <= 0:
+            # no noise levels logged yes
+            return
+
+        # data used to interpolate noise levels
+        logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
+
+        logged_noise_levels = [self.noise_stats.get(f'acc_head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads]
+
+        # force plot to be monotonic
+        logged_noise_levels = np.asarray([np.max(logged_noise_levels[:i+1]) for i in range(len(logged_noise_levels))])
+
+        # step 1: work out our target (with a cap at min_h)
+
+        new_target = 0
+        for i, h in enumerate(self.tvf_horizons):
+            noise_level = interpolate(logged_heads, logged_noise_levels[None, :], np.asarray([i]))[0]
+            if noise_level < args.ag_sns_threshold:
+                new_target = max(h, new_target)
+
+        clipped_target = np.clip(new_target, args.ag_sns_min_h, args.ag_sns_max_h)
+
+        # step 2: move towards (clipped) target
+        alpha = 1-(1/(args.ag_sns_ema_horizon / (self.N * self.A)))
+        self.noise_stats['ag_sns_horizon'] = alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h) + (1-alpha) * clipped_target
+
+        self.log.watch_mean('ag_sns_target', new_target, display_name="auto_horizon")
+        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_width=0)
+
+    def _update_sns_horizon_target(self):
         assert args.use_sns
         assert args.use_tvf
 

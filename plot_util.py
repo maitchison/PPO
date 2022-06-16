@@ -1767,7 +1767,7 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
         setup_plot(title)
     for i, key in enumerate(keys):
         if color_filter is not None:
-            c = color_filter(key)
+            c = color_filter(key, i)
         else:
             c = cm(i)
         plot_seeded_validation(

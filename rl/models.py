@@ -413,6 +413,9 @@ class DualHeadNet(nn.Module):
             g.manual_seed(99)
             self.tvf_features_mask = torch.bernoulli(torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32, device=device) * keep_prob, generator=g) / keep_prob
             self.tvf_features_mask.requires_grad = False
+        elif self.tvf_head_sparsity < 0:
+            # give early features to early heads, and late features to later heads
+            raise NotImplementedError()
 
         if self.tvf_fixed_head_horizons is not None:
             if tvf_per_head_hidden_units == 0 and self.tvf_head_sparsity == 0:

@@ -2009,6 +2009,7 @@ def tvf4_noise(priority: int = 0):
             **COMMON_ARGS,
         )
 
+def tvf4_noise2(priority: int = 0):
     # noise 2
     # changes:
     # * more gamma
@@ -2061,6 +2062,10 @@ def tvf4_noise(priority: int = 0):
     for rap in [0.5]:
         multi_run2(f'rap={rap}', repeat_action_probability=rap)
 
+    # bonus runs...
+    # feature thining
+    # maybe early horizons get some features, later horizons get different ones? (to make them a bit more indepedant?)
+
 
 
 def tvf4_initial(priority: int = 0):
@@ -2099,9 +2104,77 @@ def tvf4_initial(priority: int = 0):
         **COMMON_ARGS,
     )
 
+def tvf4_auto(priority: int = 0):
+
+    # look at auto horizon again...
+    # - initial results looked good
+    # - see if we added any bugs?
+    # - see if acc_head gives us what we want
+    # - also see if new auto formula gives good estimates
+    # - also see if new noise settings work?
+    # - also see if faster?
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_AUTO",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 20,  # 20 is enough for these two games
+        'subset': ["CrazyClimber", "Skiing"],
+
+        # new noise settings
+        'use_sns': True,
+        'sns_max_heads': 7, # save a little by only evaluating 7, and just lean into the interpolation
+        'sns_b_big': 8192,
+        'sns_b_small': 4, # smaller is better it seems?
+        'sns_small_samples': 128, # these are fast to generate
+        'sns_period': 5, # if I can make this larger I really should
+        'ag_sns_threshold': 10, # just a guess
+
+        # auto gamma
+        'use_ag': True,
+        'ag_mode': "sns",
+    }
+
+    # really just to get an idea for the noise levels, and what auto gamma picks.
+    add_run(
+        run_name=f"default",
+        **COMMON_ARGS,
+    )
+
+
+def tvf4_even(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_EVEN",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 50,  # need to make this quick, but really want 50
+        'subset': ATARI_3_VAL,
+    }
+
+    # use fixed estimator, matched with head locations
+    # should be very little interpolation
+    # also use a bit of feature masking
+    # the issue here is that n_step directly effects the number of heads
+    for n_step in [20, 40, 80]: # 30 might be better?
+        add_run(
+            run_name=f"even={n_step}",
+            tvf_head_spacing=n_step,
+            tvf_return_n_step=n_step,
+            tvf_head_sparsity=0.5,
+            tvf_return_mode="fixed",
+            tvf_max_horizon=30000,
+            **COMMON_ARGS
+        )
+
+
+
+
 def tvf4_tweak(priority: int = 0):
-
-
 
     # lets see how well our new settings work...
     COMMON_ARGS = {
@@ -2140,17 +2213,6 @@ def tvf4_tweak(priority: int = 0):
             **COMMON_ARGS,
         )
 
-    # last try at linear
-    add_run(
-        run_name=f"linear_10k",
-        tvf_head_spacing="linear",
-        tvf_value_heads=1024,
-        gamma=0.9999,
-        tvf_gamma=0.9999,
-        tvf_max_horizon=10000,
-        **COMMON_ARGS,
-    )
-
     # rediscounting...
     add_run(
         run_name=f"red_1",
@@ -2173,8 +2235,16 @@ def tvf4_tweak(priority: int = 0):
             **COMMON_ARGS,
         )
 
+    # n_step
+    for n_step in [10, 40, 80]: # 20 is default, 80 really should be better... maybe 30 is best?
+        add_run(
+            run_name=f"n_step={n_step}",
+            tvf_return_n_step=n_step,
+            **COMMON_ARGS,
+        )
+
     # new return estimators
-    for mode in ["exponential", "advanced", "advanced3", "advanced4"]:
+    for mode in ["exponential", "advanced", "advanced3", "advanced4", "fixed"]:
         add_run(
             run_name=f"tvf_return_mode={mode}",
             tvf_return_mode=mode,
@@ -2188,6 +2258,22 @@ def tvf4_tweak(priority: int = 0):
             tvf_head_sparsity=tvf_head_sparsity,
             **COMMON_ARGS,
         )
+
+    # last try at linear
+    add_run(
+        run_name=f"linear_10k",
+        tvf_head_spacing="linear",
+        tvf_value_heads=1024,
+        gamma=0.9999,
+        tvf_gamma=0.9999,
+        tvf_max_horizon=10000,
+        **COMMON_ARGS,
+    )
+    add_run(
+        run_name=f"embed_state",
+        embed_state=True,
+        **COMMON_ARGS,
+    )
 
 
 def debug1(priority: int = 0):
@@ -2707,8 +2793,8 @@ def setup():
     # ------------------------------
     # tvf 3...
 
-    t3_distil4(0)
-    tvf_red(0)
+    # t3_distil4(0)
+    # tvf_red(0)
     #tvf_noise(0)
 
     # still waiting on red, and noise I guess
@@ -2716,9 +2802,11 @@ def setup():
     # ------------------------------
     # tvf 4...
 
-    tvf4_initial(0)
-    tvf4_noise(25)
+    # tvf4_initial(0)
+    tvf4_noise2(25)
     tvf4_tweak(0)
+    tvf4_auto(99)
+    tvf4_even(-49)
     #tvf4_heads(0)
     #tvf4_zero(0)
 

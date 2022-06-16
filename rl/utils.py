@@ -79,6 +79,19 @@ def get_disallowed_devices():
         return []
 
 
+def optimizer_grad_norm(optimizer):
+    with torch.no_grad():
+        parameters = []
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                if p.grad is not None:
+                    parameters.append(p)
+        grad_norm = 0
+        for p in parameters:
+            param_norm = p.grad.data.norm(2)
+            grad_norm += param_norm.item() ** 2
+        return grad_norm ** 0.5
+
 def check_for_exteme_or_nan(X, name="array", extreme_limit=10000):
     """ Makes sure elements in array are non NaN and are within reasonable limits. """
 
