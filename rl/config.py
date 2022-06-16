@@ -297,10 +297,10 @@ class Config(BaseConfig):
         parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
         parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow]")
         parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
-        parser.add_argument("--ag_sns_threshold", type=float, default=10.0, help="target noise level for gamma.")
+        parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="target noise level for gamma.")
         parser.add_argument("--ag_sns_ema_horizon", type=float, default=int(3e6),
                             help="horizon used in EMA for horizon.")
-        parser.add_argument("--ag_sns_delay", type=int, default=int(2.5e6),
+        parser.add_argument("--ag_sns_delay", type=int, default=int(5e6),
                             help="alpha value used in EMA for horizon.")
         parser.add_argument("--ag_sns_min_h", type=int, default=100, # I'd like to make this 50
                             help="Minimum auto gamma horizon.")
@@ -313,10 +313,10 @@ class Config(BaseConfig):
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
         parser.add_argument("--sns_labels", type=str, default="['value_heads']", help="value|value_heads|distil|policy"),
-        parser.add_argument("--sns_period", type=int, default=4, help="Generate estimates every n updates.")
-        parser.add_argument("--sns_max_heads", type=int, default=8+1, help="Limit to this number of heads when doing per head noise estimate.")
-        parser.add_argument("--sns_b_big", type=int, default=128*128, help="")
-        parser.add_argument("--sns_b_small", type=int, default=32, help="")
+        parser.add_argument("--sns_period", type=int, default=5, help="Generate estimates every n updates.")
+        parser.add_argument("--sns_max_heads", type=int, default=7, help="Limit to this number of heads when doing per head noise estimate.")
+        parser.add_argument("--sns_b_big", type=int, default=4096, help="")
+        parser.add_argument("--sns_b_small", type=int, default=128, help="")
         parser.add_argument("--sns_smoothing", type=str, default="ema", help="ema|avg")
 
         # --------------------------------

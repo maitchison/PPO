@@ -1412,6 +1412,7 @@ class Runner:
                 self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
                 self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
         elif args.sns_smoothing == "ema":
+            # an update every 5 means about a 1M lag, but that's fine.
             self.noise_stats[f'{label}_s'] = 0.9 * self.noise_stats.get(f'{label}_s', 1.0) + 0.1 * est_s
             self.noise_stats[f'{label}_g2'] = 0.9 * self.noise_stats.get(f'{label}_g2', 1.0) + 0.1 * est_g2
         else:

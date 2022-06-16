@@ -558,7 +558,7 @@ TVF4_SNS_ARGS.update({
     "sns_b_small": 128, # might be too large?
     "sns_max_heads": 7, # as few as we can get away with
     "ag_sns_threshold": 7.5, # this is about right
-    "ag_sns_delay": int(5e6), # really best to wait a while before modifying gamma
+    "ag_sns_delay": int(5e6), # really best to wait a while before modifying gamma, maybe even 10M?
 })
 del TVF4_SNS_ARGS['sns_small_samples']
 
@@ -2159,7 +2159,7 @@ def tvf4_even(priority: int = 0):
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
         'experiment': "TVF4_EVEN",
-        'default_args': TVF4_TWEAKED_ARGS,
+        'default_args': TVF4_SNS_ARGS,
         'epochs': 50,  # need to make this quick, but really want 50
         'subset': ATARI_3_VAL,
     }
@@ -2841,5 +2841,5 @@ def setup():
 
     #debug1(100)
 
-    # tvf4_even(99)
+    tvf4_even(99)
     tvf4_auto(0)
