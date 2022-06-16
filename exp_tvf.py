@@ -2151,6 +2151,22 @@ def tvf4_auto(priority: int = 0):
         **COMMON_ARGS,
     )
 
+    # try two... with lessons learned
+    COMMON_ARGS['epochs'] = 50 # full training
+    COMMON_ARGS['seeds'] = 2
+    COMMON_ARGS['ag_sns_min_h'] = 30 # allow shorter horizons
+    COMMON_ARGS['tvf_gamma'] = 0.9999 # might change noise levels a bit...
+    COMMON_ARGS['subset'] = ATARI_3_VAL + ATARI_5 + ["CrazyClimber", "Skiing"]
+    COMMON_ARGS['tvf_include_ext'] = False # causes problems with rediscounting I think
+    COMMON_ARGS['experiment'] = "TVF4_AUTO2"
+
+    add_run(
+        run_name=f"default",
+        chunk_size=25,  # do it all in one two passes
+        **COMMON_ARGS,
+    )
+
+
 
 def tvf4_even(priority: int = 0):
 
@@ -2193,7 +2209,7 @@ def tvf4_random(priority: int = 0):
     }
 
     # just curious if this helps?
-    for embed_state in [True, False]:
+    for embed_state in [True]:
         add_run(
             run_name=f"embed_state={embed_state}",
             embed_state=embed_state,
@@ -2830,16 +2846,15 @@ def setup():
     # tvf 4...
 
     # tvf4_initial(0)
-    # tvf4_noise2(25)
+
     # tvf4_tweak(0)
-
-    # tvf4_random(99)
-
 
     #tvf4_heads(0)
     #tvf4_zero(0)
 
     #debug1(100)
 
-    tvf4_even(99)
+    #tvf4_even(0)
     tvf4_auto(0)
+    #tvf4_random(0)
+    #tvf4_noise2(0)

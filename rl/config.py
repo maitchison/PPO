@@ -109,6 +109,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
         parser.add_argument("--tvf_head_bias", type=str2bool, default=True, help="Enables bias for tvf heads")
         parser.add_argument("--tvf_head_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
+        parser.add_argument("--tvf_include_ext", type=str2bool, default=True, help="Also learn the rediscounted value estimate that will be used for advantages.")
 
 
 
@@ -450,6 +451,7 @@ class Config(BaseConfig):
         self.tvf_per_head_hidden_units = int()
         self.tvf_head_bias = bool()
         self.tvf_head_sparsity = float()
+        self.tvf_include_ext = bool()
 
         self.debug_bootstrap_bias = float()
         self.debug_zero_obs = bool()

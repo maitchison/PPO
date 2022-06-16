@@ -1699,12 +1699,15 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
     if label is None:
         label = key
 
+    found_seeds = 0
+
     for seed in range(1, seeds + 1):
         result = read_combined_log(path, key, subset=subset, seed=seed)
         if result is None:
             if check_seeds:
                 print(f"Missing seed {seed} for {key}")
             continue
+        found_seeds += 1
         steps = np.asarray(result["env_step"], dtype=np.float32) / 1e6
         if check_seeds:
             if steps[-1] < 49.0:
@@ -1715,6 +1718,9 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
             max_x = max(round(i), max_x)
             # plot individual runs so we can check...
         plt.plot(steps * 4, result['score'], color=color, alpha=ghost_alpha, ls='--')
+
+    if found_seeds == 0:
+        return
 
     y_list = y_list[:max_x + 1]
     xs = np.asarray(xs[:max_x + 1])
@@ -1748,38 +1754,48 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
         mask = key_filter
         key_filter = lambda x: mask in x
 
+    if type(path) is list:
+        paths = path
+    else:
+        paths = [path]
+
     if keys == "auto":
-        paths = glob(f"{path}/*/", recursive=False)
         keys = []
-        for x in paths:
-            try:
-                run = " ".join(x.split("/")[-2].split(" ")[1:-2])
-                if run in [""]:
-                    continue
-                if key_filter is not None and not key_filter(run):
-                    continue
-                keys.append(run+' ')
-            except:
-                pass
+        for path in paths:
+            _paths = glob(f"{path}/*/", recursive=False)
+            for x in _paths:
+                try:
+                    run = " ".join(x.split("/")[-2].split(" ")[1:-2])
+                    if run in [""]:
+                        continue
+                    if key_filter is not None and not key_filter(run):
+                        continue
+                    keys.append(run+' ')
+                except:
+                    pass
         keys = sorted(set(keys))
+        print(keys)
 
     if figure:
         setup_plot(title)
-    for i, key in enumerate(keys):
-        if color_filter is not None:
-            c = color_filter(key, i)
-        else:
-            c = cm(i)
-        plot_seeded_validation(
-            path,
-            key,
-            color=c,
-            subset=subset,
-            seeds=seeds,
-            check_seeds=check_seeds,
-            label=labels[i] if labels is not None else None,
-            ghost_alpha=ghost_alpha
-        )
+    counter = 0
+    for path in paths:
+        for i, key in enumerate(keys):
+            if color_filter is not None:
+                c = color_filter(key, i)
+            else:
+                c = cm(i)
+            plot_seeded_validation(
+                path,
+                key,
+                color=c,
+                subset=subset,
+                seeds=seeds,
+                check_seeds=check_seeds,
+                label=labels[i] if labels is not None else None,
+                ghost_alpha=ghost_alpha
+            )
+            counter =+ 1
     plt.legend()
     plt.xlabel('Frame (M)')
     plt.ylabel('Score')

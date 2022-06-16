@@ -2589,10 +2589,15 @@ class Runner:
         K = self.K
 
         batch_data["prev_state"] = self.prev_obs.reshape([N*A, *state_shape])
-        batch_data["returns"] = self.returns.reshape(N*A, self.VH)
+
+        if args.tvf_include_ext:
+            # these are not really needed, maybe they provide better features, I don't know.
+            # one issue is that they will be the wrong scale if rediscounting is applied.
+            # e.g. if gamma defaults to 0.99997, but these are calculated at 0.999 they might be extremly large
+            batch_data["returns"] = self.returns.reshape(N*A, self.VH)
 
         if args.use_tvf:
-            # just train ext head for the moment
+            # just train ext heads for the moment
             batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
 
             # per horizon noise estimates
@@ -2882,8 +2887,8 @@ class Runner:
         if self.step < args.ag_sns_delay:
             # it's too early to modify gamma, but log what we can anyway.
             self.noise_stats['ag_sns_horizon'] = args.ag_sns_initial_h
-            self.log.watch_mean('ag_sns_target', args.ag_sns_initial_h, display_name="auto_horizon")
-            self.log.watch_mean('ag_sns_horizon', args.ag_sns_initial_h, display_width=0)
+            self.log.watch_mean('ag_sns_target', args.ag_sns_initial_h, display_width=0)
+            self.log.watch_mean('ag_sns_horizon', args.ag_sns_initial_h, display_name="auto_horizon")
             return
 
         if len(self.noise_stats.get('active_heads', [])) <= 0:
@@ -2908,50 +2913,55 @@ class Runner:
 
         clipped_target = np.clip(new_target, args.ag_sns_min_h, args.ag_sns_max_h)
 
-        # step 2: move towards (clipped) target
+        # step 2: move towards (clipped) log target
         alpha = 1-(1/(args.ag_sns_ema_horizon / (self.N * self.A)))
-        self.noise_stats['ag_sns_horizon'] = alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h) + (1-alpha) * clipped_target
+        old_log_horizon = math.log(1+self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h))
+        target_log_horizon = math.log(1+clipped_target)
+        new_log_horizon = alpha * old_log_horizon + (1-alpha) * target_log_horizon
+        self.noise_stats['ag_sns_horizon'] = math.exp(new_log_horizon)-1
 
-        self.log.watch_mean('ag_sns_target', new_target, display_name="auto_horizon")
-        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_width=0)
+        #self.noise_stats['ag_sns_horizon'] = alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h) + (1-alpha) * clipped_target
 
-    def _update_sns_horizon_target(self):
-        assert args.use_sns
-        assert args.use_tvf
+        self.log.watch_mean('ag_sns_target', new_target, display_width=0)
+        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_name="auto_horizon")
 
-        if self.step < args.ag_sns_delay:
-            self.noise_stats['ag_sns_horizon'] = args.ag_sns_min_h
-            self.log.watch_mean('ag_sns_target', args.ag_sns_min_h, display_name="auto_horizon")
-            self.log.watch_mean('ag_sns_clipped_target', args.ag_sns_min_h, display_width=0)
-            self.log.watch_mean('ag_sns_horizon', args.ag_sns_min_h, display_width=0)
-            return
-
-        if len(self.noise_stats.get('active_heads', [])) <= 0:
-            # no noise levels logged...
-            return
-
-        # data used to interpolate noise levels
-        logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
-        # early on noise values will not be there, so just set them very high
-        logged_noise_levels = np.asarray([self.noise_stats.get(f'head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads])[None, :]
-
-        # step 1: work out our target (with a cap at min_h)
-
-        new_target = 0
-        for i, h in enumerate(self.tvf_horizons):
-            noise_level = interpolate(logged_heads, logged_noise_levels, np.asarray([i]))[0]
-            if noise_level < args.ag_sns_threshold:
-                new_target = max(h, new_target)
-
-        clipped_target = np.clip(new_target, args.ag_sns_min_h, args.ag_sns_max_h)
-
-        # step 2: move towards (clipped) target
-        self.noise_stats['ag_sns_horizon'] = \
-            args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_min_h) + (1-args.ag_sns_alpha) * clipped_target
-
-        self.log.watch_mean('ag_sns_target', new_target, display_name="auto_horizon")
-        self.log.watch_mean('ag_sns_clipped_target', clipped_target, display_width=0)
-        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_width=0) # this is the only one that is used.
+    # def _update_sns_horizon_target(self):
+    #     assert args.use_sns
+    #     assert args.use_tvf
+    #
+    #     if self.step < args.ag_sns_delay:
+    #         self.noise_stats['ag_sns_horizon'] = args.ag_sns_min_h
+    #         self.log.watch_mean('ag_sns_target', args.ag_sns_min_h, display_width=0)
+    #         self.log.watch_mean('ag_sns_clipped_target', args.ag_sns_min_h, display_width=0)
+    #         self.log.watch_mean('ag_sns_horizon', args.ag_sns_min_h, display_name="auto_horizon")
+    #         return
+    #
+    #     if len(self.noise_stats.get('active_heads', [])) <= 0:
+    #         # no noise levels logged...
+    #         return
+    #
+    #     # data used to interpolate noise levels
+    #     logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
+    #     # early on noise values will not be there, so just set them very high
+    #     logged_noise_levels = np.asarray([self.noise_stats.get(f'head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads])[None, :]
+    #
+    #     # step 1: work out our target (with a cap at min_h)
+    #
+    #     new_target = 0
+    #     for i, h in enumerate(self.tvf_horizons):
+    #         noise_level = interpolate(logged_heads, logged_noise_levels, np.asarray([i]))[0]
+    #         if noise_level < args.ag_sns_threshold:
+    #             new_target = max(h, new_target)
+    #
+    #     clipped_target = np.clip(new_target, args.ag_sns_min_h, args.ag_sns_max_h)
+    #
+    #     # step 2: move towards (clipped) target
+    #     self.noise_stats['ag_sns_horizon'] = \
+    #         args.ag_sns_alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_min_h) + (1-args.ag_sns_alpha) * clipped_target
+    #
+    #     self.log.watch_mean('ag_sns_target', new_target, display_name="auto_horizon")
+    #     self.log.watch_mean('ag_sns_clipped_target', clipped_target, display_width=0)
+    #     self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_width=0) # this is the only one that is used.
 
     def train(self):
 
