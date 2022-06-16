@@ -50,6 +50,7 @@ def make_model(args, log=None):
 
     if args.use_tvf:
         tvf_fixed_head_horizons = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing)
+        args.tvf_value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
     else:
         tvf_fixed_head_horizons = None
 

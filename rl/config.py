@@ -312,13 +312,12 @@ class Config(BaseConfig):
         # --------------------------------
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
-        parser.add_argument("--sns_labels", type=str, default="['value', 'distil']"), # policy is also an option
+        parser.add_argument("--sns_labels", type=str, default="['value_heads']", help="value|value_heads|distil|policy"),
         parser.add_argument("--sns_period", type=int, default=4, help="Generate estimates every n updates.")
         parser.add_argument("--sns_max_heads", type=int, default=8+1, help="Limit to this number of heads when doing per head noise estimate.")
         parser.add_argument("--sns_b_big", type=int, default=128*128, help="")
         parser.add_argument("--sns_b_small", type=int, default=32, help="")
         parser.add_argument("--sns_smoothing", type=str, default="ema", help="ema|avg")
-        parser.add_argument("--sns_small_samples", type=int, default=16, help="")
 
         # --------------------------------
         # Auxiliary phase
@@ -471,7 +470,6 @@ class Config(BaseConfig):
         self.sns_max_heads = int()
         self.sns_b_big = int()
         self.sns_b_small = int()
-        self.sns_small_samples = int()
         self.sns_smoothing = str()
 
         self.aux_target = str()
@@ -564,6 +562,7 @@ def parse_args(args_override=None):
         'value_network': "encoder",
         'tvf_mode': None,
         'tvf_sum_horizons': None,
+        'sns_small_samples': None,
     }
 
     for k,v in REMAPPED_PARAMS.items():
@@ -653,6 +652,9 @@ def parse_args(args_override=None):
         args.tvf_horizon_trimming = "off"
     if str(args.tvf_horizon_trimming) == 'True':
         args.tvf_horizon_trimming = "interpolate"
+
+    if args.use_ag and args.ag_mode in ['sns', 'shadow']:
+        assert 'value_heads' in ast.literal_eval(args.sns_labels), "sns_labels must include value_head"
 
 
 if __name__ == "__main__":

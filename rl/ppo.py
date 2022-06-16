@@ -119,8 +119,14 @@ def train(model: models.TVFModel, log: Logger):
         params = args.flatten()
         t.write(json.dumps(params, indent=4))
 
+    # todo: make sure this is correct, i.e. from the experiment folder?
     # make a copy of training files for reference
-    utils.copy_source_files("./", args.log_folder)
+    try:
+        root_folder, train_script = os.path.split(sys.argv[0])
+        utils.copy_source_files(root_folder, args.log_folder)
+    except:
+        # it's fine if this fails
+        pass
 
     print_counter = 0
 

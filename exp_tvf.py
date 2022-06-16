@@ -551,6 +551,18 @@ TVF4_TWEAKED_ARGS.update({
 del TVF4_TWEAKED_ARGS['sns_labels']
 
 
+TVF4_SNS_ARGS = TVF4_TWEAKED_ARGS.copy()
+TVF4_SNS_ARGS.update({
+    # tweaked sns
+    "sns_b_big": 4096,  # might be too small?
+    "sns_b_small": 128, # might be too large?
+    "sns_max_heads": 7, # as few as we can get away with
+    "ag_sns_threshold": 7.5, # this is about right
+    "ag_sns_delay": int(5e6), # really best to wait a while before modifying gamma
+})
+del TVF4_SNS_ARGS['sns_small_samples']
+
+
 def merge_dict(a, b):
     x = a.copy()
     x.update(b)
@@ -2115,22 +2127,17 @@ def tvf4_auto(priority: int = 0):
     # - also see if faster?
 
     COMMON_ARGS = {
-        'seeds': 2,
+        'seeds': 1,
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
         'experiment': "TVF4_AUTO",
-        'default_args': TVF4_TWEAKED_ARGS,
+        'default_args': TVF4_SNS_ARGS,
         'epochs': 20,  # 20 is enough for these two games
-        'subset': ["CrazyClimber", "Skiing"],
+        'subset': ["CrazyClimber", "Skiing"], # add skiing
 
         # new noise settings
         'use_sns': True,
-        'sns_max_heads': 7, # save a little by only evaluating 7, and just lean into the interpolation
-        'sns_b_big': 8192,
-        'sns_b_small': 4, # smaller is better it seems?
-        'sns_small_samples': 128, # these are fast to generate
         'sns_period': 5, # if I can make this larger I really should
-        'ag_sns_threshold': 10, # just a guess
 
         # auto gamma
         'use_ag': True,
@@ -2140,6 +2147,7 @@ def tvf4_auto(priority: int = 0):
     # really just to get an idea for the noise levels, and what auto gamma picks.
     add_run(
         run_name=f"default",
+        chunk_size=20, # do it all in one go
         **COMMON_ARGS,
     )
 
@@ -2163,7 +2171,7 @@ def tvf4_even(priority: int = 0):
     for n_step in [20, 40, 80]: # 30 might be better?
         add_run(
             run_name=f"even={n_step}",
-            tvf_head_spacing=n_step,
+            tvf_head_spacing=f"even_{n_step}",
             tvf_return_n_step=n_step,
             tvf_head_sparsity=0.5,
             tvf_return_mode="fixed",
@@ -2171,7 +2179,26 @@ def tvf4_even(priority: int = 0):
             **COMMON_ARGS
         )
 
+def tvf4_random(priority: int = 0):
 
+    # lets see how well our new settings work...
+    COMMON_ARGS = {
+        'seeds': 1,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF4_TWEAK",
+        'default_args': TVF4_TWEAKED_ARGS,
+        'epochs': 50,  # need to make this quick, but really want 50
+        'subset': ATARI_3_VAL,
+    }
+
+    # just curious if this helps?
+    for embed_state in [True, False]:
+        add_run(
+            run_name=f"embed_state={embed_state}",
+            embed_state=embed_state,
+            **merge_dict(COMMON_ARGS, {'subset': ['Seaquest']}),
+        )
 
 
 def tvf4_tweak(priority: int = 0):
@@ -2803,11 +2830,16 @@ def setup():
     # tvf 4...
 
     # tvf4_initial(0)
-    tvf4_noise2(25)
-    tvf4_tweak(0)
-    tvf4_auto(99)
-    tvf4_even(-49)
+    # tvf4_noise2(25)
+    # tvf4_tweak(0)
+
+    # tvf4_random(99)
+
+
     #tvf4_heads(0)
     #tvf4_zero(0)
 
     #debug1(100)
+
+    # tvf4_even(99)
+    tvf4_auto(0)

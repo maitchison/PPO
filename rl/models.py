@@ -667,10 +667,12 @@ class TVFModel(nn.Module):
             self.refresh_normalization_constants()
 
         # normalize x
-        x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
+        # x -= self._mu
+        # x *= 1 / (self._std + 1e-5)
+        # torch.clamp_(x, -5, 5)
+        # x *= 3.0
 
-        # note: clipping reduces the std down to 0.3, therefore we multiply the output so that it is roughly
-        # unit normal.
+        x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
         x = x * 3.0
 
         return x
@@ -827,8 +829,9 @@ class TVFModel(nn.Module):
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if was_uint8 and scale_int:
-            x = (x / 127.5)-1.0
-
+            # x /= 127.5
+            # x -= 1.0
+            x = (x / 127.5) - 1
         return x
 
 
