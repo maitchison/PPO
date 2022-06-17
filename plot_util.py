@@ -299,7 +299,9 @@ class RunLog():
             '1m_': lambda x: 1 - x,
             '1p_': lambda x: 1 + x,
             'abs_': lambda x: np.abs(x),
-            'nz_': lambda x: np.nan_to_num(np.asarray(x, dtype=np.float)) # convert none to 0
+            'nz_': lambda x: np.nan_to_num(np.asarray(x, dtype=np.float32)), # convert none to 0
+            'relu_': lambda x: np.clip(x, 0, float('inf')),
+            'eps_': lambda x: np.asarray(x, dtype=np.float32)+1e-6,
         }
 
         self._fields = {}
@@ -507,7 +509,7 @@ def compare_runs(
         i_per_style[line_style] += 1
         color = cmap.colors[color_index % len(cmap.colors)]
         if color_filter is not None:
-            color = color_filter(run_name, color)
+            color = color_filter(run_name, color_index)
 
         # -----
 

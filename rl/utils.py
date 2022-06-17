@@ -78,6 +78,19 @@ def get_disallowed_devices():
     except:
         return []
 
+
+def list_grad(opt):
+    """
+    Returns a list of parameters data from an optimizer
+    """
+    parameters = []
+    for group in opt.param_groups:
+        for p in group['params']:
+            if p.grad is not None:
+                parameters.append(p.grad.data)
+    return parameters
+
+
 def calc_norm(data):
     with torch.no_grad():
         norm = 0
@@ -785,6 +798,12 @@ def release_lock():
 
     lock_path = os.path.join(args.log_folder, "lock.txt")
     os.remove(lock_path)
+
+
+def log_folder_exists():
+    """ Returns if the log folder exists or not. """
+    return os.path.exists(args.log_folder)
+
 
 
 def get_lock_info():

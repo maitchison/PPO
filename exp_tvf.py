@@ -2127,44 +2127,61 @@ def tvf4_auto(priority: int = 0):
     # - also see if faster?
 
     COMMON_ARGS = {
-        'seeds': 1,
+        'seeds': 2,
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
-        'experiment': "TVF4_AUTO",
+        'experiment': "TVF4_AUTO5",
         'default_args': TVF4_SNS_ARGS,
         'epochs': 20,  # 20 is enough for these two games
-        'subset': ["CrazyClimber", "Skiing"], # add skiing
+        'subset': ["CrazyClimber"], # add skiing
 
         # new noise settings
         'use_sns': True,
         'sns_period': 5, # if I can make this larger I really should
+        'tvf_include_ext': False, # it's on the wrong scale
+        'ag_sns_min_h': 30,
+        'ag_sns_max_h': 10000,
 
-        # auto gamma
-        'use_ag': True,
+        # auto gamma prep
         'ag_mode': "sns",
     }
 
     # really just to get an idea for the noise levels, and what auto gamma picks.
     add_run(
-        run_name=f"default",
+        run_name=f"tvf",
         chunk_size=20, # do it all in one go
         **COMMON_ARGS,
     )
 
-    # try two... with lessons learned
-    COMMON_ARGS['epochs'] = 50 # full training
-    COMMON_ARGS['seeds'] = 2
-    COMMON_ARGS['ag_sns_min_h'] = 30 # allow shorter horizons
-    COMMON_ARGS['tvf_gamma'] = 0.9999 # might change noise levels a bit...
-    COMMON_ARGS['subset'] = ATARI_3_VAL + ATARI_5 + ["CrazyClimber", "Skiing"]
-    COMMON_ARGS['tvf_include_ext'] = False # causes problems with rediscounting I think
-    COMMON_ARGS['experiment'] = "TVF4_AUTO2"
+    add_run(
+            run_name=f"red_99",
+            gamma=0.99,
+            override_reward_normalization_gamma=0.999, # compromise
+            tvf_gamma=0.9999,
+            chunk_size=20,  # do it all in one go
+            **COMMON_ARGS,
+    )
 
     add_run(
-        run_name=f"default",
-        chunk_size=25,  # do it all in one two passes
+        run_name=f"auto",
+        use_ag=True,
+        override_reward_normalization_gamma=0.999,  # compromise
+        tvf_gamma=0.9999,
+        chunk_size=20,  # do it all in one go
         **COMMON_ARGS,
     )
+
+
+    for lvt in [0.1, 1.0, 10]:
+        add_run(
+            run_name=f"red_99 lvt={lvt}",
+            gamma=0.99,
+            override_reward_normalization_gamma=0.999, # compromise
+            tvf_gamma=0.9999,
+            distil_loss_value_target=lvt,
+            chunk_size=20,  # do it all in one go
+            **COMMON_ARGS,
+        )
 
 
 
@@ -2858,3 +2875,5 @@ def setup():
     tvf4_auto(0)
     #tvf4_random(0)
     #tvf4_noise2(0)
+
+    pass

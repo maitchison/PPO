@@ -241,6 +241,8 @@ def train(model: models.TVFModel, log: Logger):
 
         # periodically print and save progress
         if time.time() - last_print_time >= args.debug_print_freq:
+            if not utils.log_folder_exists():
+                raise Exception("Folder was removed, exiting.")
             save_progress(log)
             header_changed = old_header is None or log.header != old_header
             log.print_variables(include_header=print_counter % 10 == 0 or header_changed)
@@ -250,12 +252,15 @@ def train(model: models.TVFModel, log: Logger):
 
         # save log and refresh lock
         if time.time() - last_log_time >= args.debug_log_freq:
+            if not utils.log_folder_exists():
+                raise Exception("Folder was removed, exiting.")
             utils.lock_job()
             log.export_to_csv()
             log.save_log()
             last_log_time = time.time()
 
         # hotkeys
+        wants_manual_save=False
         if keyboard.kb.kbhit():
             c = keyboard.kb.getch()
             if c == "v":
@@ -266,12 +271,18 @@ def train(model: models.TVFModel, log: Logger):
             if c == "q":
                 pause_at_end = not pause_at_end
                 log.log(f"Pausing at end of chunk [<bold>{pause_at_end}<end>]")
+            if c == "s":
+                wants_manual_save = True
+                log.log(f"Manual checkpoint saving")
 
         # periodically save checkpoints
-        if (iteration in checkpoints) and (not did_restore or iteration != start_iteration):
+        if ((iteration in checkpoints) and (not did_restore or iteration != start_iteration)) or wants_manual_save:
 
             log.info()
             log.important("Checkpoint: {}".format(args.log_folder))
+
+            if not utils.log_folder_exists():
+                raise Exception("Folder was removed, exiting.")
 
             if args.save_checkpoints:
                 checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")

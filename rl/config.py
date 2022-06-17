@@ -313,7 +313,7 @@ class Config(BaseConfig):
         # --------------------------------
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
-        parser.add_argument("--sns_labels", type=str, default="['value_heads']", help="value|value_heads|distil|policy"),
+        parser.add_argument("--sns_labels", type=str, default="['policy','distil','value', 'value_heads']", help="value|value_heads|distil|policy"),
         parser.add_argument("--sns_period", type=int, default=5, help="Generate estimates every n updates.")
         parser.add_argument("--sns_max_heads", type=int, default=7, help="Limit to this number of heads when doing per head noise estimate.")
         parser.add_argument("--sns_b_big", type=int, default=4096, help="")
@@ -338,6 +338,10 @@ class Config(BaseConfig):
         parser.add_argument("--distil_force_ext", type=str2bool, default=False,
                             help="use value_ext instead of tvf heads for distilation.")
         parser.add_argument("--distil_rediscount", type=str2bool, default=False, help="uses rediscounted targets for distillation.")
+        parser.add_argument("--distil_reweighing", type=str2bool, default=False,
+                            help="Reduces loss for horizons which have been discounted away. Generally better than rediscounting")
+        parser.add_argument("--distil_loss_value_target", type=float, default=None,
+                            help="Normalizes loss_value_distil to approximately this level. Useful if distil_rediscount is enabled.")
 
         # --------------------------------
         # Replay
@@ -486,6 +490,8 @@ class Config(BaseConfig):
         self.distil_max_heads = int()
         self.distil_force_ext = bool()
         self.distil_rediscount = bool()
+        self.distil_reweighing = bool()
+        self.distil_loss_value_target = float()
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()

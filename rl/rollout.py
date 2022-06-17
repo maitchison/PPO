@@ -601,6 +601,7 @@ class Runner:
         self.batch_counter = 0
 
         self.noise_stats = {}
+        self.vars = {}
 
         self.grad_accumulator = {}
 
@@ -817,6 +818,7 @@ class Runner:
             'batch_counter': self.batch_counter,
             'reward_scale': self.reward_scale,
             'stats': self.stats,
+            'vars': self.vars,
         }
 
         if not disable_optimizer:
@@ -909,6 +911,7 @@ class Runner:
         self.batch_counter = checkpoint.get('batch_counter', 0)
         self.stats = checkpoint.get('stats', 0)
         self.noise_stats = checkpoint.get('noise_stats', {})
+        self.vars = checkpoint.get('vars', {})
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -1426,7 +1429,7 @@ class Runner:
         # alternative include larger batch_sizes, and / or larger EMA horizon.
         # noise levels above 1000 will not be very accurate, but around 20 should be fine.
         epsilon = 1e-4 # we can't really measure noise above this level anyway (which is around a ratio of 10k:1)
-        ratio = smooth_s / max(smooth_g2, epsilon)
+        ratio = (smooth_s+epsilon) / (max(0.0, smooth_g2) + epsilon)
 
         self.noise_stats[f'{label}_ratio'] = ratio
         if 'head' in label:
@@ -1456,7 +1459,7 @@ class Runner:
         return self.noise_stats[f'{label}_ratio']
 
 
-    def estimate_noise_scale(
+    def _estimate_noise_scale(
             self,
             batch_data,
             mini_batch_func,
@@ -1468,6 +1471,8 @@ class Runner:
         Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
 
         ema smoothing produces cleaner results, but is biased.
+
+        old version...
 
         See: https://arxiv.org/pdf/1812.06162.pdf
         """
@@ -1481,7 +1486,7 @@ class Runner:
             optimizer.zero_grad(set_to_none=True)
             return True  # make sure to not apply the gradient!
 
-        hook = {'after_mini_batch': process_gradient}
+        hook = {'after__batch': process_gradient}
 
         assert(len(batch_data["prev_state"]) >= args.sns_b_big)
 
@@ -1499,6 +1504,62 @@ class Runner:
 
         self.log.mode = self.log.LM_DEFAULT
 
+        self.process_noise_scale(g_b_small_squared, g_b_big_squared, label, verbose)
+
+    def estimate_noise_scale(
+            self,
+            batch_data,
+            mini_batch_func,
+            optimizer: torch.optim.Optimizer,
+            label,
+            verbose: bool = True,
+    ):
+        """
+        Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
+
+        ema smoothing produces cleaner results, but is biased.
+
+        new version...
+
+        See: https://arxiv.org/pdf/1812.06162.pdf
+        """
+
+        b_small = args.sns_b_small
+        b_big = args.sns_b_big
+
+        # resample data
+        # this also shuffles order
+        data = {}
+        samples = np.random.choice(range(len(batch_data["prev_state"])), b_big, replace=False)
+        for k, v in batch_data.items():
+            data[k] = batch_data[k][samples]
+
+        assert b_big % b_small == 0, "b_small must divide b_big"
+        mini_batches = b_big // b_small
+
+        small_norms_sqr = []
+        big_grad = None
+
+        for i in range(mini_batches):
+            optimizer.zero_grad(set_to_none=True)
+            segment = slice(i * b_small, (i + 1) * b_small)
+            mini_batch_data = {}
+            for k, v in data.items():
+                mini_batch_data[k] = data[k][segment]
+            self.log.mode = self.log.LM_MUTE
+            mini_batch_func(mini_batch_data)
+            self.log.mode = self.log.LM_DEFAULT
+            # get small grad
+            small_norms_sqr.append(utils.optimizer_grad_norm(optimizer) ** 2)
+            if i == 0:
+                big_grad = [x.clone() for x in utils.list_grad(optimizer)]
+            else:
+                for acc, p in zip(big_grad, utils.list_grad(optimizer)):
+                    acc += p
+
+        optimizer.zero_grad(set_to_none=True)
+        g_b_big_squared = float((utils.calc_norm(big_grad) / mini_batches) ** 2)
+        g_b_small_squared = float(np.mean(small_norms_sqr))
         self.process_noise_scale(g_b_small_squared, g_b_big_squared, label, verbose)
 
 
@@ -1770,7 +1831,6 @@ class Runner:
             return tvf_values[:, :, -1]
 
         # otherwise... we need to rediscount...
-        # note: this does not support truncation yet...
         return get_rediscounted_value_estimate(
             values=tvf_values.reshape([(N + 1) * A, -1]),
             old_gamma=self.tvf_gamma,
@@ -1872,9 +1932,11 @@ class Runner:
 
         self.log.watch_mean_std("adv_ext", ext_advantage, display_width=0)
 
-        for i, head in enumerate(self.value_heads):
-            self.log.watch_mean_std(f"return_{head}", self.returns[..., i], display_width=0)
-            self.log.watch_mean_std(f"value_{head}", self.value[..., i], display_name="ret_ext")
+        # for i, head in enumerate(self.value_heads):
+        #     self.log.watch_mean_std(f"return_{head}", self.returns[..., i], display_width=0)
+        #     self.log.watch_mean_std(f"value_{head}", self.value[..., i], display_name="ret_ext")
+        self.log.watch_mean_std(f"return_ext", self.ext_returns, display_width=0)
+        self.log.watch_mean_std(f"value_ext", ext_value_estimates, display_name="ret_ext")
 
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0, history_length=1)
         self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)
@@ -1944,12 +2006,24 @@ class Runner:
 
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
 
+        # todo: make sure heads all line up... I think they might be offset sometimes. Perhpas make sure that
+        # we always pass in all heads, and maybe just generate them all the time aswell?
+
         if args.use_tvf and not args.distil_force_ext:
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
             head_sample = utils.even_sample_down(np.arange(len(self.tvf_horizons)), max_values=args.distil_max_heads)
         else:
             head_sample = None
+
+        if args.distil_reweighing and head_sample is not None:
+            weights = [args.gamma**self.tvf_horizons[i]/args.tvf_gamma**self.tvf_horizons[i] for i in head_sample]
+            weights = np.clip(weights, 0, 1).astype(np.float32)[None, :]
+            weights = torch.from_numpy(weights).to(self.model.device)
+            weights = weights ** 2 # square as we want to manage the squared loss.
+            # that is to say, we want the loss as if we were learning the discounted return.
+        else:
+            weights = 1
 
         model_out = self.model.forward(
             data["prev_state"],
@@ -1967,7 +2041,29 @@ class Runner:
         else:
             predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets - predictions)
+        loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
+
+        # apply discount reweighing
+        loss_value = loss_value * weights
+
+        # normalize the loss
+        # this is required as return magntiude can differ by a factor of 10x or 0.1x,
+        # which can happen if we apply different discounts to the environment. This makes
+        # beta hard to tune.
+
+        if args.distil_loss_value_target is not None and 'context' in data:
+            # calibrate distil loss to be roughly the same each time
+            if data['context']['epoch'] == 0 and data['context']['mini_batch'] == 0:
+                # we do this only during the first few updates though, as loss will get very small after that.
+                with torch.no_grad():
+                    loss_value_norm2 = float(torch.norm(loss_value.view(-1), p=2).detach().cpu().numpy())
+                self.vars['distil_loss_scale'] = dls = self.vars.get('distil_loss_scale', 1.0) * 0.9 + 0.1 * loss_value_norm2
+                self.log.watch_mean("distil_loss_scale", dls, history_length=64 * args.distil.epochs,
+                                    display_width=8, display_name="dls")
+            else:
+                dls = self.vars['distil_loss_scale']
+
+            loss_value = loss_value * args.distil_loss_value_target / (dls+1e-3)
 
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
@@ -1988,16 +2084,17 @@ class Runner:
 
         loss = loss + loss_policy
 
-        pred_var = torch.var(predictions)
-        targ_var = torch.var(targets)
+        pred_var = torch.var(predictions*weights)
+        targ_var = torch.var(targets*weights)
 
         # some debugging stats
         with torch.no_grad():
             self.log.watch_mean("distil_targ_var", targ_var, history_length=64 * args.distil.epochs, display_width=0)
             self.log.watch_mean("distil_pred_var", pred_var, history_length=64 * args.distil.epochs,
                                 display_width=0)
-            mse = torch.square(predictions - targets).mean()
-            ev = 1 - torch.var(predictions-targets) / (torch.var(targets) + 1e-8)
+            delta = (predictions - targets) * weights
+            mse = torch.square(delta).mean()
+            ev = 1 - torch.var(delta) / (torch.var(targets * weights) + 1e-8)
             self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil.epochs,
                                 display_name="ev_dist",
                                 display_width=8)
@@ -2422,14 +2519,14 @@ class Runner:
 
     @property
     def gamma(self):
-        if args.use_ag and args.ag_target in ["policy", "both"] and args.ag_mode != "shadow":
+        if args.use_ag and (args.ag_target in ["policy", "both"]) and args.ag_mode != "shadow":
             return self._auto_gamma
         else:
             return args.gamma
 
     @property
     def tvf_gamma(self):
-        if args.use_ag and args.ag_target in ["value", "both"] and args.ag_mode != "shadow":
+        if args.use_ag and (args.ag_target in ["value", "both"]) and args.ag_mode != "shadow":
             return self._auto_gamma
         else:
             return args.tvf_gamma
@@ -2763,10 +2860,10 @@ class Runner:
             batch_data = {"prev_state": obs}
             model_out = self.detached_batch_forward(
                 obs=obs,
-                output="policy",
-            )
-            if args.use_tvf and not args.distil_force_ext:
-                batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0])
+                output="policy", exclude_tvf=True,
+            ) # note: we can save this pass if we move distil above policy update
+            if args.use_tvf and not args.distil_force_ext: # tvf_value is [N, A, K, VH]
+                batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0]) # N*A, K
                 if args.distil_rediscount:
                     batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
             else:
@@ -2813,7 +2910,6 @@ class Runner:
             return
 
         batch_data = self.get_distil_batch(args.distil_batch_size)
-
 
         for distil_epoch in range(args.distil.epochs):
 
@@ -3004,9 +3100,10 @@ class Runner:
             mini_batch_size,
             optimizer: torch.optim.Optimizer,
             label,
-            epoch=None,
+            epoch: Optional[int] = None,
             hooks: Union[dict, None] = None,
             thinning: float = 1.0,
+            force_micro_batch_size = None,
         ) -> dict:
         """
         Trains agent on current batch of experience
@@ -3042,7 +3139,10 @@ class Runner:
 
         assert batch_size % mini_batch_size == 0
         mini_batches = batch_size // mini_batch_size
-        micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
+        if force_micro_batch_size is not None:
+            micro_batch_size = force_micro_batch_size
+        else:
+            micro_batch_size = min(args.max_micro_batch_size, mini_batch_size)
         assert mini_batch_size % micro_batch_size == 0
         micro_batches = mini_batch_size // micro_batch_size
 
@@ -3066,11 +3166,13 @@ class Runner:
                 micro_batch_counter += 1
 
                 # context for the minibatch.
-                micro_batch_data = {}
-                micro_batch_data['context'] = {
-                    'epoch': j,
-                    'micro_batch': micro_batch_counter-1,
+                micro_batch_context = {
+                    'epoch': epoch,
+                    'mini_batch': j,
+                    'micro_batch': k,
                 }
+                micro_batch_data = {}
+                micro_batch_data['context'] = micro_batch_context
 
                 for var_name, var_value in batch_data.items():
                     data = var_value[sample]
@@ -3092,6 +3194,10 @@ class Runner:
                     micro_batch_data[var_name] = data
 
                 result = mini_batch_func(micro_batch_data, loss_scale=1 / micro_batches)
+
+                if hooks is not None and "after_micro_batch" in hooks:
+                    hooks["after_micro_batch"](micro_batch_context)
+
                 outputs.append(result)
 
             context = {

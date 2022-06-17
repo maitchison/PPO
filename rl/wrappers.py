@@ -779,13 +779,18 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
 
         # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
         # but it is what OpenAI does...
-        self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
 
+        #self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
+        self.current_returns = rewards + self.gamma * self.current_returns
         self.ret_rms.update(self.returns_transform(self.current_returns))
+        self.current_returns = self.current_returns * (1-dones)
 
         scaled_rewards = rewards / self.std
+        # print(self.current_returns.max())
+        # print(scaled_rewards.max())
         if self.clip is not None:
             rewards_copy = scaled_rewards.copy()
+
             scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
             clips = np.sum(rewards_copy != scaled_rewards)
             if clips > 0:
@@ -811,6 +816,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     def restore_state(self, buffer):
         self.ret_rms.restore_state(buffer["ret_rms"])
         self.current_returns = buffer["current_returns"]
+
 
 
 class MultiEnvVecNormalizeRewardWrapper(gym.Wrapper):
