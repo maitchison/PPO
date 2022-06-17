@@ -2149,17 +2149,21 @@ def tvf4_auto(priority: int = 0):
     # really just to get an idea for the noise levels, and what auto gamma picks.
     add_run(
         run_name=f"tvf",
-        chunk_size=20, # do it all in one go
+        **COMMON_ARGS,
+    )
+    add_run(
+        run_name=f"tvf_99",
+        gamma=0.99,
+        tvf_gamma=0.99,
         **COMMON_ARGS,
     )
 
     add_run(
-            run_name=f"red_99",
-            gamma=0.99,
-            override_reward_normalization_gamma=0.999, # compromise
-            tvf_gamma=0.9999,
-            chunk_size=20,  # do it all in one go
-            **COMMON_ARGS,
+        run_name=f"red_99",
+        gamma=0.99,
+        override_reward_normalization_gamma=0.999, # compromise
+        tvf_gamma=0.9999,
+        **COMMON_ARGS,
     )
 
     add_run(
@@ -2167,10 +2171,17 @@ def tvf4_auto(priority: int = 0):
         use_ag=True,
         override_reward_normalization_gamma=0.999,  # compromise
         tvf_gamma=0.9999,
-        chunk_size=20,  # do it all in one go
         **COMMON_ARGS,
     )
 
+    add_run(
+        run_name=f"auto lvt=1.0",
+        use_ag=True,
+        override_reward_normalization_gamma=0.999,  # compromise
+        tvf_gamma=0.9999,
+        distil_loss_value_target=1.0,
+        **COMMON_ARGS,
+    )
 
     for lvt in [0.1, 1.0, 10]:
         add_run(
@@ -2179,9 +2190,77 @@ def tvf4_auto(priority: int = 0):
             override_reward_normalization_gamma=0.999, # compromise
             tvf_gamma=0.9999,
             distil_loss_value_target=lvt,
-            chunk_size=20,  # do it all in one go
             **COMMON_ARGS,
         )
+
+    # no rediscounting on distil
+
+    add_run(
+        run_name=f"auto lvt=1.0 nr",
+        use_ag=True,
+        override_reward_normalization_gamma=0.999,  # compromise
+        distil_rediscount=False,
+        tvf_gamma=0.9999,
+        distil_loss_value_target=1.0,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+            run_name=f"red_99 nr",
+            gamma=0.99,
+            distil_rediscount=False,
+            override_reward_normalization_gamma=0.999, # compromise
+            tvf_gamma=0.9999,
+            **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_99 lvt=1.0 nr",
+        gamma=0.99,
+        override_reward_normalization_gamma=0.999,  # compromise
+        tvf_gamma=0.9999,
+        distil_rediscount=False,
+        distil_loss_value_target=1.0,
+        **COMMON_ARGS,
+    )
+
+
+    # try all games...
+    COMMON_ARGS.update({
+        'hostname': "cluster",
+        'device': 'cuda',
+    })
+    COMMON_ARGS["subset"] = ["CrazyClimber", "Skiing", "Zaxxon", "Surround"] + ATARI_3_VAL
+    COMMON_ARGS['epochs'] = 50
+    COMMON_ARGS['distil_rediscount'] = False
+    COMMON_ARGS['seeds'] = 2
+
+    add_run(
+        run_name=f"tvf",
+        **COMMON_ARGS,
+    )
+    add_run(
+        run_name=f"tvf_99",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        **COMMON_ARGS,
+    )
+    add_run(
+        run_name=f"red_99",
+        gamma=0.99,
+        override_reward_normalization_gamma=0.999,  # compromise
+        tvf_gamma=0.9999,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"auto lvt=1.0",
+        use_ag=True,
+        override_reward_normalization_gamma=0.999,  # compromise
+        tvf_gamma=0.9999,
+        distil_loss_value_target=1.0,
+        **COMMON_ARGS,
+    )
 
 
 

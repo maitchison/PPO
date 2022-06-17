@@ -538,6 +538,8 @@ def compare_runs(
                     # redo color...
                     if color_filter is None:
                         color = cmap.colors[len(group_style_names[line_style]) % len(cmap.colors)]
+                    else:
+                        color = color_filter(run_name, len(group_style_names[line_style]) % len(cmap.colors))
                     group_data[group] = ([xs], [ys], run_label, alpha, color, zorder, line_style)
                 else:
                     group_data[group][0].append(xs[x_start:])
