@@ -3059,6 +3059,14 @@ class Runner:
     #     self.log.watch_mean('ag_sns_clipped_target', clipped_target, display_width=0)
     #     self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_width=0) # this is the only one that is used.
 
+    def wants_distil_update(self, location=None):
+        location_match = location is None or location == args.distil_order
+        return \
+            args.architecture == "dual" and  \
+            args.distil.epochs > 0 and \
+            self.batch_counter % args.distil_period == args.distil_period - 1 and \
+            location_match
+
     def train(self):
 
         if args.disable_logging:
@@ -3067,6 +3075,9 @@ class Runner:
         self.model.eval()
 
         self.update_learning_rates()
+
+        if self.wants_distil_update("before_policy"):
+            self.train_distil()
 
         with Mutex(args.get_mutex_key) as mx:
             self.log.watch_mean(
@@ -3079,7 +3090,7 @@ class Runner:
         if args.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
-            if args.distil.epochs > 0 and self.batch_counter % args.distil_period == args.distil_period-1:
+            if self.wants_distil_update("after_policy"):
                 self.train_distil()
 
         if args.aux.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period-1):
