@@ -298,8 +298,8 @@ class Config(BaseConfig):
         parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
         parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow]")
         parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
-        parser.add_argument("--ag_sns_threshold", type=float, default=5.0, help="target noise level for gamma.")
-        parser.add_argument("--ag_sns_ema_horizon", type=float, default=int(3e6),
+        parser.add_argument("--ag_sns_threshold", type=float, default=10.0, help="target noise level for gamma.")
+        parser.add_argument("--ag_sns_ema_horizon", type=float, default=int(5e6),
                             help="horizon used in EMA for horizon.")
         parser.add_argument("--ag_sns_delay", type=int, default=int(5e6),
                             help="alpha value used in EMA for horizon.")
@@ -314,11 +314,16 @@ class Config(BaseConfig):
         # Simple Noise Scale
         parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
         parser.add_argument("--sns_labels", type=str, default="['policy','distil','value', 'value_heads']", help="value|value_heads|distil|policy"),
-        parser.add_argument("--sns_period", type=int, default=5, help="Generate estimates every n updates.")
+        parser.add_argument("--sns_period", type=int, default=3, help="Generate estimates every n updates.")
         parser.add_argument("--sns_max_heads", type=int, default=7, help="Limit to this number of heads when doing per head noise estimate.")
-        parser.add_argument("--sns_b_big", type=int, default=4096, help="")
+        parser.add_argument("--sns_b_big", type=int, default=2048, help="")
         parser.add_argument("--sns_b_small", type=int, default=128, help="")
-        parser.add_argument("--sns_smoothing", type=str, default="ema", help="ema|avg")
+        parser.add_argument("--sns_fake_noise", type=str2bool, default=False, help="Replaces value_head gradient with noise based on horizon.")
+        parser.add_argument("--sns_smoothing_mode", type=str, default="ema", help="ema|avg")
+        parser.add_argument("--sns_smoothing_horizon_avg", type=int, default=1e6, help="how big to make averaging window")
+        parser.add_argument("--sns_smoothing_horizon_s", type=int, default=0.1e6, help="how much to smooth s")
+        parser.add_argument("--sns_smoothing_horizon_g2", type=int, default=0.5e6, help="how much to smooth g2")
+        parser.add_argument("--sns_smoothing_horizon_policy", type=int, default=5e6, help="how much to smooth g2 for policy (normally much higher)")
 
         # --------------------------------
         # Auxiliary phase
@@ -477,7 +482,12 @@ class Config(BaseConfig):
         self.sns_max_heads = int()
         self.sns_b_big = int()
         self.sns_b_small = int()
-        self.sns_smoothing = str()
+        self.sns_fake_noise = int()
+        self.sns_smoothing_mode = str()
+        self.sns_smoothing_horizon_avg = int()
+        self.sns_smoothing_horizon_s = int()
+        self.sns_smoothing_horizon_g2 = int()
+        self.sns_smoothing_horizon_policy = int()
 
         self.aux_target = str()
         self.aux_source = str()

@@ -1387,39 +1387,54 @@ class Runner:
                 )
             )
 
+    def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
+        """
+        Returns an ema coefficent to match given horizon (in environment interactions), when updates will be applied
+        every "updates_every" rollouts
+        """
+        if required_horizon == 0:
+            return 0
+        updates_every_steps = (updates_every * self.N * self.A)
+        ema_horizon = required_horizon / updates_every_steps
+        return 1 - (1 / ema_horizon)
+
     def process_noise_scale(
             self,
             g_b_small_squared: float,
             g_b_big_squared: float,
             label: str,
             verbose: bool = True,
+            b_big = None
         ):
         """
         Logs noise levels using provided gradients
         """
 
         b_small = args.sns_b_small
-        b_big = args.sns_b_big
+        b_big = b_big or args.sns_b_big
 
         est_s = (g_b_small_squared - g_b_big_squared) / (1 / b_small - 1 / b_big)
         est_g2 = (b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small)
 
-        if args.sns_smoothing == "avg":
+        if args.sns_smoothing_mode == "avg":
             # add these samples to the mix
             for var_name, var_value in zip(['s', 'g2'], [est_s, est_g2]):
                 if f'{label}_{var_name}_history' not in self.noise_stats:
-                    history_frames = 5e6 # 5 million frames should be about right
+                    history_frames = int(args.sns_smoothing_horizon_avg) # 5 million frames should be about right
                     ideal_updates_length = history_frames / (self.N*self.A)
                     buffer_len = int(max(10, math.ceil(ideal_updates_length / args.sns_period)))
                     self.noise_stats[f'{label}_{var_name}_history'] = deque(maxlen=buffer_len)
                 self.noise_stats[f'{label}_{var_name}_history'].append(var_value)
                 self.noise_stats[f'{label}_{var_name}'] = np.mean(self.noise_stats[f'{label}_{var_name}_history'])
-        elif args.sns_smoothing == "ema":
-            # an update every 5 means about a 1M lag, but that's fine.
-            self.noise_stats[f'{label}_s'] = 0.9 * self.noise_stats.get(f'{label}_s', 1.0) + 0.1 * est_s
-            self.noise_stats[f'{label}_g2'] = 0.9 * self.noise_stats.get(f'{label}_g2', 1.0) + 0.1 * est_g2
+        elif args.sns_smoothing_mode == "ema":
+            ema_s = self.get_ema_constant(args.sns_smoothing_horizon_s, args.sns_period)
+            g2_horizon = args.sns_smoothing_horizon_policy if label == "policy" else args.sns_smoothing_horizon_g2
+            ema_g2 = self.get_ema_constant(g2_horizon, args.sns_period)
+            # question: we do we need to smooth both of these? which is more noisy? I think it's just g2 right?
+            utils.dictionary_ema(self.noise_stats, f'{label}_s', est_s, ema_s)
+            utils.dictionary_ema(self.noise_stats, f'{label}_g2', est_g2, ema_g2)
         else:
-            raise ValueError(f"Invalid smoothing mode {args.sns_smoothing}.")
+            raise ValueError(f"Invalid smoothing mode {args.sns_smoothing_mode}.")
 
         smooth_s = float(self.noise_stats[f'{label}_s'])
         smooth_g2 = float(self.noise_stats[f'{label}_g2'])
@@ -1429,7 +1444,7 @@ class Runner:
         # alternative include larger batch_sizes, and / or larger EMA horizon.
         # noise levels above 1000 will not be very accurate, but around 20 should be fine.
         epsilon = 1e-4 # we can't really measure noise above this level anyway (which is around a ratio of 10k:1)
-        ratio = (smooth_s+epsilon) / (max(0.0, smooth_g2) + epsilon)
+        ratio = (smooth_s) / (max(0.0, smooth_g2) + epsilon)
 
         self.noise_stats[f'{label}_ratio'] = ratio
         if 'head' in label:
@@ -1477,7 +1492,12 @@ class Runner:
         """
 
         b_small = args.sns_b_small
-        b_big = args.sns_b_big
+
+        if label == "policy":
+            # always use full batch for policy (it's required to get the precision needed)
+            b_big = self.N * self.A
+        else:
+            b_big = args.sns_b_big
 
         # resample data
         # this also shuffles order
@@ -1498,6 +1518,7 @@ class Runner:
             mini_batch_data = {}
             for k, v in data.items():
                 mini_batch_data[k] = data[k][segment]
+            # todo: make this a with no log...
             self.log.mode = self.log.LM_MUTE
             mini_batch_func(mini_batch_data)
             self.log.mode = self.log.LM_DEFAULT
@@ -1512,7 +1533,7 @@ class Runner:
         optimizer.zero_grad(set_to_none=True)
         g_b_big_squared = float((utils.calc_norm(big_grad) / mini_batches) ** 2)
         g_b_small_squared = float(np.mean(small_norms_sqr))
-        self.process_noise_scale(g_b_small_squared, g_b_big_squared, label, verbose)
+        self.process_noise_scale(g_b_small_squared, g_b_big_squared, label, verbose, b_big=b_big)
 
 
     @torch.no_grad()
@@ -2130,7 +2151,57 @@ class Runner:
             value_heads.append("int")
         return value_heads
 
-    def get_value_head_accumulated_gradient_norms(self, optimizer, prev_state, targets, required_head:int, b_small: int):
+    def log_fake_accumulated_gradient_norms(self, optimizer: torch.optim.Optimizer):
+
+        required_heads = utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads)
+        b_small = args.sns_b_small
+        b_big = args.sns_b_big
+
+        # get dims for this optimizer
+        d = 0
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                if p.requires_grad:
+                    d += np.prod(p.data.shape)
+
+        mini_batches = b_big // b_small
+
+        for required_head in required_heads:
+
+            small_norms_sqr = []
+            big_grad = 0
+
+            for i in range(mini_batches):
+                # note: we do not use fake noise on final horizon, this is because I want to check if final head
+                # and value noise estimate match, which they should as they measure the same thing.
+                # note: we split half the noise as decreasing signal and the other half as increasing noise
+                target_noise_level = self.tvf_horizons[abs(required_head)] / 10
+                if target_noise_level > 0:
+                    noise_level = math.sqrt(target_noise_level)
+                    signal_level = 1/math.sqrt(target_noise_level)
+                else:
+                    noise_level = target_noise_level
+                    signal_level = 1
+                grad = np.random.randn(d).astype(np.float32)
+                norm2 = d ** 0.5 # a bit more fair than taking the true norm I guess
+                # normalize so our noise vector is required length
+                # the divide by b_small is because we would mean over these samples, so noise should be less
+                renorm_factor = noise_level / norm2 / math.sqrt(b_small)
+                grad *= renorm_factor
+                grad[0] += signal_level # true signal is unit vector on first dim
+
+                small_norms_sqr.append(np.linalg.norm(grad, ord=2) ** 2)
+                if i == 0:
+                    big_grad = grad.copy()
+                else:
+                    big_grad += grad
+
+            g_small_sqr = float(np.mean(small_norms_sqr))
+            g_big_sqr = (np.linalg.norm(big_grad, ord=2) / mini_batches) ** 2
+
+            self.process_noise_scale(g_small_sqr, g_big_sqr, label=f"fake_head_{required_head}", verbose=False)
+
+    def get_value_head_accumulated_gradient_norms(self, optimizer, prev_state, targets, required_head:int):
         """
         Calculate big and small gradient from given batch of data
         prev_state and targets should be in shuffled order.
@@ -2138,38 +2209,35 @@ class Runner:
 
         B, K = targets.shape
 
+        b_small = args.sns_b_small
+
         assert B % b_small == 0, "b_small must divide b_big"
         mini_batches = B // b_small
 
         small_norms_sqr = []
         big_grad = None
 
-        def list_grad(opt):
-            parameters = []
-            for group in opt.param_groups:
-                for p in group['params']:
-                    if p.grad is not None:
-                        parameters.append(p.grad.data)
-            return parameters
-
         for i in range(mini_batches):
-            optimizer.zero_grad(set_to_none=True)
+
             segment = slice(i*b_small, (i+1)*b_small)
             data = {"tvf_returns": targets[segment], "prev_state": prev_state[segment]}
+
             self.log.mode = self.log.LM_MUTE
+            optimizer.zero_grad(set_to_none=True)
             self.train_value_minibatch(data, single_value_head=-required_head)
             self.log.mode = self.log.LM_DEFAULT
             # get small grad
-            small_norms_sqr.append(utils.optimizer_grad_norm(optimizer)**2)
+            small_norms_sqr.append(utils.optimizer_grad_norm(optimizer) ** 2)
             if i == 0:
-                big_grad = [x.clone() for x in list_grad(optimizer)]
+                big_grad = [x.clone() for x in utils.list_grad(optimizer)]
             else:
-                for acc, p in zip(big_grad, list_grad(optimizer)):
+                for acc, p in zip(big_grad, utils.list_grad(optimizer)):
                     acc += p
 
         optimizer.zero_grad(set_to_none=True)
 
-        big_norm_sqr = (utils.calc_norm(big_grad) / mini_batches)**2
+        # delete comment
+        big_norm_sqr = (utils.calc_norm(big_grad)/mini_batches)**2
 
         return float(np.mean(small_norms_sqr)), float(big_norm_sqr)
 
@@ -2553,8 +2621,8 @@ class Runner:
             if "did_break" in results:
                 break
 
-        self.log.watch(f"time_train_policy", (clock.time() - start_time) * 1000,
-                       display_width=8, display_name='t_policy', display_precision=1)
+        self.log.watch(f"time_train_policy", (clock.time() - start_time),
+                       display_width=6, display_name='t_pol', display_precision=3)
 
     def wants_noise_estimate(self, label:str):
         """
@@ -2569,6 +2637,35 @@ class Runner:
         if label.lower() not in ast.literal_eval(args.sns_labels):
             return False
         return True
+
+    def log_accumulated_gradient_norms(self, batch_data):
+
+        required_heads = utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads)
+
+        start_time = clock.time()
+        for i, head_id in enumerate(required_heads):
+
+            # select a different sample for each head (why not)
+            prev_state = batch_data["prev_state"]
+            targets = batch_data["tvf_returns"]
+            if args.sns_b_big > self.N * self.A:
+                raise ValueError(f"Can not take {args.sns_b_big} samples from rollout of size {self.N}x{self.A}")
+
+            # we sample even when we need all examples, as it's important to shuffle the order
+            sample = np.random.choice(range(self.N * self.A), args.sns_b_big, replace=False)
+            prev_state = prev_state[sample]
+            targets = targets[sample]
+
+            g_small_sqr, g_big_sqr = self.get_value_head_accumulated_gradient_norms(
+                optimizer=self.value_optimizer,
+                prev_state=prev_state,
+                targets=targets,
+                required_head=head_id,
+            )
+            self.process_noise_scale(
+                g_small_sqr, g_big_sqr, label=f"acc_head_{head_id}", verbose=False)
+        s = clock.time() - start_time
+        self.log.watch_mean("t_s_heads", s / args.sns_period)
 
     def train_value(self):
 
@@ -2600,38 +2697,12 @@ class Runner:
             # note: it's about 2x faster to generate accumulated noise all at one go, but this means
             # the generic code for noise estimation no longer works well.
             if self.wants_noise_estimate('value_heads') and args.sns_max_heads > 0:
-
-                required_heads = utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads)
-
-                # generate our per-horizon estimates
                 if args.upload_batch:
                     self.upload_batch(batch_data)
-
-                start_time = clock.time()
-                for i, head_id in enumerate(required_heads):
-
-                    # select a different sample for each head (why not)
-                    prev_state = batch_data["prev_state"]
-                    targets = batch_data["tvf_returns"]
-                    if args.sns_b_big > N * A:
-                        raise ValueError(f"Can not take {args.sns_b_big} samples from rollout of size {N}x{A}")
-                    else:
-                        # we sample even when we need all examples, as it's important to shuffle the order
-                        sample = np.random.choice(range(N * A), args.sns_b_big, replace=False)
-                        prev_state = prev_state[sample]
-                        targets = targets[sample]
-
-                    g_small_sqr, g_big_sqr = self.get_value_head_accumulated_gradient_norms(
-                        optimizer=self.value_optimizer,
-                        prev_state=prev_state,
-                        targets=targets,
-                        required_head=head_id,
-                        b_small=args.sns_b_small
-                    )
-                    self.process_noise_scale(
-                        g_small_sqr, g_big_sqr, label=f"acc_head_{head_id}", verbose=False)
-                s = clock.time() - start_time
-                self.log.watch_mean("t_sns_heads", s)
+                # generate our per-horizon estimates
+                self.log_accumulated_gradient_norms(batch_data)
+                if args.sns_fake_noise:
+                    self.log_fake_accumulated_gradient_norms(optimizer=self.value_optimizer)
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(
@@ -2643,8 +2714,8 @@ class Runner:
                 epoch=value_epoch,
             )
 
-        self.log.watch(f"time_train_value", (clock.time() - start_time) * 1000,
-                       display_width=8, display_name='t_value', display_precision=1)
+        self.log.watch(f"time_train_value", (clock.time() - start_time),
+                       display_width=6, display_name='t_val', display_precision=3)
 
     def generate_aux_buffer(self):
         """
@@ -2723,24 +2794,35 @@ class Runner:
         """
 
         if self.replay_buffer is None and samples_wanted == args.batch_size:
+
             # fast path... only requires policy module to evaluate, can reuse value estimates from rollout.
             obs = utils.merge_down(self.prev_obs)
             batch_data = {"prev_state": obs}
-            model_out = self.detached_batch_forward(
-                obs=obs,
-                output="policy", exclude_tvf=True,
-            ) # note: we can save this pass if we move distil above policy update
+
+            # get targets from rollout
             if args.use_tvf and not args.distil_force_ext: # tvf_value is [N, A, K, VH]
                 batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0]) # N*A, K
                 if args.distil_rediscount:
                     batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
             else:
                 batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
-            batch_data["old_raw_policy"] = model_out["raw_policy"].detach().cpu().numpy()
-            batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+
+            if args.distil_order == "before_policy":
+                # in this case we can just use the rollout policy
+                batch_data["old_raw_policy"] = utils.merge_down(self.raw_policy)
+                batch_data["old_log_policy"] = utils.merge_down(self.log_policy)
+            else:
+                # otherwise, policy has changed so we need to update it
+                model_out = self.detached_batch_forward(
+                    obs=obs,
+                    output="policy",
+                    exclude_tvf=True,
+                )
+                batch_data["old_raw_policy"] = model_out["raw_policy"].detach().cpu().numpy()
+                batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
             return batch_data
 
-        # slower path...
+        # slower path, for when rollout is needed and we need to regenerate all targets
         obs, distil_aux = self.get_replay_sample(samples_wanted)
 
         batch_data = {}
@@ -2790,8 +2872,8 @@ class Runner:
                 epoch=distil_epoch,
             )
 
-        self.log.watch(f"time_train_distil", (clock.time() - start_time) * 1000,
-                       display_width=8, display_name='t_distil', display_precision=1)
+        self.log.watch(f"time_train_distil", (clock.time() - start_time) / args.distil_period,
+                       display_width=6, display_name='t_dis', display_precision=3)
 
     def train_aux(self):
 
@@ -2875,16 +2957,12 @@ class Runner:
             if noise_level < args.ag_sns_threshold:
                 new_target = max(h, new_target)
 
-        clipped_target = np.clip(new_target, args.ag_sns_min_h, args.ag_sns_max_h)
-
         # step 2: move towards (clipped) log target
         alpha = 1-(1/(args.ag_sns_ema_horizon / (self.N * self.A)))
         old_log_horizon = math.log(1+self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h))
-        target_log_horizon = math.log(1+clipped_target)
+        target_log_horizon = math.log(1+new_target)
         new_log_horizon = alpha * old_log_horizon + (1-alpha) * target_log_horizon
-        self.noise_stats['ag_sns_horizon'] = math.exp(new_log_horizon)-1
-
-        #self.noise_stats['ag_sns_horizon'] = alpha * self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h) + (1-alpha) * clipped_target
+        self.noise_stats['ag_sns_horizon'] = np.clip(math.exp(new_log_horizon)-1, args.ag_sns_min_h, args.ag_sns_max_h)
 
         self.log.watch_mean('ag_sns_target', new_target, display_width=0)
         self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_name="auto_horizon")
@@ -2958,14 +3036,15 @@ class Runner:
             'did_break'=True (only if training terminated early)
         """
 
-        start_time = clock.time()
-
         if args.upload_batch:
             assert batch_data["prev_state"].dtype != object, "obs_compression can no be enabled with upload_batch."
             self.upload_batch(batch_data)
 
         if epoch == 0 and self.wants_noise_estimate(label): # check noise of first update only
+            start_time = clock.time()
             self.estimate_noise_scale(batch_data, mini_batch_func, optimizer, label)
+            s = clock.time()-start_time
+            self.log.watch_mean(f"sns_time_{label}", s / args.sns_period, display_width=8, display_name=f"t_s{label[:3]}")
 
         assert "prev_state" in batch_data, "Batches must contain 'prev_state' field of dims (B, *state_shape)"
         batch_size, *state_shape = batch_data["prev_state"].shape
@@ -3056,10 +3135,6 @@ class Runner:
 
         # free up memory by releasing grads.
         optimizer.zero_grad(set_to_none=True)
-
-        time_per_example = (clock.time() - start_time) / batch_size * 1000
-
-        self.log.watch_mean(f"time_train_{label}_bms", time_per_example, display_width=0, display_name=f"t_{label}")
 
         return context
 
