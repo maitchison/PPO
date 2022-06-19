@@ -95,6 +95,7 @@ def dictionary_ema(d:dict, key:str, target, alpha:float):
     value_1 = d.get(key, target)
     value_2 = target
     d[key] = alpha * value_1 + (1-alpha) * value_2
+    return d[key]
 
 
 def calc_norm(data):

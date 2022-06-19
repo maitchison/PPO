@@ -173,6 +173,235 @@ def tvf5_auto(priority: int = 0):
     )
 
 
+def tvf5_zp(priority: int = 0):
+
+    # another look into rediscounting with lessons learned
+
+    COMMON_ARGS = {
+        'seeds': 3,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF5_ZP",
+        'default_args': TVF5_ARGS,
+        'epochs': 30,  # 20 is enough for these two games (needs a bit more...)
+        'subset': ["Zaxxon"],
+    }
+
+    add_run(
+        run_name=f"red_99",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"tvf_99",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        **COMMON_ARGS,
+    )
+
+    for beta in [0.3, 1.0, 3.0]:
+        add_run(
+            run_name=f"rn_99 beta={beta}",
+            gamma=0.99,
+            tvf_gamma=0.9999,
+            distil_order="before_policy",
+            distil_period=2,
+            distil_epochs=2,
+            tvf_return_mode="advanced",
+            override_reward_normalization_gamma=0.9999,  # no override, just renorm
+            distil_renormalize=True, # this is probably not needed so long as tvf_gamma=gamma.
+            distil_beta=beta,
+            **COMMON_ARGS,
+        )
+
+    # alternative strategy with rediscounting and renorm
+    # the idea here is our features will be better
+    for beta in [1.0, 3.0]:
+        add_run(
+            run_name=f"rnd_99 beta={beta}",
+            gamma=0.99,
+            tvf_gamma=0.9999,
+            distil_order="before_policy",
+            distil_period=2,
+            distil_epochs=2,
+            tvf_return_mode="advanced",
+            override_reward_normalization_gamma=0.9999,  # no override, just renorm
+            distil_renormalize=True,  # this is probably not needed so long as tvf_gamma=gamma.
+            distil_rediscount=True,
+            distil_beta=beta,
+            **COMMON_ARGS,
+        )
+
+
+
+def tvf5_yp(priority: int = 0):
+
+    # really just want to know if this works or not...
+
+    COMMON_ARGS = {
+        'seeds': 3,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF5_YP",
+        'default_args': TVF5_ARGS,
+        'epochs': 30,  # 20 is enough for these two games (needs a bit more...)
+        'subset': ["YarsRevenge"],
+    }
+
+    add_run(
+        run_name=f"red_99",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_99 do_distil",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise
+        distil_epochs=0,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"tvf_99",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        **COMMON_ARGS,
+    )
+
+    # attempts to fix...
+    add_run(
+        run_name=f"red_99 distil_reweighing",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise,
+        distil_reweighing=True,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_99 distil_rediscount",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise,
+        distil_rediscount=True,
+        **COMMON_ARGS,
+    )
+
+    for lvt in [1.0]:
+        add_run(
+            run_name=f"red_99 lvt={lvt}",
+            gamma=0.99,
+            tvf_gamma=0.9999,
+            override_reward_normalization_gamma=0.999,  # compromise,
+            distil_loss_value_target=lvt,
+            **COMMON_ARGS,
+        )
+
+    for orng in [0.99, 0.9999]:
+        add_run(
+            run_name=f"red_99 orng={orng}",
+            gamma=0.99,
+            tvf_gamma=0.9999,
+            override_reward_normalization_gamma=orng,
+            **COMMON_ARGS,
+        )
+
+    # more lvt...
+    # also... we now get nice distil curves
+    COMMON_ARGS['experiment'] = "TVF5_YP2"
+    for lvt in [0.3, 1.0, 3.0]:
+        add_run(
+            run_name=f"red_99 lvt_mean={lvt}",
+            gamma=0.99,
+            tvf_gamma=0.9999,
+            override_reward_normalization_gamma=0.999,  # compromise,
+            distil_loss_value_target=lvt,
+            distil_lvt_mode="mean",
+            **COMMON_ARGS,
+        )
+
+    COMMON_ARGS['experiment'] = "TVF5_YP3"
+    add_run(
+        run_name=f"red_99 distil_renormalize",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise,
+        distil_renormalize=True,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_99 distil_renormalize lvt_mean=1.0",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise,
+        distil_loss_value_target=1.0,
+        distil_lvt_mode="mean",
+        distil_renormalize=True,
+        **COMMON_ARGS,
+    )
+
+    # just to get distil loss curves
+    COMMON_ARGS['experiment'] = "TVF5_YP4"
+    COMMON_ARGS['seeds'] = 1
+
+    add_run(
+        run_name=f"tvf_99 [ref]",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"tvf_99 beta=0.1",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        distil_beta=0.1,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"tvf_99 beta=10",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        distil_beta=10,
+        ** COMMON_ARGS,
+    )
+
+    # this run will be useful, the renormalization factor should be close to 1...
+    add_run(
+        run_name=f"tvf_99 renormalization",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        distil_renormalize=True,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_99 renormalization",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise
+        distil_renormalize=True,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"red_99 [ref]",
+        gamma=0.99,
+        tvf_gamma=0.9999,
+        override_reward_normalization_gamma=0.999,  # compromise
+        **COMMON_ARGS,
+    )
+
+
 def tvf5_tuning(priority: int = 0):
 
     # testing out a few ideas...
@@ -195,9 +424,9 @@ def tvf5_tuning(priority: int = 0):
     )
 
     # can we make things more consistent with tvl?
-    for tvl in [0.3, 1.0, 3.0]:
+    for tvl in [0.3, 1.0]:
         add_run(
-            run_name=f"ref",
+            run_name=f"tvf {tvl}",
             distil_loss_value_target=tvl,
             **COMMON_ARGS,
         )
@@ -213,16 +442,19 @@ def tvf5_tuning(priority: int = 0):
         distil_order="before_policy",
         **COMMON_ARGS,
     )
-    add_run( # default is 1_every_2
+    add_run(
         run_name=f"distil 2_every_1",
         distil_period=1,
         **COMMON_ARGS,
     )
-    add_run(
-        run_name=f"distil 1_every_2",
+    add_run( # was labeled as 1_every_2
+        run_name=f"distil 2_every_2",
         distil_epochs=2,
         **COMMON_ARGS,
     )
+
+    # todo: ref are actually tvfl, check and confirm
+    # 1_every_2 is actually 2_every_2
 
     # check if our estimator is causing problems (advanced seems like it might be good?)
     for mode in ["exponential", "advanced", "fixed"]:
@@ -239,4 +471,6 @@ def setup():
 
     tvf5_auto()
     tvf5_tuning()
+    tvf5_yp()
+    tvf5_zp(50)
     pass

@@ -344,10 +344,12 @@ class Config(BaseConfig):
         parser.add_argument("--distil_force_ext", type=str2bool, default=False,
                             help="use value_ext instead of tvf heads for distilation.")
         parser.add_argument("--distil_rediscount", type=str2bool, default=False, help="uses rediscounted targets for distillation.")
+        parser.add_argument("--distil_renormalize", type=str2bool, default=False)
         parser.add_argument("--distil_reweighing", type=str2bool, default=False,
                             help="Reduces loss for horizons which have been discounted away. Generally better than rediscounting")
         parser.add_argument("--distil_loss_value_target", type=float, default=None,
                             help="Normalizes loss_value_distil to approximately this level. Useful if distil_rediscount is enabled.")
+        parser.add_argument("--distil_lvt_mode", type=str, default="first", help="first|mean")
 
         # --------------------------------
         # Replay
@@ -502,8 +504,10 @@ class Config(BaseConfig):
         self.distil_max_heads = int()
         self.distil_force_ext = bool()
         self.distil_rediscount = bool()
+        self.distil_renormalize = bool()
         self.distil_reweighing = bool()
         self.distil_loss_value_target = float()
+        self.distil_lvt_mode = str()
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()

@@ -298,6 +298,7 @@ class RunLog():
             'exp_': lambda x: np.exp(x),
             '1m_': lambda x: 1 - x,
             '1p_': lambda x: 1 + x,
+            '10p_': lambda x: 10 + x,
             'abs_': lambda x: np.abs(x),
             'nz_': lambda x: np.nan_to_num(np.asarray(x, dtype=np.float32)), # convert none to 0
             'relu_': lambda x: np.clip(x, 0, float('inf')),

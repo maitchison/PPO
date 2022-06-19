@@ -175,6 +175,9 @@ class Logger():
         if type(value) in [float, np.float] and np.isnan(value):
             # ignore nans
             return
+        if key[0] == "*":
+            key = key[1:]
+            kwargs['display_width'] = 0
         if key not in self._vars:
             # work out which type to use.
             if "type" not in kwargs:

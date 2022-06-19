@@ -1280,7 +1280,7 @@ class Runner:
 
             # log repeated action stats
             if 'max_repeats' in infos[0]:
-                self.log.watch_mean('max_repeats', infos[0]['max_repeats'])
+                self.log.watch_mean('max_repeats', infos[0]['max_repeats'], display_name="reps", display_width=7)
             if 'mean_repeats' in infos[0]:
                 self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'], display_width=0)
 
@@ -2026,15 +2026,30 @@ class Runner:
 
         if args.distil_loss_value_target is not None and 'context' in data:
             # calibrate distil loss to be roughly the same each time
-            if data['context']['epoch'] == 0 and data['context']['mini_batch'] == 0:
+            # if no context then this implies we are doing sns.
+
+            if args.distil_lvt_mode == "first":
                 # we do this only during the first few updates though, as loss will get very small after that.
-                with torch.no_grad():
-                    loss_value_norm2 = float(torch.norm(loss_value.view(-1), p=2).detach().cpu().numpy())
-                self.vars['distil_loss_scale'] = dls = self.vars.get('distil_loss_scale', 1.0) * 0.9 + 0.1 * loss_value_norm2
-                self.log.watch_mean("distil_loss_scale", dls, history_length=64 * args.distil.epochs,
-                                    display_width=8, display_name="dls")
+                if data['context']['epoch'] == 0 and data['context']['mini_batch'] == 0:
+                    with torch.no_grad():
+                        loss_value_norm2 = float(torch.norm(loss_value.view(-1), p=2).detach().cpu().numpy())
+                    self.vars['distil_loss_scale'] = dls = self.vars.get('distil_loss_scale', 1.0) * 0.9 + 0.1 * loss_value_norm2
+                    self.log.watch_mean("distil_loss_scale", dls, history_length=64 * args.distil.epochs,
+                                        display_width=8, display_name="dls")
+                else:
+                    dls = self.vars['distil_loss_scale']
+            elif args.distil_lvt_mode == "mean":
+                # still, just over first epoch
+                if data['context']['epoch'] == 0:
+                    with torch.no_grad():
+                        loss_value_norm2 = float(torch.norm(loss_value.view(-1), p=2).detach().cpu().numpy())
+                    self.vars['distil_loss_scale'] = dls = self.vars.get('distil_loss_scale', 1.0) * 0.9 + 0.1 * loss_value_norm2
+                    self.log.watch_mean("distil_loss_scale", dls, history_length=64 * args.distil.epochs,
+                                        display_width=8, display_name="dls")
+                else:
+                    dls = self.vars['distil_loss_scale']
             else:
-                dls = self.vars['distil_loss_scale']
+                raise ValueError(f'invalid distil_lvt_mode {args.distil_lvt_mode}')
 
             loss_value = loss_value * args.distil_loss_value_target / (dls+1e-3)
 
@@ -2084,6 +2099,16 @@ class Runner:
         self.log.watch_mean("loss_distil_policy", loss_policy.mean(), history_length=64 * args.distil.epochs, display_width=0)
         self.log.watch_mean("loss_distil_value", loss_value.mean(), history_length=64 * args.distil.epochs, display_width=0)
         self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.distil.epochs, display_name="ls_distil", display_width=8)
+
+        # this is a lot, just do this for the moment...
+        if 'context' in data:
+            epoch = data['context']['epoch']
+            mini_batch = data['context']['mini_batch']
+            key = f"{epoch}_{mini_batch:02d}"
+            self.log.watch_mean(f"ldp_{key}", loss_policy.mean(), history_length=10,
+                                display_width=0)
+            self.log.watch_mean(f"ldv_{key}", loss_value.mean(), history_length=10,
+                                display_width=0)
 
         return {
             'losses': loss.detach()
@@ -2793,6 +2818,8 @@ class Runner:
 
         """
 
+        # todo: tidy this up so there's only one path.
+
         if self.replay_buffer is None and samples_wanted == args.batch_size:
 
             # fast path... only requires policy module to evaluate, can reuse value estimates from rollout.
@@ -2807,6 +2834,15 @@ class Runner:
             else:
                 batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
 
+            # returns should have unit variance, if they do not, divide by the standard deviation.
+            # this can occur, for example, when rediscounting.
+            if args.distil_renormalize:
+                targets = batch_data["distil_targets"]
+                std = np.std(targets)
+                smooth_std = utils.dictionary_ema(self.vars, "distil_target_std", std, 0.9)
+                batch_data["distil_targets"] /= (smooth_std+1e-1) # 1e-1 so we don't multiply by more than 10.
+                self.log.watch("distil_target_std", std, display_width=0)
+
             if args.distil_order == "before_policy":
                 # in this case we can just use the rollout policy
                 batch_data["old_raw_policy"] = utils.merge_down(self.raw_policy)
@@ -2820,9 +2856,11 @@ class Runner:
                 )
                 batch_data["old_raw_policy"] = model_out["raw_policy"].detach().cpu().numpy()
                 batch_data["old_log_policy"] = model_out["log_policy"].detach().cpu().numpy()
+
             return batch_data
 
         # slower path, for when rollout is needed and we need to regenerate all targets
+        assert not args.distil_renormalize, "renormalization only supported under a complete rollout distil batch."
         obs, distil_aux = self.get_replay_sample(samples_wanted)
 
         batch_data = {}
@@ -2934,7 +2972,7 @@ class Runner:
             # it's too early to modify gamma, but log what we can anyway.
             self.noise_stats['ag_sns_horizon'] = args.ag_sns_initial_h
             self.log.watch_mean('ag_sns_target', args.ag_sns_initial_h, display_width=0)
-            self.log.watch_mean('ag_sns_horizon', args.ag_sns_initial_h, display_name="auto_horizon")
+            self.log.watch_mean('ag_sns_horizon', args.ag_sns_initial_h, display_name="ah", display_width=7)
             return
 
         if len(self.noise_stats.get('active_heads', [])) <= 0:
@@ -2980,6 +3018,9 @@ class Runner:
 
         if args.disable_logging:
             self.log.mode = self.log.LM_MUTE
+
+        self.log.watch("*device", args.device)
+        self.log.watch("*host", args.hostname)
 
         self.model.eval()
 
@@ -3091,6 +3132,8 @@ class Runner:
                     'epoch': epoch,
                     'mini_batch': j,
                     'micro_batch': k,
+                    'is_first': j == 0,
+                    'is_last': j == mini_batches-1,
                 }
                 micro_batch_data = {}
                 micro_batch_data['context'] = micro_batch_context
