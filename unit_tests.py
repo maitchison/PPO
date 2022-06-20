@@ -217,12 +217,32 @@ def get_tvf_test_params_three():
     )
 
 def test_rediscounted_value_estimate():
-    # data = np.asarray([[1,2],[3,4]], dtype=np.float32)
-    # ratios = np.asarray([1, 1], dtype=np.float32)
-    # print(rollout.get_rediscounted_value_estimate(data, gamma=0.5), rediscount_ratios=ratios)
-    # print(data)
+    values = np.asarray([[0, -2, 5], [0, 4, 12]], dtype=np.float32)
+    horizons = np.asarray([0, 1, 20])
 
-    # todo: do this later
+    func = rollout.get_rediscounted_value_estimate
+
+    print(func(values, old_gamma=0.99, new_gamma=0.99, horizons=horizons))
+    print(func(values, old_gamma=1.0, new_gamma=0.99, horizons=horizons))
+
+    # try list of rewards that match value estimates and make sure it works
+    rewards = np.asarray([-1, 1, 4, 3, 2, 5, 6, 7, 1], dtype=np.float32)
+    horizons = np.arange(len(rewards)+1)
+    values_99 = []
+    values_1 = []
+    values_9 = []
+    for h in horizons:
+        values_9.append(np.sum([(0.9 ** i) * rewards[i] for i in range(h)]))
+        values_99.append(np.sum([(0.99 ** i) * rewards[i] for i in range(h)]))
+        values_1.append(np.sum([(1.0 ** i) * rewards[i] for i in range(h)]))
+    values_99 = np.asarray(values_99)[None, :]
+    values_1 = np.asarray(values_1)[None, :]
+    values_9 = np.asarray(values_9)[None, :]
+    for new_gamma in [1.0, 0.99, 0.9]:
+        print(func(values_9, old_gamma=0.9, new_gamma=new_gamma, horizons=horizons)[0], end=', ')
+        print(func(values_99, old_gamma=0.99, new_gamma=new_gamma, horizons=horizons)[0], end=', ')
+        print(func(values_1, old_gamma=1.0, new_gamma=new_gamma, horizons=horizons)[0])
+
     return True
 
 def test_gae():
@@ -336,9 +356,10 @@ def test_calculate_tvf_td():
 # print("Information Theory Functions: ", end='')
 # print("Pass" if test_information_theory_functions() else "Fail!")
 
-print("ROLLOUT_INTERPOLATE: ", end='')
-print("Pass" if test_interpolate() else "Fail!")
+# print("ROLLOUT_INTERPOLATE: ", end='')
+# print("Pass" if test_interpolate() else "Fail!")
 
+test_rediscounted_value_estimate()
 
 # print("TVF_MC: ", end='')
 # print("Pass" if test_calculate_tvf_mc() else "Fail!")

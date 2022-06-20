@@ -89,6 +89,24 @@ TVF5_ARGS = {
     'observation_normalization': True, # pong (and others maybe) do not work without this, so jsut default it to on..
 }
 
+TVF6_ARGS = TVF5_ARGS.copy()
+TVF6_ARGS.update({
+    'ag_sns_min_h': 100,             # important
+    'tvf_return_mode': "advanced",   # seems better than advanced2
+    'distil_epochs': 2,              # better than 1
+    'ag_sns_delay': int(2e6),        # earlier is better
+    'ag_sns_ema_horizon': int(10e6)  # this needs to change very slowly
+})
+
+TVF7_ARGS = TVF6_ARGS.copy()
+TVF7_ARGS.update({
+    'ag_min_h': 100,
+    'tvf_return_mode': "advanced",   # seems better than advanced2
+    'distil_epochs': 2,              # better than 1?
+    'ag_delay': int(2e6),            # earlier is better
+    'ag_sns_ema_horizon': int(10e6)  # this needs to change very slowly
+})
+
 
 def add_run(experiment: str, run_name: str, default_args, env_args, subset:list, seeds:Union[int, list]=3, priority=0, seed_params=None, **kwargs):
 
@@ -219,7 +237,7 @@ def tvf5_zp(priority: int = 0):
 
     # alternative strategy with rediscounting and renorm
     # the idea here is our features will be better
-    for beta in [1.0, 3.0]:
+    for beta in [0.3, 0.5, 1.0, 3.0]:
         add_run(
             run_name=f"rnd_99 beta={beta}",
             gamma=0.99,
@@ -401,6 +419,176 @@ def tvf5_yp(priority: int = 0):
         **COMMON_ARGS,
     )
 
+def tvf7_first(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 2,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF7",
+        'default_args': TVF6_ARGS,
+        'epochs': 50,  # 20 is enough for these two games
+        'subset': ATARI_3_VAL + ATARI_5 + ["Skiing", "CrazyClimber", "Breakout", "BeamRider"],
+
+        # put these on the cluster so they actually get done...
+        'hostname': "cluster",
+        'device': 'cuda',
+    }
+
+    # first hit
+
+    add_run(
+        run_name=f"tvf",
+        gamma=0.9999,
+        tvf_gamma=0.9999,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"auto_best",
+        tvf_gamma=0.9999,
+        use_ag=True,
+        ag_mode="h_best",
+        ag_min_h=30,
+        ag_max_h=10000,
+        debug_log_rediscount_curve=True,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"auto_sns",
+        tvf_gamma=0.9999,
+        use_ag=True,
+        ag_mode="sns",
+        ag_min_h=100,
+        ag_max_h=10000,
+        debug_log_rediscount_curve=True,
+        **COMMON_ARGS,
+    )
+
+
+def tvf6_curve(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF6_AUTO3",
+        'default_args': TVF6_ARGS,
+        'epochs': 50,  # 20 is enough for these two games
+        'subset': ATARI_3_VAL + ["Skiing", "CrazyClimber", "Breakout"],
+
+        # put these on the cluster so they actually get done...
+        # 'hostname': "cluster",
+        # 'device': 'cuda',
+    }
+
+    # use distil curve for auto adjustment..
+    add_run(
+        run_name=f"auto4",
+        tvf_gamma=0.9999,
+        use_ag=True,
+        ag_mode="h_best",
+        ag_sns_min_h=30,
+        ag_sns_max_h=10000,
+        debug_log_rediscount_curve=True,
+        **COMMON_ARGS,
+    )
+
+def tvf6_auto(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 3,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF6_AUTO",
+        'default_args': TVF6_ARGS,
+        'epochs': 50,  # 20 is enough for these two games
+        'subset': ATARI_3_VAL,
+
+         # put these on the cluster so they actually get done...
+         # 'hostname': "cluster",
+         # 'device': 'cuda',
+    }
+
+    # add_run(
+    #     run_name=f"tvf_9999",
+    #     gamma=0.9999,
+    #     tvf_gamma=0.9999,
+    #     **COMMON_ARGS,
+    # )
+    #
+    # add_run(
+    #     run_name=f"tvf_999",
+    #     gamma=0.999,
+    #     tvf_gamma=0.999,
+    #     **COMMON_ARGS,
+    # )
+    #
+    # add_run(
+    #     run_name=f"tvf_99",
+    #     gamma=0.99,
+    #     tvf_gamma=0.99,
+    #     **COMMON_ARGS,
+    # )
+    #
+    # add_run(
+    #     run_name=f"red_99",
+    #     gamma=0.99,
+    #     tvf_gamma=0.9999,
+    #     distil_rediscount=True,
+    #     distil_renormalize=True,
+    #     **COMMON_ARGS,
+    # )
+
+    add_run(
+        run_name=f"auto1",
+        tvf_gamma=0.9999,
+        distil_rediscount=True,
+        distil_renormalize=True,
+        use_ag=True,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"auto2",
+        tvf_gamma=0.9999,
+        use_ag=True,
+        **COMMON_ARGS,
+    )
+
+    COMMON_ARGS['experiment'] = "TVF6_AUTO2"
+    COMMON_ARGS['seeds'] = 1
+
+    # allow scaling up and down... interesting idea...
+    add_run(
+        run_name=f"auto3",
+        tvf_gamma=0.999,
+        debug_log_rediscount_curve=True,
+        use_ag=True,
+        **COMMON_ARGS,
+    )
+    COMMON_ARGS['subset'] = ATARI_3_VAL + ["Skiing", "CrazyClimber", "Breakout", "Centipede"]
+
+    # really just adding som extra envs and more distil curve tracking
+    add_run(
+        run_name=f"auto_redo",
+        tvf_gamma=0.9999, # just want to get debug plots...
+        debug_log_rediscount_curve=True,
+        use_ag=True,
+        **COMMON_ARGS,
+    )
+
+    # add_run(
+    #     run_name=f"auto1",
+    #     gamma=0.99,
+    #     tvf_gamma=0.9999,
+    #     distil_rediscount=True,
+    #     distil_renormalize=True,
+    #     use_ag=True,
+    #     **COMMON_ARGS,
+    # )
+
 
 def tvf5_tuning(priority: int = 0):
 
@@ -469,8 +657,12 @@ def tvf5_tuning(priority: int = 0):
 
 def setup():
 
-    tvf5_auto()
+
     tvf5_tuning()
-    tvf5_yp()
-    tvf5_zp(50)
+    # tvf5_yp()
+    tvf5_zp()
+
+    tvf6_auto()
+    tvf6_curve(100)
+    tvf7_first()
     pass

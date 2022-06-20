@@ -1800,6 +1800,108 @@ class Runner:
         # [N, A, K]
         tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
 
+        def rve(h):
+            # for debuging
+            return get_rediscounted_value_estimate(
+                values=tvf_values.reshape([(N + 1) * A, -1]),
+                old_gamma=self.tvf_gamma,
+                new_gamma=1-(1/h),
+                horizons=self.tvf_horizons,
+            ).reshape([(N + 1), A])
+
+        if self.batch_counter % 4 == 0 and (self.batch_counter * self.N * self.A) >= args.ag_delay:
+
+            hs = np.geomspace(10, 30000, 128)
+
+            stds = []
+            means = []
+            ratios = []
+            for h in hs:
+                _rve = rve(h)
+
+                # I fell this is the correct way to do it, go std over each trajectory, but std over the entire
+                # thing works a lot better in practice.
+
+                std = _rve.std()
+                mean = _rve.mean()
+                ratio = std / (np.abs(mean) + 1e-6)
+
+                stds.append(std)
+                means.append(mean)
+                ratios.append(ratio)
+
+                # std = _rve.std(axis=0)
+                # mean = _rve.mean(axis=0)
+                # ratio = std / (np.abs(mean) + 1e-6)
+                #
+                # stds.append(std.mean())
+                # means.append(mean.mean())
+                # ratios.append(ratio.mean())
+
+                # td_est = td_lambda(self.ext_rewards, _rve[:N], _rve[N], self.terminals, 1-(1/h), args.lambda_policy)
+                # td_stds.append(np.std(td_est))
+                # td_means.append(np.mean(td_est))
+
+            stds = np.asarray(stds)
+            means = np.asarray(means)
+            ratios = np.asarray(ratios)
+
+            if args.debug_log_rediscount_curve and self.batch_counter % 32 == 0:
+
+                import matplotlib.pyplot as plt
+
+                plt.figure(figsize=(12, 6))
+                plt.plot(hs, stds, label='std')
+                plt.plot(hs, means, label='mean')
+                plt.xscale('log')
+                plt.grid(alpha=0.25)
+                plt.legend()
+                epoch = self.step / 1e6
+                plt.savefig(args.log_folder+f"/rediscount_{epoch:05.2f}.png")
+                plt.close()
+
+                plt.figure(figsize=(12, 6))
+                plt.plot(hs, np.minimum(ratios, 5))
+                plt.xscale('log')
+                plt.grid(alpha=0.25)
+                plt.savefig(args.log_folder + f"/rediscount_ratio_{epoch:05.2f}.png")
+                plt.close()
+
+            # find and log the gamma the minimized variance
+            min_h = hs[np.argmin(ratios)]
+            max_h = 0
+            for ratio, h in zip(ratios, hs):
+                if ratio < args.ag_ratio_threshold:
+                    max_h = h
+            best_h = max(min_h, max_h)
+            self.log.watch("*dc_min", min_h)
+            self.log.watch("*dc_max", max_h)
+            self.log.watch("dc_bst", best_h)
+
+            self.vars['dc_bst'] = best_h
+            utils.dictionary_ema(self.vars, 'dc_h', best_h, 0.99, default=args.ag_initial_h, log=True)
+            self.log.watch("dc_h", self.vars['dc_h'])
+
+            # plt.figure(figsize=(12, 6))
+            # plt.plot(hs, td_stds, label='std')
+            # plt.plot(hs, td_means, label='mean')
+            # plt.xscale('log')
+            # plt.grid(alpha=0.25)
+            # plt.legend()
+            # epoch = self.step / 1e6
+            # plt.savefig(args.log_folder+f"/td_{epoch:05.2f}.png")
+            # plt.close()
+            #
+            # td_ratios = td_stds / (np.abs(td_means) + 1e-6)
+            # plt.figure(figsize=(12, 6))
+            # plt.plot(hs, np.minimum(td_ratios, 5))
+            # plt.xscale('log')
+            # plt.grid(alpha=0.25)
+            # plt.savefig(args.log_folder + f"/td_ratio_{epoch:05.2f}.png")
+            # plt.close()
+
+
+
         if abs(new_gamma - self.tvf_gamma) < 1e-8:
             return tvf_values[:, :, -1]
 
@@ -2500,7 +2602,9 @@ class Runner:
         elif args.ag_mode == "training":
             return (1/1000) * self.step # todo make this a parameter
         elif args.ag_mode == "sns":
-            return self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h)
+            return self.noise_stats.get('ag_sns_horizon', args.ag_initial_h)
+        elif args.ag_mode == "h_best":
+            return np.clip(self.vars.get('dc_h', args.ag_initial_h), args.ag_min_h, args.ag_max_h)
         else:
             raise ValueError(f"Invalid auto_strategy {args.ag_mode}")
 
@@ -2968,11 +3072,11 @@ class Runner:
         assert args.use_sns, "SNS must be enabled."
         assert args.use_tvf, "TVF must be enabled"
 
-        if self.step < args.ag_sns_delay:
+        if self.step < args.ag_delay:
             # it's too early to modify gamma, but log what we can anyway.
-            self.noise_stats['ag_sns_horizon'] = args.ag_sns_initial_h
-            self.log.watch_mean('ag_sns_target', args.ag_sns_initial_h, display_width=0)
-            self.log.watch_mean('ag_sns_horizon', args.ag_sns_initial_h, display_name="ah", display_width=7)
+            self.noise_stats['ag_sns_horizon'] = args.ag_initial_h
+            self.log.watch_mean('ag_sns_target', args.ag_initial_h, display_width=0)
+            self.log.watch_mean('ag_sns_horizon', args.ag_initial_h, display_name="ah", display_width=7)
             return
 
         if len(self.noise_stats.get('active_heads', [])) <= 0:
@@ -2997,10 +3101,10 @@ class Runner:
 
         # step 2: move towards (clipped) log target
         alpha = 1-(1/(args.ag_sns_ema_horizon / (self.N * self.A)))
-        old_log_horizon = math.log(1+self.noise_stats.get('ag_sns_horizon', args.ag_sns_initial_h))
+        old_log_horizon = math.log(1 + self.noise_stats.get('ag_sns_horizon', args.ag_initial_h))
         target_log_horizon = math.log(1+new_target)
         new_log_horizon = alpha * old_log_horizon + (1-alpha) * target_log_horizon
-        self.noise_stats['ag_sns_horizon'] = np.clip(math.exp(new_log_horizon)-1, args.ag_sns_min_h, args.ag_sns_max_h)
+        self.noise_stats['ag_sns_horizon'] = np.clip(math.exp(new_log_horizon) - 1, args.ag_min_h, args.ag_max_h)
 
         self.log.watch_mean('ag_sns_target', new_target, display_width=0)
         self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_name="auto_horizon")
@@ -3186,7 +3290,8 @@ def get_rediscounted_value_estimate(
         values: Union[np.ndarray, torch.Tensor],
         old_gamma: float,
         new_gamma: float,
-        horizons
+        horizons,
+        clipping=10,
 ):
     """
     Returns rediscounted return at horizon h
@@ -3199,10 +3304,11 @@ def get_rediscounted_value_estimate(
     B, K = values.shape
 
     if old_gamma == new_gamma:
+        print(old_gamma, new_gamma)
         return values[:, -1]
 
     assert K == len(horizons), f"missmatch {K} {horizons}"
-    assert horizons[0] == 0
+    assert horizons[0] == 0, 'first horizon must be 0'
 
     if type(values) is np.ndarray:
         values = torch.from_numpy(values)
@@ -3222,12 +3328,16 @@ def get_rediscounted_value_estimate(
         discounted_reward = (values[:, i] - prev)
         prev = values[:, i]
         prev_h = h
-        discounted_reward_sum += discounted_reward * (new_gamma ** mid_h) / (old_gamma ** mid_h)
+        # a clipping of 10 gets us to about 2.5k horizon before we start introducing bias. (going from 1k to 10k discounting)
+        ratio = min((new_gamma ** mid_h) / (old_gamma ** mid_h), clipping) # clipped ratio
+        discounted_reward_sum += discounted_reward * ratio
+
+    #print(old_gamma, new_gamma, values[:, 0].std(), values[:, -1].std(), discounted_reward_sum.std())
 
     return discounted_reward_sum.numpy() if is_numpy else discounted_reward_sum
 
 
-def expand_to_na(n,a,x):
+def expand_to_na(n, a, x):
     """
     takes 1d input and returns it duplicated [N,A] times
     in form [n, a, *]

@@ -91,10 +91,14 @@ def list_grad(opt):
     return parameters
 
 
-def dictionary_ema(d:dict, key:str, target, alpha:float):
-    value_1 = d.get(key, target)
+def dictionary_ema(d:dict, key:str, target, alpha:float, default=None, log=False):
+
+    value_1 = d.get(key, default if default is not None else target)
     value_2 = target
-    d[key] = alpha * value_1 + (1-alpha) * value_2
+    if log:
+        d[key] = np.exp(alpha * np.log(1+value_1) + (1 - alpha) * np.log(1+value_2))-1
+    else:
+        d[key] = alpha * value_1 + (1-alpha) * value_2
     return d[key]
 
 

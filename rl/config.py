@@ -193,8 +193,6 @@ class Config(BaseConfig):
         parser.add_argument("--seed", type=int, default=-1)
         parser.add_argument("--description", type=str, default=None, help="Can be used as needed. (logged in params.txt)")
         parser.add_argument("--quiet_mode", type=str2bool, default=False)
-        parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
-        parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
         parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
         parser.add_argument("--log_folder", type=str, default=None)
         parser.add_argument("--observation_normalization", type=str2bool, default=False)
@@ -292,22 +290,27 @@ class Config(BaseConfig):
         # Debugging
         parser.add_argument("--debug_bootstrap_bias", type=float, default=1.0, help="")
         parser.add_argument("--debug_zero_obs", type=str2bool, default=False, help="")
+        parser.add_argument("--debug_log_rediscount_curve", type=str2bool, default=False, help="")
+        parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
+        parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
+
 
         # --------------------------------
         # Auto Gamma
         parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
-        parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow]")
+        parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow|h_best]")
         parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
+        parser.add_argument("--ag_ratio_threshold", type=float, default=0.3, help="target variance ratio for gamma.")
         parser.add_argument("--ag_sns_threshold", type=float, default=10.0, help="target noise level for gamma.")
         parser.add_argument("--ag_sns_ema_horizon", type=float, default=int(5e6),
                             help="horizon used in EMA for horizon.")
-        parser.add_argument("--ag_sns_delay", type=int, default=int(5e6),
+        parser.add_argument("--ag_delay", type=int, default=int(5e6),
                             help="alpha value used in EMA for horizon.")
-        parser.add_argument("--ag_sns_min_h", type=int, default=100, # I'd like to make this 50
+        parser.add_argument("--ag_min_h", type=int, default=100,  # I'd like to make this 50
                             help="Minimum auto gamma horizon.")
-        parser.add_argument("--ag_sns_initial_h", type=int, default=1000,
+        parser.add_argument("--ag_initial_h", type=int, default=1000,
                             help="Initial auto gamma horizon.")
-        parser.add_argument("--ag_sns_max_h", type=int, default=10000,
+        parser.add_argument("--ag_max_h", type=int, default=10000,
                             help="Maximum auto gamma horizon.")
 
         # --------------------------------
@@ -321,8 +324,8 @@ class Config(BaseConfig):
         parser.add_argument("--sns_fake_noise", type=str2bool, default=False, help="Replaces value_head gradient with noise based on horizon.")
         parser.add_argument("--sns_smoothing_mode", type=str, default="ema", help="ema|avg")
         parser.add_argument("--sns_smoothing_horizon_avg", type=int, default=1e6, help="how big to make averaging window")
-        parser.add_argument("--sns_smoothing_horizon_s", type=int, default=0.1e6, help="how much to smooth s")
-        parser.add_argument("--sns_smoothing_horizon_g2", type=int, default=0.5e6, help="how much to smooth g2")
+        parser.add_argument("--sns_smoothing_horizon_s", type=int, default=0.2e6, help="how much to smooth s")
+        parser.add_argument("--sns_smoothing_horizon_g2", type=int, default=1.0e6, help="how much to smooth g2")
         parser.add_argument("--sns_smoothing_horizon_policy", type=int, default=5e6, help="how much to smooth g2 for policy (normally much higher)")
 
         # --------------------------------
@@ -467,16 +470,18 @@ class Config(BaseConfig):
 
         self.debug_bootstrap_bias = float()
         self.debug_zero_obs = bool()
+        self.debug_log_rediscount_curve = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()
         self.ag_target = str()
         self.ag_sns_threshold = float()
         self.ag_sns_ema_horizon = float()
-        self.ag_sns_delay = int()
-        self.ag_sns_min_h = int()
-        self.ag_sns_initial_h = int()
-        self.ag_sns_max_h = int()
+        self.ag_ratio_threshold = float()
+        self.ag_delay = int()
+        self.ag_min_h = int()
+        self.ag_initial_h = int()
+        self.ag_max_h = int()
 
         self.use_sns = bool()
         self.sns_labels = str()
@@ -587,6 +592,12 @@ def parse_args(args_override=None):
         'tvf_mode': None,
         'tvf_sum_horizons': None,
         'sns_small_samples': None,
+
+        "ag_sns_delay": "ag_delay",
+        "ag_sns_min_h": "ag_min_h",
+        "ag_sns_max_h": "ag_max_h",
+        "ag_sns_initial_h": "ag_initial_h",
+
     }
 
     for k,v in REMAPPED_PARAMS.items():
