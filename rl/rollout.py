@@ -1058,8 +1058,8 @@ class Runner:
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
             "time_return_estimate",
-            return_estimate_time*1000,
-            display_precision=1,
+            return_estimate_time,
+            display_precision=3,
             display_name="t_re",
         )
         return returns
@@ -1780,6 +1780,141 @@ class Runner:
         return np.take_along_axis(values, sample[None, :, :], axis=0)
 
     @torch.no_grad()
+    def estimate_horizon_from_rediscounting(self):
+
+        VALUE_HEAD_INDEX = 0
+
+        def rve(h, source=None):
+            if source is None:
+                source = self.tvf_value[..., VALUE_HEAD_INDEX]
+            # for debuging
+            N, A, K = source.shape
+            return get_rediscounted_value_estimate(
+                values=source.reshape([N * A, K]),
+                old_gamma=self.tvf_gamma,
+                new_gamma=1-(1/h),
+                horizons=self.tvf_horizons,
+            ).reshape([-1])
+
+        hs = np.geomspace(10, 30000, 128)
+
+        N, A = self.N, self.A
+
+        stds = []
+        means = []
+        ratios = []
+        for h in hs:
+
+            if args.ag_ratio_source == "returns":
+                _rve = rve(h, source=self.tvf_returns[..., VALUE_HEAD_INDEX])
+            elif args.ag_ratio_source == "value":
+                _rve = rve(h)
+            elif args.ag_ratio_source == "td":
+                _rve = rve(h)
+                _rve = td_lambda(self.ext_rewards, _rve[:N], _rve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
+            elif args.ag_ratio_source == "advantages":
+                _ve = rve(h)
+                _rve = td_lambda(self.ext_rewards, _ve[:N], _ve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
+                _rve += _ve[:N]
+            else:
+                raise ValueError(f"Invalid ratio source {args.ag_ratio_source}")
+
+            # I fell this is the correct way to do it, go std over each trajectory, but std over the entire
+            # thing works a lot better in practice.
+
+            std = _rve.std()
+            mean = _rve.mean()
+            ratio = std / (np.abs(mean) + 1e-6)
+
+            stds.append(std)
+            means.append(mean)
+            ratios.append(ratio)
+
+        stds = np.asarray(stds)
+        means = np.asarray(means)
+        ratios = np.asarray(ratios)
+
+        def score(i: int):
+            ratio = ratios[i]
+            log_h = np.log10(1 + hs[i])
+            return - ratio + args.ag_ratio_factor * log_h
+
+        scores = [score(i) for i in range(len(ratios))]
+
+        if args.debug_log_rediscount_curve and self.batch_counter % 64 == 0:
+
+            import matplotlib.pyplot as plt
+
+            plt.figure(figsize=(12, 6))
+            plt.plot(hs, stds, label='std')
+            plt.plot(hs, means, label='mean')
+            plt.xscale('log')
+            plt.grid(alpha=0.25)
+            plt.legend()
+            epoch = self.step / 1e6
+            plt.savefig(args.log_folder+f"/rediscount_{epoch:05.2f}.png")
+            plt.close()
+
+            plt.figure(figsize=(12, 6))
+            plt.plot(hs, np.minimum(ratios, 5))
+            plt.xscale('log')
+            plt.grid(alpha=0.25)
+            plt.savefig(args.log_folder + f"/rediscount_ratio_{epoch:05.2f}.png")
+            plt.close()
+
+            plt.figure(figsize=(12, 6))
+            plt.plot(hs, scores)
+            plt.xscale('log')
+            plt.grid(alpha=0.25)
+            plt.savefig(args.log_folder + f"/rediscount_score_{epoch:05.2f}.png")
+            plt.close()
+
+        # find and log the gamma the minimized variance
+        min_h = hs[np.argmin(ratios)]
+        max_h = 0
+        for ratio, h in zip(ratios, hs):
+            if ratio < args.ag_ratio_threshold:
+                max_h = h
+
+        best_h = max(min_h, max_h)
+        self.log.watch("*dc_min", min_h)
+        self.log.watch("*dc_max", max_h)
+        self.log.watch("*dc_best", best_h)
+        self.vars['dc_best'] = best_h
+
+        if args.ag_ratio_algorithm == "min":
+            target_h = min_h
+        elif args.ag_ratio_algorithm == "best":
+            target_h = best_h
+        elif args.ag_ratio_algorithm == "adv":
+            best_i = np.argmax(scores)
+            target_h = hs[best_i]
+        else:
+            raise ValueError(f"Invalid ag_ratio_algorithm {args.ag_ratio_algorithm}")
+
+        utils.dictionary_ema(self.vars, 'dc_h', target_h, 0.99, default=args.ag_initial_h, log=True)
+        self.log.watch("dc_h", self.vars['dc_h'])
+
+        # plt.figure(figsize=(12, 6))
+        # plt.plot(hs, td_stds, label='std')
+        # plt.plot(hs, td_means, label='mean')
+        # plt.xscale('log')
+        # plt.grid(alpha=0.25)
+        # plt.legend()
+        # epoch = self.step / 1e6
+        # plt.savefig(args.log_folder+f"/td_{epoch:05.2f}.png")
+        # plt.close()
+        #
+        # td_ratios = td_stds / (np.abs(td_means) + 1e-6)
+        # plt.figure(figsize=(12, 6))
+        # plt.plot(hs, np.minimum(td_ratios, 5))
+        # plt.xscale('log')
+        # plt.grid(alpha=0.25)
+        # plt.savefig(args.log_folder + f"/td_ratio_{epoch:05.2f}.png")
+        # plt.close()
+
+
+    @torch.no_grad()
     def get_tvf_ext_value_estimate(self, new_gamma: float):
         """
 
@@ -1799,108 +1934,6 @@ class Runner:
 
         # [N, A, K]
         tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
-
-        def rve(h):
-            # for debuging
-            return get_rediscounted_value_estimate(
-                values=tvf_values.reshape([(N + 1) * A, -1]),
-                old_gamma=self.tvf_gamma,
-                new_gamma=1-(1/h),
-                horizons=self.tvf_horizons,
-            ).reshape([(N + 1), A])
-
-        if self.batch_counter % 4 == 0 and (self.batch_counter * self.N * self.A) >= args.ag_delay:
-
-            hs = np.geomspace(10, 30000, 128)
-
-            stds = []
-            means = []
-            ratios = []
-            for h in hs:
-                _rve = rve(h)
-
-                # I fell this is the correct way to do it, go std over each trajectory, but std over the entire
-                # thing works a lot better in practice.
-
-                std = _rve.std()
-                mean = _rve.mean()
-                ratio = std / (np.abs(mean) + 1e-6)
-
-                stds.append(std)
-                means.append(mean)
-                ratios.append(ratio)
-
-                # std = _rve.std(axis=0)
-                # mean = _rve.mean(axis=0)
-                # ratio = std / (np.abs(mean) + 1e-6)
-                #
-                # stds.append(std.mean())
-                # means.append(mean.mean())
-                # ratios.append(ratio.mean())
-
-                # td_est = td_lambda(self.ext_rewards, _rve[:N], _rve[N], self.terminals, 1-(1/h), args.lambda_policy)
-                # td_stds.append(np.std(td_est))
-                # td_means.append(np.mean(td_est))
-
-            stds = np.asarray(stds)
-            means = np.asarray(means)
-            ratios = np.asarray(ratios)
-
-            if args.debug_log_rediscount_curve and self.batch_counter % 32 == 0:
-
-                import matplotlib.pyplot as plt
-
-                plt.figure(figsize=(12, 6))
-                plt.plot(hs, stds, label='std')
-                plt.plot(hs, means, label='mean')
-                plt.xscale('log')
-                plt.grid(alpha=0.25)
-                plt.legend()
-                epoch = self.step / 1e6
-                plt.savefig(args.log_folder+f"/rediscount_{epoch:05.2f}.png")
-                plt.close()
-
-                plt.figure(figsize=(12, 6))
-                plt.plot(hs, np.minimum(ratios, 5))
-                plt.xscale('log')
-                plt.grid(alpha=0.25)
-                plt.savefig(args.log_folder + f"/rediscount_ratio_{epoch:05.2f}.png")
-                plt.close()
-
-            # find and log the gamma the minimized variance
-            min_h = hs[np.argmin(ratios)]
-            max_h = 0
-            for ratio, h in zip(ratios, hs):
-                if ratio < args.ag_ratio_threshold:
-                    max_h = h
-            best_h = max(min_h, max_h)
-            self.log.watch("*dc_min", min_h)
-            self.log.watch("*dc_max", max_h)
-            self.log.watch("dc_bst", best_h)
-
-            self.vars['dc_bst'] = best_h
-            utils.dictionary_ema(self.vars, 'dc_h', best_h, 0.99, default=args.ag_initial_h, log=True)
-            self.log.watch("dc_h", self.vars['dc_h'])
-
-            # plt.figure(figsize=(12, 6))
-            # plt.plot(hs, td_stds, label='std')
-            # plt.plot(hs, td_means, label='mean')
-            # plt.xscale('log')
-            # plt.grid(alpha=0.25)
-            # plt.legend()
-            # epoch = self.step / 1e6
-            # plt.savefig(args.log_folder+f"/td_{epoch:05.2f}.png")
-            # plt.close()
-            #
-            # td_ratios = td_stds / (np.abs(td_means) + 1e-6)
-            # plt.figure(figsize=(12, 6))
-            # plt.plot(hs, np.minimum(td_ratios, 5))
-            # plt.xscale('log')
-            # plt.grid(alpha=0.25)
-            # plt.savefig(args.log_folder + f"/td_ratio_{epoch:05.2f}.png")
-            # plt.close()
-
-
 
         if abs(new_gamma - self.tvf_gamma) < 1e-8:
             return tvf_values[:, :, -1]
@@ -2040,6 +2073,14 @@ class Runner:
             self.returns = add_relative_noise(self.returns, args.noisy_return)
             self.tvf_returns = add_relative_noise(self.tvf_returns, args.noisy_return)
             self.tvf_returns[:, :, 0] = 0 # by definition...
+
+        if self.batch_counter % 4 == 0 and (self.batch_counter * self.N * self.A) >= args.ag_delay:
+            self.estimate_horizon_from_rediscounting()
+        else:
+            self.vars['dc_h'] = args.ag_initial_h
+            self.log.watch("dc_h", self.vars['dc_h'])
+
+
 
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):

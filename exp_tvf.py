@@ -99,8 +99,13 @@ TVF6_ARGS.update({
 })
 
 TVF7_ARGS = TVF6_ARGS.copy()
+del TVF7_ARGS['ag_sns_delay']
+del TVF7_ARGS['ag_sns_min_h']
+del TVF7_ARGS['ag_sns_max_h']
 TVF7_ARGS.update({
     'ag_min_h': 100,
+    'ag_max_h': 10000,
+    'ag_ratio_threshold': 0.33,
     'tvf_return_mode': "advanced",   # seems better than advanced2
     'distil_epochs': 2,              # better than 1?
     'ag_delay': int(2e6),            # earlier is better
@@ -419,16 +424,33 @@ def tvf5_yp(priority: int = 0):
         **COMMON_ARGS,
     )
 
-def tvf7_first(priority: int = 0):
+def tvf7_auto(priority: int = 0):
 
     COMMON_ARGS = {
-        'seeds': 2,
+        'seeds': 1,
         'priority': priority,
         'env_args': HARD_MODE_ARGS,
         'experiment': "TVF7",
-        'default_args': TVF6_ARGS,
+        'default_args': TVF7_ARGS,
+        'epochs': 20,  # 20 is enough for these two games
+        'subset': ATARI_3_VAL
+
+    }
+
+    # just trying to get a read on how AG is going to work...
+
+
+
+def tvf7_first(priority: int = 0):
+
+    COMMON_ARGS = {
+        'seeds': 1,
+        'priority': priority,
+        'env_args': HARD_MODE_ARGS,
+        'experiment': "TVF7",
+        'default_args': TVF7_ARGS,
         'epochs': 50,  # 20 is enough for these two games
-        'subset': ATARI_3_VAL + ATARI_5 + ["Skiing", "CrazyClimber", "Breakout", "BeamRider"],
+        'subset': ATARI_3_VAL + ATARI_5,
 
         # put these on the cluster so they actually get done...
         'hostname': "cluster",
@@ -437,10 +459,24 @@ def tvf7_first(priority: int = 0):
 
     # first hit
 
+    # add_run(
+    #     run_name=f"tvf", # rename to tvf_9999
+    #     gamma=0.9999,
+    #     tvf_gamma=0.9999,
+    #     **COMMON_ARGS,
+    # )
+
     add_run(
-        run_name=f"tvf",
-        gamma=0.9999,
-        tvf_gamma=0.9999,
+        run_name=f"tvf_99",
+        gamma=0.99,
+        tvf_gamma=0.99,
+        **COMMON_ARGS,
+    )
+
+    add_run(
+        run_name=f"tvf_999",
+        gamma=0.999,
+        tvf_gamma=0.999,
         **COMMON_ARGS,
     )
 
@@ -653,16 +689,14 @@ def tvf5_tuning(priority: int = 0):
         )
 
 
-
-
 def setup():
 
-
-    tvf5_tuning()
+    # tvf5_tuning()
     # tvf5_yp()
     tvf5_zp()
 
     tvf6_auto()
     tvf6_curve(100)
     tvf7_first()
+    tvf7_auto()
     pass
