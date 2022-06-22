@@ -591,7 +591,8 @@ class Runner:
         self.N = N = args.n_steps
         self.A = A = args.agents
         self.VH = VH = len(self.value_heads)
-        self.K = K = len(self.tvf_horizons)
+        if args.use_tvf:
+            self.K = K = len(self.tvf_horizons)
 
         self.action_dist = action_dist
 
@@ -1796,78 +1797,99 @@ class Runner:
                 horizons=self.tvf_horizons,
             ).reshape([-1])
 
-        hs = np.geomspace(10, 30000, 128)
+        hs = np.geomspace(args.ag_min_h, args.ag_max_h, 128)
 
-        N, A = self.N, self.A
+        def get_ratios(source: str):
 
-        stds = []
-        means = []
-        ratios = []
-        for h in hs:
+            N, A = self.N, self.A
 
-            if args.ag_ratio_source == "returns":
-                _rve = rve(h, source=self.tvf_returns[..., VALUE_HEAD_INDEX])
-            elif args.ag_ratio_source == "value":
-                _rve = rve(h)
-            elif args.ag_ratio_source == "td":
-                _rve = rve(h)
-                _rve = td_lambda(self.ext_rewards, _rve[:N], _rve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
-            elif args.ag_ratio_source == "advantages":
-                _ve = rve(h)
-                _rve = td_lambda(self.ext_rewards, _ve[:N], _ve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
-                _rve += _ve[:N]
-            else:
-                raise ValueError(f"Invalid ratio source {args.ag_ratio_source}")
+            vars = []
+            means = []
+            ratios = []
+            for h in hs:
 
-            # I fell this is the correct way to do it, go std over each trajectory, but std over the entire
-            # thing works a lot better in practice.
+                if source == "returns":
+                    _rve = rve(h, source=self.tvf_returns[..., VALUE_HEAD_INDEX])
+                elif source == "value":
+                    _rve = rve(h)
+                elif source == "td":
+                    _rve = rve(h)
+                    _rve = td_lambda(self.ext_rewards, _rve[:N], _rve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
+                elif source == "advantages":
+                    _ve = rve(h)
+                    _rve = td_lambda(self.ext_rewards, _ve[:N], _ve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
+                    _rve += _ve[:N]
+                else:
+                    raise ValueError(f"Invalid ratio source {args.ag_ratio_source}")
 
-            std = _rve.std()
-            mean = _rve.mean()
-            ratio = std / (np.abs(mean) + 1e-6)
+                # I fell this is the correct way to do it, go std over each trajectory, but std over the entire
+                # thing works a lot better in practice.
 
-            stds.append(std)
-            means.append(mean)
-            ratios.append(ratio)
+                var = _rve.var()
+                l2s = _rve.mean()**2 # squared mean
+                ratio = var / (l2s + 1e-6)
 
-        stds = np.asarray(stds)
-        means = np.asarray(means)
-        ratios = np.asarray(ratios)
+                # old method..
+                # std = _rve.std()
+                # mean = _rve.mean()
+                # ratio = std / (np.abs(mean) + 1e-6)
 
-        def score(i: int):
+                vars.append(var)
+                means.append(l2s)
+                ratios.append(ratio)
+
+            return np.asarray(ratios), np.asarray(vars), np.asarray(means),
+
+        def score(ratios, i: int):
             ratio = ratios[i]
-            log_h = np.log10(1 + hs[i])
-            return - ratio + args.ag_ratio_factor * log_h
-
-        scores = [score(i) for i in range(len(ratios))]
+            return 0.2 * np.log(100 + hs[i]) - np.log(ratio+2e-1)
 
         if args.debug_log_rediscount_curve and self.batch_counter % 64 == 0:
 
             import matplotlib.pyplot as plt
 
+            data = []
+            keys = ['returns', 'value', 'td', 'advantages']
+            for source in keys:
+                data.append(get_ratios(source))
+
             plt.figure(figsize=(12, 6))
-            plt.plot(hs, stds, label='std')
-            plt.plot(hs, means, label='mean')
+            cm = plt.get_cmap('tab10')
+            for i, (ratio, vars, means) in enumerate(data):
+                key = keys[i]
+                plt.plot(hs, vars, label=f'{key}_var', color=cm(i), ls="-")
+                plt.plot(hs, means, label=f'{key}_norm', color=cm(i), ls="--")
             plt.xscale('log')
+            plt.yscale('log')
             plt.grid(alpha=0.25)
             plt.legend()
             epoch = self.step / 1e6
-            plt.savefig(args.log_folder+f"/rediscount_{epoch:05.2f}.png")
+            plt.savefig(args.log_folder + f"/rediscount_{epoch:05.2f}.png")
             plt.close()
 
             plt.figure(figsize=(12, 6))
-            plt.plot(hs, np.minimum(ratios, 5))
+            for key, (ratios, vars, means) in zip(keys, data):
+                plt.plot(hs, np.minimum(ratios, 5), label=f'ratio_{key}')
             plt.xscale('log')
+            plt.yscale('log')
             plt.grid(alpha=0.25)
+            plt.legend()
             plt.savefig(args.log_folder + f"/rediscount_ratio_{epoch:05.2f}.png")
             plt.close()
 
             plt.figure(figsize=(12, 6))
-            plt.plot(hs, scores)
+            for key, (ratios, vars, means) in zip(keys, data):
+                scores = [score(ratios, i) for i in range(len(ratios))]
+                plt.plot(hs, scores, label=f'score_{key}')
+            plt.legend()
             plt.xscale('log')
             plt.grid(alpha=0.25)
             plt.savefig(args.log_folder + f"/rediscount_score_{epoch:05.2f}.png")
             plt.close()
+
+        ratios, vars, means = get_ratios(args.ag_ratio_source)
+
+        scores = [score(ratios, i) for i in range(len(ratios))]
 
         # find and log the gamma the minimized variance
         min_h = hs[np.argmin(ratios)]
@@ -1889,11 +1911,18 @@ class Runner:
         elif args.ag_ratio_algorithm == "adv":
             best_i = np.argmax(scores)
             target_h = hs[best_i]
+        elif args.ag_ratio_algorithm == "adv2":
+            best_ratio = np.min(ratios)
+            if best_ratio < args.ag_ratio_threshold:
+                target_h = args.ag_max_h
+            else:
+                target_h = hs[np.argmin(ratios)]
         else:
             raise ValueError(f"Invalid ag_ratio_algorithm {args.ag_ratio_algorithm}")
 
         utils.dictionary_ema(self.vars, 'dc_h', target_h, 0.99, default=args.ag_initial_h, log=True)
         self.log.watch("dc_h", self.vars['dc_h'])
+        self.log.watch("dc_target", target_h)
 
         # plt.figure(figsize=(12, 6))
         # plt.plot(hs, td_stds, label='std')
@@ -2074,13 +2103,12 @@ class Runner:
             self.tvf_returns = add_relative_noise(self.tvf_returns, args.noisy_return)
             self.tvf_returns[:, :, 0] = 0 # by definition...
 
-        if self.batch_counter % 4 == 0 and (self.batch_counter * self.N * self.A) >= args.ag_delay:
-            self.estimate_horizon_from_rediscounting()
+        if (self.batch_counter * self.N * self.A) >= args.ag_delay:
+            if self.batch_counter % 4 == 0 and
+                self.estimate_horizon_from_rediscounting()
         else:
             self.vars['dc_h'] = args.ag_initial_h
             self.log.watch("dc_h", self.vars['dc_h'])
-
-
 
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
@@ -2849,7 +2877,6 @@ class Runner:
 
         batch_data = {}
         N, A, *state_shape = self.prev_obs.shape
-        K = self.K
 
         batch_data["prev_state"] = self.prev_obs.reshape([N*A, *state_shape])
 
@@ -2861,7 +2888,7 @@ class Runner:
 
         if args.use_tvf:
             # just train ext heads for the moment
-            batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, K)
+            batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, self.K)
 
             # per horizon noise estimates
             # note: it's about 2x faster to generate accumulated noise all at one go, but this means

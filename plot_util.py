@@ -1753,7 +1753,7 @@ def setup_plot(title=None):
     #plt.title(title)
 
 
-def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None, figure=True, color_filter=None):
+def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None, figure=True, color_filter=None, cmap=None):
 
     if type(key_filter) is str:
         mask = key_filter
@@ -1763,6 +1763,9 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
         paths = path
     else:
         paths = [path]
+
+    if cmap is None:
+        cmap = cm
 
     if keys == "auto":
         keys = []
@@ -1789,7 +1792,7 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
             if color_filter is not None:
                 c = color_filter(key, i)
             else:
-                c = cm(i)
+                c = cmap(i)
             plot_seeded_validation(
                 path,
                 key,
