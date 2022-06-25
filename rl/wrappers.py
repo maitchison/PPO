@@ -9,26 +9,27 @@ from . import utils
 
 from gym.vector import VectorEnv
 
-from typing import Union
+from typing import Union, Optional
 
 class EpisodicDiscounting(gym.Wrapper):
     """
     Applies discounting at the episode level
     """
 
-    def __init__(self, env: gym.Env, discount_type, discount_gamma):
+    def __init__(self, env: gym.Env, discount_type, discount_gamma=1.0, discount_bias: float = 1.0):
         super().__init__(env)
         self.env = env
         self.t = 0
         self.discount_type = discount_type
         self.discount_gamma = discount_gamma
+        self.discount_bias = discount_bias
 
     @staticmethod
-    def get_discount(i:float, gamma:float, discount_type:str):
+    def get_discount(i: float, discount_type: str, gamma: float=1.0, discount_bias: float = 1.0):
         """
         Returns discount (gamma_i) for reward (r_i), with discounting parameter gamma.
         """
-
+        i = i + discount_bias
         if discount_type == "finite":
             m = 1/(1-gamma)
             discount = 1.0 if i <= m else 0
@@ -48,7 +49,8 @@ class EpisodicDiscounting(gym.Wrapper):
         return discount
 
     @staticmethod
-    def get_normalization_constant(k:np.ndarray, gamma:float, discount_type:str):
+    def get_normalization_constant(k:np.ndarray, discount_type: str, gamma: float = 1.0, discount_bias: float = 1.0):
+        k = k + discount_bias
         if discount_type == "finite":
             m = 1/(1-gamma)
             steps_remaining = (m-k)
@@ -67,26 +69,21 @@ class EpisodicDiscounting(gym.Wrapper):
             normalizer = 1.0
         else:
             raise ValueError(f"Invalid discount_type {discount_type}")
-        return 1 / normalizer
+        return normalizer
 
     def reset(self):
-        self.t = 0
         return self.env.reset()
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-
-        self.t += 1
-        discount = EpisodicDiscounting.get_discount(self.t, self.discount_gamma, self.discount_type)
+        assert "time" in info, "Must place timeAware wrapper before episodic discount wrapper"
+        time = info["time"]
+        discount = EpisodicDiscounting.get_discount(time, discount_type=self.discount_type, gamma=self.discount_gamma,
+                                                    discount_bias=self.discount_bias)
         reward *= discount
 
         return obs, reward, done, info
 
-    def save_state(self, buffer):
-        buffer["t"] = self.t
-
-    def restore_state(self, buffer):
-        self.t = buffer["t"]
 
 class NoPassThruWrapper(gym.Wrapper):
     """
@@ -137,7 +134,7 @@ class ActionAwareWrapper(gym.Wrapper):
 
         return obs
 
-    def step(self, action):
+    def step(self, action:int):
         assert type(action) in [int, np.int, np.int32, np.int16], f"Action aware requires discrete actions, but found action of type {type(action)}"
         obs, reward, done, info = self.env.step(action)
         return self._process_obs(obs, action), reward, done, info
@@ -401,19 +398,27 @@ class FrameSkipWrapper(gym.Wrapper):
             if done:
                 break
 
-        # Note that the observation on the done=True frame
-        # doesn't matter
-        reduce_frame = self._reduce_op(self._obs_buffer, axis=0)
+        # first frame will be from reset and gets an empty info, or the info from the last frame of previous
+        # episode. Performing increment here means second frame seen will be tagged as t=1, which is what we want.
+        self._t += 1
+
+        if done:
+            # may as well output a blank frame, as this frame will (should) not be used.
+            # what will happen is env will be auto-reset and the first frame of the next game will
+            # be used instead.
+            reduce_frame = self._reduce_op(self._obs_buffer*0, axis=0)
+            self._t = 0 # for some reason I use the info from the last state as the info for the reset observation.
+            # this is due to gym not having a way to get info from a reset :(
+        else:
+            reduce_frame = self._reduce_op(self._obs_buffer, axis=0)
 
         # fix up the time step
         # normally time refers to the steps in the environment, however it's convenient to instead use number
         # of interactions with the environment. Therefore we remap the 'time' statistic to the number of interactions
-        # and store the origional time as time_raw.
+        # and store the original time as time_raw.
         if 'time' in info:
             info['time_raw'] = info['time']
         info['time'] = self._t
-
-        self._t += 1
 
         return reduce_frame, total_reward, done, info
 
@@ -754,6 +759,8 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
             clip: float = 10.0,
             scale: float = 1.0,
             returns_transform=lambda x: x,
+            ed_type: Optional[str] = None,
+            ed_bias: float = 1.0,
     ):
         """
         Normalizes returns
@@ -767,6 +774,8 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.gamma = gamma
         self.scale = scale
         self.returns_transform = returns_transform
+        self.ed_type = ed_type
+        self.ed_bias = ed_bias
         if initial_state is not None:
             self.ret_rms.restore_state(initial_state)
 
@@ -779,10 +788,16 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
 
         # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
         # but it is what OpenAI does...
-
-        #self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
         self.current_returns = rewards + self.gamma * self.current_returns
-        self.ret_rms.update(self.returns_transform(self.current_returns))
+
+        # episodic discounting return normalization
+        if self.ed_type is not None:
+            times = np.asarray([info.get('time', 0) for info in infos]) # during warmup we occasionally get some empty infos
+            norms = EpisodicDiscounting.get_normalization_constant(times, self.ed_type, discount_bias=self.ed_bias)
+        else:
+            norms = 1
+
+        self.ret_rms.update(self.returns_transform(self.current_returns/norms)) # stub /norms
         self.current_returns = self.current_returns * (1-dones)
 
         scaled_rewards = rewards / self.std

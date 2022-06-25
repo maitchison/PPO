@@ -204,6 +204,12 @@ class Config(BaseConfig):
         parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
 
         # --------------------------------
+        # Episodic Discounting
+        parser.add_argument("--use_ed", type=str2bool, default=False, help="Enables episodic discounting.")
+        parser.add_argument("--ed_mode", type=str, default="power", help="power|quadratic|none")
+        parser.add_argument("--ed_bias", type=float, default=1, help="added to t.")
+
+        # --------------------------------
         # Rewards
         parser.add_argument("--intrinsic_reward_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--tvf_return_estimator_mode", type=str, default="default",
@@ -288,7 +294,6 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Debugging
-        parser.add_argument("--debug_bootstrap_bias", type=float, default=1.0, help="")
         parser.add_argument("--debug_zero_obs", type=str2bool, default=False, help="")
         parser.add_argument("--debug_log_rediscount_curve", type=str2bool, default=False, help="")
         parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
@@ -471,7 +476,6 @@ class Config(BaseConfig):
         self.tvf_head_sparsity = float()
         self.tvf_include_ext = bool()
 
-        self.debug_bootstrap_bias = float()
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
 
@@ -501,6 +505,10 @@ class Config(BaseConfig):
         self.sns_smoothing_horizon_s = int()
         self.sns_smoothing_horizon_g2 = int()
         self.sns_smoothing_horizon_policy = int()
+
+        self.use_ed = bool()
+        self.ed_mode = str()
+        self.ed_bias = float()
 
         self.aux_target = str()
         self.aux_source = str()

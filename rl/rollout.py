@@ -31,55 +31,6 @@ def add_relative_noise(X:np.ndarray, rel_error:float):
     factors = np.asarray(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), dtype=np.float32)
     return X * factors
 
-def old_interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
-    """
-    Returns linearly interpolated value from source_values
-
-    horizons: sorted ndarray of shape [K] of horizons, must be in *strictly* ascending order
-    values: ndarray of shape [*shape, K] where values[...,h] corresponds to horizon horizons[h]
-    target_horizons: np array of dims [*shape], the horizon we would like to know the interpolated value of for each
-        example
-
-    """
-
-    # todo: remove this, it's just here for checking at the moment.
-
-    # I did this custom, as I could not find a way to get numpy to interpolate the way I needed it to.
-    # the issue is we interpolate nd data with non-uniform target x's.
-
-    assert len(set(horizons)) == len(horizons), f"Horizons duplicates not supported {horizons}"
-    assert np.all(np.diff(horizons) > 0), f"Horizons must be sorted and unique horizons:{horizons}, targets:{target_horizons}"
-
-    assert horizons[0] == 0, "first horizon must be 0"
-
-    # we do not extrapolate...
-    target_horizons = np.clip(target_horizons, min(horizons), max(horizons))
-
-    *shape, K = values.shape
-    shape = tuple(shape)
-    assert horizons.shape == (K,)
-    assert target_horizons.shape == shape, f"{target_horizons.shape} != {shape}"
-
-    # put everything into 1d
-    N = np.prod(shape)
-    values = values.reshape(N, K)
-    target_horizons = target_horizons.reshape(N)
-
-    index = np.searchsorted(horizons, target_horizons, side='left')
-
-    # select out our values
-    pre_index = np.maximum(index-1, 0)
-    post_index = index
-    value_pre = values[range(N), pre_index]
-    value_post = values[range(N), post_index]
-
-    dx = (horizons[post_index] - horizons[pre_index])
-    dx[dx == 0] = 1.0 # this only happens when we are at the boundaries, in whic case we have 0/dx, and we just want 0.
-    factor = (target_horizons - horizons[index - 1]) / dx
-    result = value_pre * (1 - factor) + value_post * factor
-    result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
-    return result.reshape(*shape)
-
 def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
     """
     Returns linearly interpolated value from source_values
@@ -126,10 +77,6 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     result = value_pre * (1 - factor) + value_post * factor
     result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
     result = result.reshape(*shape)
-
-    # sub: check result
-    old_result = old_interpolate(horizons, values, target_horizons)
-    assert np.max(np.abs(old_result - result)) < 1e6
 
     return result
 
@@ -254,6 +201,59 @@ def td_lambda(
     advantages = gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb, normalize=False)
     return advantages + batch_value
 
+def ed_gae(
+    rewards,
+    values,
+    normalization_factors,
+    batch_terminal,
+    lamb=0.95,
+):
+
+    N_plus_one, A = values.shape
+    N = N_plus_one - 1
+    advantages = np.zeros([N, A], dtype=np.float32)
+
+    def get_g_weights(max_n: int):
+        """
+        Returns the weights for each G estimate, given lambda.
+        """
+        weight = (1-lamb)
+        weights = []
+        for _ in range(max_n):
+            weights.append(weight)
+            weight *= lamb
+        weights = np.asarray(weights) / np.sum(weights)
+        return weights
+
+    def calculate_g(t:int, n:int):
+        """ Calculate G^(n) (s_t) """
+        # we use the rewards first, then use expected rewards from 'pivot' state onwards.
+        # pivot state is either the final state in rollout, or t+n, which ever comes first.
+        sum_of_rewards = np.zeros([N], dtype=np.float32)
+        discount = np.ones([N], dtype=np.float32) # just used to handle terminals
+        if (t+n) >= N:
+            n = (N - t)
+        for i in range(n):
+            sum_of_rewards += rewards[t+i, :]
+            discount *= 1-batch_terminal[t+i, :]
+        bootstrap = values[t+n, :] * normalization_factors[t+n]
+        normed_return = (sum_of_rewards + bootstrap * discount) / normalization_factors[t]
+        normed_value_estimate = values[t, :]
+        advantage = normed_return-normed_value_estimate
+        return advantage
+
+    for t in range(N):
+        max_n = N - t
+        weights = get_g_weights(max_n)
+        for n, weight in zip(range(1, max_n+1), weights):
+            if weight <= 1e-6:
+                # ignore small or zero weights.
+                continue
+            advantages[t, :] += weight * calculate_g(t, n)
+    return advantages
+
+
+
 def gae(
         batch_rewards,
         batch_value,
@@ -303,7 +303,6 @@ def calculate_gae_tvf(
     """
 
     N, A, H = batch_value.shape
-
 
     advantages = np.zeros([N, A], dtype=np.float32)
     values = np.concatenate([batch_value, final_value_estimate[None, :, :]], axis=0)
@@ -593,6 +592,8 @@ class Runner:
         self.VH = VH = len(self.value_heads)
         if args.use_tvf:
             self.K = K = len(self.tvf_horizons)
+        else:
+            self.K = K = 0
 
         self.action_dist = action_dist
 
@@ -798,6 +799,7 @@ class Runner:
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
                 gamma=args.reward_normalization_gamma,
+                ed_type=args.ed_mode if args.use_ed else None,
             )
 
         if args.max_repeated_actions > 0:
@@ -1041,6 +1043,20 @@ class Runner:
         if re_mode == "verify" and self.batch_counter % 31 != 1:
             re_mode = "default"
 
+        # episodic discounting correction
+        if args.use_ed:
+            # time was time before action, we want time after action
+            normalization_factors = wrappers.EpisodicDiscounting.get_normalization_constant(
+                self.all_time,
+                discount_type=args.ed_mode,
+                discount_bias=args.ed_bias,
+            )[:, :, None]
+        else:
+            normalization_factors = 1
+
+        # we must unnormalize the value estimates, then renormalize after
+        values = self.tvf_value[..., self.value_heads.index(value_head)] * normalization_factors
+
         returns = get_return_estimate(
             mode=tvf_return_mode,
             gamma=self.tvf_gamma,
@@ -1048,13 +1064,16 @@ class Runner:
             dones=dones,
             required_horizons=np.asarray(self.tvf_horizons),
             value_sample_horizons=np.asarray(self.tvf_horizons),
-            value_samples=self.tvf_value[..., self.value_heads.index(value_head)] * args.debug_bootstrap_bias,
+            value_samples=values,
             n_step=tvf_n_step,
             max_samples=args.tvf_return_samples,
             estimator_mode=re_mode,
             log=self.log,
             use_log_interpolation=args.tvf_return_use_log_interpolation,
         )
+
+        if args.use_ed:
+            returns = returns / normalization_factors[:N]
 
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -1872,8 +1891,11 @@ class Runner:
                 plt.plot(hs, np.minimum(ratios, 5), label=f'ratio_{key}')
             plt.xscale('log')
             plt.yscale('log')
+            plt.hlines(args.ag_ratio_threshold, args.ag_min_h, args.ag_max_h, ls="--", color="gray")
+            plt.ylim(1e-3, 1e1)
             plt.grid(alpha=0.25)
             plt.legend()
+
             plt.savefig(args.log_folder + f"/rediscount_ratio_{epoch:05.2f}.png")
             plt.close()
 
@@ -1886,6 +1908,17 @@ class Runner:
             plt.grid(alpha=0.25)
             plt.savefig(args.log_folder + f"/rediscount_score_{epoch:05.2f}.png")
             plt.close()
+
+            # save data for later...
+            with open(args.log_folder + f"/data_{epoch:05.2f}.dat", 'wb') as f:
+                import pickle
+                save = {
+                    'data': data,
+                    'returns': self.tvf_returns[..., VALUE_HEAD_INDEX], # just in case we need these...
+                    'horizons': self.tvf_horizons
+                }
+                pickle.dump(save, f)
+
 
         ratios, vars, means = get_ratios(args.ag_ratio_source)
 
@@ -1908,6 +1941,8 @@ class Runner:
             target_h = min_h
         elif args.ag_ratio_algorithm == "best":
             target_h = best_h
+        elif args.ag_ratio_algorithm == "fixed":
+            target_h = args.ag_initial_h
         elif args.ag_ratio_algorithm == "adv":
             best_i = np.argmax(scores)
             target_h = hs[best_i]
@@ -1922,7 +1957,7 @@ class Runner:
 
         utils.dictionary_ema(self.vars, 'dc_h', target_h, 0.99, default=args.ag_initial_h, log=True)
         self.log.watch("dc_h", self.vars['dc_h'])
-        self.log.watch("dc_target", target_h)
+        self.log.watch("*dc_target", target_h)
 
         # plt.figure(figsize=(12, 6))
         # plt.plot(hs, td_stds, label='std')
@@ -2032,24 +2067,42 @@ class Runner:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
 
-        ext_advantage = gae(
-            self.ext_rewards,
-            ext_value_estimates[:N],
-            ext_value_estimates[N],
-            self.terminals,
-            self.gamma,
-            args.lambda_policy
-        )
-
-        # calculate ext_returns.
-        self.ext_returns[:] = td_lambda(
-            self.ext_rewards,
-            ext_value_estimates[:N],
-            ext_value_estimates[N],
-            self.terminals,
-            self.gamma,
-            args.lambda_value,
-        )
+        if args.use_ed:
+            # most of these requirements aren't strictly needed, I just can' be bothered coding them up.
+            assert self.gamma == 1.0, "ed requires gamma=1.0 for the moment."
+            assert args.use_tvf, "ed requires tvf enabled for the moment."
+            normalization_factors = wrappers.EpisodicDiscounting.get_normalization_constant(
+                self.all_time,
+                discount_type=args.ed_mode,
+                discount_bias=args.ed_bias,
+            )
+            ext_advantage = ed_gae(
+                rewards=self.ext_rewards,
+                values=ext_value_estimates,
+                normalization_factors=normalization_factors,
+                batch_terminal=self.terminals,
+                lamb=args.lambda_policy,
+            )
+            # ext_returns should probably not be used... they might work I guess...
+            self.ext_returns[:] = ext_advantage + ext_value_estimates[:N]
+        else:
+            ext_advantage = gae(
+                self.ext_rewards,
+                ext_value_estimates[:N],
+                ext_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                args.lambda_policy
+            )
+            # calculate ext_returns.
+            self.ext_returns[:] = td_lambda(
+                self.ext_rewards,
+                ext_value_estimates[:N],
+                ext_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                args.lambda_value,
+            )
 
         self.advantage = ext_advantage
         if args.use_intrinsic_rewards:
@@ -2072,8 +2125,8 @@ class Runner:
         # for i, head in enumerate(self.value_heads):
         #     self.log.watch_mean_std(f"return_{head}", self.returns[..., i], display_width=0)
         #     self.log.watch_mean_std(f"value_{head}", self.value[..., i], display_name="ret_ext")
-        self.log.watch_mean_std(f"return_ext", self.ext_returns, display_width=0)
-        self.log.watch_mean_std(f"value_ext", ext_value_estimates, display_name="ret_ext")
+        self.log.watch_mean_std(f"*return_ext", self.ext_returns)
+        self.log.watch_mean_std(f"value_ext", ext_value_estimates, display_name="ve")
 
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0, history_length=1)
         self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)
@@ -2084,6 +2137,8 @@ class Runner:
         self.log.watch("gamma", self.gamma, display_width=0)
         if args.use_tvf:
             self.log.watch("tvf_gamma", self.tvf_gamma)
+            # just want to know th max horizon std, should be about 3 I guess, but also the max.
+            self.log.watch_stats("tvf_return_ext", self.tvf_returns[:, :, -1], display_name="tre")
 
         if self.batch_counter % 4 == 0:
             # this can be a little slow, ~2 seconds, compared to ~40 seconds for the rollout generation.
@@ -2104,12 +2159,11 @@ class Runner:
             self.tvf_returns[:, :, 0] = 0 # by definition...
 
         if (self.batch_counter * self.N * self.A) >= args.ag_delay:
-            if self.batch_counter % 4 == 0 and
+            if self.batch_counter % 4 == 0:
                 self.estimate_horizon_from_rediscounting()
         else:
             self.vars['dc_h'] = args.ag_initial_h
             self.log.watch("dc_h", self.vars['dc_h'])
-
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -3144,7 +3198,7 @@ class Runner:
             # it's too early to modify gamma, but log what we can anyway.
             self.noise_stats['ag_sns_horizon'] = args.ag_initial_h
             self.log.watch_mean('ag_sns_target', args.ag_initial_h, display_width=0)
-            self.log.watch_mean('ag_sns_horizon', args.ag_initial_h, display_name="ah", display_width=7)
+            self.log.watch_mean('*ag_sns_horizon', args.ag_initial_h)
             return
 
         if len(self.noise_stats.get('active_heads', [])) <= 0:
@@ -3154,14 +3208,15 @@ class Runner:
         # data used to interpolate noise levels
         logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
 
-        logged_noise_levels = [self.noise_stats.get(f'acc_head_{i}_ratio', float('inf')) ** 0.5 for i in logged_heads]
+        clean_and_sqrt = lambda x: max(x, 0) ** 0.5
+
+        logged_noise_levels = np.asarray([clean_and_sqrt(self.noise_stats.get(f'acc_head_{i}_ratio', float('inf'))) for i in logged_heads])
 
         # force plot to be monotonic
-        logged_noise_levels = np.asarray([np.max(logged_noise_levels[:i+1]) for i in range(len(logged_noise_levels))])
+        #logged_noise_levels = np.asarray([np.max(logged_noise_levels[:i+1]) for i in range(len(logged_noise_levels))])
 
         # step 1: work out our target (with a cap at min_h)
-
-        new_target = 0
+        new_target = args.ag_min_h
         for i, h in enumerate(self.tvf_horizons):
             noise_level = interpolate(logged_heads, logged_noise_levels[None, :], np.asarray([i]))[0]
             if noise_level < args.ag_sns_threshold:
@@ -3372,7 +3427,6 @@ def get_rediscounted_value_estimate(
     B, K = values.shape
 
     if old_gamma == new_gamma:
-        print(old_gamma, new_gamma)
         return values[:, -1]
 
     assert K == len(horizons), f"missmatch {K} {horizons}"

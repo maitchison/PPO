@@ -195,6 +195,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
 
+    if args.use_ed:
+        env = wrappers.EpisodicDiscounting(env, discount_type=args.ed_mode, discount_bias=args.ed_bias)
+
     if args.deferred_rewards != 0:
         env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
 
@@ -204,6 +207,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         # must come after frame_stack
         env = wrappers.TimeAwareWrapper(env)
 
+
     if args.embed_action:
         env = wrappers.ActionHistoryWrapper(env)
 
@@ -212,6 +216,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     if args.debug_zero_obs:
         env = wrappers.ZeroObsWrapper(env)
+
 
     env = wrappers.NullActionWrapper(env)
 

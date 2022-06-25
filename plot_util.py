@@ -1786,24 +1786,25 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
 
     if figure:
         setup_plot(title)
-    counter = 0
-    for path in paths:
-        for i, key in enumerate(keys):
-            if color_filter is not None:
-                c = color_filter(key, i)
-            else:
-                c = cmap(i)
-            plot_seeded_validation(
-                path,
-                key,
-                color=c,
-                subset=subset,
-                seeds=seeds,
-                check_seeds=check_seeds,
-                label=labels[i] if labels is not None else None,
-                ghost_alpha=ghost_alpha
-            )
-            counter =+ 1
+
+    for i, key in enumerate(keys):
+        first = True
+
+        if color_filter is not None:
+            c = color_filter(key, i)
+        else:
+            c = cmap(i)
+        plot_seeded_validation(
+            paths,
+            key,
+            color=c,
+            subset=subset,
+            seeds=seeds,
+            check_seeds=check_seeds,
+            label=(labels[i] if labels is not None else None),
+            ghost_alpha=ghost_alpha,
+        )
+
     plt.legend()
     plt.xlabel('Frame (M)')
     plt.ylabel('Score')
