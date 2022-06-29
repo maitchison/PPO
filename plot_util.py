@@ -997,6 +997,8 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         if game_log is None:
             print(f"no log for {path} {folder}")
             return None
+        # stub:
+        #print(f"read {folder}")
         game = game_log["params"]["environment"].lower()
         if game not in game_list:
             #print(f"Skipping {game} as not in {game_list}")
