@@ -947,12 +947,12 @@ def random_search(
         search_params:dict,
         envs: list,
         score_thresholds: list=None,
-        count: int = 64,
-        process_up_to=None,
-        base_seed=0,
+        run_count: int = 64,
+        run_start=0,
+        run_end=None,
+        seed_base=0,
         hook=None,
         priority=0,
-        run_seed_lookup=None,
 ):
     """
     Improved random search:
@@ -979,22 +979,22 @@ def random_search(
     # this method makes sure categorical samples are well balanced
     for k, v in search_params.items():
         seed = hashlib.sha256(k.encode("UTF-8")).digest()
-        random.seed(int.from_bytes(seed, "big")+base_seed)
+        random.seed(int.from_bytes(seed, "big") + seed_base)
         if type(v) is Categorical:
             samples = []
-            for _ in range(math.ceil(count/len(v._values))):
+            for _ in range(math.ceil(run_count / len(v._values))):
                 samples.extend(v._values)
         elif type(v) is Uniform:
-            samples = np.linspace(v._min, v._max, count)
+            samples = np.linspace(v._min, v._max, run_count)
         elif type(v) is LogUniform:
-            samples = np.logspace(v._min, v._max, base=math.e, num=count)
+            samples = np.logspace(v._min, v._max, base=math.e, num=run_count)
         else:
             raise TypeError(f"Type {type(v)} is invalid.")
 
         random.shuffle(samples)
-        even_dist_samples[k] = samples[:count]
+        even_dist_samples[k] = samples[:run_count]
 
-    for i in range(process_up_to or count):
+    for i in range(run_start, run_end if run_end is not None else run_count):
         sample_params = {}
         for k, v in search_params.items():
             sample_params[k] = even_dist_samples[k][i]
@@ -1034,19 +1034,16 @@ def random_search(
 
         # post-processing hook
         if hook is not None:
-            hook(sample_params)
+            result = hook(i, sample_params)
+            if result is not None:
+                priority = result
 
         for j in range(len(envs)):
             env_name = envs[j]
             main_params['env_name'] = env_name
 
-            if run_seed_lookup is not None:
-                seeds_to_run = run_seed_lookup.get(i, 1)
-            else:
-                seeds_to_run = 1
-
-            for run_seed in range(seeds_to_run):
-                main_params['seed'] = run_seed
+            for run_seed in range(1): # fixed to 1 seed per settings.
+                main_params['seed'] = run_seed*997 + i
                 run_code = f"{(i + run_seed*1000) :04d}"
                 add_job(
                     run,

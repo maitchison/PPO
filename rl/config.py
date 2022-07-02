@@ -202,6 +202,8 @@ class Config(BaseConfig):
         parser.add_argument("--sync_envs", type=str2bool, nargs='?', const=True, default=False,
                             help="Enables synchronous environments (slower, but helpful for debuging env errors).")
         parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
+        parser.add_argument("--precision", type=str, default="medium", help="low|medium|high")
+
 
         # --------------------------------
         # Episodic Discounting
@@ -538,6 +540,7 @@ class Config(BaseConfig):
         self.noisy_return = float()
         self.noisy_reward = float()
         self.noisy_zero = float()
+        self.precision = str()
 
     def get_env_name(self, n: int=0):
         """

@@ -83,6 +83,7 @@ def main():
 
     # import here to make workers load faster / use less memory
     import torch
+    import torch.backends.cudnn, torch.backends.cuda
     from rl import utils, config, rollout
     from rl import ppo
     from rl.config import args
@@ -152,6 +153,21 @@ def main():
         torch.backends.cudnn.run_benchmark = False
     else:
         torch.backends.cudnn.run_benchmark = True
+
+    # sort out our precision..
+    if args.precision == "low":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    elif args.precision == "medium":
+        # these were the old default settings from PyTorch 1.7-1.11 and they make the most sense
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = True
+    elif args.precision == "high":
+        # do not use for convolutions or for matrix multiply...
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    else:
+        raise ValueError(f"Invalid precision mode {args.precision}")
 
     # work out the logging folder...
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
