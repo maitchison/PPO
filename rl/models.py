@@ -423,6 +423,10 @@ class DualHeadNet(nn.Module):
             # give early features to early heads, and late features to later heads
             raise NotImplementedError()
 
+    def mask_feature_weights(self):
+        if self.tvf_features_mask is not None and self.tvf_feature_sparsity > 0:
+            self.tvf_head.weight.data *= self.tvf_features_mask
+
     @property
     def use_tvf(self):
         return self.tvf_fixed_head_horizons is not None
@@ -492,13 +496,9 @@ class DualHeadNet(nn.Module):
             result[f'value'] = value_values
 
             if not exclude_tvf and self.use_tvf:
-
-                # apply feature masking (if needed)
-                if self.tvf_feature_sparsity > 0:
-                    # note, it's a shame we have to do this every time.
-                    # even though they were zeroed out they still become non-zero after an optimizer update.
-                    self.tvf_head.weight.data *= self.tvf_features_mask
-
+                # note, it's a shame we have to do this every time.
+                # even though they were zeroed out they still become non-zero after an optimizer update.
+                self.mask_feature_weights()
                 tvf_values = self.tvf_head(encoder_features)
                 K = len(self.tvf_fixed_head_horizons)
                 result[f'tvf_value'] = tvf_values.reshape([-1, K, len(self.value_head_names)])
@@ -612,6 +612,13 @@ class TVFModel(nn.Module):
             self.rnd_features_max = 0.0
 
         self.set_device_and_dtype(device, dtype)
+
+    def prep_for_save(self):
+        """
+        Just makes model a little smaller before saving.
+        """
+        self.value_net.mask_feature_weights()
+        self.policy_net.mask_feature_weights()
 
     def model_size(self, trainable_only: bool = True):
         model_parameters = filter(lambda p: p.requires_grad, self.parameters()) if trainable_only else self.parameters()

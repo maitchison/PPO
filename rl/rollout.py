@@ -813,6 +813,8 @@ class Runner:
 
     def save_checkpoint(self, filename, step, disable_replay=False, disable_optimizer=False, disable_log=False, disable_env_state=False):
 
+        self.model.prep_for_save()
+
         data = {
             'step': step,
             'ep_count': self.ep_count,
@@ -2138,7 +2140,7 @@ class Runner:
         if args.use_tvf:
             self.log.watch("tvf_gamma", self.tvf_gamma)
             # just want to know th max horizon std, should be about 3 I guess, but also the max.
-            self.log.watch_stats("tvf_return_ext", self.tvf_returns[:, :, -1], display_name="tre")
+            self.log.watch_stats("*tvf_return_ext", self.tvf_returns[:, :, -1])
 
         if self.batch_counter % 4 == 0:
             # this can be a little slow, ~2 seconds, compared to ~40 seconds for the rollout generation.
@@ -2319,7 +2321,7 @@ class Runner:
             # quick check out weight sparsity is correct
             total_edges = np.prod(model.tvf_head.weight.data.shape)
             active_edges = torch.ge(model.tvf_head.weight.data.abs(), 1e-6).sum().detach().cpu().numpy()
-            self.log.watch(f"ae_{label}", active_edges / total_edges)
+            self.log.watch(f"*ae_{label}", active_edges / total_edges)
 
         log_model_sparsity(self.model.value_net, "value")
         log_model_sparsity(self.model.policy_net, "policy")
