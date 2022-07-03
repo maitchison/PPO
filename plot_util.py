@@ -989,6 +989,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         folders = [x for x in folders if f"({seed})" in x]
 
     game_log = None
+    host = None
 
     for folder in folders:
         if folder in ["rl", "roms"]:
@@ -1006,6 +1007,19 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[round(env_step / 1e6)][game].append(ep_score)
 
+        # get host_name
+        if "host" in game_log:
+            hosts = list(set(game_log["host"]))
+            if len(hosts) == 1:
+                if host is None:
+                    host = hosts[0]
+                elif host != hosts[0]:
+                    host = "mixed"
+            else:
+                host = "mixed"
+        else:
+            host = "unknown"
+
     if len(epoch_scores) == 0 or game_log is None:
         return None
 
@@ -1013,6 +1027,8 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     epochs = sorted(epoch_scores.keys())
     for k, v in game_log["params"].items():  # last one will do...
         result[k] = v
+
+    result['hostname'] = host
 
     if len(epochs) == 0:
         return None
@@ -1176,9 +1192,9 @@ def plot_mode(path):
     plt.show()
 
 
-def mean_of_top(X):
+def mean_of_top(X, top_k=5):
     data = sorted(X)
-    return np.mean(data[-5:])
+    return np.mean(data[-top_k:])
 
 
 def min_of_top(X):
@@ -1215,7 +1231,7 @@ def adv_plot(xs, ys, samples, **kwargs):
             del kwargs["label"]
 
 
-def marginalize_categorical(results, var_name, sample_filter=None, setup_figure=True, hold=False, label=None, color="white"):
+def marginalize_categorical(results, var_name, sample_filter=None, setup_figure=True, hold=False, label=None, color="white", top_k=5):
     """
     Show score for given hyperparameter with all other hyperparameters set optimally.
     """
@@ -1236,7 +1252,7 @@ def marginalize_categorical(results, var_name, sample_filter=None, setup_figure=
             print(f"No data for value: {value}")
             data = [0]
 
-        ys_mean.append(mean_of_top(data))
+        ys_mean.append(mean_of_top(data, top_k))
         ys_max.append(np.max(data))
         ys_median.append(np.mean(data))
 
@@ -1432,7 +1448,7 @@ class LogUniform():
         self._force_int = force_int
 
 
-def marginalize(results, search_params, k: str, secondary: str = None, **kwargs):
+def marginalize(results, search_params, k: str, secondary: str = None, top_k=5, **kwargs):
     assert k in results[0], f"{k} is not a valid variable name"
     assert secondary is None or secondary in results[0], f"{secondary} is not a valid variable name"
 
@@ -1483,6 +1499,7 @@ def marginalize(results, search_params, k: str, secondary: str = None, **kwargs)
             label=factor,
             color=color,
             setup_figure=i==0,
+            top_k=top_k,
             #**kwargs,
         )
 

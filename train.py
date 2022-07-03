@@ -70,7 +70,7 @@ def make_model(args, log=None):
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
         tvf_head_bias=args.tvf_head_bias,
-        tvf_head_sparsity=args.tvf_head_sparsity,
+        tvf_feature_sparsity=args.tvf_feature_sparsity,
     )
     return model
 

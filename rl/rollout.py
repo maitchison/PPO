@@ -2314,6 +2314,16 @@ class Runner:
             self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil.epochs,
                                 display_width=0)
 
+        # check model sparsity
+        def log_model_sparsity(model, label):
+            # quick check out weight sparsity is correct
+            total_edges = np.prod(model.tvf_head.weight.data.shape)
+            active_edges = torch.ge(model.tvf_head.weight.data.abs(), 1e-6).sum().detach().cpu().numpy()
+            self.log.watch(f"ae_{label}", active_edges / total_edges)
+
+        log_model_sparsity(self.model.value_net, "value")
+        log_model_sparsity(self.model.policy_net, "policy")
+
         # -------------------------------------------------------------------------
         # Generate Gradient
         # -------------------------------------------------------------------------

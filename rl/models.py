@@ -343,7 +343,7 @@ class DualHeadNet(nn.Module):
             tvf_fixed_head_horizons: Union[None, list] = None,
             tvf_per_head_hidden_units:int = 0,
             tvf_head_bias: bool = True,
-            tvf_head_sparsity: float = 0.0,
+            tvf_feature_sparsity: float = 0.0,
 
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
@@ -381,6 +381,7 @@ class DualHeadNet(nn.Module):
             self.encoder.jit(device)
 
         assert self.encoder.hidden_units == hidden_units
+        assert tvf_per_head_hidden_units == 0, "NIY"
 
         self.encoder_activation_fn = activation_fn
 
@@ -388,46 +389,39 @@ class DualHeadNet(nn.Module):
 
         self.value_head_names = list(value_head_names)
         self.tvf_fixed_head_horizons = tvf_fixed_head_horizons
-
-        def make_value_head(in_features:int, out_features:int):
-            if tvf_per_head_hidden_units > 0:
-                return torch.nn.Sequential(
-                    torch.nn.Linear(in_features, tvf_per_head_hidden_units, bias=tvf_head_bias),
-                    torch.nn.ReLU(),
-                    torch.nn.Linear(tvf_per_head_hidden_units, out_features, bias=tvf_head_bias)
-                )
-            else:
-                return torch.nn.Linear(in_features, out_features, bias=tvf_head_bias)
+        self.tvf_feature_sparsity = tvf_feature_sparsity
 
         # value net can also output a basic value estimate using this head
-        self.value_head = make_value_head(self.encoder.hidden_units, len(value_head_names))
+        self.value_head = torch.nn.Linear(self.encoder.hidden_units, len(value_head_names), bias=tvf_head_bias)
 
         self.tvf_head = None
-        self.tvf_heads = None
         self.tvf_features_mask = None
 
-        self.tvf_head_sparsity = tvf_head_sparsity
-        if self.tvf_head_sparsity > 0:
-            keep_prob = (1 - self.tvf_head_sparsity)
-            g = torch.Generator(device=device)
-            g.manual_seed(99)
-            self.tvf_features_mask = torch.bernoulli(torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32, device=device) * keep_prob, generator=g) / keep_prob
-            self.tvf_features_mask.requires_grad = False
-        elif self.tvf_head_sparsity < 0:
+        if self.tvf_fixed_head_horizons is not None:
+            # faster path, calculate all heads in one go
+            self.tvf_head = torch.nn.Linear(
+                self.encoder.hidden_units,
+                len(tvf_fixed_head_horizons) * len(value_head_names),
+                bias=tvf_head_bias,
+                device=device
+            )
+
+            if self.tvf_feature_sparsity > 0:
+                keep_prob = (1 - self.tvf_feature_sparsity)
+                g = torch.Generator(device=device)
+                g.manual_seed(99) # mask will be recreated on restore (it is not saved) so make sure it's always the same.
+                tvf_features_mask = torch.bernoulli(
+                    torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32,
+                               device=device) * keep_prob, generator=g) / keep_prob
+                tvf_features_mask.requires_grad = False
+                # increase magnitude of weights that are not zeroed out.
+                self.tvf_head.weight.data *= tvf_features_mask
+                self.tvf_features_mask = torch.gt(tvf_features_mask, 0).to(torch.uint8)
+
+
+        elif self.tvf_feature_sparsity < 0:
             # give early features to early heads, and late features to later heads
             raise NotImplementedError()
-
-        if self.tvf_fixed_head_horizons is not None:
-            if tvf_per_head_hidden_units == 0 and self.tvf_head_sparsity == 0:
-                # faster path, calculate all heads in one go
-                self.tvf_head = nn.Linear(self.encoder.hidden_units,
-                                          len(tvf_fixed_head_horizons) * len(value_head_names), bias=tvf_head_bias)
-            else:
-                # processing each head individually can be a bit slow, I might be able to fix this though
-                # maybe using jit? (for the moment I'll just reduce the number of heads and hidden units)
-                self.tvf_heads = torch.nn.ModuleList(
-                    [make_value_head(self.encoder.hidden_units, len(value_head_names)) for _ in self.tvf_fixed_head_horizons]
-                )
 
     @property
     def use_tvf(self):
@@ -498,27 +492,19 @@ class DualHeadNet(nn.Module):
             result[f'value'] = value_values
 
             if not exclude_tvf and self.use_tvf:
-                if self.tvf_head is not None:
-                    # process all heads as a batch if we can
-                    tvf_values = self.tvf_head(encoder_features)
-                    K = len(self.tvf_fixed_head_horizons)
-                    result[f'tvf_value'] = tvf_values.reshape([-1, K, len(self.value_head_names)])
-                    if required_tvf_heads is not None:
-                        # select on the heads needed
-                        result[f'tvf_value'] = result[f'tvf_value'][:, required_tvf_heads]
-                else:
-                    # process individual heads, will be a bit slower
-                    # output will be B, K, VH
-                    if required_tvf_heads is None:
-                        # get all heads
-                        required_tvf_heads = range(len(self.tvf_heads))
 
-                    if self.tvf_head_sparsity > 0:
-                        maybe_sparse = lambda i, X: self.tvf_features_mask[i] * X
-                    else:
-                        maybe_sparse = lambda i, X: X
+                # apply feature masking (if needed)
+                if self.tvf_feature_sparsity > 0:
+                    # note, it's a shame we have to do this every time.
+                    # even though they were zeroed out they still become non-zero after an optimizer update.
+                    self.tvf_head.weight.data *= self.tvf_features_mask
 
-                    result[f'tvf_value'] = torch.stack([self.tvf_heads[i](maybe_sparse(i, encoder_features)) for i in required_tvf_heads], dim=1)
+                tvf_values = self.tvf_head(encoder_features)
+                K = len(self.tvf_fixed_head_horizons)
+                result[f'tvf_value'] = tvf_values.reshape([-1, K, len(self.value_head_names)])
+                if required_tvf_heads is not None:
+                    # select on the heads needed
+                    result[f'tvf_value'] = result[f'tvf_value'][:, required_tvf_heads]
 
         return result
 
@@ -542,7 +528,7 @@ class TVFModel(nn.Module):
             tvf_fixed_head_horizons: Union[None, list] = None,
             tvf_per_head_hidden_units: int = 0,
             tvf_head_bias: bool = True,
-            tvf_head_sparsity: float = 0.0,
+            tvf_feature_sparsity: float = 0.0,
     ):
         """
             Truncated Value Function model
@@ -596,7 +582,7 @@ class TVFModel(nn.Module):
                 tvf_fixed_head_horizons=tvf_fixed_head_horizons,
                 tvf_per_head_hidden_units=tvf_per_head_hidden_units,
                 tvf_head_bias=tvf_head_bias,
-                tvf_head_sparsity=tvf_head_sparsity,
+                tvf_feature_sparsity=tvf_feature_sparsity,
                 n_actions=actions,
                 device=device,
                 **(encoder_args or {})

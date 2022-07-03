@@ -108,7 +108,7 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
         parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
         parser.add_argument("--tvf_head_bias", type=str2bool, default=True, help="Enables bias for tvf heads")
-        parser.add_argument("--tvf_head_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
+        parser.add_argument("--tvf_feature_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
         parser.add_argument("--tvf_include_ext", type=str2bool, default=True, help="Also learn the rediscounted value estimate that will be used for advantages.")
 
 
@@ -475,7 +475,7 @@ class Config(BaseConfig):
         self.tvf_head_weighting = str()
         self.tvf_per_head_hidden_units = int()
         self.tvf_head_bias = bool()
-        self.tvf_head_sparsity = float()
+        self.tvf_feature_sparsity = float()
         self.tvf_include_ext = bool()
 
         self.debug_zero_obs = bool()
@@ -594,6 +594,7 @@ def parse_args(args_override=None):
         'gae_lambda': 'lambda_policy',
         'td_lambda': 'lambda_value',
         'use_compression': 'obs_compression',
+        'tvf_head_sparsity': 'tvf_feature_sparsity',
         'export_video': None,
         'tvf_value_distribution': None,
         'tvf_horizon_distribution': None,
