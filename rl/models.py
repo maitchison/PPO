@@ -410,11 +410,12 @@ class DualHeadNet(nn.Module):
                 keep_prob = (1 - self.tvf_feature_sparsity)
                 g = torch.Generator(device=device)
                 g.manual_seed(99) # mask will be recreated on restore (it is not saved) so make sure it's always the same.
+                # increase magnitude of weights that are not zeroed out.
                 tvf_features_mask = torch.bernoulli(
                     torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32,
                                device=device) * keep_prob, generator=g) / keep_prob
                 tvf_features_mask.requires_grad = False
-                # increase magnitude of weights that are not zeroed out.
+
                 self.tvf_head.weight.data *= tvf_features_mask
                 self.tvf_features_mask = torch.gt(tvf_features_mask, 0).to(torch.uint8)
 
@@ -612,13 +613,6 @@ class TVFModel(nn.Module):
             self.rnd_features_max = 0.0
 
         self.set_device_and_dtype(device, dtype)
-
-    def prep_for_save(self):
-        """
-        Just makes model a little smaller before saving.
-        """
-        self.value_net.mask_feature_weights()
-        self.policy_net.mask_feature_weights()
 
     def model_size(self, trainable_only: bool = True):
         model_parameters = filter(lambda p: p.requires_grad, self.parameters()) if trainable_only else self.parameters()

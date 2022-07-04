@@ -9,7 +9,6 @@ import shlex
 
 from . import compression
 from .logger import Logger, LogVariable
-from .returns import test_return_estimators
 from .rollout import Runner, save_progress
 
 import torch.multiprocessing
@@ -172,10 +171,6 @@ def train(model: models.TVFModel, log: Logger):
     env_step = start_iteration * batch_size
     log_iteration()
     save_progress(log)
-
-    # just to make sure everything is ok...
-    if args.tvf_return_estimator_mode == "verify":
-        test_return_estimators(runner.log)
 
     old_header = None
 

@@ -1449,6 +1449,7 @@ class LogUniform():
 
 
 def marginalize(results, search_params, k: str, secondary: str = None, top_k=5, **kwargs):
+
     assert k in results[0], f"{k} is not a valid variable name"
     assert secondary is None or secondary in results[0], f"{secondary} is not a valid variable name"
 

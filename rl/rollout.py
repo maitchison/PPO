@@ -813,8 +813,6 @@ class Runner:
 
     def save_checkpoint(self, filename, step, disable_replay=False, disable_optimizer=False, disable_log=False, disable_env_state=False):
 
-        self.model.prep_for_save()
-
         data = {
             'step': step,
             'ep_count': self.ep_count,
@@ -2323,8 +2321,9 @@ class Runner:
             active_edges = torch.ge(model.tvf_head.weight.data.abs(), 1e-6).sum().detach().cpu().numpy()
             self.log.watch(f"*ae_{label}", active_edges / total_edges)
 
-        log_model_sparsity(self.model.value_net, "value")
-        log_model_sparsity(self.model.policy_net, "policy")
+        if args.use_tvf:
+            log_model_sparsity(self.model.value_net, "value")
+            log_model_sparsity(self.model.policy_net, "policy")
 
         # -------------------------------------------------------------------------
         # Generate Gradient
