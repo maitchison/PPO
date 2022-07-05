@@ -198,6 +198,13 @@ def main():
     utils.release_lock()
 
 if __name__ == "__main__":
+
+    # quick check that returns work
+    from rl.returns import test_return_estimators
+    for i in range(2):
+        test_return_estimators(seed=i)
+    print("Return verification passed.")
+
     from rl import logger
     log = logger.Logger()
     try:

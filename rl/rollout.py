@@ -2945,7 +2945,7 @@ class Runner:
 
         batch_data["prev_state"] = self.prev_obs.reshape([N*A, *state_shape])
 
-        if args.tvf_include_ext:
+        if not args.use_tvf or args.tvf_include_ext:
             # these are not really needed, maybe they provide better features, I don't know.
             # one issue is that they will be the wrong scale if rediscounting is applied.
             # e.g. if gamma defaults to 0.99997, but these are calculated at 0.999 they might be extremly large
