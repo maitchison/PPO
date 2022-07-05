@@ -2158,7 +2158,7 @@ class Runner:
             self.tvf_returns = add_relative_noise(self.tvf_returns, args.noisy_return)
             self.tvf_returns[:, :, 0] = 0 # by definition...
 
-        if (self.batch_counter * self.N * self.A) >= args.ag_delay:
+        if (self.batch_counter * self.N * self.A) >= args.ag_delay and args.use_tvf:
             if self.batch_counter % 4 == 0:
                 self.estimate_horizon_from_rediscounting()
         else:
