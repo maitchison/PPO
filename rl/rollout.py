@@ -31,6 +31,17 @@ def add_relative_noise(X:np.ndarray, rel_error:float):
     factors = np.asarray(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), dtype=np.float32)
     return X * factors
 
+def _test_interpolate():
+    horizons = np.asarray([0, 1, 2, 10, 100])
+    values = np.asarray([0, 5, 10, -1, 2])[None, :].repeat(11, axis=0)
+    results = interpolate(horizons, values, np.asarray([-100, -1, 0, 1, 2, 3, 4, 99, 100, 101, 200]))
+    expected_results = [0, 0, 0, 5, 10, (7/8)*10+(1/8)*-1, (6/8)*10+(2/8)*-1, 1.96666667, 2, 2, 2]
+    if np.max(np.abs(np.asarray(expected_results) - results)) > 1e-6:
+        print("Expected:", expected_results)
+        print("Found:", results)
+        raise ValueError("Interpolation check failed")
+
+
 def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
     """
     Returns linearly interpolated value from source_values
@@ -63,17 +74,16 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     values = values.reshape(N, K)
     target_horizons = target_horizons.reshape(N)
 
-    index = np.searchsorted(horizons, target_horizons, side='left')
+    post_index = np.searchsorted(horizons, target_horizons, side='left')
 
     # select out our values
-    pre_index = np.maximum(index-1, 0)
-    post_index = index
+    pre_index = np.maximum(post_index-1, 0)
     value_pre = values[range(N), pre_index]
     value_post = values[range(N), post_index]
 
     dx = (horizons[post_index] - horizons[pre_index])
-    dx[dx == 0] = 1.0 # this only happens when we are at the boundaries, in whic case we have 0/dx, and we just want 0.
-    factor = (target_horizons - horizons[index - 1]) / dx
+    dx[dx == 0] = 1.0 # this only happens when we are at the boundaries, in which case we have 0/dx, and we just want 0.
+    factor = (target_horizons - horizons[pre_index]) / dx
     result = value_pre * (1 - factor) + value_post * factor
     result[post_index == 0] = 0 # these have h<=0 which by definition has value 0
     result = result.reshape(*shape)
@@ -1177,7 +1187,7 @@ class Runner:
         else:
             raise ValueError(f"invalid action distribution {self.action_dist}")
 
-    def trim_horizons(self, tvf_value_estimates, time, mode:str = "interpolate"):
+    def trim_horizons(self, tvf_value_estimates, time, method: str = "timelimit", mode:str = "interpolate"):
         """
         Adjusts horizons by reducing horizons that extend over the timeout back to the timeout.
         This is for a few reasons.
@@ -1198,28 +1208,43 @@ class Runner:
         assert self.tvf_horizons[0] == 0, "First horizon must be zero"
         tvf_value_estimates[:, 0] = 0 # always make sure h=0 is fixed to zero.
 
-        if mode == "off":
+        # step 1: work out the trimmed horizon
+        # output is [A]
+        if method == "off":
             return tvf_value_estimates
-        elif mode == "interpolate":
+        elif method == "timelimit":
+            time_till_termination = max((args.timeout / args.frame_skip) - time, self.N)
+        elif method == "av_term":
+            time_till_termination = np.maximum(np.percentile(self.episode_length_buffer, 95).astype(int) - time, self.N)
+        elif method == "est_term":
+            # todo implement per state estimate of remaining time
+            raise NotImplementedError()
+        else:
+            raise ValueError(f"Invalid trimming method {method}")
+
+        # step 2: calculate new estimates
+        if mode == "interpolate":
+            # this can work a little bit better if trimming is only minimal.
+            # however, all horizons still end up sharing the same estimate.
             old_tvf_value_estimates = tvf_value_estimates.copy()
             A, K, VH = tvf_value_estimates.shape
-            for k, h in enumerate(self.tvf_horizons):
-                target_horizons = np.minimum(h, (args.timeout / args.frame_skip) - time)
-                if np.min(target_horizons) < h:
-                    # these are some horizons than can be shortened
-                    for vh in range(VH):
-                        # note: all value heads could be done at once...
-                        tvf_value_estimates[:, k, vh] = interpolate(
-                            np.asarray(self.tvf_horizons, dtype=np.int32),
-                            old_tvf_value_estimates[..., vh],
-                            target_horizons
-                        )
+            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
+            trimmed_value_estimate = interpolate(
+                    np.asarray(self.tvf_horizons),
+                    old_tvf_value_estimates[..., 0], # select final value head
+                    time_till_termination
+                )
+            for a in range(A):
+                tvf_value_estimates[a, trimmed_ks[a]:] = trimmed_value_estimate[a]
             return tvf_value_estimates
         elif mode == "average":
             # we can use any horizon with h > remaining_time interchangeably with h.
             # so may as well average over them.
 
             # first compute the averaged values
+            # output is averaged_tvf_value_estimate of dims [A, K] where averaged_tvf_value_estimate[:, k] is the
+            # sum over the final K-k horizons. For example averaged_tvf_value_estimate[:,-1] is the final horizon
+            # and averaged_tvf_value_estimate[:,-2] is the average of the final two horizon estimates.
             averaged_tvf_value_estimates = tvf_value_estimates.copy()
             accumulator = averaged_tvf_value_estimates[:, -1].copy()
             counter = 1
@@ -1228,15 +1253,76 @@ class Runner:
                 counter += 1
                 averaged_tvf_value_estimates[:, k] = accumulator / counter
 
-            trimmed_horizon = (args.timeout / args.frame_skip) - time
-            trimmed_ks = np.searchsorted(self.tvf_horizons, trimmed_horizon)
+            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
 
             for a, trimmed_k in enumerate(trimmed_ks):
                 if trimmed_k >= len(self.tvf_horizons)-1:
+                    # this means no trimming
                     continue
+                # using this method all horizons longer than ttt can be trimmed to the same value
+                # it might be better to use the average up to the h rather than up to h_max
                 tvf_value_estimates[a, trimmed_k:] = averaged_tvf_value_estimates[a, trimmed_k]
 
             return tvf_value_estimates
+        elif mode == "average2":
+            # average up to h but no further
+            # implementation is a bit slow, drop if it's not better.
+            old_value_estimates = tvf_value_estimates.copy()
+            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
+            for a, trimmed_k in enumerate(trimmed_ks):
+                if trimmed_k >= len(self.tvf_horizons)-1:
+                    # this means no trimming
+                    continue
+                acc = 0
+                counter = 0
+                for k in range(trimmed_k, self.K):
+                    # note: this could be tvf_value_estimate, but I want to make it explicit that we're using
+                    # the original values.
+                    acc += old_value_estimates[a, k]
+                    counter += 1
+                    tvf_value_estimates[a, k] = acc / counter
+            return tvf_value_estimates
+        elif mode == "average3":
+            # average up to but not including h but no further
+            # this is based on the following ideas
+            # 1. average over as many horizons as we can.
+            # 2. try to not refer to ourself (bootstrap) or any future horizons.
+            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
+            v2 = tvf_value_estimates.copy()
+            # note, this is going to be quite slow...
+            for a, trimmed_k in enumerate(trimmed_ks):
+                if trimmed_k >= len(self.tvf_horizons)-1:
+                    # this means no trimming
+                    continue
+                # if we can trim to head x then we want...
+                # head_x = head_x
+                # head_{x+1} = head_x
+                # head_{x+2} = (head_x+head_{x+1}) / 2
+                # ....
+                # the final head is never used, as we only use heads *less* than ourselves, and the last head can
+                # never be less than any head (unless no trimming is required)
+                averages = np.cumsum(tvf_value_estimates[a, trimmed_k:-1, 0]) / np.arange(1, self.K-trimmed_k, dtype=np.float32)
+                tvf_value_estimates[a, trimmed_k+1:, 0] = averages
+
+                # old method
+                # acc = float(tvf_value_estimates[a, trimmed_k, 0])
+                # counter = 1
+                # for k in range(trimmed_k+1, self.K):
+                #     old_value = tvf_value_estimates[a, k, 0]
+                #     tvf_value_estimates[a, k, 0] = acc / counter
+                #     acc += old_value
+                #     counter += 1
+
+            return tvf_value_estimates
+        elif mode == "substitute":
+            # just use the smallest h we can, very simple.
+            untrimmed_ks = np.arange(self.K)[None, :]
+            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)[:, None]
+            trimmed_ks = np.minimum(trimmed_ks, untrimmed_ks)
+            tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], trimmed_ks, axis=1)
+            return tvf_value_estimates[:, :, None]
+        else:
+            raise ValueError(f"Invalid trimming mode {mode}")
 
     @torch.no_grad()
     def generate_rollout(self):
@@ -1339,12 +1425,18 @@ class Runner:
 
             # take advantage of the fact that V_h = V_min(h, remaining_time).
             if args.use_tvf:
+                start_time = clock.time()
                 tvf_values = model_out["tvf_value"].cpu().numpy()
                 self.tvf_value[t] = self.trim_horizons(
                     tvf_values,
                     prev_time,
-                    mode=args.tvf_horizon_trimming
+                    method=args.tvf_trimming,
+                    mode=args.tvf_trimming_mode
                 )
+                ms = (clock.time() - start_time) * 100
+                # stub:
+                print(ms)
+                self.log.watch_mean("trimming", ms)
 
             # get all the information we need from the model
             self.all_obs[t] = upload_if_needed(prev_obs)
@@ -1370,7 +1462,9 @@ class Runner:
         if args.use_tvf:
             self.tvf_value[-1] = self.trim_horizons(
                 final_model_out["tvf_value"].cpu().numpy(),
-                self.time, mode=args.tvf_horizon_trimming
+                self.time,
+                method=args.tvf_trimming,
+                mode=args.tvf_trimming_mode
             )
 
         # turn off train mode (so batch norm doesn't update more than once per example)
