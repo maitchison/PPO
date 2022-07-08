@@ -805,11 +805,13 @@ class Runner:
                 verbose=True
             )
 
-        if args.reward_normalization:
+        if args.reward_normalization != "off":
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
                 gamma=args.reward_normalization_gamma,
                 ed_type=args.ed_mode if args.use_ed else None,
+                mode=args.reward_normalization,
+                clip=args.reward_normalization_clipping,
             )
 
         if args.max_repeated_actions > 0:
@@ -1216,8 +1218,8 @@ class Runner:
             time_till_termination = max((args.timeout / args.frame_skip) - time, self.N)
         elif method == "av_term":
             time_till_termination = np.maximum(np.percentile(self.episode_length_buffer, 95).astype(int) - time, 0) + 64
-            self.log.watch_mean("ttt_ep_length", np.percentile(self.episode_length_buffer, 95).astype(int))
-            self.log.watch_mean("ttt_ep_std", np.std(self.episode_length_buffer))
+            self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, 95).astype(int))
+            self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
             self.log.watch_stats("ttt", time_till_termination, display_width=0)
         elif method == "est_term":
             # todo implement per state estimate of remaining time
@@ -1501,6 +1503,9 @@ class Runner:
                     **aux_fields,
                 )
             )
+
+        # remember what reward scale was used when we generated this rollout
+        self.stats['rollout_reward_scale'] = self.reward_scale
 
     def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
         """
@@ -2161,6 +2166,23 @@ class Runner:
         else:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
+
+        # update normalization constants in custom mode (which is always a step behind true returns)
+        if args.reward_normalization == "custom":
+            # adjust scale so that returns have unit variance.
+            # note, this doesn't work if reward clipping is enabled
+            scaled_returns = td_lambda(
+                self.ext_rewards,
+                ext_value_estimates[:N],
+                ext_value_estimates[N],
+                self.terminals,
+                self.gamma,
+                args.lambda_value,
+            )
+            norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
+            unscaled_return_variance = np.var(scaled_returns * norm_wrapper.std)
+            alpha = 0 if self.step == 0 else 1-((self.N*self.A)/1e6)
+            norm_wrapper.ret_var = norm_wrapper.ret_var * alpha + (1-alpha) * unscaled_return_variance
 
         if args.use_ed:
             # most of these requirements aren't strictly needed, I just can' be bothered coding them up.
@@ -2862,7 +2884,7 @@ class Runner:
         if args.noisy_zero > 0:
             # no reward scaling for noisy zero rewards.
             return 1.0
-        if args.reward_normalization:
+        if args.reward_normalization != "off":
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
         else:

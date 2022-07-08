@@ -7,9 +7,10 @@ from bisect import bisect_left
 
 def gamma_plot(path: str, color, key:str, label=None, seeds=5, subset='Atari_3_Val', x_offset=0):
     # show scores for td vs gae returns
+    gammas = ["0.99", "0.999", "0.9999", "0.99997", "1.0"]
     keys = []
-    for gamma in ["99", "999", "9999", "99997", "inf"]:
-        keys.append(f'{key}_{gamma} ')
+    for gamma in gammas:
+        keys.append(f'{key} {gamma} ')
 
     xs = range(50)  # epochs
     y_list = [[] for _ in xs]
@@ -19,7 +20,7 @@ def gamma_plot(path: str, color, key:str, label=None, seeds=5, subset='Atari_3_V
         label = key
 
     plot_xs = []
-    xs = [str(x) for x in ["0.99", "0.999", "0.9999", "0.99997", "inf"]]
+    xs = [str(x) for x in gammas]
     ys = []
     errs = []
 

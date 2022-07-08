@@ -746,7 +746,7 @@ class VecRepeatedActionPenalty(gym.Wrapper):
 
 class VecNormalizeRewardWrapper(gym.Wrapper):
     """
-    Normalizes rewards such that returns are unit normal.
+    Normalizes rewards such that returns are roughly unit variance.
     Vectorized version.
     Also clips rewards
     """
@@ -759,11 +759,16 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
             clip: float = 10.0,
             scale: float = 1.0,
             returns_transform=lambda x: x,
+            mode: str = "rms",
             ed_type: Optional[str] = None,
             ed_bias: float = 1.0,
     ):
         """
         Normalizes returns
+        mode:
+            rms uses running variance over entire history,
+            ema uses ema over 5M steps.
+            custom requires setting of ret_std exterminally
         """
         super().__init__(env)
 
@@ -773,9 +778,11 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.ret_rms = utils.RunningMeanStd(shape=())
         self.gamma = gamma
         self.scale = scale
+        self.mode = mode
         self.returns_transform = returns_transform
         self.ed_type = ed_type
         self.ed_bias = ed_bias
+        self.ret_var = 0.0
         if initial_state is not None:
             self.ret_rms.restore_state(initial_state)
 
@@ -798,14 +805,19 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
             norms = 1
 
         self.ret_rms.update(self.returns_transform(self.current_returns/norms)) # stub /norms
+
+        if self.mode == "ema":
+            # note: we move EMA a bit faster at the beginning
+            alpha = 1 - (len(dones) / min(self.ret_rms.count, 1e6))
+            self.ret_var = alpha * self.ret_var + (1 - alpha) * np.var(self.current_returns)
+
         self.current_returns = self.current_returns * (1-dones)
 
         scaled_rewards = rewards / self.std
         # print(self.current_returns.max())
         # print(scaled_rewards.max())
-        if self.clip is not None:
+        if self.clip is not None and self.clip >= 0:
             rewards_copy = scaled_rewards.copy()
-
             scaled_rewards = np.clip(scaled_rewards, -self.clip, +self.clip)
             clips = np.sum(rewards_copy != scaled_rewards)
             if clips > 0:
@@ -822,13 +834,20 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
 
     @property
     def std(self):
-        return math.sqrt(self.ret_rms.var + self.epsilon)
+        if self.mode == "rms":
+            return math.sqrt(self.ret_rms.var + self.epsilon)
+        elif self.mode in ["ema", "custom"]:
+            return math.sqrt(self.ret_var + self.epsilon)
+        else:
+            raise ValueError(f"Invalid mode {self.mode}")
 
     def save_state(self, buffer):
         buffer["ret_rms"] = self.ret_rms.save_state()
+        buffer["ret_var"] = self.ret_var
         buffer["current_returns"] = self.current_returns
 
     def restore_state(self, buffer):
+        self.ret_var = buffer["ret_var"]
         self.ret_rms.restore_state(buffer["ret_rms"])
         self.current_returns = buffer["current_returns"]
 

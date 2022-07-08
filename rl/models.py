@@ -614,6 +614,22 @@ class TVFModel(nn.Module):
 
         self.set_device_and_dtype(device, dtype)
 
+    def adjust_value_scale(self, factor: float):
+        """
+        Scales the value predictions of all models by given amount by scaling weights on the final layer.
+        """
+        if self.architecture == "single":
+            models = [self.policy_net]
+        elif self.architecture == "dual":
+            models = [self.policy_net, self.value_net]
+        else:
+            raise ValueError(f"Invalid architecture {self.architecture}")
+
+        for model in models:
+            model.value_head.weight.data *= factor
+            if model.tvf_head is not None:
+                model.value_head.weight.data *= factor
+
     def model_size(self, trainable_only: bool = True):
         model_parameters = filter(lambda p: p.requires_grad, self.parameters()) if trainable_only else self.parameters()
         return sum([np.prod(p.size()) for p in model_parameters])

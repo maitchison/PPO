@@ -246,7 +246,8 @@ class Config(BaseConfig):
         parser.add_argument("--per_step_termination_probability", type=float, default=0.0,
                             help="Probability that each step will result in unexpected termination (used to add noise to value).")
         parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
-        parser.add_argument("--reward_normalization", type=str2bool, default=True)
+        parser.add_argument("--reward_normalization", type=str, default="rms", help="off|rms|ema")
+        parser.add_argument("--reward_normalization_clipping", type=float, default=10, help="how much to clip rewards after normalization, negative to disable")
         parser.add_argument("--deferred_rewards", type=int, default=0,
                             help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
         # (atari)
@@ -290,6 +291,10 @@ class Config(BaseConfig):
         parser.add_argument("--advantage_clipping", type=float, default=None, help="Advantages will be clipped to this, (after normalization)")
         parser.add_argument("--ppo_epsilon_anneal", type=str2bool, nargs='?', const=True, default=False,
                             help="Anneals learning rate to 0 (linearly) over training") # remove
+
+        parser.add_argument("--auto_weight_scaling", type=str2bool, default=False,
+                            help="When reward scale changes scale final layer of value predictions to compensate.")
+
 
         # --------------------------------
         # TVF
@@ -436,7 +441,8 @@ class Config(BaseConfig):
         self.noop_duration = int()
         self.per_step_termination_probability = float()
         self.reward_clipping = str()
-        self.reward_normalization = bool()
+        self.reward_normalization = str()
+        self.reward_normalization_clipping = float()
         self.deferred_rewards = int()
         self.resolution = str()
         self.color = bool()
@@ -481,6 +487,7 @@ class Config(BaseConfig):
 
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
+        self.auto_weight_scaling = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()
@@ -706,6 +713,19 @@ def parse_args(args_override=None):
         args.tvf_horizon_trimming = "off"
     if str(args.tvf_horizon_trimming) == 'True':
         args.tvf_horizon_trimming = "interpolate"
+
+    # normalization used to be a bool
+    try:
+        bool_value = str2bool(args.reward_normalization)
+        print(f"Warning! Using deprecated version of {FAIL}reward_normalization {ENDC}. This should now be a string, not a bool.")
+        if bool_value:
+            args.reward_normalization = "rms"
+        else:
+            args.reward_normalization = "off"
+    except Exception as e:
+        # this just means we are not using the old bool values
+        pass
+
 
     if args.use_ag and args.ag_mode in ['sns', 'shadow']:
         assert 'value_heads' in ast.literal_eval(args.sns_labels), "sns_labels must include value_head"

@@ -124,8 +124,10 @@ if __name__ == "__main__":
     elif mode == "print":
         print_experiments(job_filter)
     elif mode == "slurm":
+        print(f"Generating slurm scripts.")
         generate_slurm(experiment=experiment_filter or "job",  job_filter=job_filter, st=TEMPLATE_2080ti)
         generate_slurm(experiment=experiment_filter or "job", job_filter=job_filter, st=TEMPLATE_3090)
+        print("Done.")
     elif mode == "clash":
         fix_clashes()
     elif mode == "fps":
