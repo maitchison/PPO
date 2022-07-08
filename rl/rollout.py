@@ -1341,6 +1341,8 @@ class Runner:
 
         self.model.train()
 
+        reward_scale_before_rollout = self.reward_scale
+
         self.int_rewards *= 0
         self.ext_rewards *= 0
         self.value *= 0
@@ -1384,7 +1386,6 @@ class Runner:
             if args.noisy_zero >= 0:
                 ext_rewards = np.random.normal(0, args.noisy_zero, size=ext_rewards.shape).astype(np.float32)
                 raw_rewards *= 0
-
 
             self.episode_score += raw_rewards
             self.episode_len += 1
@@ -1505,7 +1506,15 @@ class Runner:
             )
 
         # remember what reward scale was used when we generated this rollout
-        self.stats['rollout_reward_scale'] = self.reward_scale
+        # note, we ignore the first update as reward scale may initialize to 0.
+        if args.auto_weight_scaling and self.step > 0:
+            ratio = self.reward_scale / reward_scale_before_rollout
+            self.log.watch_mean("rs_ratio", ratio)
+            self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext)
+            # just a quick check... really just want to make sure nothing is exploding or zeroing out.
+            self.log.watch_mean("rs_tmag", self.model.value_net.tvf_head.weight.data[-1].std()) # just look at final head
+            self.log.watch_mean("rs_vmag", self.model.value_net.value_head.weight.data.std())
+
 
     def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
         """
@@ -2166,23 +2175,6 @@ class Runner:
         else:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
-
-        # update normalization constants in custom mode (which is always a step behind true returns)
-        if args.reward_normalization == "custom":
-            # adjust scale so that returns have unit variance.
-            # note, this doesn't work if reward clipping is enabled
-            scaled_returns = td_lambda(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_value,
-            )
-            norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
-            unscaled_return_variance = np.var(scaled_returns * norm_wrapper.std)
-            alpha = 0 if self.step == 0 else 1-((self.N*self.A)/1e6)
-            norm_wrapper.ret_var = norm_wrapper.ret_var * alpha + (1-alpha) * unscaled_return_variance
 
         if args.use_ed:
             # most of these requirements aren't strictly needed, I just can' be bothered coding them up.

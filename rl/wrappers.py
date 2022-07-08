@@ -836,7 +836,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     def std(self):
         if self.mode == "rms":
             return math.sqrt(self.ret_rms.var + self.epsilon)
-        elif self.mode in ["ema", "custom"]:
+        elif self.mode == "ema":
             return math.sqrt(self.ret_var + self.epsilon)
         else:
             raise ValueError(f"Invalid mode {self.mode}")

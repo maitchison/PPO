@@ -614,7 +614,7 @@ class TVFModel(nn.Module):
 
         self.set_device_and_dtype(device, dtype)
 
-    def adjust_value_scale(self, factor: float):
+    def adjust_value_scale(self, factor: float, process_value=True, process_tvf=True):
         """
         Scales the value predictions of all models by given amount by scaling weights on the final layer.
         """
@@ -626,8 +626,9 @@ class TVFModel(nn.Module):
             raise ValueError(f"Invalid architecture {self.architecture}")
 
         for model in models:
-            model.value_head.weight.data *= factor
-            if model.tvf_head is not None:
+            if process_value:
+                model.value_head.weight.data *= factor
+            if model.tvf_head is not None and process_tvf:
                 model.value_head.weight.data *= factor
 
     def model_size(self, trainable_only: bool = True):
