@@ -992,6 +992,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     host = None
 
     for folder in folders:
+
         if folder in ["rl", "roms"]:
             continue
         game_log = read_log(folder)
@@ -999,7 +1000,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
             print(f"no log for {path} {folder}")
             return None
         # stub:
-        #print(f"read {folder}")
+        # print(f"read {folder}")
         game = game_log["params"]["environment"].lower()
         if game not in game_list:
             #print(f"Skipping {game} as not in {game_list}")
@@ -1726,7 +1727,10 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
 
     found_seeds = 0
 
-    for seed in range(1, seeds + 1):
+    if type(seeds) is int:
+        seeds = range(1, seeds + 1)
+
+    for seed in seeds:
         result = read_combined_log(path, key, subset=subset, seed=seed)
         if result is None:
             if check_seeds:
