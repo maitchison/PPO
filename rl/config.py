@@ -175,6 +175,8 @@ class Config(BaseConfig):
         parser.add_argument("--limit_epochs", type=int, default=None, help="Train only up to this many epochs.")
         parser.add_argument("--checkpoint_compression", type=str2bool, default=True, help="Enables checkpoint compression.")
         parser.add_argument("--save_model_interval", type=int, default=0, help="Period for which to saves model history during training (uses a lot of space!). 0 = off.")
+        parser.add_argument("--initial_model", type=str, default=None,
+                            help="path to model to load for initialization")
         parser.add_argument("--obs_compression", type=str2bool, default=False, help="Use LZ4 compression on states (around 20x smaller), but is 10% slower")
         parser.add_argument("--device", type=str, default="cpu", help="Device to use [cpu|cuda:n|auto]")
         parser.add_argument("--upload_batch", type=str2bool, default=False, help='Uploads an entire batch to GPU, faster, but uses more GPU RAM.')
@@ -294,6 +296,12 @@ class Config(BaseConfig):
 
         parser.add_argument("--auto_weight_scaling", type=str2bool, default=False,
                             help="When reward scale changes scale final layer of value predictions to compensate.")
+        parser.add_argument("--auto_value_scaling", type=str2bool, default=False,
+                            help="When reward scale changes scale value estimates to match.")
+        parser.add_argument("--auto_reward_scaling", type=str2bool, default=True,
+                            help="")
+        parser.add_argument("--auto_scaling_factor", type=float, default=1.0,
+                            help="Set to 1.0")
 
 
         # --------------------------------
@@ -389,6 +397,7 @@ class Config(BaseConfig):
         self.experiment_name = str()
         self.run_name = str()
         self.restore = str()
+        self.initial_model = str()
         self.reference_policy = object()
         self.workers = int()
         self.threads = int()
@@ -488,6 +497,9 @@ class Config(BaseConfig):
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
         self.auto_weight_scaling = bool()
+        self.auto_value_scaling = bool()
+        self.auto_reward_scaling = bool()
+        self.auto_scaling_factor = float()
 
         self.use_ag = bool()
         self.ag_mode = str()

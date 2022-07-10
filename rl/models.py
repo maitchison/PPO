@@ -629,7 +629,7 @@ class TVFModel(nn.Module):
             if process_value:
                 model.value_head.weight.data *= factor
             if model.tvf_head is not None and process_tvf:
-                model.value_head.weight.data *= factor
+                model.tvf_head.weight.data *= factor
 
     def model_size(self, trainable_only: bool = True):
         model_parameters = filter(lambda p: p.requires_grad, self.parameters()) if trainable_only else self.parameters()

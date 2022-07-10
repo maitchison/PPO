@@ -1329,6 +1329,41 @@ class Runner:
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
 
+    def apply_reward_scale_adjustment(self, reward_scales):
+        """
+        Adjustes rewards, values estimates, and model weights so that all are using reward_scales[-1]
+
+        @param reward_scales a list of reward scales where reward_scales[0] is the reward scale before the rollout
+            and reward_scale[-1] is the reward scale ofter the rollout has finished. There should be N+1 entries,
+            where N is the length of the rollout.
+
+        """
+
+        if self.step == 0:
+            # first update will have a reward_scale that isn't meaningful.
+            return
+
+        ratio = (reward_scales[-1] / reward_scales[0]) ** args.auto_scaling_factor
+
+        self.log.watch_mean("rs_ratio", ratio)
+        # just a quick check... really just want to make sure nothing is exploding or zeroing out.
+        self.log.watch_mean("rs_tmag", self.model.value_net.tvf_head.weight.data[-1].std()) # just look at final head
+        if args.use_tvf:
+            self.log.watch_mean("rs_vmag", self.model.value_net.value_head.weight.data.std())
+
+        if args.auto_value_scaling:
+            self.value *= ratio
+            self.tvf_value *= ratio
+
+        if args.auto_weight_scaling:
+            self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf)
+
+        # process reward, this just makes sure that all rewards have the reward scale of the final scale
+        if args.auto_reward_scaling:
+            for n in range(self.N):
+                self.ext_rewards[n] *= (reward_scales[-1] / reward_scales[n+1]) ** args.auto_scaling_factor
+
+
     @torch.no_grad()
     def generate_rollout(self):
 
@@ -1341,13 +1376,12 @@ class Runner:
 
         self.model.train()
 
-        reward_scale_before_rollout = self.reward_scale
-
         self.int_rewards *= 0
         self.ext_rewards *= 0
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
+        reward_scales = [self.reward_scale]
 
         for k in self.stats.keys():
             if k.startswith("batch_"):
@@ -1366,6 +1400,9 @@ class Runner:
                 update_normalization=True
             )
 
+            # if reward scale has changed the value estimates will be wrong, so update them here.
+            # ignore on first step as old reward scale might be 0.
+
             # sample actions and run through environment.
             actions = self.sample_actions(model_out)
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
@@ -1382,6 +1419,9 @@ class Runner:
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
+
+            # record the reward scale used to generate this reward
+            reward_scales.append(self.reward_scale)
 
             if args.noisy_zero >= 0:
                 ext_rewards = np.random.normal(0, args.noisy_zero, size=ext_rewards.shape).astype(np.float32)
@@ -1471,6 +1511,9 @@ class Runner:
                 mode=args.tvf_trimming_mode
             )
 
+        # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
+        self.apply_reward_scale_adjustment(reward_scales)
+
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
 
@@ -1504,17 +1547,6 @@ class Runner:
                     **aux_fields,
                 )
             )
-
-        # remember what reward scale was used when we generated this rollout
-        # note, we ignore the first update as reward scale may initialize to 0.
-        if args.auto_weight_scaling and self.step > 0:
-            ratio = self.reward_scale / reward_scale_before_rollout
-            self.log.watch_mean("rs_ratio", ratio)
-            self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext)
-            # just a quick check... really just want to make sure nothing is exploding or zeroing out.
-            self.log.watch_mean("rs_tmag", self.model.value_net.tvf_head.weight.data[-1].std()) # just look at final head
-            self.log.watch_mean("rs_vmag", self.model.value_net.value_head.weight.data.std())
-
 
     def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
         """

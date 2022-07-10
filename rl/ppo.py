@@ -10,6 +10,7 @@ import shlex
 from . import compression
 from .logger import Logger, LogVariable
 from .rollout import Runner, save_progress
+from .utils import Color
 
 import torch.multiprocessing
 
@@ -87,23 +88,32 @@ def train(model: models.TVFModel, log: Logger):
     if args.restore == "always" and not has_checkpoint:
         raise Exception(f"Error: no restore point at {args.log_folder} found.")
 
-    if has_checkpoint and args.restore in ['auto', 'always']:
-        log.info("Previous checkpoint detected.")
-        checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
-        restored_step = runner.load_checkpoint(checkpoint_path)
-        log = runner.log
-        log.info("  (resumed from step {:.0f}M)".format(restored_step / 1000 / 1000))
-        start_iteration = (restored_step // batch_size) + 1
-        walltime = log["walltime"]
-        did_restore = True
-        # fixup log path (incase the folder was renamed changed between saves)
-        log.csv_path = os.path.join(args.log_folder, "training_log.csv")
-        log.txt_path = os.path.join(args.log_folder, "log.txt")
-    else:
-        # do not restore.
+    if args.initial_model is not None:
+        # load the model but start from step 0. with a new log and in a new folder
+        runner.load_checkpoint(os.path.join(args.log_folder, args.initial_model))
+        runner.log = log
         start_iteration = 0
         walltime = 0
         did_restore = False
+        log.info(f"Initialized with reference policy {Color.OKGREEN}{args.initial_model}{Color.ENDC}.")
+    else:
+        if has_checkpoint and args.restore in ['auto', 'always']:
+            log.info("Previous checkpoint detected.")
+            checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
+            restored_step = runner.load_checkpoint(checkpoint_path)
+            log = runner.log
+            log.info("  (resumed from step {:.0f}M)".format(restored_step / 1000 / 1000))
+            start_iteration = (restored_step // batch_size) + 1
+            walltime = log["walltime"]
+            did_restore = True
+            # fixup log path (incase the folder was renamed changed between saves)
+            log.csv_path = os.path.join(args.log_folder, "training_log.csv")
+            log.txt_path = os.path.join(args.log_folder, "log.txt")
+        else:
+            # do not restore.
+            start_iteration = 0
+            walltime = 0
+            did_restore = False
 
     if not did_restore:
         log.log("To rerun experiment use:")
