@@ -1215,10 +1215,10 @@ class Runner:
         if method == "off":
             return tvf_value_estimates
         elif method == "timelimit":
-            time_till_termination = max((args.timeout / args.frame_skip) - time, self.N)
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, self.N)
         elif method == "av_term":
-            time_till_termination = np.maximum(np.percentile(self.episode_length_buffer, 95).astype(int) - time, 0) + 64
-            self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, 95).astype(int))
+            time_till_termination = np.maximum(np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int) - time, 0) + args.tvf_at_minh
+            self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int))
             self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
             self.log.watch_stats("ttt", time_till_termination, display_width=0)
         elif method == "est_term":
