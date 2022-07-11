@@ -208,6 +208,9 @@ class Config(BaseConfig):
                             help="Enables synchronous environments (slower, but helpful for debuging env errors).")
         parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
         parser.add_argument("--precision", type=str, default="medium", help="low|medium|high")
+        parser.add_argument("--weight_init", type=str, default="default", help="default|xavier|orthogonal")
+        parser.add_argument("--weight_scale", type=float, default=1.0)
+
 
 
         # --------------------------------
@@ -252,6 +255,13 @@ class Config(BaseConfig):
         parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
         parser.add_argument("--reward_normalization", type=str, default="rms", help="off|rms|ema")
         parser.add_argument("--reward_normalization_clipping", type=float, default=10, help="how much to clip rewards after normalization, negative to disable")
+        parser.add_argument("--reward_normalization_horizon", type=int, default=5e6, help="how much to smooth variance estimates for ema mode.")
+        parser.add_argument("--reward_normalization_compensation", type=str2bool, default=False,
+                            help="")
+
+        parser.add_argument("--reward_curve", type=float, default=-1,
+                            help="Rewards get larger over time, set to 1/1000 or so. Negative means disabled.")
+
         parser.add_argument("--deferred_rewards", type=int, default=0,
                             help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
         # (atari)
@@ -295,16 +305,6 @@ class Config(BaseConfig):
         parser.add_argument("--advantage_clipping", type=float, default=None, help="Advantages will be clipped to this, (after normalization)")
         parser.add_argument("--ppo_epsilon_anneal", type=str2bool, nargs='?', const=True, default=False,
                             help="Anneals learning rate to 0 (linearly) over training") # remove
-
-        parser.add_argument("--auto_weight_scaling", type=str2bool, default=False,
-                            help="When reward scale changes scale final layer of value predictions to compensate.")
-        parser.add_argument("--auto_value_scaling", type=str2bool, default=False,
-                            help="When reward scale changes scale value estimates to match.")
-        parser.add_argument("--auto_reward_scaling", type=str2bool, default=True,
-                            help="")
-        parser.add_argument("--auto_scaling_factor", type=float, default=1.0,
-                            help="Set to 1.0")
-
 
         # --------------------------------
         # TVF
@@ -454,6 +454,8 @@ class Config(BaseConfig):
         self.reward_clipping = str()
         self.reward_normalization = str()
         self.reward_normalization_clipping = float()
+        self.reward_normalization_horizon = float()
+        self.reward_curve = float()
         self.deferred_rewards = int()
         self.resolution = str()
         self.color = bool()
@@ -468,6 +470,8 @@ class Config(BaseConfig):
         self.embed_action = bool()
         self.embed_state = bool()
         self.atari_rom_check = bool()
+        self.weight_init = str()
+        self.weight_scale = float()
 
         self.ppo_vf_coef = float()
         self.entropy_bonus = float()
@@ -500,10 +504,7 @@ class Config(BaseConfig):
 
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
-        self.auto_weight_scaling = bool()
-        self.auto_value_scaling = bool()
-        self.auto_reward_scaling = bool()
-        self.auto_scaling_factor = float()
+        self.reward_normalization_compensation = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()

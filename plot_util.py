@@ -1047,7 +1047,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
             #result[f"{game.lower()}_score"].append(score)
             result[f"{game}_norm"].append(norm_score)
             weighted_score += weight * np.log10(1 + max(norm_score, 0))
-        weighted_score = 10 ** weighted_score - 1
+        weighted_score = (10 ** weighted_score) - 1
         result["score"].append(weighted_score)
         result["env_step"].append(epoch * 1e6)
         result["epoch"].append(epoch)
@@ -1057,12 +1057,13 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
 
     result["score_alt"] = np.mean(result["score"][-5:])  # last 5 epochs
 
-    score_list = [
-        weight * np.mean(result[f"{game.lower()}_norm"][-5:]) for game, weight in zip(game_list, game_weights)
-    ]
+    score_list = []
+    for game, weight in zip(game_list, game_weights):
+        weighted_log_score = weight * np.log10(1+np.maximum(np.mean(result[f"{game.lower()}_norm"][-5:]), 0))
+        score_list.append(weighted_log_score)
 
     result["score_min"] = round(min(score_list))
-    result["score_list"] = tuple(round(x) for x in score_list)
+    result["score_list"] = tuple(round(x, 2) for x in score_list)
 
     result["final_epoch"] = result["epoch"][-1] + 1 # if we processed epoch 2.x then say we went up to epoch 3.
     result["run_name"] = key
@@ -1728,7 +1729,7 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
     found_seeds = 0
 
     if type(seeds) is int:
-        seeds = range(1, seeds + 1)
+        seeds = list(range(1, seeds + 1))
 
     for seed in seeds:
         result = read_combined_log(path, key, subset=subset, seed=seed)

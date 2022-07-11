@@ -71,6 +71,8 @@ def make_model(args, log=None):
         freeze_observation_normalization=args.freeze_observation_normalization,
         tvf_head_bias=args.tvf_head_bias,
         tvf_feature_sparsity=args.tvf_feature_sparsity,
+        weight_init=args.weight_init,
+        weight_scale=args.weight_scale,
     )
     return model
 

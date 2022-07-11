@@ -190,6 +190,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
             raise ValueError("reward_clipping should be off, sqrt, or a float")
         env = wrappers.ClipRewardWrapper(env, clip)
 
+    if args.reward_curve > 0:
+        env = wrappers.RewardCurveWrapper(env, args.reward_curve)
+
     env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
 
     if args.terminal_on_loss_of_life:

@@ -348,6 +348,9 @@ class DualHeadNet(nn.Module):
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
 
+            weight_init: str = "default",
+            weight_scale: float = 1.0,
+
             device=None,
             **kwargs
     ):
@@ -418,11 +421,29 @@ class DualHeadNet(nn.Module):
 
                 self.tvf_head.weight.data *= tvf_features_mask
                 self.tvf_features_mask = torch.gt(tvf_features_mask, 0).to(torch.uint8)
-
-
         elif self.tvf_feature_sparsity < 0:
             # give early features to early heads, and late features to later heads
             raise NotImplementedError()
+
+        # perform weight initialization
+        params = []
+        for param in self.parameters():
+            # we ignore the bias weights, and leave them as they were.
+            if len(param.data.shape) > 1:
+                params.append(param.data)
+
+        for param in params:
+            if weight_init == "default":
+                if weight_scale != 1.0:
+                    # just in case PyTorch decides to 16bit round our linear multiplies!
+                    param *= weight_scale
+            elif weight_init == "xavier":
+                torch.nn.init.xavier_uniform_(param, gain=weight_scale)
+            elif weight_init == "orthogonal":
+                torch.nn.init.orthogonal_(param, gain=weight_scale)
+            else:
+                raise ValueError(f"Invalid weight initialization {weight_init}")
+
 
     def mask_feature_weights(self):
         if self.tvf_features_mask is not None and self.tvf_feature_sparsity > 0:
@@ -530,6 +551,8 @@ class TVFModel(nn.Module):
             tvf_per_head_hidden_units: int = 0,
             tvf_head_bias: bool = True,
             tvf_feature_sparsity: float = 0.0,
+            weight_init:str = "default",
+            weight_scale: float = 1.0,
     ):
         """
             Truncated Value Function model
@@ -586,6 +609,8 @@ class TVFModel(nn.Module):
                 tvf_feature_sparsity=tvf_feature_sparsity,
                 n_actions=actions,
                 device=device,
+                weight_init=weight_init,
+                weight_scale=weight_scale,
                 **(encoder_args or {})
             )
 

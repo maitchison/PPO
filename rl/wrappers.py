@@ -524,6 +524,33 @@ class SqrtRewardWrapper(gym.Wrapper):
         new_reward = sign*(math.sqrt(abs(reward)+1)-1)+self.epsilon*reward
         return obs, new_reward, done, info
 
+class RewardCurveWrapper(gym.Wrapper):
+    """
+    Rewards get larger over time.
+    """
+
+    def __init__(self, env: gym.Env, scale:float):
+        super().__init__(env)
+        self.env = env
+        self.t = 0
+        self.scale=scale
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.t += 1
+        reward = reward * t * self.scale
+        return obs, reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        self.t = 0
+        return obs
+
+    def save_state(self, buffer):
+        buffer["t"] = self.t
+
+    def restore_state(self, buffer):
+        self.t = buffer["t"]
 
 class NormalizeObservationsWrapper(gym.Wrapper):
     """
@@ -742,8 +769,6 @@ class VecRepeatedActionPenalty(gym.Wrapper):
 
         return obs, rewards - (too_many_repeated_actions * self.penalty), dones, infos
 
-
-
 class VecNormalizeRewardWrapper(gym.Wrapper):
     """
     Normalizes rewards such that returns are roughly unit variance.
@@ -762,13 +787,14 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
             mode: str = "rms",
             ed_type: Optional[str] = None,
             ed_bias: float = 1.0,
+            ema_horizon: float = 5e6,
     ):
         """
         Normalizes returns
         mode:
             rms uses running variance over entire history,
             ema uses ema over 5M steps.
-            custom requires setting of ret_std exterminally
+            custom requires setting of ret_std
         """
         super().__init__(env)
 
@@ -783,6 +809,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.ed_type = ed_type
         self.ed_bias = ed_bias
         self.ret_var = 0.0
+        self.ema_horizon = ema_horizon
         if initial_state is not None:
             self.ret_rms.restore_state(initial_state)
 
@@ -808,7 +835,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
 
         if self.mode == "ema":
             # note: we move EMA a bit faster at the beginning
-            alpha = 1 - (len(dones) / min(self.ret_rms.count, 1e6))
+            alpha = 1 - (len(dones) / min(self.ret_rms.count, self.ema_horizon))
             self.ret_var = alpha * self.ret_var + (1 - alpha) * np.var(self.current_returns)
 
         self.current_returns = self.current_returns * (1-dones)
@@ -836,7 +863,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     def std(self):
         if self.mode == "rms":
             return math.sqrt(self.ret_rms.var + self.epsilon)
-        elif self.mode == "ema":
+        elif self.mode in ["ema", "custom"]:
             return math.sqrt(self.ret_var + self.epsilon)
         else:
             raise ValueError(f"Invalid mode {self.mode}")

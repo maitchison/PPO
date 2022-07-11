@@ -805,12 +805,13 @@ class Runner:
                 verbose=True
             )
 
-        if args.reward_normalization != "off":
+        # ema normalization is handled externally.
+        if args.reward_normalization == "rms":
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
                 gamma=args.reward_normalization_gamma,
                 ed_type=args.ed_mode if args.use_ed else None,
-                mode=args.reward_normalization,
+                mode="rms",
                 clip=args.reward_normalization_clipping,
             )
 
@@ -1329,39 +1330,28 @@ class Runner:
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
 
-    def apply_reward_scale_adjustment(self, reward_scales):
+    def apply_reward_scale_adjustment(self, ratio):
         """
         Adjustes rewards, values estimates, and model weights so that all are using reward_scales[-1]
 
-        @param reward_scales a list of reward scales where reward_scales[0] is the reward scale before the rollout
-            and reward_scale[-1] is the reward scale ofter the rollout has finished. There should be N+1 entries,
-            where N is the length of the rollout.
+        @param ratio How much the reward scale changed since last update.
 
         """
 
-        if self.step == 0:
-            # first update will have a reward_scale that isn't meaningful.
-            return
-
-        ratio = (reward_scales[-1] / reward_scales[0]) ** args.auto_scaling_factor
-
         self.log.watch_mean("rs_ratio", ratio)
-        # just a quick check... really just want to make sure nothing is exploding or zeroing out.
-        self.log.watch_mean("rs_tmag", self.model.value_net.tvf_head.weight.data[-1].std()) # just look at final head
-        if args.use_tvf:
-            self.log.watch_mean("rs_vmag", self.model.value_net.value_head.weight.data.std())
+        self.log.watch_mean("rs_vtmag", self.model.value_net.tvf_head.weight.data[-1].std()) # just look at final head
+        self.log.watch_mean("rs_ptmag", self.model.policy_net.tvf_head.weight.data[-1].std())  # just look at final head
 
-        if args.auto_value_scaling:
-            self.value *= ratio
-            self.tvf_value *= ratio
+        # modify value estimates made during rollout
+        # for some reason this might hurt the agent's performance?
+        self.value *= ratio
+        self.tvf_value *= ratio
 
-        if args.auto_weight_scaling:
-            self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf)
+        # adjust the model weights to future predictions should be close
+        self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf)
 
-        # process reward, this just makes sure that all rewards have the reward scale of the final scale
-        if args.auto_reward_scaling:
-            for n in range(self.N):
-                self.ext_rewards[n] *= (reward_scales[-1] / reward_scales[n+1]) ** args.auto_scaling_factor
+        # update rewards,
+        self.ext_rewards *= ratio
 
 
     @torch.no_grad()
@@ -1381,11 +1371,12 @@ class Runner:
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
-        reward_scales = [self.reward_scale]
 
         for k in self.stats.keys():
             if k.startswith("batch_"):
                 self.stats[k] *= 0
+
+        initial_beta = self.reward_scale
 
         for t in range(self.N):
 
@@ -1399,9 +1390,6 @@ class Runner:
                 include_rnd=args.use_rnd,
                 update_normalization=True
             )
-
-            # if reward scale has changed the value estimates will be wrong, so update them here.
-            # ignore on first step as old reward scale might be 0.
 
             # sample actions and run through environment.
             actions = self.sample_actions(model_out)
@@ -1419,9 +1407,6 @@ class Runner:
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
-
-            # record the reward scale used to generate this reward
-            reward_scales.append(self.reward_scale)
 
             if args.noisy_zero >= 0:
                 ext_rewards = np.random.normal(0, args.noisy_zero, size=ext_rewards.shape).astype(np.float32)
@@ -1512,7 +1497,17 @@ class Runner:
             )
 
         # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
-        self.apply_reward_scale_adjustment(reward_scales)
+        if args.reward_normalization_compensation:
+            # first figure out what the new scale is... and apply it as a normalization constant
+            return_var = np.var(self.tvf_value[-1]) if args.use_tvf else np.var(self.value)
+            RS = self.N * self.A # rollout size
+            alpha = 1 - (RS / min(self.step * RS, args.reward_normalization_horizon))
+            self.vars['return_variance'] = alpha * self.vars.get('return_variance', 0) + (1-alpha) * return_var
+            new_beta = self.reward_scale
+            # then apply the update.
+            if self.step > 0:
+                # need atleast one update before we can get started.
+                self.apply_reward_scale_adjustment(new_beta / initial_beta)
 
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
@@ -1767,6 +1762,14 @@ class Runner:
                 f"ev_{name}" + postfix,
                 ev,
                 display_width=0,
+                history_length=1
+            )
+
+            # work out ratio between average prediction at horizon and average return at horizon
+            # should be close to 1.
+            self.log.watch_mean(
+                f"*vr_ratio_{name}",
+                np.mean(value)/(abs(np.mean(target))+1e6),
                 history_length=1
             )
 
@@ -2908,11 +2911,15 @@ class Runner:
         if args.noisy_zero > 0:
             # no reward scaling for noisy zero rewards.
             return 1.0
-        if args.reward_normalization != "off":
+        if args.reward_normalization == "ema":
+            return 1.0 / math.sqrt(1e-8 + self.vars.get('return_variance', 0))
+        elif args.reward_normalization == "rms":
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
-        else:
+        elif args.reward_normalization == "off":
             return 1.0
+        else:
+            raise ValueError(f"Invalid reward normalization {args.reward_normalization}")
 
     def train_rnd_minibatch(self, data, loss_scale: float = 1.0, **kwargs):
 
