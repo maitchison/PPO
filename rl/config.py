@@ -255,9 +255,10 @@ class Config(BaseConfig):
         parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
         parser.add_argument("--reward_normalization", type=str, default="rms", help="off|rms|ema")
         parser.add_argument("--reward_normalization_clipping", type=float, default=10, help="how much to clip rewards after normalization, negative to disable")
-        parser.add_argument("--reward_normalization_horizon", type=int, default=5e6, help="how much to smooth variance estimates for ema mode.")
-        parser.add_argument("--reward_normalization_compensation", type=str2bool, default=False,
-                            help="")
+        parser.add_argument("--reward_normalization_horizon", type=float, default=5e6, help="how much to smooth variance estimates for ema mode.")
+        parser.add_argument("--reward_normalization_correction", type=str2bool, default=False, help="")
+        parser.add_argument("--rnc_value_only", type=str2bool, default=False, help="")
+
 
         parser.add_argument("--reward_curve", type=float, default=-1,
                             help="Rewards get larger over time, set to 1/1000 or so. Negative means disabled.")
@@ -379,6 +380,7 @@ class Config(BaseConfig):
         parser.add_argument("--distil_loss_value_target", type=float, default=None,
                             help="Normalizes loss_value_distil to approximately this level. Useful if distil_rediscount is enabled.")
         parser.add_argument("--distil_lvt_mode", type=str, default="first", help="first|mean")
+        parser.add_argument("--distil_value_loss", type=str, default="mse", help="mse|clipped_mse|l1|huber")
 
         # --------------------------------
         # Replay
@@ -455,6 +457,8 @@ class Config(BaseConfig):
         self.reward_normalization = str()
         self.reward_normalization_clipping = float()
         self.reward_normalization_horizon = float()
+        self.reward_normalization_correction = bool()
+        self.rnc_value_only = bool()
         self.reward_curve = float()
         self.deferred_rewards = int()
         self.resolution = str()
@@ -504,7 +508,6 @@ class Config(BaseConfig):
 
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
-        self.reward_normalization_compensation = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()
@@ -554,6 +557,7 @@ class Config(BaseConfig):
         self.distil_reweighing = bool()
         self.distil_loss_value_target = float()
         self.distil_lvt_mode = str()
+        self.distil_value_loss = str()
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()

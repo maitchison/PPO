@@ -618,6 +618,7 @@ class Runner:
         self.grad_accumulator = {}
 
         self.episode_score = np.zeros([A], dtype=np.float32)
+        self.discounted_episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
         self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
         self.done = np.zeros([A], dtype=np.bool)
@@ -833,6 +834,8 @@ class Runner:
             'model_state_dict': self.model.state_dict(),
             'batch_counter': self.batch_counter,
             'reward_scale': self.reward_scale,
+            'episode_score': self.episode_score,
+            'discounted_episode_score': self.discounted_episode_score,
             'stats': self.stats,
             'vars': self.vars,
         }
@@ -928,6 +931,8 @@ class Runner:
         self.stats = checkpoint.get('stats', 0)
         self.noise_stats = checkpoint.get('noise_stats', {})
         self.vars = checkpoint.get('vars', {})
+        self.episode_score = checkpoint['episode_score']
+        self.discounted_episode_score = checkpoint['discounted_episode_score']
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -952,6 +957,7 @@ class Runner:
         self.obs = self.vec_env.reset()
         self.done = np.zeros_like(self.done)
         self.episode_score *= 0
+        self.discounted_episode_score *= 0
         self.episode_len *= 0
         self.step = 0
         self.time *= 0
@@ -1332,15 +1338,13 @@ class Runner:
 
     def apply_reward_scale_adjustment(self, ratio):
         """
-        Adjustes rewards, values estimates, and model weights so that all are using reward_scales[-1]
+        Adjusts rewards, values estimates, and model weights so that all are using reward_scales[-1]
 
-        @param ratio How much the reward scale changed since last update.
+        Assumptions
+            * rewards have not been scaled (or clipped)
+            * value estimates where under old_beta
 
         """
-
-        self.log.watch_mean("rs_ratio", ratio)
-        self.log.watch_mean("rs_vtmag", self.model.value_net.tvf_head.weight.data[-1].std()) # just look at final head
-        self.log.watch_mean("rs_ptmag", self.model.policy_net.tvf_head.weight.data[-1].std())  # just look at final head
 
         # modify value estimates made during rollout
         # for some reason this might hurt the agent's performance?
@@ -1348,10 +1352,8 @@ class Runner:
         self.tvf_value *= ratio
 
         # adjust the model weights to future predictions should be close
-        self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf)
-
-        # update rewards,
-        self.ext_rewards *= ratio
+        self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf,
+                                      value_net_only=args.rnc_value_only)
 
 
     @torch.no_grad()
@@ -1371,6 +1373,8 @@ class Runner:
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
+
+        rollout_discounted_returns = np.zeros_like(self.ext_rewards)
 
         for k in self.stats.keys():
             if k.startswith("batch_"):
@@ -1413,6 +1417,8 @@ class Runner:
                 raw_rewards *= 0
 
             self.episode_score += raw_rewards
+            self.discounted_episode_score = self.gamma * self.discounted_episode_score + ext_rewards
+            rollout_discounted_returns[t] = self.discounted_episode_score
             self.episode_len += 1
 
             # log repeated action stats
@@ -1449,6 +1455,7 @@ class Runner:
 
                     self.episode_score[i] = 0
                     self.episode_len[i] = 0
+                    self.discounted_episode_score[i] = 0
 
             # compress observations if needed
             if args.obs_compression:
@@ -1497,17 +1504,41 @@ class Runner:
             )
 
         # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
-        if args.reward_normalization_compensation:
-            # first figure out what the new scale is... and apply it as a normalization constant
-            return_var = np.var(self.tvf_value[-1]) if args.use_tvf else np.var(self.value)
+        if args.reward_normalization == "ema":
+            # I would have preferred to not use batch variance, however PPO's normalization used "variance of returns"
+            # meaning variance of all returns over all time for all agents. This does seem to work better though.
+            # The issue is that returns across time are highly correlated, which decreases the variance.
+            # perhaps there are environments where the batch method is less applicable? not sure.. (skiing for example).
+            batch_variance = True
+            if batch_variance:
+                return_var = np.var(rollout_discounted_returns)
+            else:
+                return_var = np.var(rollout_discounted_returns, axis=1).mean()
+
             RS = self.N * self.A # rollout size
-            alpha = 1 - (RS / min(self.step * RS, args.reward_normalization_horizon))
-            self.vars['return_variance'] = alpha * self.vars.get('return_variance', 0) + (1-alpha) * return_var
+            alpha = 1 - (RS / min(self.step+RS, args.reward_normalization_horizon))
+            utils.dictionary_ema(self.vars, 'return_variance', target=return_var, default=0, alpha=alpha)
             new_beta = self.reward_scale
-            # then apply the update.
+
+            # need at least one update before we can get started.
             if self.step > 0:
-                # need atleast one update before we can get started.
-                self.apply_reward_scale_adjustment(new_beta / initial_beta)
+                ratio = new_beta/initial_beta
+                # logging...
+                self.log.watch_mean("rs_ratio", ratio)
+                if args.use_tvf:
+                    self.log.watch_mean("rs_vtv", self.model.value_net.tvf_head.weight.data[-1].std())
+                    self.log.watch_mean("rs_ptv", self.model.policy_net.tvf_head.weight.data[-1].std())
+                if args.reward_normalization_correction and self.step > 0.1e6:
+                    # delay onset of value and weight adjustment a little.
+                    # the reason for this is that the value network hasn't learned the value function yet.
+                    # if we don't do this the initial few updates will dramatically reduce / inflate the value
+                    # head weight scale.
+                    self.apply_reward_scale_adjustment(ratio)
+
+            # update rewards
+            self.ext_rewards *= new_beta
+            if args.reward_normalization_clipping >= 0:
+                self.ext_rewards = np.clip(self.ext_rewards, -args.reward_normalization_clipping, +args.reward_normalization_clipping)
 
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
@@ -2351,6 +2382,11 @@ class Runner:
         # todo: make sure heads all line up... I think they might be offset sometimes. Perhpas make sure that
         # we always pass in all heads, and maybe just generate them all the time aswell?
 
+        if 'context' in data:
+            extra_debugging = data['context']['is_first'] and data['context']['epoch'] == 0
+        else:
+            extra_debugging = False
+
         if args.use_tvf and not args.distil_force_ext:
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
@@ -2383,13 +2419,30 @@ class Runner:
         else:
             predictions = model_out["value"][:, 0]
 
-        loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
+        if args.distil_value_loss == "mse":
+            loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
+        elif args.distil_value_loss == "l1":
+            loss_value = torch.abs(targets - predictions)  # [B, K]
+        elif args.distil_value_loss == "clipped_mse":
+            loss_value = torch.square(torch.clip(targets - predictions, -1, 1))  # [B, K]
+        elif args.distil_value_loss == "huber":
+            loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=0.1)
+        else:
+            raise ValueError(f"Invalid loss distil loss {args.distil_loss}")
+
+        if extra_debugging:
+            # first distil update
+            self.log.watch("fd_mse", torch.square(targets - predictions).mean())
+            self.log.watch("fd_bias", torch.mean(targets - predictions))
+            self.log.watch("fd_max", abs(torch.max(targets - predictions)))
+            self.log.watch("fd_ratio", torch.mean(targets)/torch.mean(predictions))
+
 
         # apply discount reweighing
         loss_value = loss_value * weights
 
         # normalize the loss
-        # this is required as return magntiude can differ by a factor of 10x or 0.1x,
+        # this is required as return magnitude can differ by a factor of 10x or 0.1x,
         # which can happen if we apply different discounts to the environment. This makes
         # beta hard to tune.
 

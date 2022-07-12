@@ -538,7 +538,7 @@ class RewardCurveWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self.t += 1
-        reward = reward * t * self.scale
+        reward = reward * self.t * self.scale
         return obs, reward, done, info
 
     def reset(self):

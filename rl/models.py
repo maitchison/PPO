@@ -639,24 +639,27 @@ class TVFModel(nn.Module):
 
         self.set_device_and_dtype(device, dtype)
 
-    def adjust_value_scale(self, factor: float, process_value=True, process_tvf=True):
+    def adjust_value_scale(self, factor: float, process_value=True, process_tvf=True, value_net_only=False):
         """
         Scales the value predictions of all models by given amount by scaling weights on the final layer.
         """
-        if self.architecture == "single":
+        if value_net_only:
+            models = [self.value_net]
+        elif self.architecture == "single":
             models = [self.policy_net]
         elif self.architecture == "dual":
             models = [self.policy_net, self.value_net]
         else:
             raise ValueError(f"Invalid architecture {self.architecture}")
 
-        for model in models:
-            if process_value:
-                model.value_head.weight.data *= factor
-                model.value_head.bias.data *= factor
-            if model.tvf_head is not None and process_tvf:
-                model.tvf_head.weight.data *= factor
-                model.tvf_head.bias.data *= factor
+        with torch.no_grad():
+            for model in models:
+                if process_value:
+                    model.value_head.weight.data *= factor
+                    model.value_head.bias.data *= factor
+                if model.tvf_head is not None and process_tvf:
+                    model.tvf_head.weight.data *= factor
+                    model.tvf_head.bias.data *= factor
 
     def model_size(self, trainable_only: bool = True):
         model_parameters = filter(lambda p: p.requires_grad, self.parameters()) if trainable_only else self.parameters()
