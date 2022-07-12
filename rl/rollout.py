@@ -1348,8 +1348,9 @@ class Runner:
 
         # modify value estimates made during rollout
         # for some reason this might hurt the agent's performance?
-        self.value *= ratio
-        self.tvf_value *= ratio
+        if not args.rnc_no_value:
+            self.value *= ratio
+            self.tvf_value *= ratio
 
         # adjust the model weights to future predictions should be close
         self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf,
@@ -1528,7 +1529,7 @@ class Runner:
                 if args.use_tvf:
                     self.log.watch_mean("rs_vtv", self.model.value_net.tvf_head.weight.data[-1].std())
                     self.log.watch_mean("rs_ptv", self.model.policy_net.tvf_head.weight.data[-1].std())
-                if args.reward_normalization_correction and self.step > 0.1e6:
+                if args.reward_normalization_correction and self.step > 1e6:
                     # delay onset of value and weight adjustment a little.
                     # the reason for this is that the value network hasn't learned the value function yet.
                     # if we don't do this the initial few updates will dramatically reduce / inflate the value
@@ -2426,7 +2427,7 @@ class Runner:
         elif args.distil_value_loss == "clipped_mse":
             loss_value = torch.square(torch.clip(targets - predictions, -1, 1))  # [B, K]
         elif args.distil_value_loss == "huber":
-            loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=0.1)
+            loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=args.distil_delta)
         else:
             raise ValueError(f"Invalid loss distil loss {args.distil_loss}")
 

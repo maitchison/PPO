@@ -257,7 +257,8 @@ class Config(BaseConfig):
         parser.add_argument("--reward_normalization_clipping", type=float, default=10, help="how much to clip rewards after normalization, negative to disable")
         parser.add_argument("--reward_normalization_horizon", type=float, default=5e6, help="how much to smooth variance estimates for ema mode.")
         parser.add_argument("--reward_normalization_correction", type=str2bool, default=False, help="")
-        parser.add_argument("--rnc_value_only", type=str2bool, default=False, help="")
+        parser.add_argument("--rnc_no_value", type=str2bool, default=False)
+        parser.add_argument("--rnc_value_only", type=str2bool, default=False)
 
 
         parser.add_argument("--reward_curve", type=float, default=-1,
@@ -365,6 +366,7 @@ class Config(BaseConfig):
         # Distil phase
         parser.add_argument("--distil_order", type=str, default="after_policy", help="after_policy|before_policy")
         parser.add_argument("--distil_beta", type=float, default=10.0)
+        parser.add_argument("--distil_delta", type=float, default=0.1)
         parser.add_argument("--distil_period", type=int, default=1)
         parser.add_argument("--distil_loss", type=str, default="kl_policy", help="[mse_logit|mse_policy|kl_policy]")
         parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
@@ -458,6 +460,7 @@ class Config(BaseConfig):
         self.reward_normalization_clipping = float()
         self.reward_normalization_horizon = float()
         self.reward_normalization_correction = bool()
+        self.rnc_no_value = bool()
         self.rnc_value_only = bool()
         self.reward_curve = float()
         self.deferred_rewards = int()
@@ -545,6 +548,7 @@ class Config(BaseConfig):
         self.aux_period = int()
         self.distil_order = str()
         self.distil_beta = float()
+        self.distil_delta = float()
         self.distil_period = int()
         self.distil_loss = str()
         self.distil_batch_size = object()
