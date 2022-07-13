@@ -260,7 +260,6 @@ class Config(BaseConfig):
         parser.add_argument("--rnc_no_value", type=str2bool, default=False)
         parser.add_argument("--rnc_value_only", type=str2bool, default=False)
 
-
         parser.add_argument("--reward_curve", type=float, default=-1,
                             help="Rewards get larger over time, set to 1/1000 or so. Negative means disabled.")
 
@@ -366,6 +365,8 @@ class Config(BaseConfig):
         # Distil phase
         parser.add_argument("--distil_order", type=str, default="after_policy", help="after_policy|before_policy")
         parser.add_argument("--distil_beta", type=float, default=10.0)
+        parser.add_argument("--distil_l1_scale", type=float, default=1/30)
+
         parser.add_argument("--distil_delta", type=float, default=0.1)
         parser.add_argument("--distil_period", type=int, default=1)
         parser.add_argument("--distil_loss", type=str, default="kl_policy", help="[mse_logit|mse_policy|kl_policy]")
@@ -548,6 +549,7 @@ class Config(BaseConfig):
         self.aux_period = int()
         self.distil_order = str()
         self.distil_beta = float()
+        self.distil_l1_scale = float()
         self.distil_delta = float()
         self.distil_period = int()
         self.distil_loss = str()

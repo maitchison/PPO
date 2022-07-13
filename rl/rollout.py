@@ -2423,11 +2423,15 @@ class Runner:
         if args.distil_value_loss == "mse":
             loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
         elif args.distil_value_loss == "l1":
-            loss_value = torch.abs(targets - predictions)  # [B, K]
+            # l1 will be much higher (if errors are less than 1)
+            loss_value = args.distil_l1_scale * torch.abs(targets - predictions)  # [B, K]
         elif args.distil_value_loss == "clipped_mse":
             loss_value = torch.square(torch.clip(targets - predictions, -1, 1))  # [B, K]
         elif args.distil_value_loss == "huber":
-            loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=args.distil_delta)
+            if args.distil_delta == 0:
+                loss_value = torch.abs(targets - predictions)
+            else:
+                loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=args.distil_delta)
         else:
             raise ValueError(f"Invalid loss distil loss {args.distil_loss}")
 
@@ -2437,7 +2441,7 @@ class Runner:
             self.log.watch("fd_bias", torch.mean(targets - predictions))
             self.log.watch("fd_max", abs(torch.max(targets - predictions)))
             self.log.watch("fd_ratio", torch.mean(targets)/torch.mean(predictions))
-
+            self.log.watch("fd_loss", loss_value.mean())
 
         # apply discount reweighing
         loss_value = loss_value * weights
