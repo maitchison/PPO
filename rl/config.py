@@ -366,6 +366,7 @@ class Config(BaseConfig):
         parser.add_argument("--distil_order", type=str, default="after_policy", help="after_policy|before_policy")
         parser.add_argument("--distil_beta", type=float, default=10.0)
         parser.add_argument("--distil_l1_scale", type=float, default=1/30)
+        parser.add_argument("--shared_distil_optimizer", type=str2bool, default=False)
 
         parser.add_argument("--distil_delta", type=float, default=0.1)
         parser.add_argument("--distil_period", type=int, default=1)
@@ -480,6 +481,7 @@ class Config(BaseConfig):
         self.atari_rom_check = bool()
         self.weight_init = str()
         self.weight_scale = float()
+        self.shared_distil_optimizer = bool()
 
         self.ppo_vf_coef = float()
         self.entropy_bonus = float()

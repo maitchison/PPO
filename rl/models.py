@@ -548,6 +548,7 @@ class TVFModel(nn.Module):
             observation_normalization=False,
             freeze_observation_normalization=False,
             tvf_fixed_head_horizons: Union[None, list] = None,
+            tvf_fixed_head_weights: Union[None, list] = None,
             tvf_per_head_hidden_units: int = 0,
             tvf_head_bias: bool = True,
             tvf_feature_sparsity: float = 0.0,
@@ -577,6 +578,7 @@ class TVFModel(nn.Module):
         self.device = device
         self.dtype = dtype
         self.observation_normalization = observation_normalization
+        self.tvf_fixed_head_weights = tvf_fixed_head_weights
 
         # todo: rename this..
         if architecture == "single":

@@ -49,10 +49,11 @@ def make_model(args, log=None):
         log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
     if args.use_tvf:
-        tvf_fixed_head_horizons = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing)
+        tvf_fixed_head_horizons, tvf_weights = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing, include_weight=True)
         args.tvf_value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
     else:
         tvf_fixed_head_horizons = None
+        tvf_weights = None
 
     model = models.TVFModel(
         encoder=args.encoder,
@@ -64,6 +65,7 @@ def make_model(args, log=None):
         use_rnd=args.use_rnd,
         encoder_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
         tvf_fixed_head_horizons=tvf_fixed_head_horizons,
+        tvf_fixed_head_weights=tvf_weights,
         architecture=args.architecture,
         hidden_units=args.hidden_units,
         tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,

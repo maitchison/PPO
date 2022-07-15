@@ -91,45 +91,42 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     return result
 
 
-def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geometric"):
+def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geometric", include_weight=False):
     """
     Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = max_horizon.
     Some early horizons may be duplicated due to rounding.
     """
 
-    result = []
     target_n_heads = n_heads
 
-    # special case for even distribution
-    if spacing.startswith("even"):
-        # format should be even_x, where x is an integer
-        # we take the first n heads, then every n after that.
-        n = int(spacing.split("_")[1])
-        result = []
-        result.extend(range(n))
-        current = n
-        while current <= max_horizon:
-            result.append(current)
-            current += n
-        return np.asarray(result, dtype=np.int32)
+    if spacing == "linear":
+        result = np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int32)
+        return (result, np.ones([n_heads], dtype=np.float32)) if include_weight else result
+    elif spacing == "geometric":
+        try_heads = target_n_heads
 
-    # the idea here is to remove duplicates.
-    while len(result) < target_n_heads:
-        if spacing == "geometric":
-            result = np.asarray(np.round(np.geomspace(1, max_horizon+1, n_heads))-1, dtype=np.int32)
-        elif spacing == "linear":
-            result = np.asarray(np.round(np.linspace(0, max_horizon, n_heads)), dtype=np.int32)
-        else:
-            raise ValueError(f"Invalid spacing value {spacing}")
-        result = np.asarray(sorted(set(result)))
-        n_heads += 1
+        def get_heads(x, remove_duplicates=True):
+            result = np.asarray(np.round(np.geomspace(1, max_horizon + 1, x)) - 1, dtype=np.int32)
+            if remove_duplicates:
+                return np.asarray(sorted(set(result)))
+            else:
+                return np.asarray(sorted(result))
 
-    if len(result) != target_n_heads:
-        # this can fail sometimes...
-        print("Warning, head distribution not even, trying to fix...")
-        return get_value_head_horizons(n_heads-1, max_horizon, spacing)
+        while len(get_heads(try_heads)) != target_n_heads:
+            if len(get_heads(try_heads)) < target_n_heads:
+                try_heads += int(math.sqrt(n_heads))
+            else:
+                try_heads -= 1
+        all_heads = get_heads(try_heads, remove_duplicates=False)
+        counts = collections.defaultdict(int)
+        for head in all_heads:
+            counts[head] += 1
+        result = np.asarray(list(counts.keys()), dtype=np.int32)
+        counts = np.asarray(list(counts.values()), dtype=np.float32)
+        return (result, counts) if include_weight else result
+    else:
+        raise ValueError(f"Invalid spacing value {spacing}")
 
-    return result
 
 def save_progress(log: Logger):
     """ Saves some useful information to progress.txt. """
@@ -580,7 +577,7 @@ class Runner:
         # special case for policy optimizer
         self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.policy)
         self.value_optimizer = make_optimizer(model.value_net.parameters(), args.value)
-        if args.distil.epochs > 0:
+        if args.distil.epochs > 0 and not args.shared_distil_optimizer:
             self.distil_optimizer = make_optimizer(model.policy_net.parameters(), args.distil)
         else:
             self.distil_optimizer = None
@@ -845,9 +842,9 @@ class Runner:
             data['value_optimizer_state_dict'] = self.value_optimizer.state_dict()
             if args.use_rnd:
                 data['rnd_optimizer_state_dict'] = self.rnd_optimizer.state_dict()
-            if args.distil.epochs > 0:
+            if self.distil_optimizer is not None:
                 data['distil_optimizer_state_dict'] = self.distil_optimizer.state_dict()
-            if args.aux.epochs > 0:
+            if self.aux_optimizer is not None:
                 data['aux_optimizer_state_dict'] = self.aux_optimizer.state_dict()
 
         if not disable_log:
@@ -917,7 +914,7 @@ class Runner:
         self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
         if args.use_rnd:
             self.rnd_optimizer.load_state_dict(checkpoint['rnd_optimizer_state_dict'])
-        if args.distil.epochs > 0:
+        if 'distil_optimizer_state_dict' in checkpoint:
             self.distil_optimizer.load_state_dict(checkpoint['distil_optimizer_state_dict'])
         if args.aux.epochs > 0:
             self.aux_optimizer.load_state_dict(checkpoint['aux_optimizer_state_dict'])
@@ -2404,6 +2401,9 @@ class Runner:
         else:
             weights = 1
 
+        # account weights due to duplicate head removal
+        weights = weights * np.asarray(self.model.tvf_loss)[None, :]
+
         model_out = self.model.forward(
             data["prev_state"],
             output="policy",
@@ -2742,7 +2742,11 @@ class Runner:
             if required_tvf_heads is not None:
                 targets = targets[:, required_tvf_heads]
 
+            # this will be [B, K]
             tvf_loss = 0.5 * torch.square(targets - predictions) * args.tvf_coef
+
+            # account weights due to duplicate head removal
+            tvf_loss = tvf_loss * np.asarray(self.model.tvf_loss)[None, :]
 
             # h_weighting adjustment
             if args.tvf_head_weighting == "h_weighted" and single_value_head is None:
@@ -3348,7 +3352,7 @@ class Runner:
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
                 mini_batch_size=args.distil.mini_batch_size,
-                optimizer=self.distil_optimizer,
+                optimizer=self.policy_optimizer if args.shared_distil_optimizer else self.distil_optimizer,
                 label="distil",
                 epoch=distil_epoch,
             )

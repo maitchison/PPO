@@ -1778,7 +1778,7 @@ def setup_plot(title=None):
     #plt.title(title)
 
 
-def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None, figure=True, color_filter=None, cmap=None):
+def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, key_filter=None, figure=True, color_filter=None, cmap=None, print_results=False):
 
     if type(key_filter) is str:
         mask = key_filter
@@ -1828,6 +1828,7 @@ def experiment(title, path, keys: list="auto", subset='Atari_3_Val', seeds=5, ho
             check_seeds=check_seeds,
             label=(labels[i] if labels is not None else None),
             ghost_alpha=ghost_alpha,
+            print_results=print_results,
         )
 
     plt.legend()
