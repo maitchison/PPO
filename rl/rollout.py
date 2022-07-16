@@ -2401,8 +2401,9 @@ class Runner:
         else:
             weights = 1
 
-        # account weights due to duplicate head removal
-        weights = weights * np.asarray(self.model.tvf_loss)[None, :]
+        # weights due to duplicate head removal
+        if args.use_tvf:
+            weights = weights * torch.from_numpy(np.asarray(self.model.tvf_fixed_head_weights, dtype=np.float32)[None, :]).to(self.model.device)
 
         model_out = self.model.forward(
             data["prev_state"],
@@ -2745,8 +2746,9 @@ class Runner:
             # this will be [B, K]
             tvf_loss = 0.5 * torch.square(targets - predictions) * args.tvf_coef
 
-            # account weights due to duplicate head removal
-            tvf_loss = tvf_loss * np.asarray(self.model.tvf_loss)[None, :]
+            # account for weights due to duplicate head removal
+            if args.use_tvf:
+                tvf_loss = tvf_loss * torch.from_numpy(np.asarray(self.model.tvf_fixed_head_weights[required_tvf_heads if required_tvf_heads is not None else slice(None,None)], dtype=np.float32)[None, :]).to(self.model.device)
 
             # h_weighting adjustment
             if args.tvf_head_weighting == "h_weighted" and single_value_head is None:
