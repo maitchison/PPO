@@ -922,6 +922,24 @@ class QuickPlot():
         x1, x2 = min(x1,x2), max(x1, x2)
         self.buffer[-y, x1:x2+1] = c
 
+    def line(self, x1:int, y1:int, x2:int, y2:int, c):
+        """
+        x,y in pixel space
+        """
+        h, w, channels = self.buffer.shape
+        if x1 < 0:
+            x1 = 0
+        if x2 >= w:
+            x2 = w
+        if y1 < 0:
+            y1 = 0
+        if y2 > h:
+            y2 = h
+        y = y1
+        for x in range(x1, x2+1):
+            self.buffer[-int(y), x] = c
+            y += (y2-y1) / (x2+1-x1)
+
     def v_line(self, x:int, y1:int, y2:int, c):
         h, w, channels = self.buffer.shape
         if x < 0 or x >= w:
@@ -964,8 +982,9 @@ class QuickPlot():
                 continue
             new_x = x
             new_y = y
-            self.h_line(old_x, new_x, old_y, c)
-            self.v_line(new_x, old_y, new_y, c)
+            #self.h_line(old_x, new_x, old_y, c)
+            #self.v_line(new_x, old_y, new_y, c)
+            self.line(old_x, old_y, new_x, new_y, c)
             old_x = new_x
             old_y = new_y
 

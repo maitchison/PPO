@@ -118,10 +118,13 @@ def train(model: models.TVFModel, log: Logger):
     if not did_restore:
         log.log("To rerun experiment use:")
         log.log("python train.py " + " ".join(shlex.quote(x) for x in sys.argv[1:] if not x.startswith("description")))
-        desync_envs(runner, 0, args.warmup_period)
+        if args.warmup_period <= 0:
+            # some wrappers really want a 1-frame warmup after restoring.
+            log.warn("Extending warmup to 1 frame.")
+        desync_envs(runner, 1, max(args.warmup_period, 1))
     else:
         # this is really just the throw a few new frames through the wrappers
-        desync_envs(runner, 2, 4, verbose=False)
+        desync_envs(runner, 1, 4, verbose=False)
 
     # make a copy of params
     with open(os.path.join(args.log_folder, "params.txt"), "wt") as t:

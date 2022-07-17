@@ -26,6 +26,7 @@ def get_return_estimate(
     estimator_mode:str = "default",
     log:Logger = None,
     use_log_interpolation: bool=False,
+    use_median: bool=False,
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -64,6 +65,7 @@ def get_return_estimate(
         'value_sample_horizons': value_sample_horizons,
         'value_samples': value_samples,
         'use_log_interpolation': use_log_interpolation,
+        'use_median': use_median,
     }
 
     # fixed is a special case
@@ -676,6 +678,73 @@ def _n_step_estimate(params):
 
     return idx, target_h, returns
 
+
+def _n_step_estimate_median(params):
+    """
+    Processes rewards [N, A] and value_estimates [N+1, A, K] into returns [N, A]
+    Uses median over samples instead of mean.
+    """
+
+    (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, log_interpolation) = GLOBAL_CACHE
+
+    target_n_steps, idx, target_h = params
+
+    log_value_sample_horizons = np.log10(10+value_sample_horizons)-1
+
+    def interpolate_linear(value_estimates: np.ndarray, horizon: int):
+        return _interpolate(value_sample_horizons, value_estimates, horizon)
+        # not faster, and matches identically with my interpolate.
+        # from scipy import interpolate as sp_interpolate
+        # return sp_interpolate.interp1d(value_sample_horizons, value_estimates)(horizon)
+
+    def interpolate_log(value_estimates: np.ndarray, horizon: int):
+        return _interpolate(log_value_sample_horizons, value_estimates, np.log10(10+horizon)-1)
+
+    interpolate = interpolate_log if log_interpolation else interpolate_linear
+
+    N, A = rewards.shape
+
+    if target_h == 0:
+        # happens sometimes, always return 0.
+        zeros = np.zeros([N, A], dtype=np.float32)
+        return idx, target_h, zeros
+
+    returns = np.zeros([N, A, len(target_n_steps)], dtype=np.float32)
+    m = np.zeros([N, A], dtype=np.float32)
+
+    for i, target_n_step in enumerate(target_n_steps):
+
+        if target_n_step > target_h:
+            target_n_step = target_h
+
+        if target_n_step == 0:
+            # return is 0 by definition
+            continue
+
+        # much quicker to use the cached version of these
+        s = reward_cache[target_n_step]
+        discount = discount_cache[target_n_step]
+
+        # add the bootstrap estimate
+        h_remaining = target_h - target_n_step
+
+        if h_remaining > 0:
+            m[:N-target_n_step] = interpolate(value_samples[target_n_step:-1], h_remaining)
+        else:
+            m *= 0
+
+        # process the final n_step estimates, this can be slow for large target_n_step
+        for j in range(target_n_step):
+            # small chance we have a bug here, need to test this...
+            m[N-j-1] = interpolate(value_samples[-1], target_h - j - 1)
+
+        returns[:, :, i] = s + m * discount
+
+    returns = np.median(returns, axis=-1)
+
+    return idx, target_h, returns
+
+
 def _calculate_sampled_return_multi_threaded(
     gamma: float,
     rewards: np.ndarray,
@@ -686,7 +755,7 @@ def _calculate_sampled_return_multi_threaded(
     n_step_samples: np.ndarray=None,
     n_step_list=None,
     use_log_interpolation: bool = False,
-
+    use_median: bool = False,
 ):
     """
     New strategy, just generate these returns in parallel, and simplify the algorithm *alot*.
@@ -733,11 +802,17 @@ def _calculate_sampled_return_multi_threaded(
     GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, use_log_interpolation)
 
     # turns out it's faster to just run the jobs (atleast for 8 or less samples).
-    result = [_n_step_estimate(job) for job in jobs] # stub
+    result = [_n_step_estimate_median(job) if use_median else _n_step_estimate(job) for job in jobs]
 
     all_results = np.zeros([N, A, K], dtype=np.float32)
     for idx, h, returns in result:
-        all_results[:, :, idx] += returns
+        all_results[:, :, idx] = returns
+
+    # just make sure there are no duplicates here...
+    # as were were adding them before. Should be fine, and can delte.
+    ids = ([x[0] for x in result])
+    assert len(ids) == len(set(ids))
+
 
     return all_results
 

@@ -113,6 +113,10 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_head_bias", type=str2bool, default=True, help="Enables bias for tvf heads")
         parser.add_argument("--tvf_feature_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
         parser.add_argument("--tvf_include_ext", type=str2bool, default=True, help="Also learn the rediscounted value estimate that will be used for advantages.")
+        parser.add_argument("--tvf_sqrt_transform", type=str2bool, default=False,
+                            help="Learns the (signed) sqrt of the return. May make weight scale more uniform across heads.")
+        parser.add_argument("--tvf_boost_final_head", type=float, default=0.0,
+                            help="Increases loss on final tvf head.")
 
 
 
@@ -285,6 +289,8 @@ class Config(BaseConfig):
         # Noisy environments
         parser.add_argument("--noisy_return", type=float, default=0, help="Relative error applied after return calculations. Used to simulate a noisy environment.")
         parser.add_argument("--noisy_reward", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
+        parser.add_argument("--noisy_reward2", type=float, default=0,
+                            help="Relative error applied to all rewards. Used to simulate a noisy environment.")
         parser.add_argument("--noisy_zero", type=float, default=-1, help="Instead of environment rewards, agent is given random rewards drawn from gausian with this std.")
 
         # --------------------------------
@@ -398,6 +404,10 @@ class Config(BaseConfig):
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
 
+        # --------------------------------
+        # Temp, remove
+        parser.add_argument("--tmp_median_return", type=str2bool, default=False, help="Use median of return samples rather than mean")
+
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
         self.use_tvf = bool()
@@ -504,6 +514,7 @@ class Config(BaseConfig):
         self.tvf_return_n_step = int()
         self.tvf_return_use_log_interpolation = bool()
         self.tvf_max_horizon = int()
+        self.tvf_boost_final_head = float()
         self.tvf_value_heads = int()
         self.tvf_head_spacing = str()
         self.tvf_head_weighting = str()
@@ -511,6 +522,7 @@ class Config(BaseConfig):
         self.tvf_head_bias = bool()
         self.tvf_feature_sparsity = float()
         self.tvf_include_ext = bool()
+        self.tvf_sqrt_transform = bool()
 
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
@@ -573,9 +585,13 @@ class Config(BaseConfig):
         self.use_rnd = bool()
         self.rnd_experience_proportion = float()
 
+        # temp stuff
+        self.tmp_median_return = bool()
+
         # noise stuff
         self.noisy_return = float()
         self.noisy_reward = float()
+        self.noisy_reward2 = float()
         self.noisy_zero = float()
         self.precision = str()
 

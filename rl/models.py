@@ -350,6 +350,7 @@ class DualHeadNet(nn.Module):
 
             weight_init: str = "default",
             weight_scale: float = 1.0,
+            tvf_sqrt_transform = False,
 
             device=None,
             **kwargs
@@ -380,6 +381,7 @@ class DualHeadNet(nn.Module):
         self.encoder = construct_network(encoder, input_dims, hidden_units=hidden_units, **kwargs)
         # jit is in theory a little faster, but can be harder to debug
         self.encoder = self.encoder.to(device)
+        self.tvf_sqrt_transform = tvf_sqrt_transform
         if JIT:
             self.encoder.jit(device)
 
@@ -522,6 +524,9 @@ class DualHeadNet(nn.Module):
                 # even though they were zeroed out they still become non-zero after an optimizer update.
                 self.mask_feature_weights()
                 tvf_values = self.tvf_head(encoder_features)
+                if self.tvf_sqrt_transform:
+                    # sqr, so that model learns the sqrt.
+                    tvf_values = torch.sign(tvf_values) * torch.pow(tvf_values, 2)
                 K = len(self.tvf_fixed_head_horizons)
                 result[f'tvf_value'] = tvf_values.reshape([-1, K, len(self.value_head_names)])
                 if required_tvf_heads is not None:
@@ -554,6 +559,7 @@ class TVFModel(nn.Module):
             tvf_feature_sparsity: float = 0.0,
             weight_init:str = "default",
             weight_scale: float = 1.0,
+            tvf_sqrt_transform: bool = False,
     ):
         """
             Truncated Value Function model
@@ -579,6 +585,7 @@ class TVFModel(nn.Module):
         self.dtype = dtype
         self.observation_normalization = observation_normalization
         self.tvf_fixed_head_weights = tvf_fixed_head_weights
+        self.tvf_sqrt_transform = tvf_sqrt_transform
 
         # todo: rename this..
         if architecture == "single":
@@ -613,6 +620,7 @@ class TVFModel(nn.Module):
                 device=device,
                 weight_init=weight_init,
                 weight_scale=weight_scale,
+                tvf_sqrt_transform=tvf_sqrt_transform,
                 **(encoder_args or {})
             )
 
@@ -645,6 +653,12 @@ class TVFModel(nn.Module):
         """
         Scales the value predictions of all models by given amount by scaling weights on the final layer.
         """
+
+        if self.tvf_sqrt_transform:
+            # if we are using the sqrt transform on returns we should sqrt the ratio too.
+            # this is great as it will adjust the weights less (as the sqrt will make the factor tend to 1.
+            factor = math.sqrt(factor)
+
         if value_net_only:
             models = [self.value_net]
         elif self.architecture == "single":

@@ -31,6 +31,13 @@ def add_relative_noise(X:np.ndarray, rel_error:float):
     factors = np.asarray(1 - (rel_error / 2) + (np.random.rand(*X.shape) * rel_error), dtype=np.float32)
     return X * factors
 
+def add_10x_noise(X:np.ndarray, p:float):
+    # does not change the expectation, rewards are 10x with propbability p, otherwise reduced so that expectation matches.
+    factors = torch.bernoulli(torch.ones(X.shape, dtype=torch.float32) * p)
+    factors[factors == 1] = 10
+    factors[factors == 0] = (1-(10*p))/(1-p)
+    return X * factors.numpy()
+
 def _test_interpolate():
     horizons = np.asarray([0, 1, 2, 10, 100])
     values = np.asarray([0, 5, 10, -1, 2])[None, :].repeat(11, axis=0)
@@ -1086,6 +1093,7 @@ class Runner:
             estimator_mode=re_mode,
             log=self.log,
             use_log_interpolation=args.tvf_return_use_log_interpolation,
+            use_median=args.tmp_median_return,
         )
 
         if args.use_ed:
@@ -1297,7 +1305,7 @@ class Runner:
             # 1. average over as many horizons as we can.
             # 2. try to not refer to ourself (bootstrap) or any future horizons.
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
-            v2 = tvf_value_estimates.copy()
+            # v2 = tvf_value_estimates.copy()
             # note, this is going to be quite slow...
             for a, trimmed_k in enumerate(trimmed_ks):
                 if trimmed_k >= len(self.tvf_horizons)-1:
@@ -1328,7 +1336,10 @@ class Runner:
             untrimmed_ks = np.arange(self.K)[None, :]
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)[:, None]
             trimmed_ks = np.minimum(trimmed_ks, untrimmed_ks)
+            # old_tvf_value_estimates = tvf_value_estimates.copy()
             tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], trimmed_ks, axis=1)
+            # stub:
+            # delta = (old_tvf_value_estimates[:, :, 0] - tvf_value_estimates)
             return tvf_value_estimates[:, :, None]
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
@@ -1402,10 +1413,6 @@ class Runner:
                 # update the intrinsic rewards
                 self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
 
-            # per step reward noise
-            if args.noisy_reward > 0:
-                ext_rewards = add_relative_noise(ext_rewards, args.noisy_reward)
-
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
@@ -1418,6 +1425,13 @@ class Runner:
             self.discounted_episode_score = self.gamma * self.discounted_episode_score + ext_rewards
             rollout_discounted_returns[t] = self.discounted_episode_score
             self.episode_len += 1
+
+            # per step reward noise
+            # (should be after discounted return...)
+            if args.noisy_reward > 0:
+                ext_rewards = add_relative_noise(ext_rewards, args.noisy_reward)
+            if args.noisy_reward2 > 0:
+                ext_rewards = add_10x_noise(ext_rewards, args.noisy_reward2)
 
             # log repeated action stats
             if 'max_repeats' in infos[0]:
@@ -1526,6 +1540,11 @@ class Runner:
                 if args.use_tvf:
                     self.log.watch_mean("rs_vtv", self.model.value_net.tvf_head.weight.data[-1].std())
                     self.log.watch_mean("rs_ptv", self.model.policy_net.tvf_head.weight.data[-1].std())
+                    for head in [0, 1, 15, 31, 63, 127]:
+                        if head >= args.tvf_value_heads:
+                            continue
+                        self.log.watch_mean(f"rs_vtv_{head}", self.model.value_net.tvf_head.weight.data[head].std())
+                        self.log.watch_mean(f"rs_ptv_{head}", self.model.policy_net.tvf_head.weight.data[head].std())
                 if args.reward_normalization_correction and self.step > 1e6:
                     # delay onset of value and weight adjustment a little.
                     # the reason for this is that the value network hasn't learned the value function yet.
@@ -2375,6 +2394,19 @@ class Runner:
 
         return float(grad_norm)
 
+    @property
+    def tvf_weights(self):
+        """ Returns (loss) weight for each tvf head """
+        # these are due to duplication removal.
+        base_weights = np.asarray(self.model.tvf_fixed_head_weights, dtype=np.float32).copy()
+        if args.tvf_boost_final_head > 0:
+            # setting boost to 1.0 means last head gets 50% of loss.
+            # we also renormalize.
+            base_weights[-1] += sum(base_weights) * args.tvf_boost_final_head
+            base_weights /= np.mean(base_weights)
+        return base_weights
+
+
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
 
         # todo: make sure heads all line up... I think they might be offset sometimes. Perhpas make sure that
@@ -2403,7 +2435,8 @@ class Runner:
 
         # weights due to duplicate head removal
         if args.use_tvf:
-            weights = weights * torch.from_numpy(np.asarray(self.model.tvf_fixed_head_weights, dtype=np.float32)[None, :]).to(self.model.device)
+            head_filter = head_sample if head_sample is not None else slice(None, None)
+            weights = weights * torch.from_numpy(self.tvf_weights[None, head_filter]).to(self.model.device)
 
         model_out = self.model.forward(
             data["prev_state"],
@@ -2748,7 +2781,8 @@ class Runner:
 
             # account for weights due to duplicate head removal
             if args.use_tvf:
-                tvf_loss = tvf_loss * torch.from_numpy(np.asarray(self.model.tvf_fixed_head_weights[required_tvf_heads if required_tvf_heads is not None else slice(None,None)], dtype=np.float32)[None, :]).to(self.model.device)
+                head_filter = required_tvf_heads if required_tvf_heads is not None else slice(None, None)
+                tvf_loss = tvf_loss * torch.from_numpy(self.tvf_weights[head_filter])[None, :].to(self.model.device)
 
             # h_weighting adjustment
             if args.tvf_head_weighting == "h_weighted" and single_value_head is None:

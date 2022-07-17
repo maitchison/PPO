@@ -75,6 +75,7 @@ def make_model(args, log=None):
         tvf_feature_sparsity=args.tvf_feature_sparsity,
         weight_init=args.weight_init,
         weight_scale=args.weight_scale,
+        tvf_sqrt_transform=args.tvf_sqrt_transform,
     )
     return model
 
@@ -172,6 +173,12 @@ def main():
         torch.backends.cudnn.allow_tf32 = False
     else:
         raise ValueError(f"Invalid precision mode {args.precision}")
+
+    x = torch.tensor([[0.1, 0.1], [0.1, 0.1]], dtype=torch.float32, device=args.device)
+    ident = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32, device=args.device)
+    x = x @ ident
+    delta = abs(0.1 - float(x[0, 0].detach().cpu()))
+    print(f"Multiplication precision is ~{-np.log10((delta+1e-15) / 0.1):.1f} sig fig.")
 
     # work out the logging folder...
     args.log_folder = args.log_folder or "{} [{}]".format(os.path.join(args.output_folder, args.experiment_name, args.run_name), args.guid[-8:])
