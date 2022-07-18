@@ -1430,8 +1430,8 @@ class Runner:
             # (should be after discounted return...)
             if args.noisy_reward > 0:
                 ext_rewards = add_relative_noise(ext_rewards, args.noisy_reward)
-            if args.noisy_reward2 > 0:
-                ext_rewards = add_10x_noise(ext_rewards, args.noisy_reward2)
+            if args.noisy_reward_v2 > 0:
+                ext_rewards = add_10x_noise(ext_rewards, args.noisy_reward_v2)
 
             # log repeated action stats
             if 'max_repeats' in infos[0]:

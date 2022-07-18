@@ -289,7 +289,7 @@ class Config(BaseConfig):
         # Noisy environments
         parser.add_argument("--noisy_return", type=float, default=0, help="Relative error applied after return calculations. Used to simulate a noisy environment.")
         parser.add_argument("--noisy_reward", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
-        parser.add_argument("--noisy_reward2", type=float, default=0,
+        parser.add_argument("--noisy_reward_v2", type=float, default=0,
                             help="Relative error applied to all rewards. Used to simulate a noisy environment.")
         parser.add_argument("--noisy_zero", type=float, default=-1, help="Instead of environment rewards, agent is given random rewards drawn from gausian with this std.")
 
@@ -591,7 +591,7 @@ class Config(BaseConfig):
         # noise stuff
         self.noisy_return = float()
         self.noisy_reward = float()
-        self.noisy_reward2 = float()
+        self.noisy_reward_v2 = float()
         self.noisy_zero = float()
         self.precision = str()
 
