@@ -111,6 +111,8 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
         parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
         parser.add_argument("--tvf_head_bias", type=str2bool, default=True, help="Enables bias for tvf heads")
+        parser.add_argument("--tvf_feature_window", type=int, default=-1,
+                            help="Limits each head to a window of this many features.")
         parser.add_argument("--tvf_feature_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
         parser.add_argument("--tvf_include_ext", type=str2bool, default=True, help="Also learn the rediscounted value estimate that will be used for advantages.")
         parser.add_argument("--tvf_sqrt_transform", type=str2bool, default=False,
@@ -521,6 +523,7 @@ class Config(BaseConfig):
         self.tvf_per_head_hidden_units = int()
         self.tvf_head_bias = bool()
         self.tvf_feature_sparsity = float()
+        self.tvf_feature_window = int()
         self.tvf_include_ext = bool()
         self.tvf_sqrt_transform = bool()
 

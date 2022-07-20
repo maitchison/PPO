@@ -167,9 +167,12 @@ def load_checkpoint(checkpoint_path, device=None):
     if args.frame_skip == 0:
         args.frame_skip = 4
 
-    # fip up horizon when in dna mode (used for plotting only)
+    # fix up horizon when in dna mode (used for plotting only)
     if not args.use_tvf:
-        args.tvf_max_horizon = round(3/(1-args.gamma))
+        if args.gamma == 1.0:
+            args.tvf_max_horizon = args.timeout // 4
+        else:
+            args.tvf_max_horizon = round(3/(1-args.gamma))
 
     env = atari.make(env_id=args.get_env_name(), monitor_video=True)
 

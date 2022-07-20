@@ -2259,6 +2259,9 @@ class Runner:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
 
+        # mostly interested in how noisy these are...
+        self.log.watch_mean_std("*ext_value_estimates", ext_value_estimates)
+
         if args.use_ed:
             # most of these requirements aren't strictly needed, I just can' be bothered coding them up.
             assert self.gamma == 1.0, "ed requires gamma=1.0 for the moment."

@@ -344,6 +344,7 @@ class DualHeadNet(nn.Module):
             tvf_per_head_hidden_units:int = 0,
             tvf_head_bias: bool = True,
             tvf_feature_sparsity: float = 0.0,
+            tvf_feature_window: int = -1,
 
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
@@ -395,6 +396,7 @@ class DualHeadNet(nn.Module):
         self.value_head_names = list(value_head_names)
         self.tvf_fixed_head_horizons = tvf_fixed_head_horizons
         self.tvf_feature_sparsity = tvf_feature_sparsity
+        self.tvf_feature_window = tvf_feature_window
 
         # value net can also output a basic value estimate using this head
         self.value_head = torch.nn.Linear(self.encoder.hidden_units, len(value_head_names), bias=tvf_head_bias)
@@ -403,7 +405,6 @@ class DualHeadNet(nn.Module):
         self.tvf_features_mask = None
 
         if self.tvf_fixed_head_horizons is not None:
-            # faster path, calculate all heads in one go
             self.tvf_head = torch.nn.Linear(
                 self.encoder.hidden_units,
                 len(tvf_fixed_head_horizons) * len(value_head_names),
@@ -411,21 +412,42 @@ class DualHeadNet(nn.Module):
                 device=device
             )
 
+            mask = torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32, device=device)
+            mask.requires_grad = False
+
             if self.tvf_feature_sparsity > 0:
                 keep_prob = (1 - self.tvf_feature_sparsity)
                 g = torch.Generator(device=device)
                 g.manual_seed(99) # mask will be recreated on restore (it is not saved) so make sure it's always the same.
                 # increase magnitude of weights that are not zeroed out.
-                tvf_features_mask = torch.bernoulli(
-                    torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32,
-                               device=device) * keep_prob, generator=g) / keep_prob
-                tvf_features_mask.requires_grad = False
-
+                tvf_features_mask = torch.bernoulli(mask * keep_prob, generator=g) * math.sqrt(1 / keep_prob)
                 self.tvf_head.weight.data *= tvf_features_mask
                 self.tvf_features_mask = torch.gt(tvf_features_mask, 0).to(torch.uint8)
-        elif self.tvf_feature_sparsity < 0:
-            # give early features to early heads, and late features to later heads
-            raise NotImplementedError()
+
+            if self.tvf_feature_window > 0:
+                assert self.tvf_feature_sparsity <= 0, "sparsity and feature window not supported together"
+                n_heads = len(self.tvf_fixed_head_horizons)
+                n_features = self.encoder.hidden_units
+                first_left = 0
+                first_right = self.tvf_feature_window
+                last_left = n_features - self.tvf_feature_window
+                last_right = n_features
+
+                for head in range(n_heads):
+                    factor = (head / (n_heads-1))
+                    left = int(first_left * (1-factor) + last_left * factor)
+                    right = int(first_right * (1 - factor) + last_right * factor)
+                    mask[head, :left] = 0
+                    mask[head, right:] = 0
+
+                old_scale = 1/math.sqrt(self.encoder.hidden_units)
+                new_scale = 1/math.sqrt(self.tvf_feature_window)
+
+                mask = mask * (new_scale/old_scale)
+                # zero out and rescale weights
+                self.tvf_head.weight.data *= mask
+                # keep a copy of the mask with 0 for not used and 1 for used.
+                self.tvf_features_mask = torch.gt(mask, 0).to(torch.uint8)
 
         # perform weight initialization
         params = []
@@ -448,7 +470,7 @@ class DualHeadNet(nn.Module):
 
 
     def mask_feature_weights(self):
-        if self.tvf_features_mask is not None and self.tvf_feature_sparsity > 0:
+        if self.tvf_features_mask is not None:
             self.tvf_head.weight.data *= self.tvf_features_mask
 
     @property
@@ -557,6 +579,7 @@ class TVFModel(nn.Module):
             tvf_per_head_hidden_units: int = 0,
             tvf_head_bias: bool = True,
             tvf_feature_sparsity: float = 0.0,
+            tvf_feature_window: int = -1,
             weight_init:str = "default",
             weight_scale: float = 1.0,
             tvf_sqrt_transform: bool = False,
@@ -616,6 +639,7 @@ class TVFModel(nn.Module):
                 tvf_per_head_hidden_units=tvf_per_head_hidden_units,
                 tvf_head_bias=tvf_head_bias,
                 tvf_feature_sparsity=tvf_feature_sparsity,
+                tvf_feature_window=tvf_feature_window,
                 n_actions=actions,
                 device=device,
                 weight_init=weight_init,
