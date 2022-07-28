@@ -321,81 +321,31 @@ class RNDPredictor_Net(Base_Net):
 
 class DualHeadNet(nn.Module):
     """
-    Network has both policy and (multiple) value heads.
+    Network has both policy and value heads, but can (optionally) use only one of these.
     """
 
     def __init__(
             self,
-            encoder: str,
-            input_dims: tuple,
-            n_actions: int,
-
-            hidden_units: int = 512,
-            tvf_mode:str = "dynamic",
-            tvf_hidden_units: int = 512,
-            tvf_horizon_transform=lambda x: x,
-            tvf_time_transform=lambda x: x,
-            tvf_max_horizon: int = 30000,
-
-            tvf_value_scale_fn: str = "identity",
-            tvf_value_scale_norm: str = "max",
-
-            activation_fn="relu",
-            tvf_activation_fn: str = "relu",
-
-            tvf_fixed_head_horizons: Union[None, list] = None,
-
-            # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
-            value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
-
+            network,
+            input_dims,
+            tvf_activation,
+            hidden_units, # used in for encoder output
+            tvf_hidden_units, # used for additional linear layer for TVF.
+            tvf_horizon_transform,
+            tvf_time_transform,
+            tvf_max_horizon,
+            tvf_value_scale_fn="identity",
+            tvf_value_scale_norm="max",
+            feature_activation_fn="relu",
+            actions=None,
+            use_policy_head=True,
+            use_value_head=True,
             device=None,
             **kwargs
     ):
-        """
-        @encoder: the encoder type to use [nature|impala]
-        @input_dims: the expected input dimensions (for RGB input this is (C,H,W))
-        @n_actions: the number of actions model should produce a policy for
-
-        @hidden_units: number of encoder hidden features
-
-        @tvf_mode: enable truncated value estimates [off|dynamic|fixed].
-        @tvf_hidden_units: number of units in the tvf hidden layer (set to 0 to disable extra layer)
-        @tvf_horizon_transform: function to transform horizon before processing
-        @tvf_time_transform: function to transform time before processing
-        @tvf_max_horizon: the maximum (unscaled) horizon for tvf (h_max)
-
-        @tvf_value_scale_fn: how to scale value, setting to "linear" lets model predict the average reward.
-            [identity|linear|log|sqrt]
-        @tvf_value_scale_norm: how to normalize values, [none|max|half_max]
-
-        @activation_fn: the activation function to use after feature encoder
-        @tvf_activation_fn: the activation function to use after truncated value hidden layer
-
-        @tvf_fixed_head_horizons: if given then model switches to fixed heads mode for TVF, which means that
-            only estimates for the horizons given in this list are permissible.
-
-        @value_heads: list of value heads to output, a standard and tvf output will be created.
-
-        @device: the device to allocate model to
-        """
-
-        # network was the old parameter name.
-        if "network" in kwargs:
-            encoder = encoder
-            del kwargs["network"]
-
-        assert tvf_mode in ["off", "dynamic", "fixed"]
-
-        if tvf_mode == "dynamic":
-            assert tvf_fixed_head_horizons is not None
-
-        if len(kwargs) > 0:
-            # this is just to checkwe didn't accidently ignore some parameters
-            print(f" - additional encoder args: {kwargs}")
-
         super().__init__()
 
-        self.encoder = construct_network(encoder, input_dims, hidden_units=hidden_units, **kwargs)
+        self.encoder = construct_network(network, input_dims, hidden_units=hidden_units, **kwargs)
         # jit is in theory a little faster, but can be harder to debug
         self.encoder = self.encoder.to(device)
         if JIT:
@@ -403,37 +353,42 @@ class DualHeadNet(nn.Module):
 
         assert self.encoder.hidden_units == hidden_units
 
+        self.use_policy_head = use_policy_head
+        self.use_value_head = use_value_head
         self.tvf_max_horizon = tvf_max_horizon
         self.tvf_value_scale_fn = tvf_value_scale_fn
         self.tvf_value_scale_norm = tvf_value_scale_norm
-        self.feature_activation_fn = activation_fn
-        self.tvf_mode = tvf_mode
+        self.feature_activation_fn = feature_activation_fn
 
-        self.policy_head = nn.Linear(self.encoder.hidden_units, n_actions)
+        if self.use_policy_head:
+            assert actions is not None
+            self.policy_head = nn.Linear(self.encoder.hidden_units, actions)
+            # we default teh policy head to output nearly uniform initially
+            # if we don't do this entropy will be very low initially on some problems (especially with procgen)
+            torch.nn.init.uniform_(
+                self.policy_head.weight,
+                -0.1 / (self.encoder.hidden_units ** 0.5),
+                0.1 / (self.encoder.hidden_units ** 0.5)
+            )
 
-        self.tvf_activation = tvf_activation_fn
-        self.horizon_transform = tvf_horizon_transform
-        self.time_transform = tvf_time_transform
-        self.value_head_names = list(value_head_names)
-        self.tvf_fixed_head_horizons = tvf_fixed_head_horizons
-        self.tvf_hidden_units = tvf_hidden_units
+        if self.use_value_head:
+            self.tvf_activation = tvf_activation
+            self.horizon_transform = tvf_horizon_transform
+            self.time_transform = tvf_time_transform
 
-        # value net outputs a basic value estimate as well as the truncated value estimates
-        self.value_head = nn.Linear(self.encoder.hidden_units, len(value_head_names))
-
-        if tvf_mode == "off":
-            pass
-        elif tvf_mode in ["dynamic", "fixed"]:
-            heads_multiplier = 1 if tvf_fixed_head_horizons is None else len(tvf_fixed_head_horizons)
+            # value net outputs a basic value estimate as well as the truncated value estimates
+            self.value_head = nn.Linear(self.encoder.hidden_units, 5)
             if tvf_hidden_units > 0:
                 self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
-                self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)  # for time and horizon
+                self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
+                # we want intrinsic / extrinsic versions of first and second moments.
+                self.tvf_head = nn.Linear(tvf_hidden_units, 5, bias=False) # bias can cause problems as it will offset the entire curve.
 
                 # because we are adding aux to hidden we want the weight initialization to be roughly the same scale
                 torch.nn.init.uniform_(
                     self.tvf_hidden_aux.weight,
-                    -1 / (self.encoder.hidden_units ** 0.5),
-                    1 / (self.encoder.hidden_units ** 0.5)
+                    -1/(self.encoder.hidden_units ** 0.5),
+                     1/(self.encoder.hidden_units ** 0.5)
                 )
                 if self.tvf_hidden_aux.bias is not None:
                     torch.nn.init.uniform_(
@@ -441,18 +396,6 @@ class DualHeadNet(nn.Module):
                         -1 / (self.encoder.hidden_units ** 0.5),
                         1 / (self.encoder.hidden_units ** 0.5)
                     )
-                tvf_n_features = tvf_hidden_units
-            else:
-                # in this case we just concat,
-                tvf_n_features = 2 + self.encoder.hidden_units
-
-            # we want intrinsic / extrinsic versions of first and second moments.
-            self.tvf_head = nn.Linear(tvf_n_features, heads_multiplier * len(value_head_names),
-                                      bias=False)  # bias can cause problems as it will offset the entire curve.
-        else:
-            raise ValueError(f"Invalid tvf_mode {tvf_mode}.")
-
-
 
     @property
     def tvf_activation_function(self):
@@ -466,8 +409,7 @@ class DualHeadNet(nn.Module):
             raise Exception("invalid activation")
 
     def apply_value_scale(self, values, horizons):
-        """
-        Applies value scaling.
+        """ Applies value scaling.
         values: tensor of dims [B, H, 1] # final dim might be 2 in which case it's just ext_value and int_value, but horizon will be matched.
         horizons: tensor of dims [B, H]
         """
@@ -499,39 +441,6 @@ class DualHeadNet(nn.Module):
 
         return values
 
-    def process_tvf_hidden_layer(self, encoder_features, transformed_aux_features, force_single_h: bool=False):
-        """
-        Takes encoder features, and auxilary features and produces the features used for the tvf network.
-
-        @encoder_features: The features from the encoder (with relu applied) [B, F_encoder]
-        @transformed_aux_features: aux features transformed (e.g. logged and scaled) [B, H, 2]
-        @force_single_h: Returns [B, F] instead of [B, H, F], where first h is used.
-
-        @returns: TVF hidden features of dims [B, H, F_tvf] or [B, F_tvf]
-
-        """
-
-        if self.tvf_hidden_units > 0:
-            # this is the version where we use a hidden layer
-            # generate one value estimate per input horizon, horizons can be anything.
-            tvf_features = self.tvf_hidden(encoder_features)
-            if force_single_h:
-                aux_part = self.tvf_hidden_aux(transformed_aux_features[:, 0])  # [B, F]
-                tvf_h = self.tvf_activation_function(tvf_features + aux_part)  # [B, H, F] = [B, -, F] + [B, H, F]
-            else:
-                aux_part = self.tvf_hidden_aux(transformed_aux_features)  # [B, H, F_tvf]
-                tvf_h = self.tvf_activation_function(tvf_features[:, None, :] + aux_part)  # [B, H, F] = [B, -, F] + [B, H, F]
-        else:
-            # in this case we concatinate
-            if force_single_h:
-                tvf_h = torch.concat([encoder_features, transformed_aux_features[:, 0, :]], dim=1) # [B, F] + [B, 2]
-            else:
-                _, H, _  = transformed_aux_features.shape
-                encoder_features = encoder_features[:, None, :].repeat(1, H, 1)
-                tvf_h = torch.concat([encoder_features, transformed_aux_features], dim=2)  # [B, H, F] + [B, H, 2]
-        return tvf_h
-
-
     def forward(
             self, x, aux_features=None, policy_temperature=1.0,
             exclude_value=False, exclude_policy=False, include_features: bool = False
@@ -544,12 +453,12 @@ class DualHeadNet(nn.Module):
         result = {}
         if self.encoder.trace_module is not None:
             # faster path, precompiled
-            encoder_features = self.encoder.trace_module(x)
+            features = self.encoder.trace_module(x)
         else:
-            encoder_features = self.encoder(x)
+            features = self.encoder(x)
 
         # convert back to float32, and also switch to channels first, not that that should matter.
-        encoder_features = encoder_features.float(memory_format=torch.contiguous_format)
+        features = features.float(memory_format=torch.contiguous_format)
 
         if self.feature_activation_fn == "relu":
             af = F.relu
@@ -560,14 +469,14 @@ class DualHeadNet(nn.Module):
 
         if include_features:
             # used for debugging sometimes
-            result['raw_features'] = encoder_features
-            encoder_features = af(encoder_features)
-            result['features'] = encoder_features
+            result['raw_features'] = features
+            features = af(features)
+            result['features'] = features
         else:
-            encoder_features = af(encoder_features)
+            features = af(features)
 
-        if not exclude_policy:
-            unscaled_policy = self.policy_head(encoder_features)
+        if self.use_policy_head and not exclude_policy:
+            unscaled_policy = self.policy_head(features)
             result['raw_policy'] = unscaled_policy
 
             assert len(unscaled_policy.shape) == 2
@@ -587,59 +496,41 @@ class DualHeadNet(nn.Module):
                 # standard temperature scaling
                 result['log_policy'] = F.log_softmax(unscaled_policy / policy_temperature, dim=1)
 
-        if not exclude_value:
+        if self.use_value_head and not exclude_value:
 
-            value_values = self.value_head(encoder_features)
-            for i, name in enumerate(self.value_head_names):
-                result[f'{name}_value'] = value_values[:, i]
+            value_values = self.value_head(features)
+            result['ext_value'] = value_values[:, 0]
+            result['int_value'] = value_values[:, 1]
+            result['ext_value_sqr'] = value_values[:, 2]
+            result['int_value_sqr'] = value_values[:, 3]
+            result['uni_value'] = value_values[:, 4]
 
-            using_fixed_heads = self.tvf_mode == "fixed"
-
-            # if auxiliary features are present generate a result per h using tvf heads
+            # auxiliary features
             if aux_features is not None:
+
+                # upload aux_features to GPU and cast to float
                 if type(aux_features) is np.ndarray:
                     aux_features = torch.from_numpy(aux_features)
+
                 aux_features = aux_features.to(device=value_values.device, dtype=torch.float32)
                 _, H, _ = aux_features.shape
 
                 transformed_aux_features = torch.zeros_like(aux_features)
                 horizon_in = aux_features[:, :, 0]
                 time_in = aux_features[:, :, 1]
-                transformed_aux_features[:, :, 0] = self.horizon_transform(horizon_in)  # [B, H]
-                transformed_aux_features[:, :, 1] = self.time_transform(time_in)  # [B, H]
-
-                if using_fixed_heads:
-                    transformed_aux_features[:, :, 0] = 0
-
-                tvf_h = self.process_tvf_hidden_layer(encoder_features, transformed_aux_features, force_single_h=using_fixed_heads)
-
-                if using_fixed_heads:
-                    # generate all fixed horizons then map to requested order. Any horizons which do not match will
-                    # cause an error.
-
-                    tvf_values = self.tvf_head(tvf_h) # [B, F, H_fixed]
-
-                    # work out the mapping from output heads to the order requested
-                    h_requested = torch.round(aux_features[0, :, 0]).to(torch.int)
-                    assert torch.all(h_requested[None, :] == aux_features[:, :, 0]), "horizons must match in fixed head mode."
-
-                    head_mapping = {}
-                    for i, head in enumerate(self.tvf_fixed_head_horizons):
-                        head_mapping[int(head)] = i
-                    for h in h_requested:
-                        if int(h) not in head_mapping.keys():
-                            raise ValueError(f"Requested horizon {h}, but not found in {self.tvf_fixed_head_horizons}")
-                    ordering = np.asarray([head_mapping[int(h)] for h in h_requested])
-
-                    # sort though heads...
-                    for i, name in enumerate(self.value_head_names):
-                        result[f'tvf_{name}_value'] = tvf_values[:, ordering + (i*len(self.tvf_fixed_head_horizons))]
-
-                else:
-                    tvf_values = self.tvf_head(tvf_h)
-                    tvf_values = self.apply_value_scale(tvf_values, horizon_in)
-                    for i, name in enumerate(self.value_head_names):
-                        result[f'tvf_{name}_value'] = tvf_values[..., i]
+                transformed_aux_features[:, :, 0] = self.horizon_transform(horizon_in)
+                transformed_aux_features[:, :, 1] = self.time_transform(time_in)
+                features_part = self.tvf_hidden(features)
+                aux_part = self.tvf_hidden_aux(transformed_aux_features)
+                tvf_h = self.tvf_activation_function(features_part[:, None, :] + aux_part)
+                values = self.tvf_head(tvf_h)
+                values = self.apply_value_scale(values, horizon_in)
+                result['tvf_value'] = values[..., 0]  # old alise for tvf_ext_value
+                result['tvf_ext_value'] = values[..., 0]
+                result['tvf_int_value'] = values[..., 1]
+                result['tvf_ext_value_m2'] = values[..., 2]  # second moment estimates...
+                result['tvf_int_value_m2'] = values[..., 3]
+                result['tvf_uni_value'] = values[..., 4]
 
         return result
 
@@ -678,7 +569,6 @@ class TVFModel(nn.Module):
             use_rnd:bool = False,
             use_rnn:bool = False,
 
-            tvf_mode:str="off",
             tvf_max_horizon:int = 65536,
             tvf_horizon_transform = lambda x : x,
             tvf_time_transform = lambda x: x,
@@ -691,7 +581,6 @@ class TVFModel(nn.Module):
             shared_initialization=False,
             observation_normalization=False,
             freeze_observation_normalization=False,
-            tvf_fixed_head_horizons: Union[None, list] = None,
     ):
 
         assert not use_rnn, "RNN not supported yet"
@@ -727,10 +616,9 @@ class TVFModel(nn.Module):
             value_network_args = ast.literal_eval(value_network_args)
 
         make_net = lambda network, args: DualHeadNet(
-            encoder=network,
+            network=network,
             input_dims=input_dims,
-            tvf_mode=tvf_mode,
-            tvf_activation_fn=tvf_activation,
+            tvf_activation=tvf_activation,
             hidden_units=hidden_units,
             tvf_hidden_units=tvf_hidden_units,
             tvf_horizon_transform=tvf_horizon_transform,
@@ -738,9 +626,8 @@ class TVFModel(nn.Module):
             tvf_max_horizon=tvf_max_horizon,
             tvf_value_scale_fn=tvf_value_scale_fn,
             tvf_value_scale_norm=tvf_value_scale_norm,
-            activation_fn=feature_activation_fn,
-            tvf_fixed_head_horizons=tvf_fixed_head_horizons,
-            n_actions=actions,
+            feature_activation_fn=feature_activation_fn,
+            actions=actions,
             device=device,
             **(args or {})
         )
@@ -986,7 +873,9 @@ class TVFModel(nn.Module):
 def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
     head_name = head_name.lower()
     if head_name == "nature":
-        return NatureCNN_Net(input_dims, **kwargs)
+        return NatureCNN_Net(input_dims, base_channels=32, **kwargs)
+    if head_name == "nature_fat":
+        return NatureCNN_Net(input_dims, base_channels=64, **kwargs)
     if head_name == "impala":
         return ImpalaCNN_Net(input_dims, channels=(16, 32, 32), down_sample='pool', **kwargs)
     if head_name == "impala_fast": # not that fast, not really.

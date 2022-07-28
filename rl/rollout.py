@@ -25,7 +25,7 @@ import math
 import rl.csgo
 import train
 from .logger import Logger
-from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression
+from . import utils, atari, mujoco, procgen, hybridVecEnv, wrappers, models, compression
 from .lfr import compute_band_pass
 from .returns import get_return_estimate
 from .config import args
@@ -519,8 +519,8 @@ class Runner:
         self.batch_counter = 0
         self.erp_stats = {}
         self.are_stats = {}
-        self.are_stats["value_h"] = 1/(1-args.td_lambda)
-        self.are_stats["policy_h"] = 1/(1-args.gae_lambda)
+        self.are_stats["value_h"] = 1/(1-args.td_lambda-1e-6)
+        self.are_stats["policy_h"] = 1/(1-args.gae_lambda-1e-6)
 
         self.grad_accumulator = {}
 
@@ -609,21 +609,18 @@ class Runner:
 
         # create the replay buffer if needed
         self.replay_buffer: Optional[ExperienceReplayBuffer] = None
-        if type(self.prev_obs) is torch.Tensor:
-            replay_dtype = self.prev_obs[0].cpu().numpy().dtype
-        else:
-            replay_dtype = self.prev_obs.dtype
         if args.replay_size > 0:
             self.replay_buffer = ExperienceReplayBuffer(
                 max_size=args.replay_size,
                 obs_shape=self.prev_obs.shape[2:],
-                obs_dtype=replay_dtype,
+                obs_dtype=self.prev_obs.dtype,
                 mode=args.replay_mode,
                 thinning=args.replay_thinning,
             )
 
+
         #  these horizons will always be generated and their scores logged.
-        self.tvf_debug_horizons = [0] + Runner.get_standard_horizon_sample(args.tvf_max_horizon)
+        self.tvf_debug_horizons = [0] + self.get_standard_horizon_sample(args.tvf_max_horizon)
 
 
     def anneal(self, x, mode: str = "linear"):
@@ -669,25 +666,11 @@ class Runner:
         return self.anneal(args.distil_lr, mode="linear" if args.distil_lr_anneal else "off")
 
 
-    @staticmethod
-    def get_standard_horizon_sample(max_horizon: int):
+    def get_standard_horizon_sample(self, max_horizon: int):
         """
         Provides a set of horizons spaces (approximately) geometrically, with the H[0] = 1 and H[-1] = current_horizon.
         These may change over time (if current horizon changes). Use debug_horizons for a fixed set.
         """
-
-        if args.tvf_mode == "fixed":
-            assert args.tvf_value_samples == args.tvf_horizon_samples, "Fixed heads requires args.tvf_value_samples == args.tvf_horizon_samples"
-            assert args.tvf_value_distribution == args.tvf_horizon_distribution, "Fixed heads require value and horizon distributions to match."
-            assert "fixed" in args.tvf_value_distribution and "fixed" in args.tvf_horizon_distribution, "Fixed heads requires fixed sampling"
-            # with fixed head mode we can only use these horizons...
-            return Runner.generate_horizon_sample(
-                args.n_steps, args.tvf_max_horizon,
-                samples=args.tvf_value_samples,
-                distribution=args.tvf_value_distribution,
-                force_first_and_last=True,
-            )
-
         assert max_horizon <= 30000, "horizons over 30k not yet supported."
         horizons = [h for h in [1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000] if
                                    h <= max_horizon]
@@ -970,7 +953,7 @@ class Runner:
             time=None,
             rewards=None,
             dones=None,
-            tvf_return_mode=None,
+            tvf_mode=None,
             tvf_n_step=None,
             include_second_moment: bool = False,
     ):
@@ -981,7 +964,7 @@ class Runner:
         rewards: float32 ndarray of dims [N, B] containing reward at step n for agent b
         value_sample_horizons: int32 ndarray of dims [K] indicating horizons to generate value estimates at.
         required_horizons: int32 ndarray of dims [K] indicating the horizons for which we want a return estimate.
-        head: which head to use for estimate, i.e. ext_value, int_value, ext_sqr_value etc
+        head: which head to use for estimate, i.e. ext_value, int_value, ext_value_square etc
         sqrt_m2: returns a tuple containing (first moment, sqrt second moment)
         """
 
@@ -999,7 +982,7 @@ class Runner:
         time = time if time is not None else self.all_time
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
-        tvf_return_mode = tvf_return_mode or args.tvf_return_mode
+        tvf_mode = tvf_mode or args.tvf_return_mode
         tvf_n_step = tvf_n_step or args.tvf_return_n_step
 
         N, A, *state_shape = obs[:-1].shape
@@ -1041,7 +1024,7 @@ class Runner:
             re_mode = "default"
 
         returns = get_return_estimate(
-            mode=tvf_return_mode,
+            mode=tvf_mode,
             gamma=args.tvf_gamma,
             rewards=rewards,
             dones=dones,
@@ -1330,7 +1313,7 @@ class Runner:
             aux_features = None
             if args.use_tvf:
                 aux_features = package_aux_features(
-                    np.asarray(Runner.get_standard_horizon_sample(self.current_horizon)),
+                    np.asarray(self.get_standard_horizon_sample(self.current_horizon)),
                     self.all_time.reshape([(N + 1) * A])
                 )
             output = self.detached_batch_forward(
@@ -1486,6 +1469,80 @@ class Runner:
         """
         Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
         See: https://arxiv.org/pdf/1812.06162.pdf
+
+        """
+
+        self.log.mode = self.log.LM_MUTE
+        result = {}
+
+        def process_gradient(context):
+            # calculate norm of gradient
+            parameters = []
+            for group in optimizer.param_groups:
+                for p in group['params']:
+                    if p.grad is not None:
+                        parameters.append(p)
+
+            result['grad_magnitude'] = nn.utils.clip_grad_norm_(parameters, 99999)
+            optimizer.zero_grad(set_to_none=True)
+            return True  # make sure to not apply the gradient!
+
+        hook = {'after_mini_batch': process_gradient}
+
+        b_small = 32
+        b_big = len(batch_data["prev_state"])
+
+        # take 16 samples of the small gradient.
+        # ideally we would do this using a shuffle, but with replacement should be fine too
+        g_b_small_squared = 0
+        for sample in range(16):
+            self.train_batch(batch_data, mini_batch_func, b_small, optimizer, label, hooks=hook)
+            g_b_small_squared += float(result['grad_magnitude']) / 16
+        g_b_small_squared *= g_b_small_squared
+
+        self.train_batch(batch_data, mini_batch_func, b_big, optimizer, label, hooks=hook)
+        g_b_big_squared = float(result['grad_magnitude'])
+        g_b_big_squared *= g_b_big_squared
+
+        g2 = (b_big * g_b_big_squared - b_small * g_b_small_squared) / (b_big - b_small)
+        s = (g_b_small_squared - g_b_big_squared) / (1 / b_small - 1 / b_big)
+        self.log.mode = self.log.LM_DEFAULT
+
+        self.are_stats[f'{label}_s'] = 0.9 * self.are_stats.get(f'{label}_s', s) + 0.1 * s
+        self.are_stats[f'{label}_g2'] = 0.9 * self.are_stats.get(f'{label}_g2', g2) + 0.1 * g2
+
+        # g2 estimate is frequently negative. If ema average bounces below 0 the ratio will become negative.
+        # to avoid this we clip the *smoothed* g2 to epsilon.
+        # alternative include larger batch_sizes, and / or larger EMA horizon.
+        epsilon = 1e-4
+        target_smooth_ratio = self.are_stats[f'{label}_s'] / np.clip(self.are_stats[f'{label}_g2'], epsilon,
+                                                                     float('inf'))
+
+        # a second layer of EMA makes sure that mini-batch size doesn't flick between 8k, and 32 every other update.
+        # slow changes in the ratio will come through quickly, but large flucations will be averaged out.
+        self.are_stats[f'{label}_ratio'] = self.are_stats.get(f'{label}_ratio',
+                                                              target_smooth_ratio) * 0.9 + target_smooth_ratio * 0.1
+
+        self.log.watch(f'are_{label}_s', s, display_precision=0, display_width=0)
+        self.log.watch(f'are_{label}_g2', g2, display_precision=0, display_width=0)
+        self.log.watch(f'are_{label}_b', target_smooth_ratio, display_precision=0, display_width=0)
+        self.log.watch(f'are_{label}_smooth_b', self.are_stats[f'{label}_ratio'], display_precision=0, display_width=0)
+        self.log.watch(
+            f'are_{label}_sqrt_b',
+            np.clip(target_smooth_ratio, 0, float('inf')) ** 0.5,
+            display_precision=0,
+            display_name=f"{label}_sns"
+
+        )
+
+        return self.are_stats[f'{label}_ratio']
+
+    def estimate_noise_level_v2(self, batch_data, mini_batch_func, optimizer: torch.optim.Optimizer, label):
+        """
+        Estimates the critical batch size using the gradient magnitude of a small batch and a large batch
+        See: https://arxiv.org/pdf/1812.06162.pdf
+
+        This is an improved version that should be less biased, but was developed after the experiments.
         """
 
         self.log.mode = self.log.LM_MUTE
@@ -1663,10 +1720,9 @@ class Runner:
 
         # unfortunately we can not get estimates for horizons longer than N, so just generate the return estimates
         # up to N.
-        VALUE_SAMPLE_HORIZONS = Runner.generate_horizon_sample(
+        VALUE_SAMPLE_HORIZONS = self.generate_horizon_sample(
             # I really want 128 samples, but need to reduce the space requirements a little.
-            self.N, N,
-            64, distribution="fixed_geometric", force_first_and_last=True
+            N, 64, distribution="fixed_geometric", force_first_and_last=True
         )
         VALUE_SAMPLE_HORIZONS = list(set(VALUE_SAMPLE_HORIZONS)) # remove any duplicates
         VALUE_SAMPLE_HORIZONS.sort()
@@ -1872,7 +1928,7 @@ class Runner:
         )
 
         value_samples = self.generate_horizon_sample(
-            self.N, self.current_horizon,
+            self.current_horizon,
             args.tvf_value_samples,
             distribution=args.tvf_value_distribution,
             force_first_and_last=True,
@@ -1885,7 +1941,7 @@ class Runner:
             time=self.all_time,
             rewards=self.ext_rewards,
             dones=self.terminals,
-            tvf_return_mode="fixed",  # <-- MC is the least bias method we can do...
+            tvf_mode="fixed",  # <-- MC is the least bias method we can do...
             tvf_n_step=args.n_steps,
             include_second_moment=args.learn_second_moment
         )
@@ -2219,88 +2275,6 @@ class Runner:
 
         self.flags = {}
 
-    @torch.no_grad()
-    def clip_and_keep(self, optimizer, parameters, label, mode='cak2'):
-
-        clipped = 0
-        count = 1
-        acc_norms = []
-        grad_norms = []
-
-        for p in parameters:
-            
-            grad = p.grad.data
-            grad_accumulator = optimizer.state[p].get('acc', torch.zeros_like(grad))
-
-            grad_norms.append(((torch.square(grad).sum()) ** 0.5).cpu())
-            acc_norms.append(((torch.square(grad_accumulator).sum() * args.csgo_friction) ** 0.5).cpu())
-            count += utils.prod(grad.shape)
-
-            if mode == "cak1":
-                grad += grad_accumulator # this is the gradient not used before...
-                grad_accumulator *= 0.99
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm)
-                tail = grad - head
-                grad_accumulator = tail
-                p.grad.data = head
-            elif mode == "cak2":
-                # clip(r+g)
-                grad += grad_accumulator * args.csgo_friction
-                grad_accumulator *= (1 - args.csgo_friction)
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm)
-                tail = grad - head
-                grad_accumulator += tail
-                p.grad.data = head
-            elif mode == "cak3":
-                # works if csgo_friction is tuned really well
-                # clipped(g)+r
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm)
-                tail = grad - head
-                p.grad.data = head + grad_accumulator * args.csgo_friction
-                grad_accumulator *= (1 - args.csgo_friction) * args.csgo_decay
-                grad_accumulator += tail
-            elif mode == "cak4":
-                # clip(g)+r on scaled gradients.
-                assert args.optimizer == "adam", "Only adam supported with this clipping method."
-                if 'exp_avg_sq' not in optimizer.state[p]:
-                    continue
-                bias_correction = 1 - (args.adam_beta2 ** optimizer.state[p]['step'])
-                scale = (optimizer.state[p]['exp_avg_sq'] / bias_correction).sqrt() + args.adam_epsilon
-                clipped += torch.gt(torch.abs(grad / scale), args.max_grad_norm).sum()
-                head = torch.clip(grad / scale, -args.max_grad_norm, +args.max_grad_norm) * scale
-                tail = grad - head
-                p.grad.data = head + grad_accumulator * args.csgo_friction
-                grad_accumulator *= (1 - args.csgo_friction) * args.csgo_decay
-                grad_accumulator += tail
-            elif mode == "cak5":
-                # clip(g+r) on scaled gradients.
-                assert args.optimizer == "adam", "Only adam supported with this clipping method."
-                if 'exp_avg_sq' not in optimizer.state[p]:
-                    continue
-                bias_correction = 1 - (args.adam_beta2 ** optimizer.state[p]['step'])
-                scale = (optimizer.state[p]['exp_avg_sq'] / bias_correction).sqrt() + args.adam_epsilon
-                acc_norms[-1] = ((torch.square(grad_accumulator * scale).sum() * args.csgo_friction) ** 0.5).cpu() # override a2 here...
-                grad = (grad / scale) + grad_accumulator * args.csgo_friction
-                clipped += torch.gt(torch.abs(grad), args.max_grad_norm).sum()
-                head = torch.clip(grad, -args.max_grad_norm, +args.max_grad_norm) * scale
-                tail = grad - head
-                p.grad.data = head
-                p.grad.data *= scale
-                grad_accumulator *= (1 - args.csgo_friction) * args.csgo_decay
-                grad_accumulator += tail
-            else:
-                raise ValueError("Invalid clip_mode.")
-
-            # save accumaltor
-            optimizer.state[p]['acc'] = grad_accumulator
-
-        self.log.watch_mean(f"clip_{label}", clipped / count, display_width=10)
-        self.log.watch_stats(f"a2_{label}", acc_norms, display_width=0)
-        self.log.watch_stats(f"g2_{label}", grad_norms, display_width=0)
-
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
         # get parameters
@@ -2326,8 +2300,6 @@ class Runner:
             pass
         elif args.grad_clip_mode == "global_norm":
             grad_norm = nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
-        elif "cak" in args.grad_clip_mode:
-            self.clip_and_keep(optimizer, parameters, label, args.grad_clip_mode)
         else:
             raise ValueError("Invalid clip_mode.")
 
@@ -2389,20 +2361,16 @@ class Runner:
             raise ValueError(f"Invalid tvf_loss_fn {args.tvf_loss_fn}")
 
     def get_distil_target_name(self):
-        return 'tvf_ext_value' if args.use_tvf else "ext_value"
+        if args.distil_mode == "value":
+            return 'ext_value'
+        elif args.distil_mode == "features":
+            return 'raw_features'
+        else:
+            raise ValueError(f"Invalid distil mode {args.distil_mode}")
 
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
 
-        if args.use_tvf:
-            aux_features = package_aux_features(data["tvf_horizons"], data["tvf_time"])
-        else:
-            aux_features = None
-
-        model_out = self.model.forward(
-            data["prev_state"],
-            output="policy",
-            aux_features=aux_features
-        )
+        model_out = self.model.forward(data["prev_state"], output="policy", include_features=args.distil_mode=='features')
         targets = data["distil_targets"]
         predictions = model_out[self.get_distil_target_name()]
         loss_value = 0.5 * torch.square(targets - predictions)
@@ -2411,15 +2379,7 @@ class Runner:
         loss = loss_value
 
         # MSE loss on the logits...
-        if args.distil_loss == "mse_logit":
-            loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_raw_policy"], model_out["raw_policy"]).mean(dim=-1)
-        elif args.distil_loss == "mse_policy":
-            loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_log_policy"], model_out["log_policy"]).mean(dim=-1)
-        elif args.distil_loss == "kl_policy":
-            loss_policy = args.distil_beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="batchmean")
-        else:
-            raise ValueError(f"Invalid distil_loss {args.distil_loss}")
-
+        loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_raw_policy"], model_out["raw_policy"]).mean(dim=-1)
         loss = loss + loss_policy
 
         pred_var = torch.var(predictions)
@@ -2618,9 +2578,8 @@ class Runner:
             'losses': loss.detach()
         }
 
-    @staticmethod
     def generate_horizon_sample(
-            N: int,
+            self,
             max_value: int,
             samples: int,
             distribution: str = "linear",
@@ -2650,11 +2609,11 @@ class Runner:
             samples = np.random.uniform(np.log(1), np.log(max_value+1), size=samples)
             samples = np.exp(samples)-1
         elif distribution == "saturated_geometric":
-            samples1 = np.random.uniform(np.log(1), np.log(min(N, max_value) + 1), size=samples//2)
+            samples1 = np.random.uniform(np.log(1), np.log(min(self.N, max_value) + 1), size=samples//2)
             samples2 = np.random.uniform(np.log(1), np.log(max_value + 1), size=samples//2)
             samples = np.exp(np.concatenate([samples1, samples2])) - 1
         elif distribution == "saturated_fixed_geometric":
-            samples1 = np.geomspace(1, min(N, max_value) + 1, num=samples//2, endpoint=False)-1
+            samples1 = np.geomspace(1, min(self.N, max_value) + 1, num=samples//2, endpoint=False)-1
             samples2 = np.geomspace(1, 1+max_value, num=samples//2, endpoint=True)-1
             samples = np.concatenate([samples1, samples2])
         else:
@@ -2685,15 +2644,15 @@ class Runner:
         H = self.current_horizon
         N, A, *state_shape = self.prev_obs.shape
 
-        horizon_samples = Runner.generate_horizon_sample(
-            N, H,
+        horizon_samples = self.generate_horizon_sample(
+            H,
             args.tvf_horizon_samples,
             distribution=args.tvf_horizon_distribution,
             force_first_and_last=force_first_and_last,
         )
 
-        value_samples = Runner.generate_horizon_sample(
-            N, H,
+        value_samples = self.generate_horizon_sample(
+            H,
             args.tvf_value_samples,
             distribution=args.tvf_value_distribution,
             force_first_and_last=True
@@ -2717,7 +2676,7 @@ class Runner:
                 _, returns_m2 = self.calculate_sampled_returns(
                     value_sample_horizons=value_samples,
                     required_horizons=horizon_samples,
-                    tvf_return_mode=args.sqr_return_mode,
+                    tvf_mode=args.sqr_return_mode,
                     tvf_n_step=args.sqr_return_n_step,
                     include_second_moment=True
                 )
@@ -3314,11 +3273,9 @@ class Runner:
         batch_data["prev_state"] = obs
 
         if args.use_tvf:
-            assert not args.tvf_force_ext_value_distil, "tvf_force_ext_value_distil not supported yet."
-
-            horizons = Runner.generate_horizon_sample(
-                self.N, self.current_horizon,
-                args.tvf_horizon_samples,
+            # this might not be needed anymore... ?
+            horizons = self.generate_horizon_sample(
+                self.current_horizon, args.tvf_horizon_samples,
                 args.tvf_horizon_distribution
             )
             H = len(horizons)
@@ -3328,18 +3285,47 @@ class Runner:
         else:
             aux_features = None
 
+        assert not args.use_tvf, "tvf not working with distil yet..."
+
+        # if args.use_tvf and not args.tvf_force_ext_value_distil:
+        #     # maybe drop this and just use aux features?
+        #     horizons = self.generate_horizon_sample(self.current_horizon, args.tvf_horizon_samples,
+        #                                             args.tvf_horizon_distribution)
+        #     H = len(horizons)
+        #     output = self.get_value_estimates(
+        #         obs=distil_obs[np.newaxis], # change from [B,*obs_shape] to [1,B,*obs_shape]
+        #         time=distil_time[np.newaxis],
+        #         horizons=horizons,
+        #         include_model_out=args.use_intrinsic_rewards,
+        #     )
+        #     batch_data["tvf_horizons"] = expand_to_na(1, B, horizons).reshape([B, H])
+        #     batch_data["tvf_time"] = distil_time.reshape([B])
+        # else:
+        #     output = self.get_value_estimates(
+        #         obs=distil_obs[np.newaxis], time=distil_time[np.newaxis],
+        #         include_model_out=args.use_intrinsic_rewards,
+        #     )
+        #
+
+        # if args.use_intrinsic_rewards:
+        #     target_values, model_out = output
+        #     target_int_values = model_out["int_value"].cpu().numpy()
+        #     batch_data["int_value_targets"] = target_int_values.reshape([B])
+        # else:
+        #     target_values = output
+
         # forward through model to get targets from model
         model_out = self.detached_batch_forward(
             obs=obs,
             aux_features=aux_features,
             output="full",
+            include_features=args.distil_mode == "features"
         )
 
         batch_data["distil_targets"] = model_out['value_'+self.get_distil_target_name()]
 
         # get old policy
         batch_data["old_raw_policy"] = model_out["policy_raw_policy"].detach().cpu().numpy()
-        batch_data["old_log_policy"] = model_out["policy_log_policy"].detach().cpu().numpy()
 
         return batch_data
 
@@ -3781,6 +3767,8 @@ def make_env(env_type, env_id, **kwargs):
         make_fn = rl.atari.make
     elif env_type == "mujoco":
         make_fn = rl.mujoco.make
+    elif env_type == "procgen":
+        make_fn = rl.procgen.make
     else:
         raise ValueError(f"Invalid environment type {env_type}")
     return make_fn(env_id, **kwargs)

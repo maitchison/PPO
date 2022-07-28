@@ -4,9 +4,31 @@ Helper to create wrapped mujoco environments
 
 import gym
 import numpy as np
+from procgen import ProcgenGym3Env
 
 from . import wrappers
 from . import config
+
+class ProcGenWrapper(gym.Wrapper):
+    """
+    Swaps channel order for procgen.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        H, W, C = self.env.observation_space.shape
+        self.observation_space = gym.spaces.Box(0, 255, (C, H, W), dtype=np.uint8)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        return self._process(obs), reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        return self._process(obs)
+
+    def _process(self, obs):
+        return obs.transpose(2, 0, 1)
 
 def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_saving=True):
     """
@@ -19,28 +41,35 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env_name = f"procgen:procgen-{env_id}-v0"
 
+    # procgen defaults to using hard, so just use gym to create env.
+    #env = ProcgenGym3Env(env_id, distribution_mode="hard")
     env = gym.make(env_name)
 
-    env = env.unwrapped
+    env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
+
+    env = ProcGenWrapper(env)
 
     env = wrappers.LabelEnvWrapper(env, env_id)
 
     if seed is not None:
         np.random.seed(seed)
-        env.seed(seed)
+        # for some reason procgen does not like the seed being set this way?
+        #env.seed(seed)
 
     if args.timeout > 0:
         env = wrappers.TimeLimitWrapper(env, args.timeout)
 
-    env = F32Wrapper(env)
-
-    env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
+    # no state saving for procgen
+    #env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
 
     env = wrappers.EpisodeScoreWrapper(env)
 
-    env = wrappers.MonitorWrapper(env, monitor_video=False)
-
     if args.reward_scale != 1.0 and not args.reward_normalization:
         env = wrappers.RewardScaleWrapper(env, args.reward_scale)
+
+    # todo: include time aware... (and maybe action aware)
+    # if args.embed_time:
+    #     # must come after frame_stack
+    #     env = wrappers.TimeAwareWrapper(env)
 
     return env

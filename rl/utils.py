@@ -575,7 +575,7 @@ def compose_frame(state_frame, rendered_frame, channels=None):
     # note: untested on non-stacked states.
 
     # assume state is C, W, H
-    # assume rendered frame is  is W, H, C
+    # assume rendered frame is is W, H, C
     assert state_frame.shape[0] < max(state_frame.shape), "Channels should be first on state {}".format(state_frame.shape)
     assert rendered_frame.shape[2] < max(state_frame.shape), "Channels should be last on rendered {}".format(
         rendered_frame.shape)

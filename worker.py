@@ -1,3 +1,7 @@
+"""
+Jobs can be processed in parallel by running this script concurrently.
+"""
+
 import os
 import time
 import sys

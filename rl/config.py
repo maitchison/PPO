@@ -33,7 +33,7 @@ class Config:
         self.epochs             = float()
         self.limit_epochs       = int()
         self.distil_beta        = float()
-        self.distil_loss        = str()
+        self.distil_mode        = str()
         self.distil_period      = int()
         self.distil_freq_ratio  = float()
         self.distil_batch_size_ratio = float()
@@ -108,7 +108,7 @@ class Config:
         self.policy_norm = str()
         self.value_norm = str()
 
-        self.tvf_mode = str()
+
         self.tvf_coef           = float()
         self.tvf_max_horizon    = int()
         self.auto_horizon   = bool()
@@ -123,7 +123,6 @@ class Config:
         self.tvf_value_scale_norm = str()
         self.tvf_gamma          = float()
         self.return_estimator_mode = str()
-
 
         self.tvf_return_samples = int()
         self.tvf_return_mode = str()
@@ -140,6 +139,7 @@ class Config:
 
         self.tvf_force_ext_value_distil = bool()
         self.tvf_hidden_units = int()
+        self.use_tvf = bool()
         self.distil_delay = int()
 
         # entropy bonus constants
@@ -275,9 +275,6 @@ class Config:
             return self.environment[n % len(self.environment)]
         raise ValueError(f"Invalid type for environment {type(self.environment)} expecting str or list.")
 
-    @property
-    def use_tvf(self):
-        return self.tvf_mode != "off"
 
     @property
     def reward_normalization_gamma(self):
@@ -375,7 +372,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE parameter.")
     parser.add_argument("--gae_value_multiplier", type=float, default=1.0, help="Modifies value before going into GAE. Used to see how bad value estimates affect performance.")
     parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clip gradients during training to this.")
-    parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|marcus1|marcus2]")
+    parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm]")
 
     # policy features
     parser.add_argument("--policy_batch_norm", type=str2bool, default=False)
@@ -433,7 +430,7 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
 
-    parser.add_argument("--are_mode", type=str, default="off", help="Enables adaptive batch size. [off|on|shadow|policy]")
+    parser.add_argument("--are_mode", type=str, default="off", help="Enables automatic return estimator. [off|on|shadow|policy]")
     parser.add_argument("--are_target_p", type=float, default=100)
     parser.add_argument("--are_target_v", type=float, default=10)
     parser.add_argument("--save_model_interval", type=int, default=0, help="Period for which to saves model history during training (uses a lot of space!). 0 = off.")
@@ -442,6 +439,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--tvf_time_scale", type=str, default="default", help="[default|centered|wide|log|zero]")
     parser.add_argument("--tvf_hidden_units", type=int, default=512, help="units used for value prediction")
 
+    parser.add_argument("--use_tvf", type=str2bool, default=False, help="Enabled TVF mode.")
     parser.add_argument("--big_red_button_prob", type=float, default=0.0, help="Probability of adding a big red button to environment that will terminate with a large penality.")
 
     # simulated annealing
@@ -467,7 +465,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--distil_epochs", type=int, default=0, help="Number of distillation epochs")
     parser.add_argument("--distil_beta", type=float, default=1.0)
     parser.add_argument("--distil_period", type=int, default=1)
-    parser.add_argument("--distil_loss", type=str, default="mse_logit", help="[mse_logit|mse_policy|kl_policy]")
+    parser.add_argument("--distil_mode", type=str, default="value",
+                        help="[value|features|projection]")
     parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
 
     parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
@@ -506,7 +505,6 @@ def parse_args(no_env=False, args_override=None):
 
 
     # experimental...
-    parser.add_argument("--tvf_mode", type=str, default="off", help="[off|dynamic|fixed]")
     parser.add_argument("--tvf_loss_fn", type=str, default="MSE", help="[MSE|huber|h_weighted]")
     parser.add_argument("--tvf_huber_loss_delta", type=float, default=1.0)
 
@@ -546,7 +544,7 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--eb_cost_alpha", type=float, default=10.0, help="Weights entropy bonus by uniform action cost.")
     parser.add_argument("--eb_clip", type=float, default=-1, help="Clips entropy bonus. (negative disables clipping)")
     parser.add_argument("--threads", type=int, default=2)
-    parser.add_argument("--export_video", type=str2bool, default=True)
+    parser.add_argument("--export_video", type=str2bool, default=False)
     parser.add_argument("--export_trajectories", type=str2bool, default=False)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--upload_batch", type=str2bool, default=False, help='Uploads an entire batch to GPU, faster, but uses more GPU RAM.')
@@ -652,8 +650,6 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--lfr_samples", type=int, default=256, help='Number of samples for LRF.')
     parser.add_argument("--lfr_normalize", type=str2bool, default=True, help='If input should use normalization transform.')
 
-    # legacy
-    parser.add_argument("--use_tvf", type=str2bool, default=None)
     # other
     parser.add_argument("--mutex_key", type=str, default='',
                         help="uses mutex locking so that only one GPU can be working on a rollout at a time. " +
@@ -664,6 +660,13 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--policy_norm", type=str, default="off")
     parser.add_argument("--value_norm", type=str, default="off")
     parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
+
+    # legacy
+    # parser.add_argument("--time_aware", type=str2bool, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--sticky_actions", type=str2bool, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--tvf_exp_gamma", type=float, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--tvf_mode", type=str, default=None, help=argparse.SUPPRESS)
+    # parser.add_argument("--tvf_n_step", type=int, default=None, help=argparse.SUPPRESS)
 
     for param in REMOVED_PARAMS:
         parser.add_argument(f"--{param}", type=str, default=None, help=argparse.SUPPRESS)
@@ -705,6 +708,7 @@ def parse_args(no_env=False, args_override=None):
     if args.distil_batch_size is None:
         args.distil_batch_size = args.batch_size
 
+    # legacy settings (for compatability)
     # having these here just causes bugs as the override the newer settings...
     # better to simply throw an error
     # if args.sticky_actions is not None:
@@ -741,5 +745,8 @@ def parse_args(no_env=False, args_override=None):
 
     if args.replay_mode == "off":
         args.replay_size = 0
+
+    if not args.use_tvf:
+        args.tvf_hidden_units = 0 # save some parameters..
 
 

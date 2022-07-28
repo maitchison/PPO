@@ -1,6 +1,7 @@
 from runner_tools import *
 
 # ---------------------------------------------------------------------------------------------------------
+# Run all experiments from DNA paper
 
 if __name__ == "__main__":
 

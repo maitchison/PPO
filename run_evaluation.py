@@ -1,6 +1,5 @@
 # limit to 4 threads...
 import os
-import typing
 
 # IPS: (for samples=1, mv_samples=100
 # on my PC with cuda:0
@@ -43,7 +42,7 @@ from typing import Union, List, Dict
 import cv2
 import numpy as np
 import torch
-import os
+
 import traceback
 from pathlib import Path
 
@@ -53,7 +52,7 @@ import matplotlib.transforms
 import matplotlib.colors
 import numpy.random
 from gym.vector import sync_vector_env
-from rl import atari, config, utils, models, hybridVecEnv, rollout
+from rl import atari, procgen, config, utils, hybridVecEnv, rollout
 from rl.config import args
 import lz4.frame as lib
 import os
@@ -151,6 +150,7 @@ def load_args(checkpoint_path):
             vars(args)[k] = v
         args.log_folder = ''
         args.terminal_on_loss_of_life = False # always off for evaluation...
+        args.device = eval_args.device
 
 # load a model and evaluate performance
 def load_checkpoint(checkpoint_path, device=None):
@@ -167,13 +167,15 @@ def load_checkpoint(checkpoint_path, device=None):
     if args.frame_skip == 0:
         args.frame_skip = 4
 
-    # fip up horizon when in dna mode (used for plotting only)
+    # fix up horizon when in dna mode (used for plotting only)
     if not args.use_tvf:
-        args.tvf_max_horizon = round(3/(1-args.gamma))
+        if args.gamma == 1.0:
+            args.tvf_max_horizon = args.timeout // 4
+        else:
+            args.tvf_max_horizon = round(3/(1-args.gamma))
 
-    env = atari.make(env_id=args.get_env_name(), monitor_video=True)
-
-    model = make_model(env)
+    import train
+    model = train.make_model(args)
 
     # some older versions might not have the open_checkpoint function... :(
     try:
@@ -182,7 +184,12 @@ def load_checkpoint(checkpoint_path, device=None):
         oc = backup_open_checkpoint
     checkpoint = oc(checkpoint_path, map_location=device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    except Exception as e:
+        print(f"Warning, failed to load model, trying non-strict version: {e}")
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+
     step = checkpoint['step']
     env_state = checkpoint["env_state"]
     CURRENT_HORIZON = checkpoint.get("current_horizon", 0)
@@ -192,108 +199,21 @@ def load_checkpoint(checkpoint_path, device=None):
 
     if "reward_scale" in checkpoint:
         REWARD_SCALE = checkpoint["reward_scale"]
-    else:
-        # old method...
-        normalizers = env_state['VecNormalizeRewardWrapper']['normalizers']
-        # print("Reward normalizers are:")
-        # for k, v in normalizers.items():
-        #     print(f"  -{k:<30}: {v.ret_rms.mean:<10.3f} {v.ret_rms.var ** 0.5:<10.3f} {v.ret_rms.count:<10.0f}")
-        REWARD_SCALE = (normalizers[args.get_env_name()].ret_rms.var + 1e-8) ** 0.5
-        print(f"Reward scale set to {REWARD_SCALE:.2f}")
-
 
     return model
 
-def make_model(env):
 
-    import inspect
-    allowed_args = set(inspect.signature(models.TVFModel.__init__).parameters.keys())
+# remove once old runs are done.
+def __get_n_actions(space):
 
-    additional_args = {}
-
-    additional_args['use_rnd'] = args.use_rnd
-    additional_args['use_rnn'] = False
-
-    additional_args['tvf_horizon_transform'] = rollout.horizon_scale_function
-    additional_args['tvf_time_transform'] = rollout.time_scale_function
-
-    try:
-        network = args.network
-    except:
-        network = "nature"
-
-    try:
-        additional_args['tvf_hidden_units'] = args.tvf_hidden_units
-    except:
-        pass
-
-    try:
-        additional_args['tvf_average_reward'] = args.tvf_average_reward
-    except:
-        pass
-
-    try:
-        additional_args['tvf_value_scale_fn'] = args.tvf_value_scale_fn
-        additional_args['tvf_value_scale_norm'] = args.tvf_value_scale_norm
-    except:
-        pass
-
-    try:
-        additional_args['hidden_units'] = args.hidden_units
-    except:
-        pass
-
-    additional_args['tvf_activation'] = args.tvf_activation
-    additional_args['tvf_max_horizon'] = args.tvf_max_horizon
-
-
-    try:
-        additional_args['architecture'] = args.architecture
-    except:
-        pass
-
-    try:
-        additional_args['architecture'] = args.architecture
-    except:
-        pass
-
-    try:
-        additional_args['tvf_n_value_heads'] = args.tvf_n_value_heads
-    except:
-        pass
-
-    try:
-        additional_args['centered'] = args.observation_scaling == "centered"
-    except:
-        pass
-
-    try:
-        additional_args['observation_normalization'] = args.observation_normalization
-    except:
-        pass
-
-    try:
-        additional_args['networks'] = (args.policy_network, args.value_network)
-        additional_args['network_args'] = (args.policy_network_args, args.value_network_args)
-    except:
-        pass
-
-    try:
-        additional_args['value_norm'] = args.value_norm
-    except:
-        pass
-
-    additional_args['head'] = network
-    additional_args['network'] = network
-
-    return models.TVFModel(
-            input_dims=env.observation_space.shape,
-            actions=env.action_space.n,
-            device=DEVICE,
-            dtype=torch.float32,
-            **{k:v for k, v in additional_args.items() if k in allowed_args},
-        )
-
+    import gym
+    if type(space) == gym.spaces.Discrete:
+        return space.n
+    elif type(space) == gym.spaces.Box:
+        assert len(space.shape) == 1
+        return space.shape[0]
+    else:
+        raise ValueError(f"Action space of type {type(space)} not implemented yet.")
 
 def discount_rewards(rewards, gamma):
     """
@@ -475,7 +395,7 @@ def generate_fake_rollout(num_frames = 30*60):
     Generate a fake rollout for testing
     """
     return {
-        'values': np.zeros([num_frames, args.tvf_n_horizons], dtype=np.float32),
+        'values': np.zeros([num_frames, args.tvf_value_heads], dtype=np.float32),
         'time': np.zeros([num_frames], dtype=np.float32),
         'model_values': np.zeros([num_frames], dtype=np.float32),
         'rewards': np.zeros([num_frames], dtype=np.float32),
@@ -491,7 +411,8 @@ def make_envs(
         determanistic_saving=True
 ):
     # create environment(s) if not already given
-    env_fns = [lambda i=i: atari.make(
+    env_fns = [lambda i=i: rollout.make_env(
+        args.env_type,
         env_id=args.get_env_name(),
         monitor_video=include_video,
         seed=(i * 997) + seed_base,
@@ -572,7 +493,7 @@ def generate_rollouts(
                 'mv_return_sample': [], # return samples for each horizon, specifically the discounted sum of (unscaled) rewards
                 'prev_state_hash': [],  # hash for each prev_state , used to verify that runs are identical
                 'is_running': [], # bool, True if agent is still alive, false otherwise.
-                'uac_value': [],
+                # 'uac_value': [],
                 'actions': [],
                 'probs': [],
                 'noops': 0,
@@ -588,12 +509,18 @@ def generate_rollouts(
     elif include_horizons is False:
         include_horizons = "last"
 
+    # special case for fixed head mode
+    # if include_horizons:
+    #     include_horizons = "standard"
+
     if include_horizons == "full":
         horizons = np.repeat(np.arange(int(args.tvf_max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "debug":
         horizons = np.repeat(np.asarray([1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000])[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "last":
         horizons = np.repeat(np.arange(args.tvf_max_horizon, args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
+    elif include_horizons == "standard":
+        horizons = model.tvf_fixed_head_horizons
     else:
         raise ValueError(f"invalid horizons mode {include_horizons}")
 
@@ -666,24 +593,8 @@ def generate_rollouts(
 
         forward_timer.start()
 
-        # not sure how best to do this
-        try:
-            _ = rollout.package_aux_features
-            is_old_code = False
-        except:
-            is_old_code = True
-
-        if is_old_code:
-            # old method
-            kwargs['horizons'] = horizons
-        else:
-            # new method
-            if args.use_tvf:
-                kwargs['aux_features'] = rollout.package_aux_features(horizons, times)
-
         if rewards_only:
             kwargs['output'] = "policy"
-            del kwargs['aux_features']
 
         with torch.no_grad():
             model_out = model.forward(
@@ -759,6 +670,12 @@ def generate_rollouts(
             # 1. first do the simple stuff... rewards etc
             append_buffer('is_running', is_running[i])
             raw_reward = infos[i].get("raw_reward", rewards[i])
+            try:
+                if args.noisy_zero >= 0:
+                    rewards *= 0
+                    raw_reward *= 0
+            except:
+                pass
             append_buffer('rewards', rewards[i])
             append_buffer('raw_rewards', raw_reward)
 
@@ -870,13 +787,6 @@ def generate_rollouts(
             append_buffer('actions', actions[i])
             append_buffer('probs', probs[i])
 
-            if args.learn_second_moment:
-                sqrt_m2_est = model_out["tvf_ext_value_m2"]
-                m2_est = torch.relu(sqrt_m2_est)**2
-                variance = (m2_est - model_out["tvf_ext_value"] ** 2)[i].detach().cpu().numpy()
-                append_buffer('std', np.clip(variance, 0, float('inf'))**0.5)
-                append_buffer('sqrt_m2', sqrt_m2_est[i].detach().cpu().numpy())
-
             if 'frames' in buffers[i]:
                 agent_layers = prev_states[i]
                 channels = prev_infos[i].get("channels", None)
@@ -885,9 +795,7 @@ def generate_rollouts(
                 append_buffer('frames', frame)
 
             if horizons is not None and args.use_tvf:
-                values = model_out["tvf_value"][i, :].detach().cpu().numpy()
-                values = values
-
+                values = model_out["tvf_value"][i, :, 0].detach().cpu().numpy()
                 if needs_rediscount():
                     append_buffer('tvf_discounted_values', values)
                     values = rediscount_TVF(values, args.gamma)
@@ -900,10 +808,6 @@ def generate_rollouts(
             append_buffer('model_values', model_value)
             append_buffer('times', prev_times[i])
 
-            # calculate uac cost
-            if args.use_uac:
-                uniform_action_value = model_out["uni_value"][i].detach().cpu().numpy()
-                append_buffer('uac_value', uniform_action_value)
 
         process_timer.stop()
         total_timer.stop()
@@ -1020,6 +924,24 @@ class QuickPlot():
         x1, x2 = min(x1,x2), max(x1, x2)
         self.buffer[-y, x1:x2+1] = c
 
+    def line(self, x1:int, y1:int, x2:int, y2:int, c):
+        """
+        x,y in pixel space
+        """
+        h, w, channels = self.buffer.shape
+        if x1 < 0:
+            x1 = 0
+        if x2 >= w:
+            x2 = w
+        if y1 < 0:
+            y1 = 0
+        if y2 > h:
+            y2 = h
+        y = y1
+        for x in range(x1, x2+1):
+            self.buffer[-int(y), x] = c
+            y += (y2-y1) / (x2+1-x1)
+
     def v_line(self, x:int, y1:int, y2:int, c):
         h, w, channels = self.buffer.shape
         if x < 0 or x >= w:
@@ -1062,8 +984,9 @@ class QuickPlot():
                 continue
             new_x = x
             new_y = y
-            self.h_line(old_x, new_x, old_y, c)
-            self.v_line(new_x, old_y, new_y, c)
+            #self.h_line(old_x, new_x, old_y, c)
+            #self.v_line(new_x, old_y, new_y, c)
+            self.line(old_x, old_y, new_x, new_y, c)
             old_x = new_x
             old_y = new_y
 
@@ -1128,7 +1051,7 @@ def export_movie(
 
     scale = 4
 
-    env = atari.make(env_id=args.get_env_name(), monitor_video=True, seed=1)
+    env = rollout.make_env(args.env_type, env_id=args.get_env_name(), monitor_video=True, seed=1)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)
@@ -1238,20 +1161,6 @@ def export_movie(
         # plotting...
         fig.clear()
 
-        if args.use_tvf and args.learn_second_moment:
-            # show 1 standard deviations
-            xs = list(range(len(buffer["values"][t])))
-            err = buffer["std"][t] * 1
-            ys_min = (buffer["values"][t] - err) / REWARD_SCALE  # model learned scaled rewards
-            ys_max = (buffer["values"][t] + err) / REWARD_SCALE  # model learned scaled rewards
-            color = (0.1, 0.1, 0.2)
-            fig.plot_between(xs, ys_min, ys_max, color)
-
-            color = (0.4, 0.4, 0.4)
-            fig.plot_between(xs, ys_min, ys_max, color, edges_only=True)
-
-            sqrt_square = buffer["sqrt_m2"][t] / REWARD_SCALE
-            fig.plot(xs, sqrt_square, (0.6, 0.3, 0.1))
 
         if return_sample is not None:
             # plot return sample
@@ -1284,7 +1193,7 @@ def export_movie(
 
         # plot predicted values
         if args.use_tvf:
-            xs = list(range(len(buffer["values"][t])))
+            xs = model.tvf_fixed_head_horizons
             ys = buffer["values"][t] / REWARD_SCALE  # model learned scaled rewards
             fig.plot(xs, ys, 'greenyellow')
         else:
@@ -1294,14 +1203,14 @@ def export_movie(
             ys = [y_value, y_value]
             fig.plot(xs, ys, 'white')
 
-            if args.use_uac:
-                xs = [round(args.tvf_max_horizon*0.98)-1, args.tvf_max_horizon]
-                y_uac = buffer["uac_value"][t] / REWARD_SCALE
-                ys = [y_uac, y_uac]
-                fig.plot(xs, ys, [1.0, 0.5, 0.0])
-                ys = [y_value, y_uac]
-                xs = [round(np.mean(xs)), round(np.mean(xs))]
-                fig.plot(xs, ys, [1.0, 0.5, 0.0])
+            # if args.use_uac:
+            #     xs = [round(args.tvf_max_horizon*0.98)-1, args.tvf_max_horizon]
+            #     y_uac = buffer["uac_value"][t] / REWARD_SCALE
+            #     ys = [y_uac, y_uac]
+            #     fig.plot(xs, ys, [1.0, 0.5, 0.0])
+            #     ys = [y_value, y_uac]
+            #     xs = [round(np.mean(xs)), round(np.mean(xs))]
+            #     fig.plot(xs, ys, [1.0, 0.5, 0.0])
 
 
 
@@ -1425,7 +1334,7 @@ if __name__ == "__main__":
                 max_frames=eval_args.max_frames,
             )
         else:
-            raise Exception(f"Invalid mode {args.mode}")
+            raise Exception(f"Invalid mode {args.experiment_name}")
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:

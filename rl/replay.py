@@ -197,11 +197,6 @@ class ExperienceReplayBuffer:
         @param new_aux: auxillary information
         """
 
-        if type(new_experience) is torch.Tensor:
-            new_experience = new_experience.cpu().numpy()
-        if type(new_aux) is torch.Tensor:
-            new_aux = new_aux.cpu().numpy()
-
         assert new_experience.shape[1:] == self.data.shape[1:], \
             f"Invalid shape for new experience, expecting {new_experience.shape[1:]} but found {self.data.shape[1:]}."
         assert new_experience.dtype == self.data.dtype, \
