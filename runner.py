@@ -30,7 +30,8 @@ TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
 pwd; hostname; date
 echo "--- training ---"
 cd ~
-cd PPO     
+cd DNA
+pip install procgen     
 %CMD%
 echo "--- done ---"
 date
@@ -49,7 +50,8 @@ TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
 pwd; hostname; date
 echo "--- training ---"
 cd ~
-cd PPO     
+cd DNA
+pip install procgen     
 %CMD%
 echo "--- done ---"
 date

@@ -22,7 +22,6 @@ from collections import defaultdict, deque
 from typing import Union, Optional
 import math
 
-import rl.csgo
 import train
 from .logger import Logger
 from . import utils, atari, mujoco, procgen, hybridVecEnv, wrappers, models, compression
@@ -476,13 +475,6 @@ class Runner:
                 }
             elif name == "sgd":
                 optimizer = torch.optim.SGD
-            elif name == "csgo":
-                optimizer = rl.csgo.CSGO
-                optimizer_params = {
-                    'clip': args.csgo_clip,
-                    'decay': args.csgo_decay,
-                    'friction': args.csgo_friction,
-                }
             else:
                 raise ValueError(f"Invalid Optimizer {name}")
             return optimizer(params, **kwargs, **optimizer_params)
@@ -3764,11 +3756,11 @@ class RolloutBuffer():
 
 def make_env(env_type, env_id, **kwargs):
     if env_type == "atari":
-        make_fn = rl.atari.make
+        make_fn = atari.make
     elif env_type == "mujoco":
-        make_fn = rl.mujoco.make
+        make_fn = mujoco.make
     elif env_type == "procgen":
-        make_fn = rl.procgen.make
+        make_fn = procgen.make
     else:
         raise ValueError(f"Invalid environment type {env_type}")
     return make_fn(env_id, **kwargs)
