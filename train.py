@@ -181,6 +181,12 @@ def main():
     utils.release_lock()
 
 if __name__ == "__main__":
+
+    # install procgen... this is a bit dodgy, but it'll get things working on the cluster
+    import subprocess
+    p = subprocess.Popen("pip install procgen",stdout=subprocess.PIPE)
+    print(p.communicate())
+
     from rl import logger
     log = logger.Logger()
     try:

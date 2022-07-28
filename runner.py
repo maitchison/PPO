@@ -30,8 +30,7 @@ TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
 pwd; hostname; date
 echo "--- training ---"
 cd ~
-cd DNA
-pip install procgen     
+cd DNA     
 %CMD%
 echo "--- done ---"
 date
@@ -50,8 +49,7 @@ TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
 pwd; hostname; date
 echo "--- training ---"
 cd ~
-cd DNA
-pip install procgen     
+cd DNA     
 %CMD%
 echo "--- done ---"
 date
@@ -74,7 +72,7 @@ def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_2
     n = 0
     while len(cmds) > 0:
         n += 1
-        with open(f'{experiment}_{n:02d}_{st.name}.slurm', 'wt') as t:
+        with open(f'{experiment}_{n:02d}_{st.name}  .slurm', 'wt') as t:
 
             lines = []
 
