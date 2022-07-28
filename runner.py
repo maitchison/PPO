@@ -1,3 +1,4 @@
+import dna_experiments
 from runner_tools import *
 
 # ---------------------------------------------------------------------------------------------------------
@@ -8,10 +9,8 @@ if __name__ == "__main__":
     # see https://github.com/pytorch/pytorch/issues/37377 :(
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
-    # load in the jobs...
-    import exp_tvf
-
-    exp_tvf.setup()
+    # dna_experiments.base_experiments()
+    dna_experiments.additional_experiments()
 
     if len(sys.argv) == 1:
         experiment_name = "show"

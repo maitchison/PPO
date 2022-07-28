@@ -337,6 +337,7 @@ class DualHeadNet(nn.Module):
             tvf_value_scale_fn="identity",
             tvf_value_scale_norm="max",
             feature_activation_fn="relu",
+            policy_weight_scale: float=0.1,
             actions=None,
             use_policy_head=True,
             use_value_head=True,
@@ -367,8 +368,8 @@ class DualHeadNet(nn.Module):
             # if we don't do this entropy will be very low initially on some problems (especially with procgen)
             torch.nn.init.uniform_(
                 self.policy_head.weight,
-                -0.1 / (self.encoder.hidden_units ** 0.5),
-                0.1 / (self.encoder.hidden_units ** 0.5)
+                -policy_weight_scale / (self.encoder.hidden_units ** 0.5),
+                policy_weight_scale / (self.encoder.hidden_units ** 0.5)
             )
 
         if self.use_value_head:

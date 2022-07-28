@@ -30,6 +30,7 @@ class ProcGenWrapper(gym.Wrapper):
     def _process(self, obs):
         return obs.transpose(2, 0, 1)
 
+
 def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_saving=True):
     """
     Construct environment of given name, including any required wrappers.
@@ -63,6 +64,8 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     #env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
 
     env = wrappers.EpisodeScoreWrapper(env)
+
+    env = wrappers.TimeAwareWrapper(env, log=True)
 
     if args.reward_scale != 1.0 and not args.reward_normalization:
         env = wrappers.RewardScaleWrapper(env, args.reward_scale)
