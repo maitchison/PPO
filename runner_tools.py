@@ -633,7 +633,11 @@ class Job:
         params["output_folder"] = "./Run"
         params["experiment_name"] = self.experiment_name
         params["run_name"] = self.run_name
+
+        # fixes because this is old DNA code, not TVF code...
         params['restore'] = False # restore if we can, but do not error if we can not.
+        if 'ignore_lock' in params:
+            del params['ignore_lock']
 
         nice_params = [
             f"--{k}={nice_format(v)}" for k, v in params.items() if k not in ["env_name"] and v is not None

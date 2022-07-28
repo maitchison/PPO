@@ -111,8 +111,10 @@ def read_log(file_path):
 
     game = params["environment"]
 
+    norm_scale = 100.0 if params['env_type'] == "procgen" else 1.0
+
     result["ep_score_norm"] = np.asarray(
-        [asn.normalize(game, score, count) for score, count in zip(result["ep_score_mean"], result["ep_count"])])
+        [asn.normalize(game, score, count)/norm_scale for score, count in zip(result["ep_score_mean"], result["ep_count"])])
 
     if "tvf_horizon_transform" in result:
         result["tvf_horizon_transform"] = "log" if result["tvf_horizon_transform"] == "log" else "off"
@@ -799,8 +801,36 @@ def plot_experiment(
     )
 
 
+PROCGEN_NORM_CONSTANTS = {
+    # from https://github.com/openai/phasic-policy-gradient/blob/7295473f0185c82f9eb9c1e17a373135edd8aacc/phasic_policy_gradient/constants.py#L20
+    'coinrun': [5, 10],
+    'starpilot': [1.5, 35],
+    'caveflyer': [2, 13.4],
+    'dodgeball': [1.5, 19],
+    'fruitbot': [-.5, 27.2],
+    'chaser': [.5, 14.2],
+    'miner': [1.5, 20],
+    'jumper': [1, 10],
+    'leaper': [1.5, 10],
+    'maze': [4, 10],
+    'bigfish': [0, 40],
+    'heist': [2, 10],
+    'climber': [1, 12.6],
+    'plunder': [3, 30],
+    'ninja': [2, 10],
+    'bossfight': [.5, 13],
+}
+
 class AtariScoreNormalizer:
+
+
     SUBSETS = {
+        # special case...
+        'Procgen': (
+            list(PROCGEN_NORM_CONSTANTS.keys()),
+            "mean",
+            0
+        ),
         'Atari_Single': (
             ['Zaxxon'],
             [0.7364257371683655],
@@ -846,6 +876,8 @@ class AtariScoreNormalizer:
 
     def __init__(self):
         self._normalization_scores = self._load_scores("./Atari-Human.csv")
+        # add procgen
+        self._normalization_scores.update(PROCGEN_NORM_CONSTANTS)
 
     def _load_scores(self, filename):
 
@@ -895,6 +927,14 @@ class AtariScoreNormalizer:
         """
         assert subset_name in self.SUBSETS
         games, weights, rel_error = self.SUBSETS[subset_name]
+
+        # special case for procgen
+        if subset_name == "Procgen":
+            total = 0
+            for k, (low, high) in PROCGEN_NORM_CONSTANTS.items():
+                norm_score = (scores[k] - low) / (high-low)
+                total += norm_score * (1/len(PROCGEN_NORM_CONSTANTS))
+            return total
 
         # because montezuma's revenge often gets 0, and has such low weighting, I often don't test on it and just
         # assume we would have gotten 0.
@@ -975,14 +1015,20 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         # make sure we have data for all games
         if not all(len(es[game]) > 0 for game in game_list):
             break
+
         # work out game scores for each game
-        weighted_score = c
-        for game, weight in zip(game_list, game_weights):
-            norm_score = np.mean(es[game])
-            #result[f"{game.lower()}_score"].append(score)
-            result[f"{game}_norm"].append(norm_score)
-            weighted_score += weight * np.log10(1 + max(norm_score, 0))
-        weighted_score = 10 ** weighted_score - 1
+        if type(game_weights) is str and game_weights == "mean":
+            scores = [np.mean(es[game]) for game in game_list]
+            weighted_score = np.mean(scores)
+        else:
+            # standard weighting system
+            weighted_score = c
+            for game, weight in zip(game_list, game_weights):
+                norm_score = np.mean(es[game])
+                #result[f"{game.lower()}_score"].append(score)
+                result[f"{game}_norm"].append(norm_score)
+                weighted_score += weight * np.log10(1 + max(norm_score, 0))
+            weighted_score = 10 ** weighted_score - 1
         result["score"].append(weighted_score)
         result["env_step"].append(epoch * 1e6)
         result["epoch"].append(epoch)
@@ -992,12 +1038,12 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
 
     result["score_alt"] = np.mean(result["score"][-5:])  # last 5 epochs
 
-    score_list = [
-        weight * np.mean(result[f"{game.lower()}_norm"][-5:]) for game, weight in zip(game_list, game_weights)
-    ]
-
-    result["score_min"] = round(min(score_list))
-    result["score_list"] = tuple(round(x) for x in score_list)
+    if not type(game_weights) is str:
+        score_list = [
+            weight * np.mean(result[f"{game.lower()}_norm"][-5:]) for game, weight in zip(game_list, game_weights)
+        ]
+        result["score_min"] = round(min(score_list))
+        result["score_list"] = tuple(round(x) for x in score_list)
 
     result["final_epoch"] = result["epoch"][-1] + 1 # if we processed epoch 2.x then say we went up to epoch 3.
     result["run_name"] = key
@@ -1650,7 +1696,7 @@ def load_hyper_parameter_search(path, table_cols: list = None, max_col_width: in
 import bisect
 
 
-def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False):
+def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False, step_mul=4.0):
     xs = range(51)  # epochs
     y_list = [[] for _ in xs]
     max_x = 0
@@ -1673,7 +1719,7 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
             y_list[round(i)].append(y)
             max_x = max(round(i), max_x)
             # plot individual runs so we can check...
-        plt.plot(steps * 4, result['score'], color=color, alpha=ghost_alpha, ls='--')
+        plt.plot(steps * step_mul, result['score'], color=color, alpha=ghost_alpha, ls='--')
 
     y_list = y_list[:max_x + 1]
     xs = np.asarray(xs[:max_x + 1])
@@ -1685,8 +1731,8 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
 
     y_mean = np.asarray([np.mean(y) if len(y) > 0 else 0 for y in y_list])
     y_err = 1.0 * np.asarray([std_err(y) for y in y_list])
-    plt.plot(xs * 4, y_mean, label=label, color=color, alpha=1.0, ls=style)
-    plt.fill_between(xs * 4, y_mean - y_err, y_mean + y_err, color=color, alpha=0.15)
+    plt.plot(xs * step_mul, y_mean, label=label, color=color, alpha=1.0, ls=style)
+    plt.fill_between(xs * step_mul, y_mean - y_err, y_mean + y_err, color=color, alpha=0.15)
 
     if print_results:
         print(f"{key}: {y_mean[-1]:.2f} += {y_err[-1]:.2f}")
@@ -1701,7 +1747,7 @@ def setup_plot(title=None):
     #plt.title(title)
 
 
-def experiment(title, path, keys: list, subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0):
+def experiment(title, path, keys: list, subset='Atari_3_Val', seeds=5, hold=False, check_seeds=False, labels=None, ghost_alpha=0.0, step_mul=4.0, steps=200):
     setup_plot(title)
     for i, key in enumerate(keys):
         plot_seeded_validation(
@@ -1712,14 +1758,15 @@ def experiment(title, path, keys: list, subset='Atari_3_Val', seeds=5, hold=Fals
             seeds=seeds,
             check_seeds=check_seeds,
             label=labels[i] if labels is not None else None,
-            ghost_alpha=ghost_alpha
+            ghost_alpha=ghost_alpha,
+            step_mul=step_mul,
         )
     plt.legend()
     plt.xlabel('Frame (M)')
     plt.ylabel('Score')
     ax = plt.gca()
 
-    plt.xlim(0, 200)
+    plt.xlim(0, steps)
     plt.title('')
     if not hold:
         plt.title(title)

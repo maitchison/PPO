@@ -83,8 +83,9 @@ def main():
     import numpy as np
     import gym.spaces
 
-    # needs to be off for ampere.
-    torch.backends.cudnn.allow_tf32 = False
+    # needs to be like this for ampere.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = True
 
     config.parse_args()
 
