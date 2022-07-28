@@ -19,12 +19,11 @@ from . import utils, impala
 # nature       1847      3.4M       512
 # nature_fat   1451      7.1M       512
 
-JIT = False # causes problems with impala
-AMP = False # not helpful
-
 # ----------------------------------------------------------------------------------------------------------------
 # Heads (feature extractors)
 # ----------------------------------------------------------------------------------------------------------------
+
+AMP = False
 
 def get_memory_format():
     return torch.channels_last if AMP else torch.contiguous_format
@@ -165,8 +164,11 @@ class NatureCNN_Net(Base_Net):
 
         x = torch.reshape(x, [-1, D])
         if self.hidden_units > 0:
-            x = self.fc(x)
-        return x
+            features_out = self.fc(x)
+        else:
+            features_out = x
+
+        return features_out
 
 
 class MLP_Net(Base_Net):
@@ -335,7 +337,7 @@ class DualHeadNet(nn.Module):
             encoder: str,
             input_dims: tuple,
             n_actions: int,
-
+            encoder_count: int = 1,
             hidden_units: int = 512,
 
             activation_fn="relu",
@@ -360,16 +362,10 @@ class DualHeadNet(nn.Module):
         @encoder: the encoder type to use [nature|impala]
         @input_dims: the expected input dimensions (for RGB input this is (C,H,W))
         @n_actions: the number of actions model should produce a policy for
-
         @hidden_units: number of encoder hidden features
-
-
         @activation_fn: the activation function to use after feature encoder
-
         @tvf_fixed_head_horizons: if given then model enables tvf with fixed heads at these locations.
-
         @value_heads: list of value heads to output, a standard and tvf output will be created.
-
         @device: the device to allocate model to
         """
 
@@ -379,19 +375,21 @@ class DualHeadNet(nn.Module):
 
         super().__init__()
 
-        self.encoder = construct_network(encoder, input_dims, hidden_units=hidden_units, **kwargs)
-        # jit is in theory a little faster, but can be harder to debug
-        self.encoder = self.encoder.to(device)
-        self.tvf_sqrt_transform = tvf_sqrt_transform
-        if JIT:
-            self.encoder.jit(device)
+        self.encoders = torch.nn.ModuleList()
+        assert hidden_units % encoder_count == 0
+        units_per_encoder = hidden_units
+        for _ in range(encoder_count):
+            self.encoders.append(construct_network(encoder, input_dims, hidden_units=units_per_encoder, **kwargs).to(device))
 
-        assert self.encoder.hidden_units == hidden_units
+        self.tvf_sqrt_transform = tvf_sqrt_transform
+
         assert tvf_per_head_hidden_units == 0, "NIY"
+
+        self.hidden_units = hidden_units * encoder_count
 
         self.encoder_activation_fn = activation_fn
 
-        self.policy_head = nn.Linear(self.encoder.hidden_units, n_actions)
+        self.policy_head = nn.Linear(self.hidden_units, n_actions)
 
         self.value_head_names = list(value_head_names)
         self.tvf_fixed_head_horizons = tvf_fixed_head_horizons
@@ -399,20 +397,20 @@ class DualHeadNet(nn.Module):
         self.tvf_feature_window = tvf_feature_window
 
         # value net can also output a basic value estimate using this head
-        self.value_head = torch.nn.Linear(self.encoder.hidden_units, len(value_head_names), bias=tvf_head_bias)
+        self.value_head = torch.nn.Linear(self.hidden_units, len(value_head_names), bias=tvf_head_bias)
 
         self.tvf_head = None
         self.tvf_features_mask = None
 
         if self.tvf_fixed_head_horizons is not None:
             self.tvf_head = torch.nn.Linear(
-                self.encoder.hidden_units,
+                self.hidden_units,
                 len(tvf_fixed_head_horizons) * len(value_head_names),
                 bias=tvf_head_bias,
                 device=device
             )
 
-            mask = torch.ones([len(self.tvf_fixed_head_horizons), self.encoder.hidden_units], dtype=torch.float32, device=device)
+            mask = torch.ones([len(self.tvf_fixed_head_horizons), self.hidden_units], dtype=torch.float32, device=device)
             mask.requires_grad = False
 
             if self.tvf_feature_sparsity > 0:
@@ -427,7 +425,7 @@ class DualHeadNet(nn.Module):
             if self.tvf_feature_window > 0:
                 assert self.tvf_feature_sparsity <= 0, "sparsity and feature window not supported together"
                 n_heads = len(self.tvf_fixed_head_horizons)
-                n_features = self.encoder.hidden_units
+                n_features = self.hidden_units
                 first_left = 0
                 first_right = self.tvf_feature_window
                 last_left = n_features - self.tvf_feature_window
@@ -440,7 +438,7 @@ class DualHeadNet(nn.Module):
                     mask[head, :left] = 0
                     mask[head, right:] = 0
 
-                old_scale = 1/math.sqrt(self.encoder.hidden_units)
+                old_scale = 1/math.sqrt(self.hidden_units)
                 new_scale = 1/math.sqrt(self.tvf_feature_window)
 
                 mask = mask * (new_scale/old_scale)
@@ -492,11 +490,8 @@ class DualHeadNet(nn.Module):
         """
 
         result = {}
-        if self.encoder.trace_module is not None:
-            # faster path, precompiled
-            encoder_features = self.encoder.trace_module(x)
-        else:
-            encoder_features = self.encoder(x)
+
+        encoder_features = torch.concat([encoder(x) for encoder in self.encoders], dim=-1)
 
         # convert back to float32, and also switch to channels first, not that that should matter.
         encoder_features = encoder_features.float(memory_format=torch.contiguous_format)
@@ -566,6 +561,7 @@ class TVFModel(nn.Module):
             encoder_args: Union[str, dict],
             input_dims: tuple,
             actions: int,
+            encoder_count: int = 1,
             device: str = "cuda",
             architecture: str = "dual",
             dtype: torch.dtype=torch.float32,
@@ -629,7 +625,7 @@ class TVFModel(nn.Module):
         if type(encoder_args) is str:
             encoder_args = ast.literal_eval(encoder_args)
 
-        def make_net():
+        def make_net(**extra_args):
             return DualHeadNet(
                 encoder=encoder,
                 input_dims=input_dims,
@@ -645,12 +641,14 @@ class TVFModel(nn.Module):
                 weight_init=weight_init,
                 weight_scale=weight_scale,
                 tvf_sqrt_transform=tvf_sqrt_transform,
+                **extra_args,
                 **(encoder_args or {})
             )
 
         self.policy_net = make_net()
         if architecture == "dual":
-            self.value_net = make_net()
+            # extra encoders for value network only
+            self.value_net = make_net(encoder_count=encoder_count)
         elif architecture == "single":
             self.value_net = self.policy_net
         else:
@@ -958,3 +956,15 @@ def scale_weights(model: nn.Module, weight_scale, bias_scale):
     for child in model.children():
         child.weight.data *= weight_scale
         child.bias.data *= bias_scale
+
+
+def window(x, max_x, max_y):
+    window_size = max_y // max_x
+    first_left = 0
+    first_right = window_size
+    last_left = max_y - window_size
+    last_right = max_y
+    factor = (x / (max_x - 1))
+    left = int(first_left * (1 - factor) + last_left * factor)
+    right = int(first_right * (1 - factor) + last_right * factor)
+    return left, right

@@ -238,6 +238,8 @@ class Config(BaseConfig):
 
         parser.add_argument("--encoder", type=str, default="nature", help="Encoder used for all models, [nature|impala]")
         parser.add_argument("--encoder_args", type=str, default=None, help="Additional arguments for encoder. (encoder specific)")
+        parser.add_argument("--encoder_count", type=int, default=1,
+                            help="Allows multiple parallel independant encoders. Each outputting hidden_units / encoer_count features")
         parser.add_argument("--hidden_units", type=int, default=512)
         parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
         parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
@@ -455,6 +457,7 @@ class Config(BaseConfig):
         self.override_reward_normalization_gamma = object()
         self.encoder = str()
         self.encoder_args = object()
+        self.encoder_count = int()
         self.hidden_units = int()
         self.architecture = str()
         self.gamma_int = float()

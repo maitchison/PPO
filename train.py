@@ -57,6 +57,7 @@ def make_model(args, log=None):
 
     model = models.TVFModel(
         encoder=args.encoder,
+        encoder_count=args.encoder_count,
         encoder_args=args.encoder_args,
         input_dims=obs_space,
         actions=n_actions,

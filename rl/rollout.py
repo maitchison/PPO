@@ -824,7 +824,7 @@ class Runner:
             self.vec_env = wrappers.VecRepeatedActionPenalty(self.vec_env, args.max_repeated_actions, args.repeated_action_penalty)
 
         if verbose:
-            model_total_size = self.model.model_size(trainable_only=False)/1e6
+            model_total_size = self.model.model_size(trainable_only=True)/1e6
             self.log.important("Generated {} agents ({}) using {} ({:.2f}M params) {} model.".
                            format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
                                   model_total_size, self.model.dtype))
@@ -907,13 +907,6 @@ class Runner:
         """ Restores model from checkpoint. Returns current env_step"""
 
         checkpoint = _open_checkpoint(checkpoint_path, map_location=args.device)
-
-        if not models.JIT:
-            # remove tracemodule if jit is disabled.
-            #print("debug:", list(checkpoint['model_state_dict'].keys()))
-            checkpoint['model_state_dict'] = {
-                k: v for k, v in checkpoint['model_state_dict'].items() if "trace_module" not in k
-            }
 
         self.model.load_state_dict(checkpoint['model_state_dict'])
 
