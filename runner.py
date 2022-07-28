@@ -72,7 +72,7 @@ def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_2
     n = 0
     while len(cmds) > 0:
         n += 1
-        with open(f'{experiment}_{n:02d}_{st.name}  .slurm', 'wt') as t:
+        with open(f'{experiment}_{n:02d}_{st.name}.slurm', 'wt') as t:
 
             lines = []
 
