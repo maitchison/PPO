@@ -181,7 +181,11 @@ class ExperienceReplayBuffer:
         if reward is not None:
             buffer[..., ExperienceReplayBuffer.AUX_REWARD] = reward
         if action is not None:
-            buffer[..., ExperienceReplayBuffer.AUX_ACTION] = action
+            if len(action.shape) == 3:
+                # in this case we have cont actions, just take the first one...
+                buffer[..., ExperienceReplayBuffer.AUX_ACTION] = action[:, :, 0]
+            else:
+                buffer[..., ExperienceReplayBuffer.AUX_ACTION] = action
         if step is not None:
             buffer[..., ExperienceReplayBuffer.AUX_STEP] = step
         if vtarg is not None:

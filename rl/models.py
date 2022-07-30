@@ -175,9 +175,15 @@ class MLP_Net(Base_Net):
         self.fc1 = nn.Linear(input_dims[0], hidden_units)
         self.fc2 = nn.Linear(hidden_units, hidden_units)
 
+        # init weights
+        # taken from https://github.com/alirezakazemipour/Continuous-PPO/blob/master/model.py
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=5/3) # these are tanh layers.
+                # with no bias
+                layer.bias.data.zero_()
 
-    # this causes everything to be on cuda:1... hmm... even when it's disabled...
-    #@torch.autocast(device_type='cuda', enabled=AMP)
+
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
 
@@ -360,6 +366,9 @@ class DualHeadNet(nn.Module):
         self.tvf_value_scale_fn = tvf_value_scale_fn
         self.tvf_value_scale_norm = tvf_value_scale_norm
         self.feature_activation_fn = feature_activation_fn
+
+        # the model's (learnable) std for cont actions (defaults to 1.0)
+        self.log_std = nn.Parameter(torch.zeros(actions, device=device, dtype=torch.float32))
 
         if self.use_policy_head:
             assert actions is not None
@@ -643,6 +652,11 @@ class TVFModel(nn.Module):
             self.value_net = self.policy_net
         else:
             raise Exception("Invalid architecture, use [dual|single]")
+
+        # special case for tanh models, which is mujoco, update policy layer weights to be correct scale
+        if tvf_activation == "tanh":
+            nn.init.orthogonal_(self.policy_net.policy_head)
+            self.policy_net.policy_head.bias.data.zero_()
 
         self.architecture = architecture
 

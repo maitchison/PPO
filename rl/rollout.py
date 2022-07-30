@@ -516,9 +516,16 @@ class Runner:
 
         self.grad_accumulator = {}
 
+        if args.env_type == "mujoco":
+            obs_type = np.float32
+            obs_type_torch = torch.float32
+        else:
+            obs_type = np.uint8
+            obs_type_torch = torch.uint8
+
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
-        self.obs = np.zeros([A, *self.state_shape], dtype=np.uint8)
+        self.obs = np.zeros([A, *self.state_shape], dtype=obs_type)
         self.time = np.zeros([A], dtype=np.float32)
         self.done = np.zeros([A], dtype=np.bool)
 
@@ -534,15 +541,15 @@ class Runner:
             FORCE_PINNED = args.device != "cpu"
             if FORCE_PINNED:
                 # make the memory pinned...
-                all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8)
+                all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=obs_type_torch)
                 all_obs = all_obs.pin_memory()
                 self.all_obs = all_obs.numpy()
             else:
-                self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=np.uint8)
+                self.all_obs = np.zeros([N + 1, A, *self.state_shape], dtype=obs_type)
 
         if args.upload_batch and not args.use_compression:
             # in batch upload mode we can just keep all_obs on the GPU
-            self.all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=torch.uint8, device=self.model.device)
+            self.all_obs = torch.zeros(size=[N + 1, A, *self.state_shape], dtype=obs_type_torch, device=self.model.device)
 
         self.all_time = np.zeros([N + 1, A], dtype=np.float32)
         if self.action_dist == "discrete":
@@ -602,6 +609,8 @@ class Runner:
         # create the replay buffer if needed
         self.replay_buffer: Optional[ExperienceReplayBuffer] = None
         if args.replay_size > 0:
+            # stub
+            print("replay size is", args.replay_size)
             self.replay_buffer = ExperienceReplayBuffer(
                 max_size=args.replay_size,
                 obs_shape=self.prev_obs.shape[2:],
@@ -724,7 +733,7 @@ class Runner:
                 scale=args.reward_scale,
             )
 
-        if args.max_repeated_actions > 0:
+        if args.max_repeated_actions > 0 and args.env_type != "mujoco":
             self.vec_env = wrappers.VecRepeatedActionPenalty(self.vec_env, args.max_repeated_actions, args.repeated_action_penalty)
 
         if verbose:
@@ -1122,13 +1131,11 @@ class Runner:
     def erp_internal_distance(self, value):
         self.erp_stats["erp_internal_distance"] = value
 
-    def get_current_action_std(self):
-
+    def get_current_actions_std(self):
         if self.action_dist == "discrete":
             return 0.0
         elif self.action_dist == "gaussian":
-            # hard coded for the moment (switch to log scale)
-            return np.exp(np.clip(-0.7 + (0.7-1.6) * (self.step / 1e6), -1.6, -0.7))
+            return torch.exp(self.model.policy_net.log_std)
         else:
             raise ValueError(f"invalid action distribution {self.action_dist}")
 
@@ -1141,13 +1148,13 @@ class Runner:
             log_policy = model_out["log_policy"].cpu().numpy()
             return np.asarray([utils.sample_action_from_logp(prob) for prob in log_policy], dtype=np.int32)
         elif self.action_dist == "gaussian":
-            mu = np.tanh(model_out["raw_policy"].cpu().numpy())*1.1
-            std = self.get_current_action_std() if train else 0.0
-            return np.clip(np.random.randn(*mu.shape) * std + mu, -1, 1)
+            mu = model_out["raw_policy"].cpu().numpy()
+            model_std = self.get_current_actions_std().detach().cpu().numpy()[None, :]
+            if not train:
+                model_std = 0.0
+            return np.random.randn(*mu.shape) * model_std + mu
         else:
             raise ValueError(f"invalid action distribution {self.action_dist}")
-
-
 
     @torch.no_grad()
     def generate_rollout(self):
@@ -1293,7 +1300,7 @@ class Runner:
         self.model.eval()
 
         # check if environments are in sync or not...
-        rollout_rvs = self.time / max(self.time) # todo: fix time divide error...
+        rollout_rvs = self.time / max(self.time+1) # todo: fix time divide error...
         ks = scipy.stats.kstest(rvs=rollout_rvs, cdf=scipy.stats.uniform.cdf)
         self.log.watch("t_ks", ks.statistic, display_width=0)
 
@@ -1414,6 +1421,7 @@ class Runner:
 
         # add data to replay buffer if needed
         steps = (np.arange(args.n_steps * args.agents) + self.step)
+
         if self.replay_buffer is not None:
             self.replay_buffer.add_experience(
                 utils.merge_down(self.prev_obs),
@@ -2291,7 +2299,8 @@ class Runner:
         if args.grad_clip_mode == "off":
             pass
         elif args.grad_clip_mode == "global_norm":
-            grad_norm = nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
+            if args.max_grad_norm >= 0:
+                grad_norm = nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
         else:
             raise ValueError("Invalid clip_mode.")
 
@@ -2367,12 +2376,21 @@ class Runner:
         predictions = model_out[self.get_distil_target_name()]
         loss_value = 0.5 * torch.square(targets - predictions)
         if len(loss_value.shape) == 2:
-            loss_value = loss_value.mean(axis=-1) # mean accross final dim if targets / predictions were vector.
+            loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
         loss = loss_value
 
-        # MSE loss on the logits...
-        loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_raw_policy"], model_out["raw_policy"]).mean(dim=-1)
-        loss = loss + loss_policy
+        if args.env_type == "mujoco":
+            # we are basically calculating the KL here, ignoring the constant term.
+            # note: this might get very large when std gets very small... so we add a bias term
+            # see https://stats.stackexchange.com/questions/7440/kl-divergence-between-two-univariate-gaussians
+            epsilon = 1e-5
+            delta = torch.square(data["old_raw_policy"]-model_out["raw_policy"]) / (epsilon + 2 * self.get_current_actions_std().detach() ** 2)
+            loss_policy = args.distil_beta * 0.5 * delta.mean(dim=-1)
+            loss = loss + loss_policy
+        else:
+            # MSE loss on the logits...
+            loss_policy = args.distil_beta * 0.5 * self.calculate_value_loss(data["old_raw_policy"], model_out["raw_policy"]).mean(dim=-1)
+            loss = loss + loss_policy
 
         pred_var = torch.var(predictions)
         targ_var = torch.var(targets)
@@ -2771,7 +2789,6 @@ class Runner:
         mini_batch_size = len(data["prev_state"])
 
         prev_states = data["prev_state"]
-        actions = data["actions"].to(torch.long)
         old_log_pac = data["log_pac"]
         advantages = data["advantages"]
 
@@ -2784,6 +2801,7 @@ class Runner:
         # -------------------------------------------------------------------------
 
         if self.action_dist == "discrete":
+            actions = data["actions"].to(torch.long)
             old_log_policy = data["log_policy"]
             logps = model_out["log_policy"]
             logpac = logps[range(mini_batch_size), actions]
@@ -2845,8 +2863,9 @@ class Runner:
             self.log.watch_mean("kl_true", kl_true, display_width=8)
 
         elif self.action_dist == "gaussian":
-            mu = torch.clip(torch.tanh(model_out["raw_policy"])*1.1, -1, 1)
-            logpac = torch.distributions.normal.Normal(mu, self.get_current_action_std()).log_prob(actions)
+            actions = data["actions"].to(torch.float32)
+            mu = model_out["raw_policy"]
+            logpac = torch.distributions.normal.Normal(mu, self.get_current_actions_std()).log_prob(actions)
             ratio = torch.exp(logpac - old_log_pac)
 
             clip_frac = torch.gt(torch.abs(ratio - 1.0), self.ppo_epsilon).float().mean()
@@ -2855,9 +2874,14 @@ class Runner:
             loss_clip = torch.min(ratio * advantages[:, None], clipped_ratio * advantages[:, None])
             gain = gain + loss_clip.mean(dim=-1) # mean over actions..
 
+            # no entropy bonus... ?
+
             # todo kl for gaussian
             kl_approx = torch.zeros(1)
             kl_true = torch.zeros(1)
+
+            for i, std in enumerate(self.get_current_actions_std()):
+                self.log.watch_mean(f'astd_{i}', std)
 
         else:
             raise ValueError(f"Invalid action distribution type {self.action_dist}")
@@ -3053,11 +3077,11 @@ class Runner:
             batch_data["log_pac"] = batch_data["log_policy"][range(B), self.actions.reshape([B])]
         elif self.action_dist == "gaussian":
             assert self.actions.dtype == np.float32, f"actions should be float32, but were {type(self.actions)}"
-            mu = np.clip(np.tanh(self.raw_policy)*1.1, -1, 1)
+            mu = self.raw_policy
             batch_data["actions"] = self.actions.reshape(B, self.model.actions).astype(np.float32)
             batch_data["log_pac"] = torch.distributions.normal.Normal(
                 torch.from_numpy(mu),
-                self.get_current_action_std()
+                self.get_current_actions_std().detach().cpu()
             ).log_prob(torch.from_numpy(self.actions)).reshape(B, self.model.actions)
 
         if args.architecture == "single":

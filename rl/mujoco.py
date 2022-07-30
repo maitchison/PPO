@@ -41,8 +41,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = gym.make(env_name)
 
-    env = env.unwrapped
-
     env = wrappers.LabelEnvWrapper(env, env_id)
 
     if seed is not None:
@@ -54,7 +52,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = F32Wrapper(env)
 
-    env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
+    # env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
 
     env = wrappers.EpisodeScoreWrapper(env)
 
@@ -62,5 +60,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     if args.reward_scale != 1.0 and not args.reward_normalization:
         env = wrappers.RewardScaleWrapper(env, args.reward_scale)
+
+    env = wrappers.NullActionWrapper(env)
 
     return env

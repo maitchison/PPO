@@ -1,5 +1,5 @@
 """
-Helper to create wrapped mujoco environments
+Helper to create wrapped procgen environments
 """
 
 import gym
@@ -44,7 +44,10 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     # procgen defaults to using hard, so just use gym to create env.
     #env = ProcgenGym3Env(env_id, distribution_mode="hard")
-    env = gym.make(env_name)
+    env_args = {}
+    if seed is not None:
+        env_args['rand_seed'] = seed
+    env = gym.make(env_name, **env_args)
 
     env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
 
@@ -54,8 +57,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     if seed is not None:
         np.random.seed(seed)
-        # for some reason procgen does not like the seed being set this way?
-        #env.seed(seed)
 
     if args.timeout > 0:
         env = wrappers.TimeLimitWrapper(env, args.timeout)
@@ -74,5 +75,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     # if args.embed_time:
     #     # must come after frame_stack
     #     env = wrappers.TimeAwareWrapper(env)
+
+    env = wrappers.NullActionWrapper(env)
 
     return env

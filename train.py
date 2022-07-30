@@ -184,9 +184,21 @@ def main():
 if __name__ == "__main__":
 
     # install procgen... this is a bit dodgy, but it'll get things working on the cluster
-    import subprocess
-    p = subprocess.Popen(["pip", "install", "procgen"], stdout=subprocess.PIPE)
-    print(p.communicate())
+    import sys
+    if "procgen" in sys.argv:
+        print("Installing Procgen...")
+        import subprocess
+        p = subprocess.Popen(["pip", "install", "procgen"], stdout=subprocess.PIPE)
+        print(p.communicate())
+
+    # special setup for mujoco
+    if "--env_type=mujoco" in sys.argv:
+        import os
+        print("Setting up for mujoco")
+        # print("Old path was", os.environ["LD_LIBRARY_PATH"])
+        if "/home/matthew/.mujoco/mujoco210/bin" not in os.environ.get("LD_LIBRARY_PATH", ""):
+            print(" - updating path.")
+            os.environ["LD_LIBRARY_PATH"] = ":/home/matthew/.mujoco/mujoco210/bin:/usr/lib/nvidia"
 
     from rl import logger
     log = logger.Logger()

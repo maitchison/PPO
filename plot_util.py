@@ -931,8 +931,10 @@ class AtariScoreNormalizer:
         # special case for procgen
         if subset_name == "Procgen":
             total = 0
+            normed_scores = []
             for k, (low, high) in PROCGEN_NORM_CONSTANTS.items():
                 norm_score = (scores[k] - low) / (high-low)
+                normed_scores.append(norm_score)
                 total += norm_score * (1/len(PROCGEN_NORM_CONSTANTS))
             return total
 
@@ -1019,6 +1021,9 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         # work out game scores for each game
         if type(game_weights) is str and game_weights == "mean":
             scores = [np.mean(es[game]) for game in game_list]
+            # stub: show scores
+            if epoch == epochs[-1]:
+                print([round(x,2) for x in scores], round(np.mean(scores), 3))
             weighted_score = np.mean(scores)
         else:
             # standard weighting system
@@ -1697,7 +1702,7 @@ import bisect
 
 
 def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False, step_mul=4.0):
-    xs = range(51)  # epochs
+    xs = range(101)  # epochs
     y_list = [[] for _ in xs]
     max_x = 0
 
