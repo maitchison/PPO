@@ -4,7 +4,6 @@ Helper to create wrapped procgen environments
 
 import gym
 import numpy as np
-from procgen import ProcgenGym3Env
 
 from . import wrappers
 from . import config
@@ -42,8 +41,11 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env_name = f"procgen:procgen-{env_id}-v0"
 
+    if seed is not None:
+        # setting seed here might help procgen init?
+        np.random.seed(seed)
+
     # procgen defaults to using hard, so just use gym to create env.
-    #env = ProcgenGym3Env(env_id, distribution_mode="hard")
     env_args = {}
     if seed is not None:
         env_args['rand_seed'] = seed
@@ -55,27 +57,14 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.LabelEnvWrapper(env, env_id)
 
-    if seed is not None:
-        np.random.seed(seed)
-
+    # no timeout...
     if args.timeout > 0:
         env = wrappers.TimeLimitWrapper(env, args.timeout)
 
-    # no state saving for procgen
-    #env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
-
     env = wrappers.EpisodeScoreWrapper(env)
 
-    env = wrappers.TimeAwareWrapper(env, log=True)
-
-    if args.reward_scale != 1.0 and not args.reward_normalization:
-        env = wrappers.RewardScaleWrapper(env, args.reward_scale)
-
-    # todo: include time aware... (and maybe action aware)
-    # if args.embed_time:
-    #     # must come after frame_stack
-    #     env = wrappers.TimeAwareWrapper(env)
 
     env = wrappers.NullActionWrapper(env)
+
 
     return env

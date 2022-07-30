@@ -343,7 +343,8 @@ class DualHeadNet(nn.Module):
             tvf_value_scale_fn="identity",
             tvf_value_scale_norm="max",
             feature_activation_fn="relu",
-            policy_weight_scale: float=0.1,
+            policy_weight_scale: float= 0.1,
+            value_weight_scale: float=0.1,
             actions=None,
             use_policy_head=True,
             use_value_head=True,
@@ -388,6 +389,13 @@ class DualHeadNet(nn.Module):
 
             # value net outputs a basic value estimate as well as the truncated value estimates
             self.value_head = nn.Linear(self.encoder.hidden_units, 5)
+            # start value predictions with small guesses (otherwise we get large error early on).
+            torch.nn.init.uniform_(
+                self.value_head.weight,
+                -value_weight_scale / (self.encoder.hidden_units ** 0.5),
+                value_weight_scale / (self.encoder.hidden_units ** 0.5)
+            )
+
             if tvf_hidden_units > 0:
                 self.tvf_hidden = nn.Linear(self.encoder.hidden_units, tvf_hidden_units)
                 self.tvf_hidden_aux = nn.Linear(2, tvf_hidden_units, bias=False)
@@ -590,6 +598,7 @@ class TVFModel(nn.Module):
             tvf_value_scale_norm: str = "max",
             shared_initialization=False,
             observation_normalization=False,
+            normalization_mode="v1",
             freeze_observation_normalization=False,
     ):
 
@@ -602,6 +611,7 @@ class TVFModel(nn.Module):
         self.device = device
         self.dtype = dtype
         self.observation_normalization = observation_normalization
+        self.normalization_mode = normalization_mode
 
         if architecture == "single":
             self.name = "PPO-" + networks[0]
@@ -714,12 +724,16 @@ class TVFModel(nn.Module):
         if self._mu is None:
             self.refresh_normalization_constants()
 
-        # normalize x
-        x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
-
-        # note: clipping reduces the std down to 0.3, therefore we multiply the output so that it is roughly
-        # unit normal.
-        x = x * 3.0
+        if self.normalization_mode == "v1":
+            # normalize x
+            x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
+            # note: clipping reduces the std down to 0.3, therefore we multiply the output so that it is roughly
+            # unit normal.
+            x = x * 3.0
+        elif self.normalization_mode == "v2":
+            x = torch.clamp((x - self._mu[None]) / (self._std[None] + 1e-5), -15, 15)
+        else:
+            raise ValueError("invalid normalization mode")
 
         return x
 
@@ -856,7 +870,7 @@ class TVFModel(nn.Module):
     def prep_for_model(self, x, scale_int=True):
         """ Converts data to format for model (i.e. uploads to GPU, converts type).
             Can accept tensor or ndarray.
-            scale_int scales uint8 to [-1..1]
+            scale_int scales uint8 to [0..1]
          """
 
         assert self.device is not None, "Must call set_device_and_dtype."
@@ -876,7 +890,8 @@ class TVFModel(nn.Module):
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if was_uint8 and scale_int:
-            x = (x / 127.5)-1.0
+            #x = (x / 127.5)-1.0
+            x = (x / 255.0) # this is more standard
 
         return x
 

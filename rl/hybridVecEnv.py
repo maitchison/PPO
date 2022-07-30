@@ -53,7 +53,7 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
 
     """
 
-    def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True):
+    def __init__(self, env_fns, max_cpus=8, verbose=False, copy=True, allow_threaded=True):
         # create sequential envs for each worker
         assert len(env_fns) % max_cpus == 0, "Number of environments ({}) must be a multiple of the CPU count ({}).".format(len(env_fns), max_cpus)
         self.n_sequential = len(env_fns) // max_cpus
@@ -63,7 +63,8 @@ class HybridAsyncVectorEnv(gym.vector.async_vector_env.AsyncVectorEnv):
             # I prefer the lambda, but it won't work with pickle, and I want to multiprocessor this...
             # Note: thread vector env is a lot faster than gym.vector.sync_vector_env
             # but I'm not 100% sure ALE is thread safe (I think it is ...), but just in case...
-            constructor = functools.partial(ThreadVectorEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
+            BaseVecEnv = ThreadVectorEnv if allow_threaded else SyncVectorEnv
+            constructor = functools.partial(BaseVecEnv, env_fns[i*self.n_sequential:(i+1)*self.n_sequential], copy=copy)
             vec_functions.append(constructor)
 
         if verbose:

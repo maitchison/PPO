@@ -67,6 +67,7 @@ class Config:
         self.quite_mode         = bool()
 
         self.observation_normalization = bool()
+        self.normalization_mode = str()
         self.freeze_observation_normalization = bool()
         self.ir_scale = float()
         self.er_scale = float()
@@ -525,6 +526,8 @@ def parse_args(no_env=False, args_override=None):
     parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
 
     parser.add_argument("--observation_normalization", type=str2bool, default=False)
+    parser.add_argument("--normalization_mode", type=str, default="v1", help='[v1|v2]')
+
     parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False, help="Disables updates to observation normalization constants.")
     parser.add_argument("--er_scale", type=float, default=1.0, help="Extrinsic reward scale.")
     parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")

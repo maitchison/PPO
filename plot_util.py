@@ -911,7 +911,7 @@ class AtariScoreNormalizer:
             score = np.asarray(score)
         key = game.lower()
         if key not in self._normalization_scores:
-            print(f"Warning: Game not found {game}")
+            # print(f"Warning: Game not found {game}")
             return score * 0
         random, human = self._normalization_scores[key]
         return 100 * (score - random) / (human - random)

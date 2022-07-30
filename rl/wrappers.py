@@ -904,6 +904,7 @@ class TimeLimitWrapper(gym.Wrapper):
         observation, reward, done, info = self.env.step(ac)
         self._elapsed_steps += 1
         if self._elapsed_steps >= self._max_episode_steps:
+            print("forced reset!")
             done = True
             info['TimeLimit.truncated'] = True
         # when a done occurs we will reset and the observation returned will be the first frame of a new

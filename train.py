@@ -66,6 +66,7 @@ def make_model(args, log=None):
         shared_initialization=args.dna_shared_initialization,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
+        normalization_mode=args.normalization_mode,
     )
     return actor_critic_model
 
