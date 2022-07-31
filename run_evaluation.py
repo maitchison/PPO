@@ -411,12 +411,19 @@ def make_envs(
         determanistic_saving=True
 ):
     # create environment(s) if not already given
+    extra_args = {}
+    try:
+        if args.env_type == "procgen":
+            extra_args['difficulty'] = args.procgen_difficulty
+    except:
+        pass
     env_fns = [lambda i=i: rollout.make_env(
         args.env_type,
         env_id=args.get_env_name(),
         monitor_video=include_video,
         seed=(i * 997) + seed_base,
         determanistic_saving=determanistic_saving,
+        **extra_args,
     ) for i in
                range(num_envs)]
     if num_envs > 1 or force_hybrid_async:
@@ -1051,7 +1058,14 @@ def export_movie(
 
     scale = 4
 
-    env = rollout.make_env(args.env_type, env_id=args.get_env_name(), monitor_video=True, seed=1)
+    extra_args = {}
+    try:
+        if args.env_type == "procgen":
+            extra_args['difficulty'] = args.procgen_difficulty
+    except:
+        pass
+
+    env = rollout.make_env(args.env_type, env_id=args.get_env_name(), monitor_video=True, seed=1, **extra_args)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)

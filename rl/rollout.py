@@ -714,7 +714,11 @@ class Runner:
         base_seed = args.seed
         if base_seed is None or base_seed < 0:
             base_seed = np.random.randint(0, 9999)
-        env_fns = [lambda i=i: make_env(args.env_type, env_id=args.get_env_name(i), args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
+
+        extra_args = {}
+        if args.env_type == "procgen":
+            extra_args['difficulty'] = args.procgen_difficulty
+        env_fns = [lambda i=i: make_env(args.env_type, env_id=args.get_env_name(i), args=args, seed=base_seed+(i*997), monitor_video=monitor_video, **extra_args) for i in range(N)]
 
         if args.sync_envs:
             self.vec_env = gym.vector.SyncVectorEnv(env_fns)

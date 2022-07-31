@@ -14,6 +14,7 @@ class Config:
         self.experiment_name    = str()
         self.run_name           = str()
         self.filter             = str()
+        self.procgen_difficulty = str()
 
         self.hash_size          = int()
         self.restore            = bool()
@@ -352,6 +353,7 @@ def parse_args(no_env=False, args_override=None):
 
     parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
     parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
+    parser.add_argument("--procgen_difficulty", type=str, default="hard", help="[hard|]")
 
     parser.add_argument("--filter", type=str, default="none",
                         help="Add filter to agent observation ['none', 'hash']")
