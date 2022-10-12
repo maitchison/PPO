@@ -389,6 +389,8 @@ def compare_runs(
         ref_level=None,
         hold=False,
         x_transform=None,
+        faded_alpha=0.2,
+        alpha=1.0,
         jitter=0.0,
         figsize=(16, 4),
         run_filter=None, # not used
@@ -487,7 +489,7 @@ def compare_runs(
         else:
             color = auto_color
             ls = auto_style
-            alpha = 1.0
+            alpha = alpha
             zorder = None if zorder_filter is None else zorder_filter(run_name, run_params)
 
         if run_data is reference_run:
@@ -519,7 +521,7 @@ def compare_runs(
                 continue
 
 
-        plt.plot(xs[x_start:], ys[x_start:], alpha=0.2 * alpha, c=color)
+        plt.plot(xs[x_start:], ys[x_start:], alpha=faded_alpha * alpha, c=color)
         plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=ls, zorder=zorder)
 

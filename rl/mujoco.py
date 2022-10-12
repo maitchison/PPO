@@ -61,6 +61,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.reward_scale != 1.0 and not args.reward_normalization:
         env = wrappers.RewardScaleWrapper(env, args.reward_scale)
 
-    env = wrappers.NullActionWrapper(env)
+    # null action does not work has actions can be negative...
+    #env = wrappers.NullActionWrapper(env)
 
     return env

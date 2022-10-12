@@ -43,6 +43,9 @@ class Config:
         self.replay_mixing      = bool()
         self.replay_thinning = float()
 
+        self.policy_weight_scale = float()
+        self.value_weight_scale = float()
+
         self.log_frequency_response = bool()
         self.lfr_samples = int()
         self.lfr_normalize = bool()
@@ -522,6 +525,9 @@ def parse_args(no_env=False, args_override=None):
                         help="Anneals learning rate to 0 (linearly) over training")
 
     parser.add_argument("--anneal_target_epoch", type=float, default=None, help="Epoch to anneal to zero by")
+
+    parser.add_argument("--policy_weight_scale", type=float, default=0.1)
+    parser.add_argument("--value_weight_scale", type=float, default=0.1)
 
     # -----------------
 

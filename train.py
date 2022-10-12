@@ -67,6 +67,9 @@ def make_model(args, log=None):
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
         normalization_mode=args.normalization_mode,
+
+        policy_weight_scale=args.policy_weight_scale,
+        value_weight_scale=args.value_weight_scale,
     )
     return actor_critic_model
 

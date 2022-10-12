@@ -2879,6 +2879,7 @@ class Runner:
             gain = gain + loss_clip.mean(dim=-1) # mean over actions..
 
             # no entropy bonus... ?
+            # the ppo paper did not use entropy bonus.
 
             # todo kl for gaussian
             kl_approx = torch.zeros(1)

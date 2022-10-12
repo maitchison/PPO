@@ -343,7 +343,7 @@ class DualHeadNet(nn.Module):
             tvf_value_scale_fn="identity",
             tvf_value_scale_norm="max",
             feature_activation_fn="relu",
-            policy_weight_scale: float= 0.1,
+            policy_weight_scale: float = 0.1,
             value_weight_scale: float=0.1,
             actions=None,
             use_policy_head=True,
@@ -600,6 +600,7 @@ class TVFModel(nn.Module):
             observation_normalization=False,
             normalization_mode="v1",
             freeze_observation_normalization=False,
+            **kwargs,
     ):
 
         assert not use_rnn, "RNN not supported yet"
@@ -649,6 +650,7 @@ class TVFModel(nn.Module):
             feature_activation_fn=feature_activation_fn,
             actions=actions,
             device=device,
+            **kwargs,
             **(args or {})
         )
 
