@@ -74,7 +74,6 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
     N, B, A = behaviour_log_policy.shape
 
     vs = np.zeros_like(target_value_estimates)
-    cs = np.zeros_like(target_value_estimates)
 
     not_terminal = np.asarray(1-dones, dtype=np.float32)
 
@@ -92,15 +91,15 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
       behaviour_log_policy_actions[:, b] = behaviour_log_policy[range(N), b, actions[:, b]]
 
     rhos = np.minimum(1, np.exp(target_log_policy_actions - behaviour_log_policy_actions))
+    cs = lamb * rhos
 
     for i in reversed(range(N)):
         next_target_value_estimate = target_value_estimates[i + 1] if i + 1 != N else target_value_final_estimate
         # adding an epsilon to the denominator introduce a small amount of bias, this probably would not be necessary
         # if I use logs instead.
-        tdv = rhos[i] * (rewards[i] + gamma * not_terminal[i] * next_target_value_estimate - target_value_estimates[i])
-        cs[i] = rhos[i]  # in the paper these seem to be different, but I have them the same here?
+        tdv = rhos[i] * (rewards[i] + (gamma * not_terminal[i]) * next_target_value_estimate - target_value_estimates[i])
         next_vs = vs[i + 1] if i + 1 != N else 0
-        vs[i] = tdv + gamma * not_terminal[i] * (lamb * cs[i]) * next_vs
+        vs[i] = tdv + (gamma * not_terminal[i]) * cs[i] * next_vs
 
     # add value estimates back in
     vs = vs + target_value_estimates

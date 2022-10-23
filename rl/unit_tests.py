@@ -2,8 +2,7 @@
 
 import torch
 import numpy as np
-from rl import ppo, rollout
-from rl.vtrace import importance_sampling_v_trace, v_trace_trust_region
+from rl import ppo, rollout, vtrace
 from rl.utils import entropy, log_entropy, log_kl, kl
 from rl.rollout import  interpolate
 
@@ -27,16 +26,17 @@ def select_from(a,b):
     return r
 
 def _ground_truth_vtrace_calculation(discounts, log_rhos, rewards, values,
-                                     bootstrap_value, clip_rho_threshold,
-                                     clip_pg_rho_threshold):
+                                     bootstrap_value, clip_rho_threshold=1,
+                                     clip_pg_rho_threshold=1, lamb=1.0):
   """Calculates the ground truth for V-trace in Python/Numpy."""
 
   # this is the ground truth calculation from https://github.com/deepmind/scalable_agent/blob/master/vtrace_test.py
+  # modifed by me to include lambda (see remark 2 from paper)
 
   vs = []
   seq_len = len(discounts)
   rhos = np.exp(log_rhos)
-  cs = np.minimum(rhos, 1.0)
+  cs = lamb * np.minimum(rhos, 1.0)
   clipped_rhos = rhos
   if clip_rho_threshold:
     clipped_rhos = np.minimum(rhos, clip_rho_threshold)
@@ -59,8 +59,7 @@ def _ground_truth_vtrace_calculation(discounts, log_rhos, rewards, values,
     v_s = np.copy(values[s])  # Very important copy.
     for t in range(s, seq_len):
       v_s += (
-          np.prod(discounts[s:t], axis=0) * np.prod(cs[s:t],
-                                                    axis=0) * clipped_rhos[t] *
+          np.prod(discounts[s:t], axis=0) * np.prod(cs[s:t], axis=0) * clipped_rhos[t] *
           (rewards[t] + discounts[t] * values_t_plus_1[t + 1] - values[t]))
     vs.append(v_s)
   vs = np.stack(vs, axis=0)
@@ -114,10 +113,10 @@ def test_vtrace():
     dones = np.asarray([[False, False], [False, False], [True, False], [False, False], [False, False]])
 
     gamma = 0.90
-    lamb = 1.0 # doesn't work with lamb != 1, not sure who's correct though, might be V-Trace?
+    lamb = 1.0
 
     # first calculate the returns
-    returns = rollout.calculate_returns(rewards, dones, final_value_estimate, gamma)
+    returns = rollout.calculate_bootstrapped_returns(rewards, dones, final_value_estimate, gamma)
 
     gae = rollout.gae(rewards, value_estimates, final_value_estimate, dones, gamma, lamb=lamb, normalize=False)
 
@@ -125,7 +124,7 @@ def test_vtrace():
     target_log_policy = np.zeros([5,2,1], dtype=np.float)
     actions = np.zeros([5, 2], dtype=np.int)
 
-    vs, pg_adv, cs = ppo.importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
+    vs, pg_adv, cs = vtrace.importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
                                                      value_estimates, final_value_estimate, gamma, lamb=lamb)
 
     assert_is_similar(returns, vs, "V-trace returns do not match.")
@@ -142,15 +141,15 @@ def test_vtrace():
     target_log_policy[:,0,0] = [-2,-4,-4,2,-1]
     target_log_policy[:,1,0] = [-6,-5,-4,-4,-3]
 
+    lamb = 0.9
+
     discounts = np.ones_like(value_estimates) * gamma * (1-dones)
-
-
     log_rhos = (select_from(target_log_policy,actions) - select_from(behaviour_log_policy,actions))
 
     gt_vs, gt_adv = _ground_truth_vtrace_calculation(discounts, log_rhos, rewards, value_estimates,
-                                                     final_value_estimate, 1, 1)
+                                                     final_value_estimate, lamb=lamb)
 
-    vs, pg_adv, cs = importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
+    vs, pg_adv, cs = vtrace.importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
                                                      value_estimates, final_value_estimate, gamma, lamb=lamb)
 
     assert_is_similar(gt_adv, pg_adv, "V-trace advantages do not match reference.")
@@ -350,8 +349,8 @@ def test_calculate_tvf_td():
 
     return True
 
-# print("V-trace: ", end='')
-# print("Pass" if test_vtrace() else "Fail!")
+print("V-trace: ", end='')
+print("Pass" if test_vtrace() else "Fail!")
 #
 # print("Information Theory Functions: ", end='')
 # print("Pass" if test_information_theory_functions() else "Fail!")

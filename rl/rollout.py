@@ -3210,6 +3210,8 @@ class Runner:
 
         if args.use_vtrace_correction:
 
+            assert not args.use_tvf, "TVF not supported with V-Trace yet."
+
             old_value_targets = self.returns # [N, A, VH]
 
             old_log_policy = self.log_policy
@@ -3247,9 +3249,7 @@ class Runner:
             # plt.scatter(old_value_targets.ravel(), new_value_targets.ravel())
             # plt.show()
 
-            batch_data["returns"][:, :] = new_value_targets.reshape(N*A, self.VH)
-            assert not args.use_tvf, "TVF not supported with V-Trace yet."
-
+            batch_data["returns"] = new_value_targets.reshape(N*A, self.VH)
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(

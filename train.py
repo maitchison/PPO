@@ -89,7 +89,6 @@ def main():
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
     # import here to make workers load faster / use less memory
-    import torch
     import torch.backends.cudnn, torch.backends.cuda
     from rl import utils, config, rollout
     from rl import ppo
@@ -215,6 +214,8 @@ if __name__ == "__main__":
     # quick check that returns work
     from rl.returns import test_return_estimators
     from rl.rollout import _test_interpolate
+    import rl.unit_tests
+
     for i in range(2):
         test_return_estimators(seed=i)
     print("Return verification passed.")
@@ -222,6 +223,7 @@ if __name__ == "__main__":
     print("Interpolation verification passed.")
 
     from rl import logger
+
     log = logger.Logger()
     try:
         main()

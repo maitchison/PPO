@@ -13,7 +13,7 @@ from rl.utils import Color
 from rl import utils
 
 import runner_tools
-import plot_util as pu
+import Notebooks.plot_util as pu
 
 # todo:
 # check how few epochs we can get away with...
@@ -22,9 +22,10 @@ import plot_util as pu
 ROLLOUT_SIZE = 128*128
 WORKERS = 8
 GPUS = torch.cuda.device_count()
-DEVICE = socket.gethostname()
-BENCHMARK_FOLDER = f"__benchmark_{DEVICE}"
-REGRESSION_FOLDER = f"__regression_{DEVICE}"
+DEVICE = "cpu" # "auto"
+HOSTNAME = socket.gethostname()
+BENCHMARK_FOLDER = f"__benchmark_{HOSTNAME}"
+REGRESSION_FOLDER = f"__regression_{HOSTNAME}"
 NUMA_GROUPS = utils.detect_numa_groups()
 BENCHMARK_EPOCHS = 4 * ROLLOUT_SIZE / 1e6 # (4 should probably be enough)
 BENCHMARK_ENV = 'Zaxxon' # a bit of a better test for compression.
@@ -48,7 +49,6 @@ regression_args = {
     'embed_time': True,
     'terminal_on_loss_of_life': False,
     'reward_clipping': "off",
-    'value_transform': 'identity',
 
     # parameters found by hyperparameter search...
     'max_grad_norm': 5.0,
@@ -61,7 +61,6 @@ regression_args = {
     'policy_epochs': 2,
     'value_epochs': 1,
 
-    'target_kl': -1,
     'ppo_epsilon': 0.2,
     'policy_lr': 2.5e-4,
     'value_lr': 2.5e-4,
@@ -89,8 +88,6 @@ regression_args = {
     'tvf_horizon_samples': 128,
     'tvf_return_mode': 'exponential',
     'tvf_coef': 0.5,
-    'tvf_soft_anchor': 0,
-    'tvf_exp_mode': "transformed",
 
     # horizon
     'gamma': 0.99997,
@@ -255,7 +252,7 @@ def run_benchmark(description: str, job_counts: list, **kwargs):
     os.system(f'rm -r ./Run/{BENCHMARK_FOLDER}')
 
     if args.verbose:
-        print(f"Running {description} benchmark on {DEVICE} with {GPUS} GPUS...")
+        print(f"Running {description} benchmark on {HOSTNAME} with {GPUS} GPUS...")
 
     baseline_ips = None
 
@@ -265,7 +262,7 @@ def run_benchmark(description: str, job_counts: list, **kwargs):
 
     for jobs in job_counts:
         ips = sum(
-            generate_benchmark_result(parallel_jobs=jobs, show_compression_stats=jobs == job_counts[0], **kwargs)
+            generate_benchmark_result(parallel_jobs=jobs, device=DEVICE, show_compression_stats=jobs == job_counts[0], **kwargs)
         )
         if baseline_ips is None:
             baseline_ips = ips
