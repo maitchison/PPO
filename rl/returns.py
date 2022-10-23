@@ -151,6 +151,8 @@ def get_return_estimate(
     else:
         raise ValueError(f"Invalid returns mode {mode}")
 
+    raise Exception("This return mode is not supported yet.")
+
 
 
 

@@ -250,6 +250,11 @@ class Config(BaseConfig):
         parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
 
         # --------------------------------
+        # Extra
+
+        parser.add_argument("--use_vtrace_correction", type=str2bool, default=False, help="Applies vtrace correction to value update.")
+
+        # --------------------------------
         # Environment
         parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
         parser.add_argument("--warmup_period", type=int, default=250,
@@ -563,6 +568,9 @@ class Config(BaseConfig):
         self.use_ed = bool()
         self.ed_mode = str()
         self.ed_bias = float()
+
+        # extra
+        self.use_vtrace_correction = bool()
 
         self.aux_target = str()
         self.aux_source = str()

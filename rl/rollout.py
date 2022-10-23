@@ -16,7 +16,7 @@ from typing import Union, Optional
 import math
 
 from .logger import Logger
-from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression, config
+from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression, config, vtrace
 from .returns import get_return_estimate
 from .config import args
 from .mutex import Mutex
@@ -972,7 +972,7 @@ class Runner:
         self.episode_length_buffer.append(1000)
 
     @torch.no_grad()
-    def detached_batch_forward(self, obs:np.ndarray, **kwargs):
+    def detached_batch_forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs):
         """ Forward states through model, returns output, which is a dictionary containing
             "log_policy" etc.
             obs: np array of dims [B, *state_shape]
@@ -2141,7 +2141,7 @@ class Runner:
             raise ValueError(f"Invalid ag_ratio_algorithm {args.ag_ratio_algorithm}")
 
         utils.dictionary_ema(self.vars, 'dc_h', target_h, 0.99, default=args.ag_initial_h, log=True)
-        self.log.watch("dc_h", self.vars['dc_h'])
+        self.log.watch("*dc_h", self.vars['dc_h'])
         self.log.watch("*dc_target", target_h)
 
         # plt.figure(figsize=(12, 6))
@@ -2351,7 +2351,7 @@ class Runner:
                 self.estimate_horizon_from_rediscounting()
         else:
             self.vars['dc_h'] = args.ag_initial_h
-            self.log.watch("dc_h", self.vars['dc_h'])
+            self.log.watch("*dc_h", self.vars['dc_h'])
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -2467,11 +2467,11 @@ class Runner:
 
         if extra_debugging:
             # first distil update
-            self.log.watch("fd_mse", torch.square(targets - predictions).mean())
-            self.log.watch("fd_bias", torch.mean(targets - predictions))
-            self.log.watch("fd_max", abs(torch.max(targets - predictions)))
-            self.log.watch("fd_ratio", torch.mean(targets)/torch.mean(predictions))
-            self.log.watch("fd_loss", loss_value.mean())
+            self.log.watch("*fd_mse", torch.square(targets - predictions).mean())
+            self.log.watch("*fd_bias", torch.mean(targets - predictions))
+            self.log.watch("*fd_max", abs(torch.max(targets - predictions)))
+            self.log.watch("*fd_ratio", torch.mean(targets)/torch.mean(predictions))
+            self.log.watch("*fd_loss", loss_value.mean())
 
         # apply discount reweighing
         loss_value = loss_value * weights
@@ -3190,7 +3190,7 @@ class Runner:
         if not args.use_tvf or args.tvf_include_ext:
             # these are not really needed, maybe they provide better features, I don't know.
             # one issue is that they will be the wrong scale if rediscounting is applied.
-            # e.g. if gamma defaults to 0.99997, but these are calculated at 0.999 they might be extremly large
+            # e.g. if gamma defaults to 0.99997, but these are calculated at 0.999 they might be extremely large
             batch_data["returns"] = self.returns.reshape(N*A, self.VH)
 
         if args.use_tvf:
@@ -3207,6 +3207,49 @@ class Runner:
                 self.log_accumulated_gradient_norms(batch_data)
                 if args.sns_fake_noise:
                     self.log_fake_accumulated_gradient_norms(optimizer=self.value_optimizer)
+
+        if args.use_vtrace_correction:
+
+            old_value_targets = self.returns # [N, A, VH]
+
+            old_log_policy = self.log_policy
+            model_out = self.detached_batch_forward(
+                obs=utils.merge_down(self.prev_obs),
+                output="policy",
+            )
+            new_log_policy = model_out["log_policy"].detach().cpu().numpy().reshape(N, A, self.model.actions)
+
+            new_value_targets, _, _ = vtrace.importance_sampling_v_trace(
+                old_log_policy,
+                new_log_policy,
+                self.actions,
+                self.ext_rewards,
+                self.terminals,
+                self.ext_value[:N], # not quite what we want, but it'll have to do...
+                self.ext_value[N],
+                self.tvf_gamma,
+                lamb=args.lambda_value
+            )
+            assert self.VH == 1
+            new_value_targets = new_value_targets[:, :, None] # assume one value head.
+
+            mse = np.mean((new_value_targets - old_value_targets) ** 2)
+            max = np.max(np.abs(new_value_targets - old_value_targets))
+            kl = float(F.kl_div(torch.from_numpy(old_log_policy), torch.from_numpy(new_log_policy), log_target=True, reduction="batchmean").numpy())
+            ev = utils.explained_variance(new_value_targets.ravel(), old_value_targets.ravel())
+
+            self.log.watch_mean("vt_ev", ev)
+            self.log.watch_mean("vt_kl", kl)
+            self.log.watch_mean("vt_mse", mse)
+            self.log.watch_mean("vt_max", max)
+
+            # import matplotlib.pyplot as plt
+            # plt.scatter(old_value_targets.ravel(), new_value_targets.ravel())
+            # plt.show()
+
+            batch_data["returns"][:, :] = new_value_targets.reshape(N*A, self.VH)
+            assert not args.use_tvf, "TVF not supported with V-Trace yet."
+
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(

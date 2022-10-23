@@ -66,7 +66,7 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
         vs                              np array [N, B], the value estimates for pi learned from off-policy data. These
                                         can be used as targets for policy gradient learning.
         weighted_advantages             np array [N, B], weighted (by rho) advantage estimates that can be used in
-                                        policy graident updates.
+                                        policy gradient updates.
         cs                              the importance sampling correction adjustments
 
     """
