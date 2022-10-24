@@ -2848,6 +2848,8 @@ class Runner:
         def calc_entropy(x):
             return -(x.exp() * x).sum(axis=1)
 
+        result = {}
+
         mini_batch_size = len(data["prev_state"])
 
         prev_states = data["prev_state"]
@@ -2914,6 +2916,29 @@ class Runner:
             raise ValueError(f"Invalid action distribution type {self.action_dist}")
 
         # -------------------------------------------------------------------------
+        # Global KL
+        # -------------------------------------------------------------------------
+
+        # the idea here is to get an estimate for E_{s ~ \mu, \pi} KL(\pi^{new}(s), \pi^{old}(s)
+
+        if args.use_gkl:
+            old_global_log_policy = data["*global_log_policy"]
+            global_states = data["*global_states"]
+            global_model_out = self.model.forward(global_states, output="policy", exclude_tvf=True)
+            new_global_log_policy = global_model_out["log_policy"]
+            global_kl = F.kl_div(
+                utils.merge_down(old_global_log_policy), utils.merge_down(new_global_log_policy),
+                reduction="batchmean", log_target=True
+            )
+
+            if args.gkl_penalty != 0:
+                gkl_loss = global_kl * args.gkl_penalty
+                gain = gain - gkl_loss
+                self.log.watch_mean("loss_gkl", gkl_loss, history_length=64 * args.policy.epochs, display_name=f"ls_gkl", display_width=8)
+
+            result["global_kl"] = global_kl.detach().cpu()
+
+        # -------------------------------------------------------------------------
         # Value learning for PPO mode
         # -------------------------------------------------------------------------
 
@@ -2936,12 +2961,14 @@ class Runner:
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("loss_policy", gain.mean(), display_name=f"ls_policy")
 
-        return {
+        result.update({
             'losses': loss.detach(),
             'kl_approx': float(kl_approx.detach()),  # make sure we don't pass the graph through.
             'kl_true': float(kl_true.detach()),
             'clip_frac': float(clip_frac.detach()),
-        }
+        })
+
+        return result
 
     @property
     def training_fraction(self):
@@ -3111,6 +3138,20 @@ class Runner:
         self.log.watch_stats("advantages", advantages, display_width=0, history_length=1)
         batch_data["advantages"] = advantages
 
+        # get global kl states (if needed)
+        if args.use_gkl:
+            assert args.gkl_source == "rollout", "Only rollout source supported at the moment"
+
+            global_states = utils.merge_down(self.prev_obs)
+            global_states = global_states[np.random.choice(len(global_states), args.gkl_samples, replace=False)]
+            batch_data["*global_states"] = global_states.clone()
+
+            model_out = self.detached_batch_forward(
+                obs=global_states,
+                output="policy",
+            )
+            batch_data["*global_log_policy"] = model_out["log_policy"].detach()
+
         epochs = 0
         for epoch in range(args.policy.epochs):
             results = self.train_batch(
@@ -3208,7 +3249,7 @@ class Runner:
                 if args.sns_fake_noise:
                     self.log_fake_accumulated_gradient_norms(optimizer=self.value_optimizer)
 
-        if args.use_vtrace_correction:
+        if args.vtrace_correction in ['on', 'shadow']:
 
             assert not args.use_tvf, "TVF not supported with V-Trace yet."
 
@@ -3237,7 +3278,10 @@ class Runner:
 
             mse = np.mean((new_value_targets - old_value_targets) ** 2)
             max = np.max(np.abs(new_value_targets - old_value_targets))
-            kl = float(F.kl_div(torch.from_numpy(old_log_policy), torch.from_numpy(new_log_policy), log_target=True, reduction="batchmean").numpy())
+            kl = float(F.kl_div(
+                torch.from_numpy(utils.merge_down(old_log_policy)), torch.from_numpy(utils.merge_down(new_log_policy)),
+                log_target=True, reduction="batchmean").numpy()
+                       )
             ev = utils.explained_variance(new_value_targets.ravel(), old_value_targets.ravel())
 
             self.log.watch_mean("vt_ev", ev)
@@ -3249,7 +3293,13 @@ class Runner:
             # plt.scatter(old_value_targets.ravel(), new_value_targets.ravel())
             # plt.show()
 
-            batch_data["returns"] = new_value_targets.reshape(N*A, self.VH)
+            if args.vtrace_correction == "on":
+                batch_data["returns"] = new_value_targets.reshape(N*A, self.VH)
+            elif args.vtrace_correction == "trust":
+                # just a guess about this threshold
+                mask = np.abs(new_value_targets - old_value_targets) > 0.5
+                # reset returns for samples that have changed too much...
+                batch_data["returns"][mask] = self.ext_value[mask]
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(
@@ -3614,6 +3664,8 @@ class Runner:
         batch_size, *state_shape = batch_data["prev_state"].shape
 
         for k, v in batch_data.items():
+            if k.startswith('*'):
+                continue
             assert len(v) == batch_size, f"Batch input must all match in entry count. Expecting {batch_size} but found {len(v)} on {k}"
             if type(v) is np.ndarray:
                 assert v.dtype in [np.uint8, np.int64, np.float32, np.object], \
@@ -3662,6 +3714,12 @@ class Runner:
                 micro_batch_data['context'] = micro_batch_context
 
                 for var_name, var_value in batch_data.items():
+
+                    if var_name.startswith('*'):
+                        # we pass these through directly.
+                        micro_batch_data[var_name] = var_value.to(self.model.device, non_blocking=True)
+                        continue
+
                     data = var_value[sample]
 
                     if thinning < 1.0:

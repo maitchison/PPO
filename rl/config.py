@@ -217,8 +217,6 @@ class Config(BaseConfig):
         parser.add_argument("--weight_init", type=str, default="default", help="default|xavier|orthogonal")
         parser.add_argument("--weight_scale", type=float, default=1.0)
 
-
-
         # --------------------------------
         # Episodic Discounting
         parser.add_argument("--use_ed", type=str2bool, default=False, help="Enables episodic discounting.")
@@ -252,8 +250,13 @@ class Config(BaseConfig):
         # --------------------------------
         # Extra
 
-        parser.add_argument("--use_vtrace_correction", type=str2bool, default=False, help="Applies vtrace correction to value update.")
+        parser.add_argument("--vtrace_correction", type=str, default="off", help="Applies vtrace correction to value update. [off|on|shadow|trust]")
 
+        parser.add_argument("--use_gkl", type=str2bool, default=False, help="Use a global kl constraint.")
+        parser.add_argument("--gkl_threshold", type=float, default=-1) # 0.004 is probably good.
+        parser.add_argument("--gkl_penalty", type=float, default=0.01)
+        parser.add_argument("--gkl_source", type=str, default="rollout", help="[rollout]")
+        parser.add_argument("--gkl_samples", type=int, default=1024, help="Number of samples to use for global sample of state distrubtion.")
         # --------------------------------
         # Environment
         parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
@@ -570,7 +573,13 @@ class Config(BaseConfig):
         self.ed_bias = float()
 
         # extra
-        self.use_vtrace_correction = bool()
+        self.vtrace_correction = bool()
+        self.use_gkl = bool()
+        self.gkl_threshold = float()
+        self.gkl_penalty = float()
+        self.gkl_source = str()
+        self.gkl_samples = int()
+
 
         self.aux_target = str()
         self.aux_source = str()
@@ -736,6 +745,8 @@ def parse_args(args_override=None):
     assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
+
+    assert args.vtrace_correction in ["off", "on", "shadow", "trust"]
 
     assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
 

@@ -214,7 +214,7 @@ if __name__ == "__main__":
     # quick check that returns work
     from rl.returns import test_return_estimators
     from rl.rollout import _test_interpolate
-    import rl.unit_tests
+    #import rl.unit_tests
 
     for i in range(2):
         test_return_estimators(seed=i)
