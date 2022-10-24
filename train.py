@@ -71,6 +71,7 @@ def make_model(args, log=None):
         hidden_units=args.hidden_units,
         tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,
         observation_normalization=args.observation_normalization,
+        observation_normalization_scale=args.observation_normalization_scale,
         freeze_observation_normalization=args.freeze_observation_normalization,
         tvf_head_bias=args.tvf_head_bias,
         tvf_feature_sparsity=args.tvf_feature_sparsity,

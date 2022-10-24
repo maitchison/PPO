@@ -569,6 +569,7 @@ class TVFModel(nn.Module):
             hidden_units:int = 512,
             encoder_activation_fn: str = "relu",
             observation_normalization=False,
+            observation_normalization_scale=3.0,
             freeze_observation_normalization=False,
             tvf_fixed_head_horizons: Union[None, list] = None,
             tvf_fixed_head_weights: Union[None, list] = None,
@@ -605,6 +606,8 @@ class TVFModel(nn.Module):
         self.observation_normalization = observation_normalization
         self.tvf_fixed_head_weights = tvf_fixed_head_weights
         self.tvf_sqrt_transform = tvf_sqrt_transform
+        self.encoder_name = encoder
+        self.observation_normalization_scale = observation_normalization_scale
 
         # todo: rename this..
         if architecture == "single":
@@ -745,7 +748,7 @@ class TVFModel(nn.Module):
         # x *= 3.0
 
         x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
-        x = x * 3.0
+        x = x * self.observation_normalization_scale
 
         return x
 

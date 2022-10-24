@@ -1732,9 +1732,20 @@ class Runner:
         g_b_small_squared = float(np.mean(small_norms_sqr))
         self.process_noise_scale(g_b_small_squared, g_b_big_squared, label, verbose, b_big=b_big)
 
-
     @torch.no_grad()
     def log_dna_value_quality(self):
+
+        # also log feature statistics
+        model_out = self.detached_batch_forward(
+            self.prev_obs[0, :], # just get the first obs from each agent
+            output="both",
+            include_features=True,
+        )
+        for key in ["policy", "value"]:
+            features = model_out[f"{key}_raw_features"]
+            self.log.watch_stats(f"*{key}_features", features)
+
+
         targets = calculate_bootstrapped_returns(
             self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
         )
@@ -2405,7 +2416,7 @@ class Runner:
 
     def train_distil_minibatch(self, data, loss_scale=1.0, **kwargs):
 
-        # todo: make sure heads all line up... I think they might be offset sometimes. Perhpas make sure that
+        # todo: make sure heads all line up... I think they might be offset sometimes. Perhaps make sure that
         # we always pass in all heads, and maybe just generate them all the time aswell?
 
         if 'context' in data:
@@ -2934,7 +2945,7 @@ class Runner:
             if args.gkl_penalty != 0:
                 gkl_loss = global_kl * args.gkl_penalty
                 gain = gain - gkl_loss
-                self.log.watch_mean("loss_gkl", gkl_loss, history_length=64 * args.policy.epochs, display_name=f"ls_gkl", display_width=8)
+                self.log.watch_mean("*loss_gkl", gkl_loss, history_length=64 * args.policy.epochs, display_name=f"ls_gkl", display_width=8)
 
             result["global_kl"] = global_kl.detach().cpu()
 
@@ -3249,7 +3260,7 @@ class Runner:
                 if args.sns_fake_noise:
                     self.log_fake_accumulated_gradient_norms(optimizer=self.value_optimizer)
 
-        if args.vtrace_correction in ['on', 'shadow']:
+        if args.vtrace_correction != "off":
 
             assert not args.use_tvf, "TVF not supported with V-Trace yet."
 
@@ -3300,6 +3311,10 @@ class Runner:
                 mask = np.abs(new_value_targets - old_value_targets) > 0.5
                 # reset returns for samples that have changed too much...
                 batch_data["returns"][mask] = self.ext_value[mask]
+            elif args.vtrace_correction == "shadow":
+                pass
+            else:
+                raise Exception(f"Invalid vtrace_correction mode {args.vtrace_correction}")
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(
