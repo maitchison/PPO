@@ -207,7 +207,8 @@ class Config(BaseConfig):
         parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
         parser.add_argument("--log_folder", type=str, default=None)
         parser.add_argument("--observation_normalization", type=str2bool, default=False)
-        parser.add_argument("--observation_normalization_scale", type=float, default=3.0)
+        parser.add_argument("--observation_centered", type=str2bool, default=True, help="Centers observation during scaling.")
+        parser.add_argument("--observation_scale", type=float, default=3.0)
         parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False,
                             help="Disables updates to observation normalization constants.")
         parser.add_argument("--max_micro_batch_size", type=int, default=512, help="Can be useful to limit GPU memory")
@@ -247,11 +248,14 @@ class Config(BaseConfig):
         parser.add_argument("--lambda_value", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
         parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clipping used when global_norm is set.")
         parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
+        parser.add_argument("--feature_scale", type=float, default=0.1, help="Scales encoder output features.")
 
         # --------------------------------
         # Extra
 
         parser.add_argument("--vtrace_correction", type=str, default="off", help="Applies vtrace correction to value update. [off|on|shadow|trust]")
+        parser.add_argument("--vtrace_threshold", type=float, default=0.25)
+
 
         parser.add_argument("--use_gkl", type=str2bool, default=False, help="Use a global kl constraint.")
         parser.add_argument("--gkl_threshold", type=float, default=-1) # 0.004 is probably good.
@@ -457,7 +461,8 @@ class Config(BaseConfig):
         self.checkpoint_every = int()
         self.log_folder = object()
         self.observation_normalization = bool()
-        self.observation_normalization_scale = float()
+        self.observation_scale = float()
+        self.observation_centered = bool()
         self.freeze_observation_normalization = bool()
         self.max_micro_batch_size = int()
         self.sync_envs = bool()
@@ -576,11 +581,13 @@ class Config(BaseConfig):
 
         # extra
         self.vtrace_correction = bool()
+        self.vtrace_threshold = float()
         self.use_gkl = bool()
         self.gkl_threshold = float()
         self.gkl_penalty = float()
         self.gkl_source = str()
         self.gkl_samples = int()
+        self.feature_scale = float()
 
 
         self.aux_target = str()

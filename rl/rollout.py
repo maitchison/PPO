@@ -1738,7 +1738,7 @@ class Runner:
         # also log feature statistics
         model_out = self.detached_batch_forward(
             self.prev_obs[0, :], # just get the first obs from each agent
-            output="both",
+            output="full",
             include_features=True,
         )
         for key in ["policy", "value"]:
@@ -3308,9 +3308,10 @@ class Runner:
                 batch_data["returns"] = new_value_targets.reshape(N*A, self.VH)
             elif args.vtrace_correction == "trust":
                 # just a guess about this threshold
-                mask = np.abs(new_value_targets - old_value_targets) > 0.5
+                mask = (np.abs(new_value_targets - old_value_targets) > args.vtrace_threshold).ravel()
                 # reset returns for samples that have changed too much...
-                batch_data["returns"][mask] = self.ext_value[mask]
+                batch_data["returns"][mask, 0] = self.ext_value[:N, :].reshape(N*A, self.VH)[mask][:, 0]
+                self.log.watch_mean("vt_reject", mask.mean())
             elif args.vtrace_correction == "shadow":
                 pass
             else:
