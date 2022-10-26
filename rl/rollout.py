@@ -16,7 +16,8 @@ from typing import Union, Optional
 import math
 
 from .logger import Logger
-from . import utils, atari, mujoco, hybridVecEnv, wrappers, models, compression, config, vtrace
+from . import utils, hybridVecEnv, wrappers, models, compression, config, vtrace,
+from . import atari, mujoco, procgen
 from .returns import get_return_estimate
 from .config import args
 from .mutex import Mutex
