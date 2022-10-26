@@ -154,12 +154,11 @@ class StandardMLP(BaseNet):
 
         super().__init__(input_dims, hidden_units)
 
-        self.fc1 = nn.Linear(input_dims[0], hidden_units)
-        self.fc2 = nn.Linear(hidden_units, hidden_units)
+        s = torch.nn.init.calculate_gain("tanh")
 
+        self.fc1 = tu.CustomLinear(input_dims[0], hidden_units, weight_init="orthogonal", scale=s)
+        self.fc2 = tu.CustomLinear(hidden_units, hidden_units, weight_init="orthogonal", scale=1.414)
 
-    # this causes everything to be on cuda:1... hmm... even when it's disabled...
-    #@torch.autocast(device_type='cuda', enabled=AMP)
     def forward(self, x):
         """ forwards input through model, returns features (without relu) """
 

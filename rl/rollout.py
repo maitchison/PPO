@@ -3854,6 +3854,8 @@ def make_env(env_type, env_id, **kwargs):
         make_fn = atari.make
     elif env_type == "mujoco":
         make_fn = mujoco.make
+    elif env_type == "procgen":
+        make_fn = procgen.make
     else:
         raise ValueError(f"Invalid environment type {env_type}")
     return make_fn(env_id, **kwargs)
