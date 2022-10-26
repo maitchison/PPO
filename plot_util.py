@@ -1027,37 +1027,20 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         folders = [x for x in folders if f"({seed})" in x]
 
     game_log = None
-    host = None
 
     for folder in folders:
-
         if folder in ["rl", "roms"]:
             continue
         game_log = read_log(folder)
         if game_log is None:
             print(f"no log for {path} {folder}")
             return None
-        # stub:
-        # print(f"read {folder}")
         game = game_log["params"]["environment"].lower()
         if game not in game_list:
             #print(f"Skipping {game} as not in {game_list}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[round(env_step / 1e6)][game].append(ep_score)
-
-        # get host_name
-        if "host" in game_log:
-            hosts = list(set(game_log["host"]))
-            if len(hosts) == 1:
-                if host is None:
-                    host = hosts[0]
-                elif host != hosts[0]:
-                    host = "mixed"
-            else:
-                host = "mixed"
-        else:
-            host = "unknown"
 
     if len(epoch_scores) == 0 or game_log is None:
         return None
@@ -1066,8 +1049,6 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     epochs = sorted(epoch_scores.keys())
     for k, v in game_log["params"].items():  # last one will do...
         result[k] = v
-
-    result['hostname'] = host
 
     if len(epochs) == 0:
         return None
@@ -1079,32 +1060,22 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         if not all(len(es[game]) > 0 for game in game_list):
             break
 
-        # # work out game scores for each game
-        # weighted_score = c
-        # for game, weight in zip(game_list, game_weights):
-        #     norm_score = np.mean(es[game])
-        #     #result[f"{game.lower()}_score"].append(score)
-        #     result[f"{game}_norm"].append(norm_score)
-        #     weighted_score += weight * np.log10(1 + max(norm_score, 0))
-        # weighted_score = (10 ** weighted_score) - 1
-
+        # work out game scores for each game
         if type(game_weights) is str and game_weights == "mean":
             scores = [np.mean(es[game]) for game in game_list]
             # stub: show scores
             if epoch == epochs[-1]:
-                print([round(x, 2) for x in scores], round(np.mean(scores), 3))
+                print([round(x,2) for x in scores], round(np.mean(scores), 3))
             weighted_score = np.mean(scores)
         else:
             # standard weighting system
             weighted_score = c
             for game, weight in zip(game_list, game_weights):
                 norm_score = np.mean(es[game])
-                # result[f"{game.lower()}_score"].append(score)
+                #result[f"{game.lower()}_score"].append(score)
                 result[f"{game}_norm"].append(norm_score)
                 weighted_score += weight * np.log10(1 + max(norm_score, 0))
             weighted_score = 10 ** weighted_score - 1
-
-
         result["score"].append(weighted_score)
         result["env_step"].append(epoch * 1e6)
         result["epoch"].append(epoch)
@@ -1114,16 +1085,12 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
 
     result["score_alt"] = np.mean(result["score"][-5:])  # last 5 epochs
 
-    score_list = []
-    # for game, weight in zip(game_list, game_weights):
-    #     weighted_log_score = weight * np.log10(1+np.maximum(np.mean(result[f"{game.lower()}_norm"][-5:]), 0))
-    #     score_list.append(weighted_log_score)
-
     if not type(game_weights) is str:
-        score_list = [weight * np.mean(result[f"{game.lower()}_norm"][-5:]) for game, weight in zip(game_list, game_weights)]
-
-    result["score_min"] = round(min(score_list))
-    result["score_list"] = tuple(round(x, 2) for x in score_list)
+        score_list = [
+            weight * np.mean(result[f"{game.lower()}_norm"][-5:]) for game, weight in zip(game_list, game_weights)
+        ]
+        result["score_min"] = round(min(score_list))
+        result["score_list"] = tuple(round(x) for x in score_list)
 
     result["final_epoch"] = result["epoch"][-1] + 1 # if we processed epoch 2.x then say we went up to epoch 3.
     result["run_name"] = key
