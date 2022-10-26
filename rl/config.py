@@ -4,7 +4,7 @@ import socket
 import argparse
 
 """
-    Colors class for use with terminal.
+Colors class for use with terminal.
 """
 HEADER = '\033[95m'
 OKBLUE = '\033[94m'
@@ -174,6 +174,7 @@ class Config(BaseConfig):
         parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
         parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
         parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
+        parser.add_argument("--procgen_difficulty", type=str, default="hard", help="[hard|]")
         parser.add_argument("--restore", type=str, default='never', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
         parser.add_argument("--reference_policy", type=str, default=None, help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
         parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
@@ -240,7 +241,7 @@ class Config(BaseConfig):
         parser.add_argument("--lambda_policy", type=float, default=0.95, help="GAE parameter.")
         parser.add_argument("--lambda_value", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
         parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clipping used when global_norm is set.")
-        parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
+        parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm]")
         parser.add_argument("--head_scale", type=float, default=0.1, help="Scales weights for value and policy heads.")
 
         # --------------------------------
@@ -424,6 +425,7 @@ class Config(BaseConfig):
         self.environment = str()
         self.experiment_name = str()
         self.run_name = str()
+        self.procgen_difficulty = str()
         self.restore = str()
         self.initial_model = str()
         self.reference_policy = object()

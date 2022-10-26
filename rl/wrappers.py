@@ -143,12 +143,15 @@ class TimeAwareWrapper(gym.Wrapper):
     """
     Includes time on frame of last channel of observation (which is last state if using stacking)
     Observational spaces should be 2d image in format
-
     [..., C, H, W]
     """
 
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, log:bool=False):
+        """
+        Enabling log will present the log time elapsed.
+        """
         super().__init__(env)
+        self.log = log
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
@@ -169,9 +172,18 @@ class TimeAwareWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         assert "time_frac" in info, "Must use TimeLimitWrapper."
-        time_frac = np.clip(info["time_frac"], 0, 1)
+        if self.log:
+            # log
+            t = info["time"]
+            if t == 0:
+                max_t = 100
+            else:
+                max_t = info["time"] / info["time_frac"]
+            time_frac = math.log(1+t) / math.log(1+max_t)
+        else:
+            # linear
+            time_frac = np.clip(info["time_frac"], 0, 1)
         return self._process_obs(obs, time_frac), reward, done, info
-
 
 class ActionHistoryWrapper(gym.Wrapper):
     """

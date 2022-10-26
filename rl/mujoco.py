@@ -54,7 +54,8 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = F32Wrapper(env)
 
-    env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
+    # doesn't work...
+    #env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
 
     env = wrappers.EpisodeScoreWrapper(env)
 

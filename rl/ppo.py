@@ -77,7 +77,7 @@ def train(model: models.TVFModel, log: Logger):
     final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
     end_iteration = math.ceil((final_epoch * 1e6) / batch_size)
 
-    runner = Runner(model, log, action_dist="discrete" if args.env_type == "atari" else "gaussian")
+    runner = Runner(model, log, action_dist="gaussian" if args.env_type == "mujoco" else "discrete")
     runner.create_envs()
     runner.reset()
 

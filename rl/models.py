@@ -111,9 +111,9 @@ class NatureCNN(BaseNet):
 
         input_channels = input_dims[0]
 
-        self.conv1 = tu.CustomConv2d(input_channels, base_channels, kernel_size=(8, 8), stride=(4, 4), scale=1.414)
-        self.conv2 = tu.CustomConv2d(base_channels, 2 * base_channels, kernel_size=(4, 4), stride=(2, 2), scale=1.414)
-        self.conv3 = tu.CustomConv2d(2 * base_channels, 2 * base_channels, kernel_size=(3, 3), stride=(1, 1), scale=1.414)
+        self.conv1 = tu.CustomConv2d(input_channels, base_channels, kernel_size=(8, 8), stride=(4, 4), scale=1.414, weight_init="orthogonal")
+        self.conv2 = tu.CustomConv2d(base_channels, 2 * base_channels, kernel_size=(4, 4), stride=(2, 2), scale=1.414, weight_init="orthogonal")
+        self.conv3 = tu.CustomConv2d(2 * base_channels, 2 * base_channels, kernel_size=(3, 3), stride=(1, 1), scale=1.414, weight_init="orthogonal")
 
         fake_input = torch.zeros((1, *input_dims))
         _, c, w, h = self.conv3(self.conv2(self.conv1(fake_input))).shape
@@ -122,7 +122,7 @@ class NatureCNN(BaseNet):
         self.d = utils.prod(self.out_shape)
         self.hidden_units = hidden_units
         if self.hidden_units > 0:
-            self.fc = tu.CustomLinear(self.d, hidden_units, scale=1.414)
+            self.fc = tu.CustomLinear(self.d, hidden_units, scale=1.414, weight_init="orthogonal")
 
 
     # this causes everything to be on cuda:1... hmm... even when it's disabled...
