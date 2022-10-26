@@ -80,7 +80,9 @@ def make_model(args, log=None):
         weight_scale=args.weight_scale,
         tvf_sqrt_transform=args.tvf_sqrt_transform,
         feature_scale=args.feature_scale,
+        head_scale=args.head_scale,
         observation_centered=args.observation_centered,
+        observation_offset=args.observation_offset,
     )
     return model
 

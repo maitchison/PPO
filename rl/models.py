@@ -173,6 +173,75 @@ class NatureCNN_Net(Base_Net):
         return features_out
 
 
+class LightningCNN_Net(Base_Net):
+    """
+        First conv should be shared weights per channel.
+        Pool instead of stride (maybe?)
+        Use 4x4 and 3x3
+        Not many layers
+        Linear should be small
+        Position matters
+
+    """
+
+    def __init__(self, input_dims, hidden_units=512, base_channels=32, down_sample='stride', no_bias=False):
+
+        super().__init__(input_dims, hidden_units)
+
+        assert down_sample == 'stride' # pool not supported yet
+
+        c, w, h = input_dims
+
+        self.conv1a = nn.Conv2d(1, 2 * base_channels, kernel_size=(4, 4), stride=(2, 2), bias=not no_bias)
+        self.conv1x = nn.Conv2d(2*c*base_channels, base_channels, kernel_size=(1, 1), stride=(1, 1), bias=not no_bias) # compression
+        self.conv1b = nn.Conv2d(base_channels, base_channels, kernel_size=(4, 4), stride=(2, 2), bias=not no_bias)
+        self.conv2 = nn.Conv2d(base_channels, 2 * base_channels, kernel_size=(3, 3), stride=(2, 2), bias=False)
+        self.conv3 = nn.Conv2d(2 * base_channels, 2 * base_channels, kernel_size=(3, 3), stride=(1, 1), bias=False)
+        self.conv3x = nn.Conv2d(2 * base_channels, base_channels, kernel_size=(1, 1), stride=(1, 1), bias=False)
+
+        fake_input = torch.zeros((1, *input_dims))
+        z = self.conv1a(fake_input[:, 0:1, :, :])[:, :base_channels]
+        z = self.conv1b(z)
+        z = self.conv2(z)
+        z = self.conv3(z)
+        z = self.conv3x(z)
+        _, c, w, h = z.shape
+
+        self.out_shape = (c, w, h)
+        self.d = utils.prod(self.out_shape)
+        self.hidden_units = hidden_units
+        if self.hidden_units > 0:
+            self.fc = nn.Linear(self.d, hidden_units)
+
+
+    # this causes everything to be on cuda:1... hmm... even when it's disabled...
+    #@torch.autocast(device_type='cuda', enabled=AMP)
+    def forward(self, x):
+        """ forwards input through model, returns features (without relu) """
+
+        D = self.d
+
+        b,c,h,w = x.shape
+
+        x = x.reshape(b*c, 1, h, w)
+        x = F.relu(self.conv1a(x)) # x-> [b*c, channels, h, w]
+        bc, per_channel_channels, h, w = x.shape
+        x = x.reshape(b, c*per_channel_channels, h, w)
+        x = F.relu(self.conv1x(x)) # compress down...
+        x = F.relu(self.conv1b(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv3x(x))
+
+        x = torch.reshape(x, [-1, D])
+        if self.hidden_units > 0:
+            features_out = self.fc(x)
+        else:
+            features_out = x
+
+        return features_out
+
+
 class MLP_Net(Base_Net):
     """ Based on https://arxiv.org/pdf/1707.06347.pdf
         Based on https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
@@ -351,6 +420,7 @@ class DualHeadNet(nn.Module):
             tvf_feature_window: int = -1,
 
             feature_scale: float = 1.0,
+            head_scale: float = 1.0,
 
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
@@ -393,7 +463,17 @@ class DualHeadNet(nn.Module):
 
         self.encoder_activation_fn = activation_fn
 
-        self.policy_head = nn.Linear(self.hidden_units, n_actions)
+        def make_linear(in_size, out_size, scale=None, **kwargs):
+            layer = nn.Linear(in_size, out_size, **kwargs)
+            if scale is None:
+                scale = head_scale
+            if scale != 1.0:
+                layer.weight.data *= scale
+                layer.bias.data *= scale
+            setattr(layer.weight, "weight_scale", scale)
+            return layer
+
+        self.policy_head = make_linear(self.hidden_units, n_actions)
 
         # we try to keep input to the encoder unit normal, and output unit normal as well.
         # however, this means value estimates will be large early on in training, and this can cause issues with the
@@ -408,7 +488,7 @@ class DualHeadNet(nn.Module):
         self.tvf_feature_window = tvf_feature_window
 
         # value net can also output a basic value estimate using this head
-        self.value_head = torch.nn.Linear(self.hidden_units, len(value_head_names), bias=tvf_head_bias)
+        self.value_head = make_linear(self.hidden_units, len(value_head_names), bias=tvf_head_bias)
 
         self.tvf_head = None
         self.tvf_features_mask = None
@@ -461,20 +541,28 @@ class DualHeadNet(nn.Module):
         # perform weight initialization
         params = []
         for param in self.parameters():
-            # we ignore the bias weights, and leave them as they were.
-            if len(param.data.shape) > 1:
-                params.append(param.data)
+            if len(param.data.shape) == 1:
+                # assume this is a bias weight and zero it out.
+                param.data *= 0
+            else:
+                params.append(param)
 
         for param in params:
+
             activation_gain = torch.nn.init.calculate_gain("relu") # should be sqrt(2)
+
+            this_scale = weight_scale * activation_gain
+
+            layer_scale = vars(param).get("weight_scale", 1.0)
+            this_scale *= layer_scale
+
             if weight_init == "default":
-                if weight_scale != 1.0:
-                    # just in case PyTorch decides to 16bit round our linear multiplies!
-                    param *= weight_scale
+                pass
             elif weight_init == "xavier":
-                torch.nn.init.xavier_uniform_(param, gain=weight_scale*activation_gain)
+                torch.nn.init.xavier_uniform_(param.data, gain=this_scale)
+
             elif weight_init == "orthogonal":
-                torch.nn.init.orthogonal_(param, gain=weight_scale*activation_gain)
+                torch.nn.init.orthogonal_(param.data, gain=this_scale)
             else:
                 raise ValueError(f"Invalid weight initialization {weight_init}")
 
@@ -593,7 +681,9 @@ class TVFModel(nn.Module):
             weight_scale: float = 1.0,
             tvf_sqrt_transform: bool = False,
             feature_scale: float=1.0,
+            head_scale: float=1.0,
             observation_centered=True,
+            observation_offset:float=0.0,
     ):
         """
             Truncated Value Function model
@@ -623,6 +713,7 @@ class TVFModel(nn.Module):
         self.encoder_name = encoder
         self.observation_scale = observation_scale
         self.observation_centered = observation_centered
+        self.observation_offset = observation_offset
 
         # todo: rename this..
         if architecture == "single":
@@ -660,6 +751,7 @@ class TVFModel(nn.Module):
                 weight_scale=weight_scale,
                 tvf_sqrt_transform=tvf_sqrt_transform,
                 feature_scale=feature_scale,
+                head_scale=head_scale,
                 **extra_args,
                 **(encoder_args or {})
             )
@@ -861,6 +953,9 @@ class TVFModel(nn.Module):
             # scale observations
             x = x * self.observation_scale
 
+        if self.observation_offset != 0.0:
+            x = x + self.observation_scale
+
         if include_rnd:
             result["rnd_error"] = self.rnd_prediction_error(x, already_normed=True)
 
@@ -937,6 +1032,8 @@ def construct_network(head_name, input_dims, **kwargs) -> Base_Net:
     head_name = head_name.lower()
     if head_name == "nature":
         return NatureCNN_Net(input_dims, **kwargs)
+    if head_name == "lightning":
+        return LightningCNN_Net(input_dims, down_sample='stride', **kwargs)
     if head_name == "impala":
         return ImpalaCNN_Net(input_dims, channels=(16, 32, 32), down_sample='pool', **kwargs)
     if head_name == "impala_fast": # not that fast, not really.

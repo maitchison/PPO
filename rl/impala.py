@@ -53,7 +53,7 @@ class CnnBasicBlock(nn.Module):
     Preserves channel number and shape
     """
 
-    def __init__(self, inchan, scale=1.0, batch_norm=False):
+    def __init__(self, inchan, scale=1.0, batch_norm=False, **ignore_args):
         super().__init__()
         self.inchan = inchan
         self.batch_norm = batch_norm

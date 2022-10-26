@@ -208,6 +208,7 @@ class Config(BaseConfig):
         parser.add_argument("--log_folder", type=str, default=None)
         parser.add_argument("--observation_normalization", type=str2bool, default=False)
         parser.add_argument("--observation_centered", type=str2bool, default=True, help="Centers observation during scaling.")
+        parser.add_argument("--observation_offset", type=float, default=0.0)
         parser.add_argument("--observation_scale", type=float, default=3.0)
         parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False,
                             help="Disables updates to observation normalization constants.")
@@ -249,6 +250,7 @@ class Config(BaseConfig):
         parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clipping used when global_norm is set.")
         parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
         parser.add_argument("--feature_scale", type=float, default=0.1, help="Scales encoder output features.")
+        parser.add_argument("--head_scale", type=float, default=1.0, help="Scales weights for value and policy heads.")
 
         # --------------------------------
         # Extra
@@ -462,6 +464,7 @@ class Config(BaseConfig):
         self.log_folder = object()
         self.observation_normalization = bool()
         self.observation_scale = float()
+        self.observation_offset = float()
         self.observation_centered = bool()
         self.freeze_observation_normalization = bool()
         self.max_micro_batch_size = int()
@@ -588,7 +591,7 @@ class Config(BaseConfig):
         self.gkl_source = str()
         self.gkl_samples = int()
         self.feature_scale = float()
-
+        self.head_scale = float()
 
         self.aux_target = str()
         self.aux_source = str()
