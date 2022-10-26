@@ -110,7 +110,6 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_head_weighting", type=str, default="off", help="[off|h_weighted]")
         parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
         parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
-        parser.add_argument("--tvf_head_bias", type=str2bool, default=True, help="Enables bias for tvf heads")
         parser.add_argument("--tvf_feature_window", type=int, default=-1,
                             help="Limits each head to a window of this many features.")
         parser.add_argument("--tvf_feature_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
@@ -207,9 +206,6 @@ class Config(BaseConfig):
         parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
         parser.add_argument("--log_folder", type=str, default=None)
         parser.add_argument("--observation_normalization", type=str2bool, default=False)
-        parser.add_argument("--observation_centered", type=str2bool, default=True, help="Centers observation during scaling.")
-        parser.add_argument("--observation_offset", type=float, default=0.0)
-        parser.add_argument("--observation_scale", type=float, default=3.0)
         parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False,
                             help="Disables updates to observation normalization constants.")
         parser.add_argument("--max_micro_batch_size", type=int, default=512, help="Can be useful to limit GPU memory")
@@ -217,8 +213,6 @@ class Config(BaseConfig):
                             help="Enables synchronous environments (slower, but helpful for debuging env errors).")
         parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
         parser.add_argument("--precision", type=str, default="medium", help="low|medium|high")
-        parser.add_argument("--weight_init", type=str, default="default", help="default|xavier|orthogonal")
-        parser.add_argument("--weight_scale", type=float, default=1.0)
 
         # --------------------------------
         # Episodic Discounting
@@ -239,9 +233,7 @@ class Config(BaseConfig):
 
         parser.add_argument("--encoder", type=str, default="nature", help="Encoder used for all models, [nature|impala]")
         parser.add_argument("--encoder_args", type=str, default=None, help="Additional arguments for encoder. (encoder specific)")
-        parser.add_argument("--encoder_count", type=int, default=1,
-                            help="Allows multiple parallel independant encoders. Each outputting hidden_units / encoer_count features")
-        parser.add_argument("--hidden_units", type=int, default=512)
+        parser.add_argument("--hidden_units", type=int, default=256)
         parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
         parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
         parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
@@ -249,8 +241,7 @@ class Config(BaseConfig):
         parser.add_argument("--lambda_value", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
         parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clipping used when global_norm is set.")
         parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm|cak]")
-        parser.add_argument("--feature_scale", type=float, default=0.1, help="Scales encoder output features.")
-        parser.add_argument("--head_scale", type=float, default=1.0, help="Scales weights for value and policy heads.")
+        parser.add_argument("--head_scale", type=float, default=0.1, help="Scales weights for value and policy heads.")
 
         # --------------------------------
         # Extra
@@ -388,7 +379,7 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Distil phase
-        parser.add_argument("--distil_order", type=str, default="after_policy", help="after_policy|before_policy")
+        parser.add_argument("--distil_order", type=str, default="before_policy", help="after_policy|before_policy")
         parser.add_argument("--distil_beta", type=float, default=10.0)
         parser.add_argument("--distil_l1_scale", type=float, default=1/30)
         parser.add_argument("--shared_distil_optimizer", type=str2bool, default=False)
@@ -463,9 +454,6 @@ class Config(BaseConfig):
         self.checkpoint_every = int()
         self.log_folder = object()
         self.observation_normalization = bool()
-        self.observation_scale = float()
-        self.observation_offset = float()
-        self.observation_centered = bool()
         self.freeze_observation_normalization = bool()
         self.max_micro_batch_size = int()
         self.sync_envs = bool()
@@ -475,7 +463,6 @@ class Config(BaseConfig):
         self.override_reward_normalization_gamma = object()
         self.encoder = str()
         self.encoder_args = object()
-        self.encoder_count = int()
         self.hidden_units = int()
         self.architecture = str()
         self.gamma_int = float()
@@ -512,8 +499,6 @@ class Config(BaseConfig):
         self.embed_action = bool()
         self.embed_state = bool()
         self.atari_rom_check = bool()
-        self.weight_init = str()
-        self.weight_scale = float()
         self.shared_distil_optimizer = bool()
 
         self.ppo_vf_coef = float()
@@ -542,7 +527,6 @@ class Config(BaseConfig):
         self.tvf_head_spacing = str()
         self.tvf_head_weighting = str()
         self.tvf_per_head_hidden_units = int()
-        self.tvf_head_bias = bool()
         self.tvf_feature_sparsity = float()
         self.tvf_feature_window = int()
         self.tvf_include_ext = bool()
@@ -590,7 +574,6 @@ class Config(BaseConfig):
         self.gkl_penalty = float()
         self.gkl_source = str()
         self.gkl_samples = int()
-        self.feature_scale = float()
         self.head_scale = float()
 
         self.aux_target = str()
@@ -694,8 +677,6 @@ def parse_args(args_override=None):
         'tvf_force_ext_value_distil': None,
         'tvf_horizon_scale': None,
         'tvf_time_scale': None,
-        'policy_network': "encoder",
-        'value_network': "encoder",
         'tvf_mode': None,
         'tvf_sum_horizons': None,
         'sns_small_samples': None,

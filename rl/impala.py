@@ -4,9 +4,9 @@ Modified from https://github.com/openai/phasic-policy-gradient/blob/master/phasi
 
 import math
 
-import torch as th
 from torch import nn
 from torch.nn import functional as F
+from . import tensor_utilities as tu
 
 class Encoder(nn.Module):
     """
@@ -58,8 +58,8 @@ class CnnBasicBlock(nn.Module):
         self.inchan = inchan
         self.batch_norm = batch_norm
         s = math.sqrt(scale)
-        self.conv0 = NormedConv2d(self.inchan, self.inchan, 3, padding=1, scale=s)
-        self.conv1 = NormedConv2d(self.inchan, self.inchan, 3, padding=1, scale=s)
+        self.conv0 = tu.NormedConv2d(self.inchan, self.inchan, 3, padding=1, scale=s)
+        self.conv1 = tu.NormedConv2d(self.inchan, self.inchan, 3, padding=1, scale=s)
         if self.batch_norm:
             self.bn0 = nn.BatchNorm2d(self.inchan)
             self.bn1 = nn.BatchNorm2d(self.inchan)
@@ -94,7 +94,7 @@ class CnnDownStack(nn.Module):
         self.outchan = outchan
         self.down_sample = down_sample
         no_bias = kwargs.get('no_bias', True)
-        self.firstconv = NormedConv2d(inchan, outchan, 3, padding=1, stride=2 if down_sample == 'stride' else 1, bias=no_bias) # modification, allow bias on first conv.
+        self.firstconv = tu.NormedConv2d(inchan, outchan, 3, padding=1, stride=2 if down_sample == 'stride' else 1, bias=no_bias) # modification, allow bias on first conv.
         s = scale / math.sqrt(nblock)
         self.blocks = nn.ModuleList(
             [CnnBasicBlock(outchan, scale=s, **kwargs) for _ in range(nblock)]
@@ -123,66 +123,6 @@ class CnnDownStack(nn.Module):
         else:
             raise ValueError(f"Invalid down_sample mode {self.down_sample}")
 
-
-
-# -----------------------------------------------------
-# from tensor utilities
-
-
-def NormedLinear(*args, scale=1.0, dtype=th.float32, **kwargs):
-    """
-    nn.Linear but with normalized fan-in init
-    """
-    dtype = parse_dtype(dtype)
-    if dtype == th.float32:
-        out = nn.Linear(*args, **kwargs)
-    elif dtype == th.float16:
-        #out = LinearF16(*args, **kwargs)
-        raise NotImplementedError("Float16 not implemented yet.")
-    else:
-        raise ValueError(dtype)
-    out.weight.data *= scale / out.weight.norm(dim=1, p=2, keepdim=True)
-    if kwargs.get("bias", True):
-        out.bias.data *= 0
-    return out
-
-def NormedConv2d(*args, scale=1.0, **kwargs):
-    """
-    nn.Conv2d but with normalized fan-in init
-    """
-    out = nn.Conv2d(*args, **kwargs)
-    out.weight.data *= scale / out.weight.norm(dim=(1, 2, 3), p=2, keepdim=True)
-    if kwargs.get("bias", True):
-        out.bias.data *= 0
-    return out
-
-
-def parse_dtype(x):
-    if isinstance(x, th.dtype):
-        return x
-    elif isinstance(x, str):
-        if x == "float32" or x == "float":
-            return th.float32
-        elif x == "float64" or x == "double":
-            return th.float64
-        elif x == "float16" or x == "half":
-            return th.float16
-        elif x == "uint8":
-            return th.uint8
-        elif x == "int8":
-            return th.int8
-        elif x == "int16" or x == "short":
-            return th.int16
-        elif x == "int32" or x == "int":
-            return th.int32
-        elif x == "int64" or x == "long":
-            return th.int64
-        elif x == "bool":
-            return th.bool
-        else:
-            raise ValueError(f"cannot parse {x} as a dtype")
-    else:
-        raise TypeError(f"cannot parse {type(x)} as dtype")
 
 
 def intprod(xs):

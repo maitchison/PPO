@@ -57,7 +57,6 @@ def make_model(args, log=None):
 
     model = models.TVFModel(
         encoder=args.encoder,
-        encoder_count=args.encoder_count,
         encoder_args=args.encoder_args,
         input_dims=obs_space,
         actions=n_actions,
@@ -71,18 +70,11 @@ def make_model(args, log=None):
         hidden_units=args.hidden_units,
         tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,
         observation_normalization=args.observation_normalization,
-        observation_scale=args.observation_scale,
         freeze_observation_normalization=args.freeze_observation_normalization,
-        tvf_head_bias=args.tvf_head_bias,
         tvf_feature_sparsity=args.tvf_feature_sparsity,
         tvf_feature_window=args.tvf_feature_window,
-        weight_init=args.weight_init,
-        weight_scale=args.weight_scale,
         tvf_sqrt_transform=args.tvf_sqrt_transform,
-        feature_scale=args.feature_scale,
         head_scale=args.head_scale,
-        observation_centered=args.observation_centered,
-        observation_offset=args.observation_offset,
     )
     return model
 
