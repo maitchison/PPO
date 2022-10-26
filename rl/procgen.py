@@ -63,7 +63,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
         env = wrappers.TimeLimitWrapper(env, args.timeout)
 
     env = wrappers.EpisodeScoreWrapper(env)
-
+    env = wrappers.TimeAwareWrapper(env, log=True)
 
     env = wrappers.NullActionWrapper(env)
 

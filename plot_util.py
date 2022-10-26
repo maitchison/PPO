@@ -21,6 +21,7 @@ LOG_CAP = 1e-6 # when computing logs values <= 0 will be replaced with this
 
 PROCGEN_NORM_CONSTANTS = {
     # from https://github.com/openai/phasic-policy-gradient/blob/7295473f0185c82f9eb9c1e17a373135edd8aacc/phasic_policy_gradient/constants.py#L20
+    # these are for hard..
     'coinrun': [5, 10],
     'starpilot': [1.5, 35],
     'caveflyer': [2, 13.4],
@@ -916,7 +917,7 @@ class AtariScoreNormalizer:
     }
 
     def __init__(self):
-        self._normalization_scores = self._load_scores("Notebooks/Atari-Human.csv")
+        self._normalization_scores = self._load_scores("Atari-Human.csv")
         self._normalization_scores.update(PROCGEN_NORM_CONSTANTS)
 
 
@@ -1087,7 +1088,6 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
         #     weighted_score += weight * np.log10(1 + max(norm_score, 0))
         # weighted_score = (10 ** weighted_score) - 1
 
-
         if type(game_weights) is str and game_weights == "mean":
             scores = [np.mean(es[game]) for game in game_list]
             # stub: show scores
@@ -1114,7 +1114,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
 
     result["score_alt"] = np.mean(result["score"][-5:])  # last 5 epochs
 
-    # score_list = []
+    score_list = []
     # for game, weight in zip(game_list, game_weights):
     #     weighted_log_score = weight * np.log10(1+np.maximum(np.mean(result[f"{game.lower()}_norm"][-5:]), 0))
     #     score_list.append(weighted_log_score)
@@ -1773,9 +1773,6 @@ def load_hyper_parameter_search(path, table_cols: list = None, max_col_width: in
 
     print(f"Found {len(results)} results.")
     return results
-
-
-import bisect
 
 
 def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False, step_mul=4.0):

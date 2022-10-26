@@ -156,6 +156,7 @@ class StandardMLP(BaseNet):
 
         s = torch.nn.init.calculate_gain("tanh")
 
+        # taken from https://github.com/alirezakazemipour/Continuous-PPO/blob/master/model.py
         self.fc1 = tu.CustomLinear(input_dims[0], hidden_units, weight_init="orthogonal", scale=s)
         self.fc2 = tu.CustomLinear(hidden_units, hidden_units, weight_init="orthogonal", scale=1.414)
 
@@ -361,6 +362,8 @@ class DualHeadNet(nn.Module):
 
         self.policy_head = linear(self.hidden_units, n_actions, scale=head_scale)
         self.value_head = linear(self.hidden_units, len(value_head_names), scale=head_scale)
+
+        self.log_std = nn.Parameter(torch.zeros(n_actions, device=device, dtype=torch.float32))
 
         self.value_head_names = list(value_head_names)
         self.tvf_fixed_head_horizons = tvf_fixed_head_horizons
