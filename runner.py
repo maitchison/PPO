@@ -101,6 +101,8 @@ if __name__ == "__main__":
 
     experiment_filter = None
 
+    run_filter = None
+
     if len(sys.argv) == 1:
         mode = "show"
     elif len(sys.argv) == 2:
@@ -108,6 +110,11 @@ if __name__ == "__main__":
     elif len(sys.argv) == 3:
         mode = sys.argv[1]
         experiment_filter = sys.argv[2]
+    elif len(sys.argv) == 4: # this is for auto...
+        _path = sys.argv[0]
+        mode = sys.argv[1]
+        _device = sys.argv[2]
+        run_filter = lambda x: sys.argv[3] in x.run_name or sys.argv[3] in x.experiment_name
     else:
         raise Exception("Invalid parameters.")
 
@@ -133,6 +140,6 @@ if __name__ == "__main__":
     elif mode == "fps":
         show_fps()
     elif mode == "auto":
-        run_next_experiment()
+        run_next_experiment(filter_jobs=run_filter)
     else:
         run_next_experiment(filter_jobs=lambda x: mode in x.run_name)

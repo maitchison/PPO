@@ -68,6 +68,7 @@ AGENT57_10 = [
     "Venture"
 ]
 
+# tod: remove this and do this properly!!
 if len(sys.argv) == 3:
     DEVICE = sys.argv[2]
 

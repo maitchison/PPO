@@ -40,6 +40,17 @@ PROCGEN_NORM_CONSTANTS = {
     'bossfight': [.5, 13],
 }
 
+MUJOCO_NORM_CONSTANTS = {
+    'ant': (-400, 1000), # not covered in PPO paper
+    'halfcheetah': (-500, 1750),
+    'hopper': (0, 2250),
+    'reacher': (-100, -7),
+    'swimmer': (0, 110),
+    "inverteddoublependulum": (0, 8000),
+    "invertedpendulum": (0, 1000),
+    'walker2d': (0, 3000),
+}
+
 def safe_float(x):
     try:
         return float(x)
@@ -874,6 +885,16 @@ class AtariScoreNormalizer:
             "mean",
             0
         ),
+        'Mujoco': (
+            list(MUJOCO_NORM_CONSTANTS.keys()),
+            "mean",
+            0
+        ),
+        'Mujoco_3': (
+            ["Ant", "Swimmer", "Hopper"],
+            "mean",
+            0
+        ),
         'Atari_Single': (
             ['Zaxxon'],
             [0.7364257371683655],
@@ -920,6 +941,7 @@ class AtariScoreNormalizer:
     def __init__(self):
         self._normalization_scores = self._load_scores("Atari-Human.csv")
         self._normalization_scores.update(PROCGEN_NORM_CONSTANTS)
+        self._normalization_scores.update(MUJOCO_NORM_CONSTANTS)
 
 
     def _load_scores(self, filename):
@@ -953,8 +975,8 @@ class AtariScoreNormalizer:
         if type(score) is list:
             score = np.asarray(score)
         key = game.lower()
-        if key not in self._normalization_scores:
-            print(f"Warning: Game not found {game}")
+        if key not in self._normalization_scores.keys():
+            print(f"Warning: Game '{game}' not found  in {self._normalization_scores.keys()}")
             return score * 0
         random, human = self._normalization_scores[key]
         return 100 * (score - random) / (human - random)
@@ -1009,6 +1031,11 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     else:
         paths = path
 
+    resolution = {
+        'Mujoco': 1e5,
+        'Mujoco_3': 1e5,
+    }.get(subset, 1e6)
+
     if type(subset) is str:
         game_list, game_weights, _ = AtariScoreNormalizer.SUBSETS[subset]
         c = 0.0 # no intercept for these
@@ -1041,7 +1068,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
             #print(f"Skipping {game} as not in {game_list}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
-            epoch_scores[round(env_step / 1e6)][game].append(ep_score)
+            epoch_scores[round(env_step / resolution)][game].append(ep_score)
 
     if len(epoch_scores) == 0 or game_log is None:
         return None
@@ -1817,7 +1844,8 @@ def experiment(
     figure: object = True,
     color_filter: object = None,
     cmap: object = None,
-    print_results: object = False,
+    print_results: bool = False,
+    style_filter = None,
     step_mul=4.0,
     steps=200,
     ):
@@ -1843,6 +1871,8 @@ def experiment(
                     run = " ".join(x.split("/")[-2].split(" ")[1:-2])
                     if run in [""]:
                         continue
+                    if key_filter is not None:
+                        print(run, key_filter(run))
                     if key_filter is not None and not key_filter(run):
                         continue
                     keys.append(run+' ')
@@ -1862,6 +1892,12 @@ def experiment(
         else:
             c = cmap(i)
         try:
+
+            if style_filter is not None:
+                style = style_filter(key)
+            else:
+                style = "-"
+
             plot_seeded_validation(
                 paths,
                 key,
@@ -1873,7 +1909,8 @@ def experiment(
                 ghost_alpha=ghost_alpha,
                 step_mul=step_mul,
                 print_results=print_results,
-                epochs=int(steps/step_mul)
+                epochs=int(steps/step_mul),
+                style=style,
             )
         except Exception as e:
             import traceback
