@@ -1871,8 +1871,6 @@ def experiment(
                     run = " ".join(x.split("/")[-2].split(" ")[1:-2])
                     if run in [""]:
                         continue
-                    if key_filter is not None:
-                        print(run, key_filter(run))
                     if key_filter is not None and not key_filter(run):
                         continue
                     keys.append(run+' ')
