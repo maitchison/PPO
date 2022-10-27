@@ -754,6 +754,7 @@ def load_eval_results(path, temperature=None, seed=None):
 
 
 def plot_eval_results(path, y_axis="scores", label=None, temperature=None, quantile=None):
+
     results = load_eval_results(path, temperature=temperature)
 
     if len(results["epoch"]) == 0:
@@ -1742,8 +1743,8 @@ def load_hyper_parameter_search(path, table_cols: list = None, max_col_width: in
     return results
 
 
-def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False, step_mul=4.0):
-    xs = range(51)  # epochs
+def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None, subset="Atari_3_Val", ghost_alpha=0.15, check_seeds=False, print_results: bool=False, step_mul=4.0, epochs=50):
+    xs = range(epochs+1)  # epochs
     y_list = [[] for _ in xs]
     max_x = 0
 
@@ -1764,7 +1765,7 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
         found_seeds += 1
         steps = np.asarray(result["env_step"], dtype=np.float32) / 1e6
         if check_seeds:
-            if steps[-1] < 49.0:
+            if steps[-1] < epochs-1:
                 print(f"Seed {seed} not complete for {key} - {steps[-1]}")
 
         for i, y in zip(steps, result['score']):
@@ -1872,8 +1873,11 @@ def experiment(
                 ghost_alpha=ghost_alpha,
                 step_mul=step_mul,
                 print_results=print_results,
+                epochs=int(steps/step_mul)
             )
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"Error while plotting {key}: ", e)
 
     plt.legend()

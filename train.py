@@ -220,10 +220,11 @@ if __name__ == "__main__":
     if "--env_type=mujoco" in sys.argv:
         import os
         print("Setting up for mujoco")
+        mujoco_path="/home/matthew/.mujoco/mujoco210/bin"
         # print("Old path was", os.environ["LD_LIBRARY_PATH"])
-        if "/home/matthew/.mujoco/mujoco210/bin" not in os.environ.get("LD_LIBRARY_PATH", ""):
+        if mujoco_path not in os.environ.get("LD_LIBRARY_PATH", ""):
             print(" - updating path.")
-            os.environ["LD_LIBRARY_PATH"] = ":/home/matthew/.mujoco/mujoco210/bin:/usr/lib/nvidia"
+            os.environ["LD_LIBRARY_PATH"] = f":{mujoco_path}:/usr/lib/nvidia"
 
     # quick check that returns work
     from rl.returns import test_return_estimators

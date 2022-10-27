@@ -1711,7 +1711,11 @@ class Runner:
         data = {}
         samples = np.random.choice(range(len(batch_data["prev_state"])), b_big, replace=False)
         for k, v in batch_data.items():
-            data[k] = batch_data[k][samples]
+            if k.startswith('*'):
+                # these inputs are uploaded directly, and not sampled down.
+                data[k] = batch_data[k]
+            else:
+                data[k] = batch_data[k][samples]
 
         assert b_big % b_small == 0, "b_small must divide b_big"
         mini_batches = b_big // b_small
@@ -1725,6 +1729,8 @@ class Runner:
             mini_batch_data = {}
             for k, v in data.items():
                 mini_batch_data[k] = data[k][segment]
+                if type(mini_batch_data[k]) is np.ndarray:
+                    mini_batch_data[k] = torch.from_numpy(mini_batch_data[k]).to(self.model.device)
             # todo: make this a with no log...
             self.log.mode = self.log.LM_MUTE
             mini_batch_func(mini_batch_data)

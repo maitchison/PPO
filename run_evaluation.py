@@ -174,7 +174,8 @@ def load_checkpoint(checkpoint_path, device=None):
         else:
             args.tvf_max_horizon = round(3/(1-args.gamma))
 
-    env = atari.make(env_id=args.get_env_name(), monitor_video=True)
+    # I think not needed, remove?
+    # env = rollout.make_env(env_id=args.get_env_name(), monitor_video=True)
 
     import train
     model = train.make_model(args)
@@ -413,7 +414,8 @@ def make_envs(
         determanistic_saving=True
 ):
     # create environment(s) if not already given
-    env_fns = [lambda i=i: atari.make(
+    env_fns = [lambda i=i: rollout.make_env(
+        env_type=args.env_type,
         env_id=args.get_env_name(),
         monitor_video=include_video,
         seed=(i * 997) + seed_base,
@@ -1052,7 +1054,7 @@ def export_movie(
 
     scale = 4
 
-    env = atari.make(env_id=args.get_env_name(), monitor_video=True, seed=1)
+    env = rollout.make_env(env_type=args.env_type, env_id=args.get_env_name(), monitor_video=True, seed=1)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)
