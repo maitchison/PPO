@@ -385,6 +385,10 @@ class Config(BaseConfig):
         parser.add_argument("--distil_l1_scale", type=float, default=1/30)
         parser.add_argument("--shared_distil_optimizer", type=str2bool, default=False)
 
+        # extra
+        parser.add_argument("--distil_target", type=str, default="value", help="return|value|advantage")
+        parser.add_argument("--distil_lambda", type=float, default=0.6, help="Used for return or advantage distil targets")
+
         parser.add_argument("--distil_delta", type=float, default=0.1)
         parser.add_argument("--distil_period", type=int, default=1)
         parser.add_argument("--distil_loss", type=str, default="kl_policy", help="[mse_logit|mse_policy|kl_policy]")
@@ -418,6 +422,7 @@ class Config(BaseConfig):
         # --------------------------------
         # Temp, remove
         parser.add_argument("--tmp_median_return", type=str2bool, default=False, help="Use median of return samples rather than mean")
+
 
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
@@ -582,6 +587,8 @@ class Config(BaseConfig):
         self.aux_source = str()
         self.aux_period = int()
         self.distil_order = str()
+        self.distil_target = str()
+        self.distil_lambda = str()
         self.distil_beta = float()
         self.distil_l1_scale = float()
         self.distil_delta = float()
@@ -604,9 +611,6 @@ class Config(BaseConfig):
         self.replay_thinning = float()
         self.use_rnd = bool()
         self.rnd_experience_proportion = float()
-
-        # temp stuff
-        self.tmp_median_return = bool()
 
         # noise stuff
         self.noisy_return = float()

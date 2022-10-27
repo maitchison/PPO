@@ -1094,7 +1094,6 @@ class Runner:
             estimator_mode=re_mode,
             log=self.log,
             use_log_interpolation=args.tvf_return_use_log_interpolation,
-            use_median=args.tmp_median_return,
         )
 
         if args.use_ed:
@@ -3426,7 +3425,7 @@ class Runner:
             )
         return new_value_estimates
 
-    def get_distil_batch(self, samples_wanted:int):
+    def get_distil_batch(self, samples_wanted: int):
         """
         Creates a batch of data to train on during distil phase.
         Also generates any required targets.
@@ -3448,11 +3447,33 @@ class Runner:
 
             # get targets from rollout
             if args.use_tvf and not args.distil_force_ext: # tvf_value is [N, A, K, VH]
+                assert args.distil_target == "value", "Only value targets supported for TVF distil"
                 batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0]) # N*A, K
                 if args.distil_rediscount:
                     batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
             else:
-                batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
+                if args.distil_target == "value":
+                    batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
+                elif args.distil_target in ["return", "advantage"]:
+                    # note, we use the value estimates, which are tvf_gamma,
+                    # perhaps we want to use policy gamma instead, which would mean
+                    # transforming the value estimates. This can be done with rediscounting... I probably won't
+                    # bother though.
+                    advantage_estimate = gae(
+                        self.ext_rewards,
+                        self.ext_value[:self.N],
+                        self.ext_value[self.N],
+                        self.terminals,
+                        self.tvf_gamma,
+                        args.distil_lambda,
+                    )
+                    if args.distil_target == "return":
+                        batch_data["distil_targets"] = utils.merge_down(advantage_estimate + self.ext_value[:self.N])
+                    else:
+                        batch_data["distil_targets"] = utils.merge_down(advantage_estimate)
+                else:
+                    raise ValueError(f"Invalid distil target {args.distil_target}")
+
 
             # returns should have unit variance, if they do not, divide by the standard deviation.
             # this can occur, for example, when rediscounting.
@@ -3479,8 +3500,9 @@ class Runner:
 
             return batch_data
 
-        # slower path, for when rollout is needed and we need to regenerate all targets
+        # slower path, for when replay is used and we need to regenerate all targets
         assert not args.distil_renormalize, "renormalization only supported under a complete rollout distil batch."
+        assert args.distil_target == "value", "Replay distil required value targets."
         obs, distil_aux = self.get_replay_sample(samples_wanted)
 
         batch_data = {}

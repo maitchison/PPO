@@ -26,7 +26,6 @@ def get_return_estimate(
     estimator_mode:str = "default",
     log:Logger = None,
     use_log_interpolation: bool=False,
-    use_median: bool=False,
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -65,7 +64,6 @@ def get_return_estimate(
         'value_sample_horizons': value_sample_horizons,
         'value_samples': value_samples,
         'use_log_interpolation': use_log_interpolation,
-        'use_median': use_median,
     }
 
     # fixed is a special case
@@ -757,7 +755,6 @@ def _calculate_sampled_return_multi_threaded(
     n_step_samples: np.ndarray=None,
     n_step_list=None,
     use_log_interpolation: bool = False,
-    use_median: bool = False,
 ):
     """
     New strategy, just generate these returns in parallel, and simplify the algorithm *alot*.
@@ -804,7 +801,7 @@ def _calculate_sampled_return_multi_threaded(
     GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, use_log_interpolation)
 
     # turns out it's faster to just run the jobs (atleast for 8 or less samples).
-    result = [_n_step_estimate_median(job) if use_median else _n_step_estimate(job) for job in jobs]
+    result = [_n_step_estimate(job) for job in jobs]
 
     all_results = np.zeros([N, A, K], dtype=np.float32)
     for idx, h, returns in result:
