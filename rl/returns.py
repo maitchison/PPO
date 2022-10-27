@@ -800,7 +800,7 @@ def _calculate_sampled_return_multi_threaded(
     global GLOBAL_CACHE
     GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, use_log_interpolation)
 
-    # turns out it's faster to just run the jobs (atleast for 8 or less samples).
+    # turns out it's faster to just run the jobs (at least for 8 or less samples).
     result = [_n_step_estimate(job) for job in jobs]
 
     all_results = np.zeros([N, A, K], dtype=np.float32)

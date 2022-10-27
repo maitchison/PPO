@@ -2474,7 +2474,11 @@ class Runner:
             if head_sample is not None:
                 targets = targets[:, head_sample]
         else:
-            predictions = model_out["value"][:, 0]
+            if args.distil_target == "value":
+                predictions = model_out["value"][:, 0]
+            else:
+                actions = data["distil_actions"]
+                predictions = model_out["advantage"][range(len(actions)), actions]
 
         if args.distil_value_loss == "mse":
             loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
@@ -3459,6 +3463,7 @@ class Runner:
                     # perhaps we want to use policy gamma instead, which would mean
                     # transforming the value estimates. This can be done with rediscounting... I probably won't
                     # bother though.
+                    batch_data["distil_actions"] = utils.merge_down(self.actions)
                     advantage_estimate = gae(
                         self.ext_rewards,
                         self.ext_value[:self.N],

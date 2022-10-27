@@ -362,6 +362,7 @@ class DualHeadNet(nn.Module):
 
         self.policy_head = linear(self.hidden_units, n_actions, scale=head_scale)
         self.value_head = linear(self.hidden_units, len(value_head_names), scale=head_scale)
+        self.advantage_head = linear(self.hidden_units, n_actions, scale=head_scale)
 
         self.log_std = nn.Parameter(torch.zeros(n_actions, device=device, dtype=torch.float32))
 
@@ -502,6 +503,9 @@ class DualHeadNet(nn.Module):
                 if required_tvf_heads is not None:
                     # select on the heads needed
                     result[f'tvf_value'] = result[f'tvf_value'][:, required_tvf_heads]
+
+        # always include advantages for the moment
+        result[f'advantage'] = self.advantage_head(encoder_features)
 
         return result
 

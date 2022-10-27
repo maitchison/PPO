@@ -211,8 +211,8 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         # must come after frame_stack
         env = wrappers.TimeAwareWrapper(env)
 
-
     if args.embed_action:
+        # change this from history to just last action.
         env = wrappers.ActionHistoryWrapper(env)
 
     if args.embed_state:

@@ -63,6 +63,11 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
 
     env = wrappers.EpisodeScoreWrapper(env)
 
+    if args.embed_action:
+        # note: this is slightly different to how we do this for atari, where entire history is given...
+        # also, make sure this is the correction action...
+        env = wrappers.ActionAwareWrapper(env)
+
     env = wrappers.NullActionWrapper(env)
 
     return env
