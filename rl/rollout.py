@@ -16,7 +16,7 @@ from typing import Union, Optional
 import math
 
 from .logger import Logger
-from . import utils, hybridVecEnv, wrappers, models, compression, config, vtrace
+from . import utils, hybridVecEnv, wrappers, models, compression, config, vtrace, hash
 from . import atari, mujoco, procgen
 from .returns import get_return_estimate
 from .config import args
@@ -686,6 +686,12 @@ class Runner:
         self.returns = np.zeros([N, A, VH], dtype=np.float32)
         self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
 
+        # hashing
+        # lifelong and episodic.
+        if args.use_hashing:
+            self.hash_counts = np.zeros([2**args.hashing_bits], dtype=np.int64)
+            self.hash_fn = hash.LinearStateHasher(self.state_shape, args.hashing_bits, device="cpu")
+
         # returns generation
         self.advantage = np.zeros([N, A], dtype=np.float32)
 
@@ -852,6 +858,9 @@ class Runner:
             'vars': self.vars,
         }
 
+        if args.use_hashing:
+            data['hash_counts'] = self.hash_counts
+
         if not disable_optimizer:
             data['policy_optimizer_state_dict'] = self.policy_optimizer.state_dict()
             data['value_optimizer_state_dict'] = self.value_optimizer.state_dict()
@@ -938,6 +947,9 @@ class Runner:
         self.vars = checkpoint.get('vars', {})
         self.episode_score = checkpoint['episode_score']
         self.discounted_episode_score = checkpoint['discounted_episode_score']
+
+        if args.use_hashing:
+            self.hash_counts = checkpoint['hash_counts']
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -1415,6 +1427,17 @@ class Runner:
             actions = self.sample_actions(model_out)
             self.obs, ext_rewards, dones, infos = self.vec_env.step(actions)
             self.time = np.asarray([info["time"] for info in infos], dtype=np.int32)
+
+            # hashing if needed...
+            if args.use_hashing:
+                # give reward for action that lead to a novel state...
+                hashes = self.hash_fn(self.obs)
+                for a, obs_hash in enumerate(hashes):
+                    self.hash_counts[obs_hash] += 1
+                    if args.hashing_bonus != 0:
+                        # maybe 1/t is better?
+                        self.int_rewards[t, a] += args.hashing_bonus/(self.hash_counts[obs_hash]**2)
+
 
             if args.use_rnd:
                 # update the intrinsic rewards
@@ -2343,13 +2366,16 @@ class Runner:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
+        if args.use_hashing:
+            self.log.watch("hash", int(np.count_nonzero(self.hash_counts)), display_width=6)
+
         self.log.watch_mean_std("adv_ext", ext_advantage, display_width=0)
 
-        # for i, head in enumerate(self.value_heads):
-        #     self.log.watch_mean_std(f"return_{head}", self.returns[..., i], display_width=0)
-        #     self.log.watch_mean_std(f"value_{head}", self.value[..., i], display_name="ret_ext")
-        self.log.watch_mean_std(f"*return_ext", self.ext_returns)
-        self.log.watch_mean_std(f"value_ext", ext_value_estimates, display_name="ve")
+        for i, head in enumerate(self.value_heads):
+            self.log.watch_mean_std(f"*return_{head}", self.returns[..., i], display_width=0)
+            self.log.watch_mean_std(f"value_{head}", self.value[..., i], display_name="v_"+head)
+        # self.log.watch_mean_std(f"*return_ext", self.ext_returns)
+        # self.log.watch_mean_std(f"value_ext", ext_value_estimates, display_name="ve")
 
         self.log.watch_mean("reward_scale", self.reward_scale, display_width=0, history_length=1)
         self.log.watch_mean("entropy_bonus", self.current_entropy_bonus, display_width=0, history_length=1)

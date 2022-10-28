@@ -212,8 +212,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         env = wrappers.TimeAwareWrapper(env)
 
     if args.embed_action:
-        # change this from history to just last action.
-        env = wrappers.ActionHistoryWrapper(env)
+        env = wrappers.ActionAwareWrapper(env)
 
     if args.embed_state:
         env = wrappers.StateHistoryWrapper(env)
