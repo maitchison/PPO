@@ -205,14 +205,15 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.deferred_rewards != 0:
         env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
 
+    if args.embed_action:
+        # should go before framestack
+        env = wrappers.ActionAwareWrapper(env)
+
     env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
 
     if args.embed_time:
         # must come after frame_stack
         env = wrappers.TimeAwareWrapper(env)
-
-    if args.embed_action:
-        env = wrappers.ActionAwareWrapper(env)
 
     if args.embed_state:
         env = wrappers.StateHistoryWrapper(env)

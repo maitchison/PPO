@@ -687,10 +687,22 @@ class Runner:
         self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
 
         # hashing
-        # lifelong and episodic.
         if args.use_hashing:
-            self.hash_counts = np.zeros([2**args.hashing_bits], dtype=np.int64)
-            self.hash_fn = hash.LinearStateHasher(self.state_shape, args.hashing_bits, device="cpu")
+            self.hash_counts = np.zeros([2 ** args.hash_bits], dtype=np.int64)
+            self.hash_batch_counts = np.zeros([2 ** args.hash_bits], dtype=np.int64)
+            hashers = {
+                'linear': hash.LinearStateHasher,
+                'conv': hash.ConvStateHasher,
+            }
+            assert args.hash_method in hashers.keys(), f"Invalid hashing method '{args.hash_method}' ({hashers.keys()})"
+
+            if args.env_type == "atari":
+                # for atari, because of frame stacking only use the first state.
+                hash_state_shape = list(self.state_shape)
+                hash_state_shape[0] = 1
+            else:
+                hash_state_shape = self.state_shape
+            self.hash_fn = hashers[args.hash_method](hash_state_shape, args.hash_bits, device=args.device)
 
         # returns generation
         self.advantage = np.zeros([N, A], dtype=np.float32)
@@ -978,6 +990,7 @@ class Runner:
         self.episode_len *= 0
         self.step = 0
         self.time *= 0
+        self.hash_batch_counts *= 0
 
         # reset stats
         for k in list(self.stats.keys()):
@@ -1396,6 +1409,7 @@ class Runner:
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
+        self.hash_batch_counts *= 0
 
         rollout_discounted_returns = np.zeros_like(self.ext_rewards)
 
@@ -1431,13 +1445,19 @@ class Runner:
             # hashing if needed...
             if args.use_hashing:
                 # give reward for action that lead to a novel state...
-                hashes = self.hash_fn(self.obs)
+                if args.env_type == "atari":
+                    channel_filter = slice(0, 1) # select first channel (should be most recent?)
+                else:
+                    channel_filter = None # select all channels.
+                hashes = self.hash_fn(self.obs[:, channel_filter])
                 for a, obs_hash in enumerate(hashes):
                     self.hash_counts[obs_hash] += 1
-                    if args.hashing_bonus != 0:
-                        # maybe 1/t is better?
-                        self.int_rewards[t, a] += args.hashing_bonus/(self.hash_counts[obs_hash]**2)
-
+                    self.hash_batch_counts[obs_hash] += 1
+                    # maybe 1/t is better?
+                    if args.hash_bonus != 0:
+                        self.int_rewards[t, a] += args.hash_bonus / (self.hash_counts[obs_hash] ** 2)
+                    if args.hash_batch_bonus != 0:
+                        self.int_rewards[t, a] += args.hash_batch_bonus / (self.hash_counts[obs_hash] ** 2)
 
             if args.use_rnd:
                 # update the intrinsic rewards
@@ -2367,7 +2387,8 @@ class Runner:
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
         if args.use_hashing:
-            self.log.watch("hash", int(np.count_nonzero(self.hash_counts)), display_width=6)
+            self.log.watch("hash_states", int(np.count_nonzero(self.hash_counts)), display_width=6)
+            self.log.watch("hash_delta", int(np.count_nonzero(self.hash_batch_counts)), display_width=6)
 
         self.log.watch_mean_std("adv_ext", ext_advantage, display_width=0)
 

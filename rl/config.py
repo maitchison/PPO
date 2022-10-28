@@ -421,12 +421,14 @@ class Config(BaseConfig):
                             help="Enables Exploration by Disagreement (EBD) module (a poor mans rnd).")
         parser.add_argument("--use_hashing", type=str2bool, default=False,
                             help="Enables state hashing (used to track exploration.")
-        parser.add_argument("--hashing_bits", type=int, default=16,
+        parser.add_argument("--hash_bits", type=int, default=20,
                             help="Number of bits to hash to, requires O(2^n) memory.")
-        parser.add_argument("--hashing_bonus", type=float, default=0.0,
+        parser.add_argument("--hash_bonus", type=float, default=0.0,
                             help="Intrinsic reward bonus for novel hashed states")
-        parser.add_argument("--hashing_method", type=str, default="projection",
-                            help="projection, later implement cnn or md5.")
+        parser.add_argument("--hash_batch_bonus", type=float, default=0.0,
+                            help="This can help agents explore different parts of the state space.")
+        parser.add_argument("--hash_method", type=str, default="linear",
+                            help="linear|conv")
 
         # --------------------------------
         # Temp, remove
@@ -621,9 +623,10 @@ class Config(BaseConfig):
         self.use_rnd = bool()
         self.use_ebd = bool()
         self.use_hashing = bool()
-        self.hashing_method = str()
-        self.hashing_bits = int()
-        self.hashing_bonus = float()
+        self.hash_method = str()
+        self.hash_bits = int()
+        self.hash_bonus = float()
+        self.hash_batch_bonus = float()
         self.rnd_experience_proportion = float()
 
         # noise stuff
@@ -652,7 +655,7 @@ class Config(BaseConfig):
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_ebd or self.hashing_bonus != 0
+        return self.use_rnd or self.use_ebd or self.hash_bonus != 0
 
     @property
     def get_mutex_key(self):
@@ -779,7 +782,7 @@ def parse_args(args_override=None):
     if args.distil_batch_size is None:
         args.distil_batch_size = args.batch_size
 
-    if args.hashing_bonus != 0:
+    if args.hash_bonus != 0:
         assert args.use_hashing, "use_hashing must be enabled."
 
     # smart config
