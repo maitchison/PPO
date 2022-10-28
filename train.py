@@ -55,6 +55,10 @@ def make_model(args, log=None):
         tvf_fixed_head_horizons = None
         tvf_weights = None
 
+    value_head_names = ['ext']
+    if args.use_intrinsic_rewards:
+        value_head_names.append('int')
+
     model = models.TVFModel(
         encoder=args.encoder,
         encoder_args=args.encoder_args,
@@ -75,6 +79,7 @@ def make_model(args, log=None):
         tvf_feature_window=args.tvf_feature_window,
         tvf_sqrt_transform=args.tvf_sqrt_transform,
         head_scale=args.head_scale,
+        value_head_names=tuple(value_head_names),
     )
     return model
 

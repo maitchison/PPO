@@ -1401,10 +1401,15 @@ class Runner:
             # forward state through model, then detach the result and convert to numpy.
             model_out = self.detached_batch_forward(
                 self.obs,
-                output="default",
+                output="full",
                 include_rnd=args.use_rnd,
                 update_normalization=True
             )
+
+            # remap to sensible defaults
+            model_out['value'] = model_out['value_value']
+            model_out['log_policy'] = model_out['policy_log_policy']
+            model_out['raw_policy'] = model_out['policy_raw_policy']
 
             # sample actions and run through environment.
             actions = self.sample_actions(model_out)
@@ -1414,6 +1419,10 @@ class Runner:
             if args.use_rnd:
                 # update the intrinsic rewards
                 self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
+
+            if args.use_ebd:
+                ebd_error = (model_out["value_value"][..., 0] - model_out["policy_value"][..., 0]) ** 2
+                self.int_rewards[t] = ebd_error.detach().cpu().numpy()
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],

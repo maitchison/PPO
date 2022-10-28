@@ -533,6 +533,7 @@ class TVFModel(nn.Module):
             tvf_feature_window: int = -1,
             tvf_sqrt_transform: bool = False,
             head_scale: float=1.0,
+            value_head_names=('ext',)
     ):
         """
             Truncated Value Function model
@@ -580,6 +581,9 @@ class TVFModel(nn.Module):
         if type(encoder_args) is str:
             encoder_args = ast.literal_eval(encoder_args)
 
+        if use_rnd:
+            assert 'int' in value_head_names, "RND requires int value head."
+
         def make_net(**extra_args):
             return DualHeadNet(
                 encoder=encoder,
@@ -594,6 +598,7 @@ class TVFModel(nn.Module):
                 device=device,
                 tvf_sqrt_transform=tvf_sqrt_transform,
                 head_scale=head_scale,
+                value_head_names=value_head_names,
                 **extra_args,
                 **(encoder_args or {})
             )
@@ -819,7 +824,6 @@ class TVFModel(nn.Module):
                 **args,
                 exclude_policy=output == 'default',
                 ))
-
         return result
 
     @torch.no_grad()

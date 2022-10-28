@@ -418,6 +418,8 @@ class Config(BaseConfig):
         # RND
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
+        parser.add_argument("--use_ebd", type=str2bool, default=False,
+                            help="Enables Exploration by Disagreement (EBD) module (a poor mans rnd).")
 
         # --------------------------------
         # Temp, remove
@@ -610,6 +612,7 @@ class Config(BaseConfig):
         self.replay_mixing = bool()
         self.replay_thinning = float()
         self.use_rnd = bool()
+        self.use_ebd = bool()
         self.rnd_experience_proportion = float()
 
         # noise stuff
@@ -638,7 +641,7 @@ class Config(BaseConfig):
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd
+        return self.use_rnd or self.use_ebd
 
     @property
     def get_mutex_key(self):
@@ -759,7 +762,7 @@ def parse_args(args_override=None):
         # this seems key to getting intrinsic motivation to work
         # without it the agent might never want to die (as it can gain int_reward forever).
         # maybe this is correct behaviour? Not sure.
-        args.intrinsic_reward_propagation = args.use_rnd
+        args.intrinsic_reward_propagation = args.use_intrinsic_rewards
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
     if args.distil_batch_size is None:
@@ -781,6 +784,9 @@ def parse_args(args_override=None):
 
     if args.replay_mode == "off":
         args.replay_size = 0
+
+    if args.use_ebd:
+        assert args.distil.epochs > 0, "EBD requires distilation to be enabled."
 
     # fixup horizon trimming
     if str(args.tvf_horizon_trimming) == 'False':
