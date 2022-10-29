@@ -92,7 +92,7 @@ class ConvStateHasher(pt.nn.Module):
         x = x.to(torch.float32)
 
         x = pt.relu(self.conv1(x))
-        x = pt.relu(self.conv2(x))
+        x = self.conv2(x) # no conv here, it's just a random projection down.
         x = x.reshape([B, -1])
         x = self.projection(x)
 

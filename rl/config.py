@@ -132,10 +132,15 @@ class OptimizerConfig(BaseConfig):
         if parser is None:
             return
 
-        if prefix in ["value", "policy", "distil"]:
-            epoch_default = 2
-        else:
-            epoch_default = 0
+        epoch_defaults = {
+            'value': 2,
+            'policy': 2,
+            'distil': 2,
+            'aux': 0,
+            'rnd': 1,
+        }
+
+        epoch_default = epoch_defaults.get(prefix, 0)
 
         # general
         parser.add_argument(f"--{prefix}_optimizer", type=str, default="adam", help="[adam|sgd|csgo]")
@@ -223,10 +228,9 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Rewards
-        parser.add_argument("--intrinsic_reward_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--tvf_return_estimator_mode", type=str, default="default",
                             help='Allows the use of the reference return estimator (very slow). [default|reference|verify|historic]')
-        parser.add_argument("--intrinsic_reward_propagation", type=str2bool, default=None, help="allows intrinsic returns to propagate through end of episode.")
+        parser.add_argument("--ir_propagation", type=str2bool, default=True, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
         # --------------------------------
@@ -236,7 +240,7 @@ class Config(BaseConfig):
         parser.add_argument("--encoder_args", type=str, default=None, help="Additional arguments for encoder. (encoder specific)")
         parser.add_argument("--hidden_units", type=int, default=256)
         parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
-        parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards")
+        parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards") # tood: rename to int_gamma
         parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
         parser.add_argument("--lambda_policy", type=float, default=0.95, help="GAE parameter.")
         parser.add_argument("--lambda_value", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
@@ -246,10 +250,6 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Extra
-
-        parser.add_argument("--vtrace_correction", type=str, default="off", help="Applies vtrace correction to value update. [off|on|shadow|trust]")
-        parser.add_argument("--vtrace_threshold", type=float, default=0.25)
-
 
         parser.add_argument("--use_gkl", type=str2bool, default=False, help="Use a global kl constraint.")
         parser.add_argument("--gkl_threshold", type=float, default=-1) # 0.004 is probably good.
@@ -417,11 +417,12 @@ class Config(BaseConfig):
         # RND
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
+
         parser.add_argument("--use_ebd", type=str2bool, default=False,
                             help="Enables Exploration by Disagreement (EBD) module (a poor mans rnd).")
         parser.add_argument("--use_hashing", type=str2bool, default=False,
                             help="Enables state hashing (used to track exploration.")
-        parser.add_argument("--hash_bits", type=int, default=20,
+        parser.add_argument("--hash_bits", type=int, default=16,
                             help="Number of bits to hash to, requires O(2^n) memory.")
         parser.add_argument("--hash_bonus", type=float, default=0.0,
                             help="Intrinsic reward bonus for novel hashed states")
@@ -429,6 +430,13 @@ class Config(BaseConfig):
                             help="This can help agents explore different parts of the state space.")
         parser.add_argument("--hash_method", type=str, default="linear",
                             help="linear|conv")
+        parser.add_argument("--hash_bonus_method", type=str, default="hyperbolic", help="hyperbolic|quadratic|binary")
+
+        parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
+        parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
+        parser.add_argument("--ir_normalize", type=str2bool, default=True, help="Normalizes intrinsic rewards such that they have unit variance")
+
+
 
         # --------------------------------
         # Temp, remove
@@ -476,8 +484,13 @@ class Config(BaseConfig):
         self.max_micro_batch_size = int()
         self.sync_envs = bool()
         self.benchmark_mode = bool()
-        self.intrinsic_reward_scale = float()
-        self.intrinsic_reward_propagation = object()
+
+        self.ir_scale = float()
+        self.ir_propagation = bool()
+        self.ir_normalize = bool()
+        self.ir_center = bool()
+        self.ir_scale = float()
+
         self.override_reward_normalization_gamma = object()
         self.encoder = str()
         self.encoder_args = object()
@@ -585,8 +598,6 @@ class Config(BaseConfig):
         self.ed_bias = float()
 
         # extra
-        self.vtrace_correction = bool()
-        self.vtrace_threshold = float()
         self.use_gkl = bool()
         self.gkl_threshold = float()
         self.gkl_penalty = float()
@@ -627,6 +638,7 @@ class Config(BaseConfig):
         self.hash_bits = int()
         self.hash_bonus = float()
         self.hash_batch_bonus = float()
+        self.hash_bonus_method = str()
         self.rnd_experience_proportion = float()
 
         # noise stuff
@@ -665,10 +677,6 @@ class Config(BaseConfig):
             return self.mutex_key
 
     @property
-    def normalize_intrinsic_rewards(self):
-        return self.use_intrinsic_rewards
-
-    @property
     def noop_start(self):
         return self.noop_duration > 0
 
@@ -688,7 +696,6 @@ def parse_args(args_override=None):
         'gae_lambda': 'lambda_policy',
         'td_lambda': 'lambda_value',
         'use_compression': 'obs_compression',
-        'use_vtrace_correction': 'vtrace_correction',
         'tvf_head_sparsity': 'tvf_feature_sparsity',
         'export_video': None,
         'tvf_value_distribution': None,
@@ -763,20 +770,9 @@ def parse_args(args_override=None):
     assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
                                                                "best to not use it with color at the moment."
 
-    if args.vtrace_correction in [True, "True"]:
-        args.vtrace_correction = "on"
-    if args.vtrace_correction in [False, "False"]:
-        args.vtrace_correction = "off"
-    assert args.vtrace_correction in ["off", "on", "shadow", "trust"]
-
     assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
 
     # set defaults
-    if args.intrinsic_reward_propagation is None:
-        # this seems key to getting intrinsic motivation to work
-        # without it the agent might never want to die (as it can gain int_reward forever).
-        # maybe this is correct behaviour? Not sure.
-        args.intrinsic_reward_propagation = args.use_intrinsic_rewards
     if args.tvf_gamma is None:
         args.tvf_gamma = args.gamma
     if args.distil_batch_size is None:

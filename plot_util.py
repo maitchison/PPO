@@ -679,7 +679,9 @@ def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=Fa
 def table_runs(runs, run_filter=None, epochs=None, metric:RunMetric=ScoreMetric()):
 
     if epochs is None:
-        epochs = [50]
+        epochs = 50
+    if type(epochs) is int:
+        epochs = [epochs]
 
 
     print(("|{:<50}|{:>16}|"+"{:>16}|"*len(epochs)+"{:>16}|").format(
@@ -861,6 +863,7 @@ def plot_experiment(
         run_filter=None,
         smooth_factor=0.95,
         include_table=False,
+        table_epochs=None,
         **kwargs
 ):
     # support old style path as input
@@ -873,6 +876,7 @@ def plot_experiment(
         include_table=include_table,
         smooth_factor=smooth_factor,
         run_filter=run_filter,
+        table_epochs=table_epochs,
         **kwargs
     )
 

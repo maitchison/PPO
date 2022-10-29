@@ -811,7 +811,7 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         super().__init__(env)
 
         self.clip = clip
-        self.epsilon = 1e-8
+        self.epsilon = 1.0 # was 1e-8
         self.current_returns = np.zeros([env.num_envs], dtype=np.float32)
         self.ret_rms = utils.RunningMeanStd(shape=())
         self.gamma = gamma

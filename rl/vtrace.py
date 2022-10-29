@@ -112,3 +112,72 @@ def importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions
     weighted_advantages = weighted_advantages.astype(dtype=np.float32)
 
     return vs, weighted_advantages, cs
+
+
+
+#
+#
+# # This was the old code to handle vtrace correction. Found it did not help
+#
+#
+#
+#         if args.vtrace_correction != "off":
+#
+#             assert not args.use_tvf, "TVF not supported with V-Trace yet."
+#
+#             old_value_targets = self.returns # [N, A, VH]
+#
+#             old_log_policy = self.log_policy
+#             model_out = self.detached_batch_forward(
+#                 obs=utils.merge_down(self.prev_obs),
+#                 output="policy",
+#             )
+#             new_log_policy = model_out["log_policy"].detach().cpu().numpy().reshape(N, A, self.model.actions)
+#
+#             new_value_targets, _, _ = vtrace.importance_sampling_v_trace(
+#                 old_log_policy,
+#                 new_log_policy,
+#                 self.actions,
+#                 self.ext_rewards,
+#                 self.terminals,
+#                 self.ext_value[:N], # not quite what we want, but it'll have to do...
+#                 self.ext_value[N],
+#                 self.tvf_gamma,
+#                 lamb=args.lambda_value
+#             )
+#             assert self.VH == 1
+#             new_value_targets = new_value_targets[:, :, None] # assume one value head.
+#
+#             mse = np.mean((new_value_targets - old_value_targets) ** 2)
+#             max = np.max(np.abs(new_value_targets - old_value_targets))
+#             kl = float(F.kl_div(
+#                 torch.from_numpy(utils.merge_down(old_log_policy)), torch.from_numpy(utils.merge_down(new_log_policy)),
+#                 log_target=True, reduction="batchmean").numpy()
+#                        )
+#             ev = utils.explained_variance(new_value_targets.ravel(), old_value_targets.ravel())
+#
+#             self.log.watch_mean("vt_ev", ev)
+#             self.log.watch_mean("vt_kl", kl)
+#             self.log.watch_mean("vt_mse", mse)
+#             self.log.watch_mean("vt_max", max)
+#
+#             # import matplotlib.pyplot as plt
+#             # plt.scatter(old_value_targets.ravel(), new_value_targets.ravel())
+#             # plt.show()
+#
+#             if args.vtrace_correction == "on":
+#                 batch_data["returns"] = new_value_targets.reshape(N*A, self.VH)
+#             elif args.vtrace_correction == "trust":
+#                 # just a guess about this threshold
+#                 mask = (np.abs(new_value_targets - old_value_targets) > args.vtrace_threshold).ravel()
+#                 # reset returns for samples that have changed too much...
+#                 batch_data["returns"][mask, 0] = self.ext_value[:N, :].reshape(N*A, self.VH)[mask][:, 0]
+#                 self.log.watch_mean("vt_reject", mask.mean())
+#             elif args.vtrace_correction == "shadow":
+#                 pass
+#             else:
+#                 raise Exception(f"Invalid vtrace_correction mode {args.vtrace_correction}")
+#
+#
+#
+#

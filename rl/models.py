@@ -726,7 +726,7 @@ class TVFModel(nn.Module):
             x = self.prep_for_model(x)
             x = self.perform_normalization(x)
 
-        x = x[:, 0:1, :, :]  # rnd works on just one channel
+        x = x[:, -1:, :, :]  # rnd works on just one channel so take the last (which is the most recent)
 
         # random features have too low varience due to weight initialization being different from the OpenAI implementation
         # we adjust it here by simply multiplying the output to scale the features to have a max of around 3

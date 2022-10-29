@@ -1446,18 +1446,43 @@ class Runner:
             if args.use_hashing:
                 # give reward for action that lead to a novel state...
                 if args.env_type == "atari":
-                    channel_filter = slice(0, 1) # select first channel (should be most recent?)
+                    channel_filter = slice(args.frame_stack-1, args.frame_stack) # select first channel (should be most recent?)
                 else:
                     channel_filter = None # select all channels.
+
+                # calculate threshold
+                def calc_threshold(counts: np.ndarray):
+                    x = counts.copy()
+                    x.sort()
+                    x = np.cumsum(x)
+                    threshold_idx = np.searchsorted(x, x[-1]/2)
+                    delta = x[threshold_idx]-x[threshold_idx-1] # not sure if this is right...
+                    return delta
+
+                hash_threshold = calc_threshold(self.hash_counts)
+                batch_threshold = calc_threshold(self.hash_batch_counts)
+
+
                 hashes = self.hash_fn(self.obs[:, channel_filter])
                 for a, obs_hash in enumerate(hashes):
+
                     self.hash_counts[obs_hash] += 1
                     self.hash_batch_counts[obs_hash] += 1
-                    # maybe 1/t is better?
+
+                    def get_bonus(hashes: np.ndarray, x: int, threshold=None):
+                        if args.hash_bonus_method == "hyperbolic":
+                            return 1 / hashes[x]
+                        elif args.hash_bonus_method == "quadratic":
+                            return 1 / (hashes[x]**2)
+                        elif args.hash_bonus_method == "binary":
+                            return 1 if hashes[x] < threshold else -1
+                        else:
+                            raise ValueError(f"Invalid hash_bonus_method {args.hash_bonus_method}")
+
                     if args.hash_bonus != 0:
-                        self.int_rewards[t, a] += args.hash_bonus / (self.hash_counts[obs_hash] ** 2)
+                        self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_counts, obs_hash, hash_threshold)
                     if args.hash_batch_bonus != 0:
-                        self.int_rewards[t, a] += args.hash_batch_bonus / (self.hash_counts[obs_hash] ** 2)
+                        self.int_rewards[t, a] += args.hash_batch_bonus * get_bonus(self.hash_batch_counts, obs_hash, batch_threshold)
 
             if args.use_rnd:
                 # update the intrinsic rewards
@@ -1819,6 +1844,16 @@ class Runner:
         values = self.ext_value[:self.N]
         ev = utils.explained_variance(values.ravel(), targets.ravel())
         self.log.watch_mean("ev_ext", ev, history_length=1)
+
+        # also for int
+        if args.use_intrinsic_rewards:
+            targets = calculate_bootstrapped_returns(
+                self.int_rewards, self.terminals, self.int_value[self.N], args.gamma_int
+            )
+            values = self.int_value[:self.N]
+            ev = utils.explained_variance(values.ravel(), targets.ravel())
+            self.log.watch_mean("ev_int", ev, history_length=1)
+
 
         # use ev_ext for ev_average when not using tvf
         self.log.watch_mean(
@@ -2280,11 +2315,11 @@ class Runner:
 
         N, A, *state_shape = self.prev_obs.shape
 
-        if args.normalize_intrinsic_rewards:
+        if args.ir_normalize:
             # normalize returns using EMS
             # this is this how openai did it (i.e. forward rather than backwards)
             for t in range(self.N):
-                terminals = (not args.intrinsic_reward_propagation) * self.terminals[t, :]
+                terminals = (not args.ir_propagation) * self.terminals[t, :]
                 self.ems_norm = (1 - terminals) * args.gamma_int * self.ems_norm + self.int_rewards[t, :]
                 self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
 
@@ -2300,11 +2335,14 @@ class Runner:
             self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
             self.int_rewards = (self.int_rewards / self.intrinsic_reward_norm_scale)
 
+        if args.ir_center:
+            self.int_rewards = self.int_rewards - self.int_rewards.mean()
+
         int_advantage = gae(
             self.int_rewards,
             self.int_value[:N],
             self.int_value[N],
-            (not args.intrinsic_reward_propagation) * self.terminals,
+            (not args.ir_propagation) * self.terminals,
             gamma=args.gamma_int,
             lamb=args.lambda_policy
         )
@@ -2370,11 +2408,13 @@ class Runner:
                 args.lambda_value,
             )
 
-        self.advantage = ext_advantage
+        self.advantage = ext_advantage.copy()
         if args.use_intrinsic_rewards:
-            int_advantage = args.intrinsic_reward_scale * self.calculate_intrinsic_returns()
+            int_advantage = args.ir_scale * self.calculate_intrinsic_returns()
             self.advantage += int_advantage
-            self.log.watch_mean_std("adv_int", int_advantage, display_width=0)
+            self.log.watch_mean_std("*adv_int", int_advantage, display_width=0)
+            self.log.watch_mean("adv_ratio", ((ext_advantage**2).mean() / (int_advantage**2).mean())**0.5, display_width=0)
+            self.log.watch_mean("*ir_scale", self.intrinsic_reward_norm_scale)
 
         # tvf
         if args.use_tvf:
@@ -2387,8 +2427,13 @@ class Runner:
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
         if args.use_hashing:
-            self.log.watch("hash_states", int(np.count_nonzero(self.hash_counts)), display_width=6)
-            self.log.watch("hash_delta", int(np.count_nonzero(self.hash_batch_counts)), display_width=6)
+            try:
+                old_delta = self.log['hash_states']
+            except:
+                old_delta = 0
+            self.log.watch("hash_states", int(np.count_nonzero(self.hash_counts)), display_width=8, display_name="h_states")
+            self.log.watch("*hash_delta", int(np.count_nonzero(self.hash_counts)-old_delta), display_name="h_delta")
+            self.log.watch("*hash_batch", int(np.count_nonzero(self.hash_batch_counts)), display_name="h_batch")
 
         self.log.watch_mean_std("adv_ext", ext_advantage, display_width=0)
 
@@ -3156,9 +3201,9 @@ class Runner:
         loss_rnd = self.model.rnd_prediction_error(data["prev_state"]).mean()
         self.log.watch_mean("loss_rnd", loss_rnd)
 
-        self.log.watch_mean("feat_mean", self.model.rnd_features_mean, display_width=0)
-        self.log.watch_mean("feat_var", self.model.rnd_features_var, display_width=10)
-        self.log.watch_mean("feat_max", self.model.rnd_features_max, display_width=10, display_precision=1)
+        self.log.watch_mean("*feat_mean", self.model.rnd_features_mean)
+        self.log.watch_mean("*feat_var", self.model.rnd_features_var)
+        self.log.watch_mean("*feat_max", self.model.rnd_features_max, display_precision=1)
 
         loss = loss_rnd * loss_scale
         loss.backward()
@@ -3351,62 +3396,6 @@ class Runner:
                 if args.sns_fake_noise:
                     self.log_fake_accumulated_gradient_norms(optimizer=self.value_optimizer)
 
-        if args.vtrace_correction != "off":
-
-            assert not args.use_tvf, "TVF not supported with V-Trace yet."
-
-            old_value_targets = self.returns # [N, A, VH]
-
-            old_log_policy = self.log_policy
-            model_out = self.detached_batch_forward(
-                obs=utils.merge_down(self.prev_obs),
-                output="policy",
-            )
-            new_log_policy = model_out["log_policy"].detach().cpu().numpy().reshape(N, A, self.model.actions)
-
-            new_value_targets, _, _ = vtrace.importance_sampling_v_trace(
-                old_log_policy,
-                new_log_policy,
-                self.actions,
-                self.ext_rewards,
-                self.terminals,
-                self.ext_value[:N], # not quite what we want, but it'll have to do...
-                self.ext_value[N],
-                self.tvf_gamma,
-                lamb=args.lambda_value
-            )
-            assert self.VH == 1
-            new_value_targets = new_value_targets[:, :, None] # assume one value head.
-
-            mse = np.mean((new_value_targets - old_value_targets) ** 2)
-            max = np.max(np.abs(new_value_targets - old_value_targets))
-            kl = float(F.kl_div(
-                torch.from_numpy(utils.merge_down(old_log_policy)), torch.from_numpy(utils.merge_down(new_log_policy)),
-                log_target=True, reduction="batchmean").numpy()
-                       )
-            ev = utils.explained_variance(new_value_targets.ravel(), old_value_targets.ravel())
-
-            self.log.watch_mean("vt_ev", ev)
-            self.log.watch_mean("vt_kl", kl)
-            self.log.watch_mean("vt_mse", mse)
-            self.log.watch_mean("vt_max", max)
-
-            # import matplotlib.pyplot as plt
-            # plt.scatter(old_value_targets.ravel(), new_value_targets.ravel())
-            # plt.show()
-
-            if args.vtrace_correction == "on":
-                batch_data["returns"] = new_value_targets.reshape(N*A, self.VH)
-            elif args.vtrace_correction == "trust":
-                # just a guess about this threshold
-                mask = (np.abs(new_value_targets - old_value_targets) > args.vtrace_threshold).ravel()
-                # reset returns for samples that have changed too much...
-                batch_data["returns"][mask, 0] = self.ext_value[:N, :].reshape(N*A, self.VH)[mask][:, 0]
-                self.log.watch_mean("vt_reject", mask.mean())
-            elif args.vtrace_correction == "shadow":
-                pass
-            else:
-                raise Exception(f"Invalid vtrace_correction mode {args.vtrace_correction}")
 
         for value_epoch in range(args.value.epochs):
             self.train_batch(
