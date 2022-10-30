@@ -1438,7 +1438,8 @@ class Runner:
             model_out['value'] = model_out['value_value']
             model_out['log_policy'] = model_out['policy_log_policy']
             model_out['raw_policy'] = model_out['policy_raw_policy']
-            model_out['tvf_value'] = model_out['value_tvf_value']
+            if args.use_tvf:
+                model_out['tvf_value'] = model_out['value_tvf_value']
 
             # sample actions and run through environment.
             actions = self.sample_actions(model_out)
