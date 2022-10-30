@@ -1810,6 +1810,9 @@ class Runner:
             for k, v in data.items():
                 mini_batch_data[k] = data[k][segment]
                 if type(mini_batch_data[k]) is np.ndarray:
+                    if mini_batch_data[k].dtype == np.object:
+                        # handle decompression
+                        mini_batch_data[k] = np.asarray([mini_batch_data[k][i].decompress() for i in range(len(mini_batch_data[k]))])
                     mini_batch_data[k] = torch.from_numpy(mini_batch_data[k]).to(self.model.device)
             # todo: make this a with no log...
             self.log.mode = self.log.LM_MUTE
