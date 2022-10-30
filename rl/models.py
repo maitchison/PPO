@@ -91,7 +91,7 @@ class ImpalaCNN(BaseNet):
         """ forwards input through model, returns features (without relu)
             input should be in B,C,H,W format
          """
-        #with torch.torch.autocast(device_type='cuda', enabled=AMP):
+        # with torch.torch.autocast(device_type='cuda', enabled=AMP):
         x = impala.sequential(self.stacks, x, diag_name=self.name)
         x = impala.flatten_image(x)
         x = torch.relu(x)

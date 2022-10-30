@@ -990,7 +990,8 @@ class Runner:
         self.episode_len *= 0
         self.step = 0
         self.time *= 0
-        self.hash_batch_counts *= 0
+        if args.use_hashing:
+            self.hash_batch_counts *= 0
 
         # reset stats
         for k in list(self.stats.keys()):
@@ -1409,7 +1410,8 @@ class Runner:
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
-        self.hash_batch_counts *= 0
+        if args.use_hashing:
+            self.hash_batch_counts *= 0
 
         rollout_discounted_returns = np.zeros_like(self.ext_rewards)
 
@@ -1436,6 +1438,7 @@ class Runner:
             model_out['value'] = model_out['value_value']
             model_out['log_policy'] = model_out['policy_log_policy']
             model_out['raw_policy'] = model_out['policy_raw_policy']
+            model_out['tvf_value'] = model_out['value_tvf_value']
 
             # sample actions and run through environment.
             actions = self.sample_actions(model_out)
@@ -3640,7 +3643,7 @@ class Runner:
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_aux_minibatch,
-                mini_batch_size=args.distil.mini_batch_size,
+                mini_batch_size=args.aux.mini_batch_size,
                 optimizer=self.aux_optimizer,
                 epoch=aux_epoch,
                 label="aux",

@@ -40,6 +40,8 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
 
     args = args or config.args
 
+    assert args.frame_skip == 1, "Frame skip should be 1 for procgen"
+
     env_name = f"procgen:procgen-{env_id}-v0"
 
     if seed is not None:
@@ -69,5 +71,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
         env = wrappers.ActionAwareWrapper(env)
 
     env = wrappers.NullActionWrapper(env)
+
+
 
     return env

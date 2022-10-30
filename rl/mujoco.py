@@ -37,6 +37,8 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     # so make sure to pass args in as an argument.
     args = args or config.args
 
+    assert args.frame_skip == 1, "Frame skip should be 1 for mujoco"
+
     env_name = f"{env_id}-v2"
 
     env = gym.make(env_name)
