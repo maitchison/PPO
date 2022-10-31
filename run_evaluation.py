@@ -523,7 +523,11 @@ def generate_rollouts(
     elif include_horizons == "last":
         horizons = np.repeat(np.arange(args.tvf_max_horizon, args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "standard":
-        horizons = model.tvf_fixed_head_horizons
+        try:
+            horizons = model.tvf_fixed_head_horizons
+        except:
+            # for old code
+            horizons = np.repeat(np.asarray([1, 3, 10, 30, 100, 300, 1000])[None, :], repeats=num_rollouts, axis=0)
     else:
         raise ValueError(f"invalid horizons mode {include_horizons}")
 
@@ -779,7 +783,11 @@ def generate_rollouts(
             if "noop_start" in infos[i]:
                 set_buffer("noops", infos[i]["noop_start"])
 
-            model_value = model_out["value"][i][..., 0].detach().cpu().numpy()
+            try:
+                model_value = model_out["value"][i][..., 0].detach().cpu().numpy()
+            except:
+                # not sure why this is broken on some older code...
+                model_value = 0.0
 
             # old versions accidentally used time_frac... if time is there we use that instead
             time = 0.0

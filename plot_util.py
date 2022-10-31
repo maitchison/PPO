@@ -1030,6 +1030,8 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     Load multiple games and averages their scores
     """
 
+    print(f"Reading scores for {key}")
+
     if type(path) is str:
         paths = [path]
     else:
@@ -1063,13 +1065,14 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     for folder in folders:
         if folder in ["rl", "roms"]:
             continue
+        # print(" -loading",folder)
         game_log = read_log(folder)
         if game_log is None:
             print(f"no log for {path} {folder}")
             return None
         game = game_log["params"]["environment"].lower()
         if game not in game_list:
-            #print(f"Skipping {game} as not in {game_list}")
+            print(f"Skipping {game} as not in {game_list}")
             continue
         for env_step, ep_score in zip(game_log["env_step"], game_log["ep_score_norm"]):
             epoch_scores[round(env_step / resolution)][game].append(ep_score)
@@ -1803,6 +1806,7 @@ def plot_seeded_validation(path, key, seeds=3, color=None, style="-", label=None
             y_list[round(i)].append(y)
             max_x = max(round(i), max_x)
             # plot individual runs so we can check...
+
         plt.plot(steps * step_mul, result['score'], color=color, alpha=ghost_alpha, ls='--')
 
     if found_seeds == 0:

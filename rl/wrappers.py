@@ -122,6 +122,8 @@ class ActionAwareWrapper(gym.Wrapper):
 
     def _process_obs(self, obs, action: int):
 
+        # input should be C, H, W, or H, W
+
         assert obs.dtype == np.uint8
 
         # draw actions we pressed on frames
@@ -130,7 +132,12 @@ class ActionAwareWrapper(gym.Wrapper):
         if action >= 0:
             x = action * BLOCK_SIZE
             y = 0
-            obs[x:x+BLOCK_SIZE, y:y+BLOCK_SIZE, :] = 255
+            if len(obs.shape) == 2:
+                obs[x:x+BLOCK_SIZE, y:y+BLOCK_SIZE] = 255
+            else:
+                C, H, W = obs.shape
+                assert C < H, "Should be channels first"
+                obs[:, x:x + BLOCK_SIZE, y:y + BLOCK_SIZE] = 255
 
         return obs
 
@@ -572,7 +579,7 @@ class NormalizeObservationsWrapper(gym.Wrapper):
         super().__init__(env)
 
         self.env = env
-        self.epsilon = 1e-4
+        self.epsilon = 1e-8
         self.clip = clip
         self.obs_rms = utils.RunningMeanStd(shape=())
         self.shadow_mode = shadow_mode
@@ -832,9 +839,21 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
     def step(self, actions):
         obs, rewards, dones, infos = self.env.step(actions)
 
+        # note:
+        # we used to do this with:
+        #
+        # self.current_returns = rewards + self.gamma * self.current_returns
+        # self.ret_rms.update(self.current_returns)
+        # self.current_returns = self.current_returns * (1-dones)
+        #
+        # which I think is more correct, but is quite inconsistent when rewards are at terminal states.
+        # I also think this matches OpenAI right?
+        # now instead we do it the older way, which I think was OpenAI's older method.
+        # Note: the important change here is on what happens on a transition that both gives reward and terminates.
+
         # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
         # but it is what OpenAI does...
-        self.current_returns = rewards + self.gamma * self.current_returns
+        self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
 
         # episodic discounting return normalization
         if self.ed_type is not None:
@@ -849,8 +868,6 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
             # note: we move EMA a bit faster at the beginning
             alpha = 1 - (len(dones) / min(self.ret_rms.count, self.ema_horizon))
             self.ret_var = alpha * self.ret_var + (1 - alpha) * np.var(self.current_returns)
-
-        self.current_returns = self.current_returns * (1-dones)
 
         scaled_rewards = rewards / self.std
         # print(self.current_returns.max())
