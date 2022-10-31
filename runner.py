@@ -20,9 +20,9 @@ TEMPLATE_3090 = SlurmTemplate("3090", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
 #SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
-#SBATCH --ntasks=8                    # More than 24 seems to crash prolog?
+#SBATCH --ntasks=12                   # More than 24 seems to crash prolog?
 #SBATCH --mem=32G                     # 8GB per job is about right
-#SBATCH --time=24:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
+#SBATCH --time=36:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:3090:2             # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
 #SBATCH --output=%j.log     # Standard output and error log
@@ -34,7 +34,7 @@ cd PPO
 %CMD%
 echo "--- done ---"
 date
-""", n_gpus=2, n_jobs=4)
+""", n_gpus=2, n_jobs=6)
 
 # TEMPLATE_2080ti = SlurmTemplate("2080ti", """#!/bin/bash
 # #SBATCH --job-name=%JOBNAME%          # Job name

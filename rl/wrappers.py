@@ -851,6 +851,13 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         # now instead we do it the older way, which I think was OpenAI's older method.
         # Note: the important change here is on what happens on a transition that both gives reward and terminates.
 
+        # ok, so follow up
+        # baselines https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/common/vec_env/vec_normalize.py#L4
+        #   they do this the v2 way, which is zero returns after update, I can show this is wrong.
+        # baselines3
+        #   they just ignore terminals... interesting...
+        # I think my way is correct. It correlates well with the true return
+
         # the self.gamma here doesn't make sense to me as we are discounting into the future rather than from the past
         # but it is what OpenAI does...
         self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
