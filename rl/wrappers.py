@@ -136,8 +136,11 @@ class ActionAwareWrapper(gym.Wrapper):
                 obs[x:x+BLOCK_SIZE, y:y+BLOCK_SIZE] = 255
             else:
                 C, H, W = obs.shape
-                assert C < H, "Should be channels first"
-                obs[:, x:x + BLOCK_SIZE, y:y + BLOCK_SIZE] = 255
+                # this is a bit of a hack, procgen and atari have different channel order.
+                if C < H:
+                    obs[:, x:x + BLOCK_SIZE, y:y + BLOCK_SIZE] = 255
+                else:
+                    obs[x:x + BLOCK_SIZE, y:y + BLOCK_SIZE, :] = 255
 
         return obs
 

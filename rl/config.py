@@ -379,7 +379,7 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Distil phase
-        parser.add_argument("--distil_order", type=str, default="before_policy", help="after_policy|before_policy")
+        parser.add_argument("--distil_order", type=str, default="after_policy", help="after_policy|before_policy")
         parser.add_argument("--distil_beta", type=float, default=10.0)
         parser.add_argument("--distil_l1_scale", type=float, default=1/30)
         parser.add_argument("--shared_distil_optimizer", type=str2bool, default=False)
@@ -430,7 +430,11 @@ class Config(BaseConfig):
                             help="This can help agents explore different parts of the state space.")
         parser.add_argument("--hash_method", type=str, default="linear",
                             help="linear|conv")
+        parser.add_argument("--hash_input", type=str, default="raw",
+                            help="raw|raw_centered|normed|normed_offset")
         parser.add_argument("--hash_bonus_method", type=str, default="hyperbolic", help="hyperbolic|quadratic|binary")
+        parser.add_argument("--hash_rescale", type=int, default=1)
+        parser.add_argument("--hash_quantize", type=float, default=1)
 
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
@@ -485,7 +489,6 @@ class Config(BaseConfig):
         self.sync_envs = bool()
         self.benchmark_mode = bool()
 
-        self.ir_scale = float()
         self.ir_propagation = bool()
         self.ir_normalize = bool()
         self.ir_center = bool()
@@ -635,6 +638,9 @@ class Config(BaseConfig):
         self.use_ebd = bool()
         self.use_hashing = bool()
         self.hash_method = str()
+        self.hash_input = str()
+        self.hash_rescale = int()
+        self.hash_quantize = float()
         self.hash_bits = int()
         self.hash_bonus = float()
         self.hash_batch_bonus = float()
@@ -667,7 +673,7 @@ class Config(BaseConfig):
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_ebd or self.hash_bonus != 0
+        return self.use_rnd or self.use_ebd or (self.hash_bonus != 0 or self.hash_batch_bonus != 0)
 
     @property
     def get_mutex_key(self):

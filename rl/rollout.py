@@ -702,6 +702,11 @@ class Runner:
                 hash_state_shape[0] = 1
             else:
                 hash_state_shape = self.state_shape
+
+            if args.hash_rescale != 1:
+                C, H, W = hash_state_shape
+                hash_state_shape = (C, H//args.hash_rescale, W//args.hash_rescale)
+
             self.hash_fn = hashers[args.hash_method](hash_state_shape, args.hash_bits, device=args.device)
 
         # returns generation
@@ -1392,6 +1397,55 @@ class Runner:
         self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf,
                                       value_net_only=args.rnc_value_only)
 
+    def generate_hashes(self, obs: np.ndarray):
+        """
+        Applies hash preprocessing, returns hashing for obs
+        @param obs np array of dims [A, *state_shape]
+        """
+
+        A, C, H, W = obs.shape
+
+        # note this could be much faster by only processing the channel.
+
+        assert self.obs.dtype == np.uint8, "hashin currently requires 8-bit input"
+
+        # give reward for action that lead to a novel state...
+        if args.env_type == "atari":
+            channel_filter = slice(args.frame_stack - 1, args.frame_stack)  # last channel is most recent
+        else:
+            channel_filter = None  # select all channels.
+
+        # downscale
+        if args.hash_rescale:
+            import cv2
+            new_frames = []
+            for a in range(A):
+                for c in range(C):
+                    new_frames.append(cv2.resize(obs[a, c], (H//args.hash_rescale, W//args.hash_rescale), interpolation=cv2.INTER_AREA))
+            new_frames = np.asarray(new_frames).reshape([A, C, H//args.hash_rescale, W//args.hash_rescale])
+            obs = new_frames
+
+        if args.hash_quantize:
+            obs = ((obs // args.hash_quantize) * args.hash_quantize).astype(np.uint8)
+
+        # process the observations
+        if args.hash_input == "raw":
+            hash_input = obs[:, channel_filter]
+        elif args.hash_input == "raw_centered":
+            hash_input = (obs[:, channel_filter].astype(np.float) - 128)
+        elif args.hash_input == "normed":
+            hash_input = self.model.prep_for_model(obs)
+            hash_input = self.model.perform_normalization(hash_input)[:, channel_filter]
+        elif args.hash_input == "normed_offset":
+            # this should make the cosign distance more stable.
+            hash_input = self.model.prep_for_model(obs)
+            hash_input = self.model.perform_normalization(hash_input)[:, channel_filter] + 3.0
+        else:
+            raise ValueError("Invalid hash_input {args.hash_input}")
+
+        return self.hash_fn(hash_input)
+
+
 
     @torch.no_grad()
     def generate_rollout(self):
@@ -1412,6 +1466,8 @@ class Runner:
         self.all_time *= 0
         if args.use_hashing:
             self.hash_batch_counts *= 0
+
+        obs_hashes = np.zeros([self.N, self.A], dtype=np.int32)
 
         rollout_discounted_returns = np.zeros_like(self.ext_rewards)
 
@@ -1448,45 +1504,11 @@ class Runner:
 
             # hashing if needed...
             if args.use_hashing:
-                # give reward for action that lead to a novel state...
-                if args.env_type == "atari":
-                    channel_filter = slice(args.frame_stack-1, args.frame_stack) # select first channel (should be most recent?)
-                else:
-                    channel_filter = None # select all channels.
-
-                # calculate threshold
-                def calc_threshold(counts: np.ndarray):
-                    x = counts.copy()
-                    x.sort()
-                    x = np.cumsum(x)
-                    threshold_idx = np.searchsorted(x, x[-1]/2)
-                    delta = x[threshold_idx]-x[threshold_idx-1] # not sure if this is right...
-                    return delta
-
-                hash_threshold = calc_threshold(self.hash_counts)
-                batch_threshold = calc_threshold(self.hash_batch_counts)
-
-
-                hashes = self.hash_fn(self.obs[:, channel_filter])
+                hashes = self.generate_hashes(self.obs)
                 for a, obs_hash in enumerate(hashes):
-
                     self.hash_counts[obs_hash] += 1
                     self.hash_batch_counts[obs_hash] += 1
-
-                    def get_bonus(hashes: np.ndarray, x: int, threshold=None):
-                        if args.hash_bonus_method == "hyperbolic":
-                            return 1 / hashes[x]
-                        elif args.hash_bonus_method == "quadratic":
-                            return 1 / (hashes[x]**2)
-                        elif args.hash_bonus_method == "binary":
-                            return 1 if hashes[x] < threshold else -1
-                        else:
-                            raise ValueError(f"Invalid hash_bonus_method {args.hash_bonus_method}")
-
-                    if args.hash_bonus != 0:
-                        self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_counts, obs_hash, hash_threshold)
-                    if args.hash_batch_bonus != 0:
-                        self.int_rewards[t, a] += args.hash_batch_bonus * get_bonus(self.hash_batch_counts, obs_hash, batch_threshold)
+                    obs_hashes[t, a] = obs_hash
 
             if args.use_rnd:
                 # update the intrinsic rewards
@@ -1597,6 +1619,40 @@ class Runner:
                 method=args.tvf_trimming,
                 mode=args.tvf_trimming_mode
             )
+
+        # -----------------------------------------------
+        # give hashing bonus
+        # note: could make this much faster
+
+        def get_bonus(hashes: np.ndarray, x: int, threshold=None):
+            if args.hash_bonus_method == "hyperbolic":
+                return 1 / hashes[x]
+            elif args.hash_bonus_method == "quadratic":
+                return 1 / (hashes[x] ** 2)
+            elif args.hash_bonus_method == "binary":
+                return 1 if hashes[x] < threshold else -1
+            else:
+                raise ValueError(f"Invalid hash_bonus_method {args.hash_bonus_method}")
+
+        # calculate threshold
+        def calc_threshold(counts: np.ndarray):
+            x = counts.copy()
+            x.sort()
+            x = np.cumsum(x)
+            threshold_idx = np.searchsorted(x, x[-1] / 2)
+            delta = x[threshold_idx] - x[threshold_idx - 1]  # not sure if this is right...
+            return delta
+
+        hash_threshold = calc_threshold(self.hash_counts)
+        batch_threshold = calc_threshold(self.hash_batch_counts)
+
+        for t in range(self.N):
+            for a in range(self.A):
+                obs_hash = obs_hashes[t, a]
+                if args.hash_bonus != 0:
+                    self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_counts, obs_hash, hash_threshold)
+                if args.hash_batch_bonus != 0:
+                    self.int_rewards[t, a] += args.hash_batch_bonus * get_bonus(self.hash_batch_counts, obs_hash, batch_threshold)
 
         # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
         if args.reward_normalization == "ema":

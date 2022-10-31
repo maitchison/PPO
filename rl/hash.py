@@ -27,7 +27,7 @@ class LinearStateHasher(pt.nn.Module):
         out_d = output_bits
         self.input_space = tuple(input_space)
         self.device = device
-        self.projection = pt.nn.Linear(in_d, out_d, bias=False) # bias or not?
+        self.projection = pt.nn.Linear(in_d, out_d, bias=False)
 
         # make sure we always get the same weights (so we don't have to store them)
         g = torch.Generator()
