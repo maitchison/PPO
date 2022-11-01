@@ -707,7 +707,7 @@ class Runner:
                 C, H, W = hash_state_shape
                 hash_state_shape = (C, H//args.hash_rescale, W//args.hash_rescale)
 
-            self.hash_fn = hashers[args.hash_method](hash_state_shape, args.hash_bits, device=args.device)
+            self.hash_fn = hashers[args.hash_method](hash_state_shape, args.hash_bits, device=args.device, bias=args.hash_bias)
 
         # returns generation
         self.advantage = np.zeros([N, A], dtype=np.float32)
@@ -1415,16 +1415,6 @@ class Runner:
         else:
             channel_filter = None  # select all channels.
 
-        # downscale
-        if args.hash_rescale:
-            import cv2
-            new_frames = []
-            for a in range(A):
-                for c in range(C):
-                    new_frames.append(cv2.resize(obs[a, c], (H//args.hash_rescale, W//args.hash_rescale), interpolation=cv2.INTER_AREA))
-            new_frames = np.asarray(new_frames).reshape([A, C, H//args.hash_rescale, W//args.hash_rescale])
-            obs = new_frames
-
         if args.hash_quantize:
             obs = ((obs // args.hash_quantize) * args.hash_quantize).astype(np.uint8)
 
@@ -1442,6 +1432,17 @@ class Runner:
             hash_input = self.model.perform_normalization(hash_input)[:, channel_filter] + 3.0
         else:
             raise ValueError("Invalid hash_input {args.hash_input}")
+
+        # downscale
+        if args.hash_rescale:
+            import cv2
+            if type(hash_input) == torch.Tensor:
+                hash_input = hash_input.cpu().numpy()
+            new_frames = []
+            for a in range(A):
+                new_frames.append(cv2.resize(hash_input[a, 0], (H//args.hash_rescale, W//args.hash_rescale), interpolation=cv2.INTER_AREA))
+            new_frames = np.asarray(new_frames).reshape([A, 1, H//args.hash_rescale, W//args.hash_rescale])
+            hash_input = new_frames
 
         return self.hash_fn(hash_input)
 

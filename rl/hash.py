@@ -21,19 +21,20 @@ def convert_to_state(x):
 
 class LinearStateHasher(pt.nn.Module):
 
-    def __init__(self, input_space:tuple, output_bits: int=16, device="cpu"):
+    def __init__(self, input_space:tuple, output_bits: int=16, device="cpu", bias=0.0):
         super().__init__()
         in_d = prod(input_space)
         out_d = output_bits
         self.input_space = tuple(input_space)
         self.device = device
-        self.projection = pt.nn.Linear(in_d, out_d, bias=False)
+        self.projection = pt.nn.Linear(in_d, out_d, bias=True)
 
         # make sure we always get the same weights (so we don't have to store them)
         g = torch.Generator()
         g.manual_seed(12345)
         s = 0.01
         self.projection.weight.data.uniform_(-s, s, generator=g)
+        self.projection.bias.data.uniform_(-bias, bias, generator=g)
 
         self.to(device)
 
@@ -55,7 +56,10 @@ class LinearStateHasher(pt.nn.Module):
 
 class ConvStateHasher(pt.nn.Module):
 
-    def __init__(self, input_space:tuple, output_bits: int=16, device="cpu"):
+    def __init__(self, input_space:tuple, output_bits: int=16, device="cpu", bias=0.0):
+        """
+        bias is not used.
+        """
 
         super().__init__()
         out_d = output_bits

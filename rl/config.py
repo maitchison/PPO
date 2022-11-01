@@ -435,6 +435,8 @@ class Config(BaseConfig):
         parser.add_argument("--hash_bonus_method", type=str, default="hyperbolic", help="hyperbolic|quadratic|binary")
         parser.add_argument("--hash_rescale", type=int, default=1)
         parser.add_argument("--hash_quantize", type=float, default=1)
+        parser.add_argument("--hash_bias", type=float, default=0.0)
+
 
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
@@ -645,6 +647,7 @@ class Config(BaseConfig):
         self.hash_bonus = float()
         self.hash_batch_bonus = float()
         self.hash_bonus_method = str()
+        self.hash_bias = float()
         self.rnd_experience_proportion = float()
 
         # noise stuff
