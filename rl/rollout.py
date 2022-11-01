@@ -1558,7 +1558,7 @@ class Runner:
                 if "repeated_action" in info:
                     self.stats['batch_action_repeats'] += 1
                 if "room_count" in info:
-                    self.log.watch_mean("av_room_count", info["room_count"])
+                    self.log.watch_mean("av_room_count", info["room_count"], history_length=100, display_name="rooms_av")
 
                 if done:
                     # this should be always updated, even if it's just a loss of life terminal
@@ -1569,12 +1569,17 @@ class Runner:
                         continue
 
                     # reset is handled automatically by vectorized environments
-                    # so just need to keep track of book-keeping
+                    # so just need to keep track of book keeping
                     self.ep_count += 1
                     self.log.watch_full("ep_score", info["ep_score"], history_length=100)
-                    self.log.watch_full("ep_length", info["ep_length"])
+                    self.log.watch_full("ep_length", info["ep_length"], history_length=100)
                     if "room_count" in info:
-                        self.log.watch_mean("ep_room_count", info["room_count"])
+                        self.log.watch_mean("ep_room_count", info["room_count"], history_length=100, display_name="rooms_ep")
+                        try:
+                            old_room_count = self.log['max_room_count']
+                        except:
+                            old_room_count = 0
+                        self.log.watch("*max_room_count", max(old_room_count, info["room_count"]))
                     self.log.watch_mean("ep_count", self.ep_count, history_length=1)
 
                     self.episode_score[i] = 0

@@ -1390,7 +1390,8 @@ class MontezumaInfoWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
-        self.visited_rooms.add(self.get_current_room())
+        room_id = self.get_current_room()
+        self.visited_rooms.add(room_id)
         info['room_count'] = len(self.visited_rooms)
         if done:
             if 'episode' not in info:
