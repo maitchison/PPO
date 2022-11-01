@@ -688,8 +688,8 @@ class Runner:
 
         # hashing
         if args.use_hashing:
-            self.hash_counts = np.zeros([2 ** args.hash_bits], dtype=np.int64)
-            self.hash_batch_counts = np.zeros([2 ** args.hash_bits], dtype=np.int64)
+            self.hash_global_counts = np.zeros([2 ** args.hash_bits], dtype=np.float)
+            self.hash_recent_counts = np.zeros([2 ** args.hash_bits], dtype=np.float)
             hashers = {
                 'linear': hash.LinearStateHasher,
                 'conv': hash.ConvStateHasher,
@@ -876,7 +876,8 @@ class Runner:
         }
 
         if args.use_hashing:
-            data['hash_counts'] = self.hash_counts
+            data['hash_global_counts'] = self.hash_global_counts
+            data['hash_recent_counts'] = self.hash_recent_counts
 
         if not disable_optimizer:
             data['policy_optimizer_state_dict'] = self.policy_optimizer.state_dict()
@@ -966,7 +967,8 @@ class Runner:
         self.discounted_episode_score = checkpoint['discounted_episode_score']
 
         if args.use_hashing:
-            self.hash_counts = checkpoint['hash_counts']
+            self.hash_global_counts = checkpoint['hash_global_counts']
+            self.hash_recent_counts = checkpoint['hash_recent_counts']
 
         if self.replay_buffer is not None:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
@@ -996,7 +998,8 @@ class Runner:
         self.step = 0
         self.time *= 0
         if args.use_hashing:
-            self.hash_batch_counts *= 0
+            self.hash_recent_counts *= 0
+            self.hash_global_counts *= 0
 
         # reset stats
         for k in list(self.stats.keys()):
@@ -1465,8 +1468,6 @@ class Runner:
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
-        if args.use_hashing:
-            self.hash_batch_counts *= 0
 
         obs_hashes = np.zeros([self.N, self.A], dtype=np.int32)
 
@@ -1506,9 +1507,10 @@ class Runner:
             # hashing if needed...
             if args.use_hashing:
                 hashes = self.generate_hashes(self.obs)
+                self.hash_recent_counts *= args.hash_decay
                 for a, obs_hash in enumerate(hashes):
-                    self.hash_counts[obs_hash] += 1
-                    self.hash_batch_counts[obs_hash] += 1
+                    self.hash_global_counts[obs_hash] += 1
+                    self.hash_recent_counts[obs_hash] += 1
                     obs_hashes[t, a] = obs_hash
 
             if args.use_rnd:
@@ -1644,16 +1646,14 @@ class Runner:
             delta = x[threshold_idx] - x[threshold_idx - 1]  # not sure if this is right...
             return delta
 
-        hash_threshold = calc_threshold(self.hash_counts)
-        batch_threshold = calc_threshold(self.hash_batch_counts)
+        hash_threshold = calc_threshold(self.hash_recent_counts)
+
 
         for t in range(self.N):
             for a in range(self.A):
                 obs_hash = obs_hashes[t, a]
                 if args.hash_bonus != 0:
-                    self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_counts, obs_hash, hash_threshold)
-                if args.hash_batch_bonus != 0:
-                    self.int_rewards[t, a] += args.hash_batch_bonus * get_bonus(self.hash_batch_counts, obs_hash, batch_threshold)
+                    self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
 
         # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
         if args.reward_normalization == "ema":
@@ -2495,9 +2495,9 @@ class Runner:
                 old_delta = self.log['hash_states']
             except:
                 old_delta = 0
-            self.log.watch("hash_states", int(np.count_nonzero(self.hash_counts)), display_width=8, display_name="h_states")
-            self.log.watch("*hash_delta", int(np.count_nonzero(self.hash_counts)-old_delta), display_name="h_delta")
-            self.log.watch("*hash_batch", int(np.count_nonzero(self.hash_batch_counts)), display_name="h_batch")
+            self.log.watch("hash_states", int(np.count_nonzero(self.hash_global_counts)), display_width=8, display_name="h_states")
+            self.log.watch("*hash_delta", int(np.count_nonzero(self.hash_global_counts) - old_delta), display_name="h_delta")
+            self.log.watch("*hash_recent", int(np.count_nonzero(self.hash_recent_counts.astype(int))), display_name="h_batch")
 
         self.log.watch_mean_std("adv_ext", ext_advantage, display_width=0)
 
