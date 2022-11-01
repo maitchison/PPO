@@ -1557,6 +1557,8 @@ class Runner:
                     self.stats['action_repeats'] += 1
                 if "repeated_action" in info:
                     self.stats['batch_action_repeats'] += 1
+                if "room_count" in info:
+                    self.log.watch_mean("av_room_count", info["room_count"])
 
                 if done:
                     # this should be always updated, even if it's just a loss of life terminal
@@ -1571,6 +1573,8 @@ class Runner:
                     self.ep_count += 1
                     self.log.watch_full("ep_score", info["ep_score"], history_length=100)
                     self.log.watch_full("ep_length", info["ep_length"])
+                    if "room_count" in info:
+                        self.log.watch_mean("ep_room_count", info["room_count"])
                     self.log.watch_mean("ep_count", self.ep_count, history_length=1)
 
                     self.episode_score[i] = 0

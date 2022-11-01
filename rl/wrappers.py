@@ -1371,6 +1371,37 @@ class FrameStack(gym.Wrapper):
         self.stack = buffer["stack"]
 
 
+class MontezumaInfoWrapper(gym.Wrapper):
+    """
+    From https://github.com/openai/random-network-distillation/blob/master/atari_wrappers.py
+    """
+    def __init__(self, env, room_address=3):
+        """
+        room_address: 3 for montezuma, 1 for pitfall
+        """
+        super(MontezumaInfoWrapper, self).__init__(env)
+        self.room_address = room_address
+        self.visited_rooms = set()
+
+    def get_current_room(self):
+        ram = self.env.unwrapped.ale.getRAM()
+        assert len(ram) == 128
+        return int(ram[self.room_address])
+
+    def step(self, action):
+        obs, rew, done, info = self.env.step(action)
+        self.visited_rooms.add(self.get_current_room())
+        info['room_count'] = len(self.visited_rooms)
+        if done:
+            if 'episode' not in info:
+                info['episode'] = {}
+            info['episode'].update(visited_rooms=self.visited_rooms.copy())
+            self.visited_rooms.clear()
+        return obs, rew, done, info
+
+    def reset(self):
+        return self.env.reset()
+
 class EMAFrameStack(gym.Wrapper):
     """
         Maintain EMA of previous states with different alpha values.
