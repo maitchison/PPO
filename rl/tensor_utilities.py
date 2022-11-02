@@ -67,7 +67,8 @@ def NormedConv2d(*args, scale=1.0, **kwargs):
     return out
 
 def process_weights(param:torch.nn.Module, method="default", scale:float=1.0):
-    param.bias.data *= 0  # zero bias weights
+    if param.bias is not None:
+        param.bias.data *= 0  # zero bias weights
     if method == "default":
         param.weight.data *= scale
     elif method == "xavier":

@@ -326,6 +326,7 @@ class DualHeadNet(nn.Module):
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
 
             tvf_sqrt_transform: bool = False,
+            head_bias: bool=False,
 
             device=None,
             **kwargs
@@ -358,7 +359,13 @@ class DualHeadNet(nn.Module):
         self.encoder_activation_fn = activation_fn
 
         def linear(*args, scale=1.0, **kwargs):
-            return tu.CustomLinear(*args, scale=scale, weight_init="orthogonal", **kwargs)
+            # almost always don't want bias for the final heads.
+            # the reason for this is any change in bias will apply to all states, which is not ideal.
+            # also, in tvf_mode, the bias enables the model to output a simple function of h, which
+            # we would like to avoid.
+            # the game boss fight can do this. The noise is so high that the model just outputs the state
+            # independant average, and is not able to easily improve on that.
+            return tu.CustomLinear(*args, scale=scale, weight_init="orthogonal", bias=self.head_bias, **kwargs)
 
         self.policy_head = linear(self.hidden_units, n_actions, scale=head_scale)
         self.value_head = linear(self.hidden_units, len(value_head_names), scale=head_scale)
@@ -535,6 +542,7 @@ class TVFModel(nn.Module):
             head_scale: float=1.0,
             value_head_names=('ext',),
             norm_eps: float=1e-5,
+            head_bias: bool = False,
     ):
         """
             Truncated Value Function model
@@ -601,6 +609,7 @@ class TVFModel(nn.Module):
                 tvf_sqrt_transform=tvf_sqrt_transform,
                 head_scale=head_scale,
                 value_head_names=value_head_names,
+                head_bias=head_bias,
                 **extra_args,
                 **(encoder_args or {})
             )
