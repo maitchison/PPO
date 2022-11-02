@@ -365,7 +365,7 @@ class DualHeadNet(nn.Module):
             # we would like to avoid.
             # the game boss fight can do this. The noise is so high that the model just outputs the state
             # independant average, and is not able to easily improve on that.
-            return tu.CustomLinear(*args, scale=scale, weight_init="orthogonal", bias=self.head_bias, **kwargs)
+            return tu.CustomLinear(*args, scale=scale, weight_init="orthogonal", bias=head_bias, **kwargs)
 
         self.policy_head = linear(self.hidden_units, n_actions, scale=head_scale)
         self.value_head = linear(self.hidden_units, len(value_head_names), scale=head_scale)
