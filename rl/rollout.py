@@ -1646,23 +1646,23 @@ class Runner:
             else:
                 raise ValueError(f"Invalid hash_bonus_method {args.hash_bonus_method}")
 
-        # calculate threshold
-        def calc_threshold(counts: np.ndarray):
-            x = counts.copy()
-            x.sort()
-            x = np.cumsum(x)
-            threshold_idx = np.searchsorted(x, x[-1] / 2)
-            delta = x[threshold_idx] - x[threshold_idx - 1]  # not sure if this is right...
-            return delta
+        if args.use_hashing:
+            # calculate threshold
+            def calc_threshold(counts: np.ndarray):
+                x = counts.copy()
+                x.sort()
+                x = np.cumsum(x)
+                threshold_idx = np.searchsorted(x, x[-1] / 2)
+                delta = x[threshold_idx] - x[threshold_idx - 1]  # not sure if this is right...
+                return delta
 
-        hash_threshold = calc_threshold(self.hash_recent_counts)
+            hash_threshold = calc_threshold(self.hash_recent_counts)
 
-
-        for t in range(self.N):
-            for a in range(self.A):
-                obs_hash = obs_hashes[t, a]
-                if args.hash_bonus != 0:
-                    self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
+            for t in range(self.N):
+                for a in range(self.A):
+                    obs_hash = obs_hashes[t, a]
+                    if args.hash_bonus != 0:
+                        self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
 
         # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
         if args.reward_normalization == "ema":
