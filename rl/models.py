@@ -562,6 +562,7 @@ class TVFModel(nn.Module):
         self.tvf_fixed_head_weights = tvf_fixed_head_weights
         self.tvf_sqrt_transform = tvf_sqrt_transform
         self.encoder_name = encoder
+        self.norm_eps = norm_eps
 
         # todo: rename this..
         if architecture == "single":
