@@ -1030,7 +1030,7 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     Load multiple games and averages their scores
     """
 
-    print(f"Reading scores for {key}")
+    # print(f"Reading scores for {key}")
 
     if type(path) is str:
         paths = [path]
