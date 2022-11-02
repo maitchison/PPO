@@ -533,7 +533,8 @@ class TVFModel(nn.Module):
             tvf_feature_window: int = -1,
             tvf_sqrt_transform: bool = False,
             head_scale: float=1.0,
-            value_head_names=('ext',)
+            value_head_names=('ext',),
+            norm_eps: float=1e-5,
     ):
         """
             Truncated Value Function model
@@ -695,7 +696,7 @@ class TVFModel(nn.Module):
         if self._mu is None:
             self.refresh_normalization_constants()
 
-        x = torch.clamp((x - self._mu) / (self._std + 1e-5), -5, 5)
+        x = torch.clamp((x - self._mu) / (self._std + self.norm_eps), -5, 5)
 
         return x
 

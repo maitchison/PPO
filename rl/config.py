@@ -212,6 +212,7 @@ class Config(BaseConfig):
         parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
         parser.add_argument("--log_folder", type=str, default=None)
         parser.add_argument("--observation_normalization", type=str2bool, default=False)
+        parser.add_argument("--observation_normalization_epsilon", type=float, default=1e-5)
         parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False,
                             help="Disables updates to observation normalization constants.")
         parser.add_argument("--max_micro_batch_size", type=int, default=512, help="Can be useful to limit GPU memory")
@@ -485,6 +486,7 @@ class Config(BaseConfig):
         self.checkpoint_every = int()
         self.log_folder = object()
         self.observation_normalization = bool()
+        self.observation_normalization_epsilon = float()
         self.freeze_observation_normalization = bool()
         self.max_micro_batch_size = int()
         self.sync_envs = bool()

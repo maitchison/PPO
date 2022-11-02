@@ -80,6 +80,7 @@ def make_model(args, log=None):
         tvf_sqrt_transform=args.tvf_sqrt_transform,
         head_scale=args.head_scale,
         value_head_names=tuple(value_head_names),
+        norm_eps=args.observation_normalization_epsilon,
     )
     return model
 
