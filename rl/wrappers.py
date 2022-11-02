@@ -1397,10 +1397,10 @@ class MontezumaInfoWrapper(gym.Wrapper):
             if 'episode' not in info:
                 info['episode'] = {}
             info['episode'].update(visited_rooms=self.visited_rooms.copy())
-            self.visited_rooms.clear()
         return obs, rew, done, info
 
     def reset(self):
+        self.visited_rooms.clear()
         return self.env.reset()
 
 class EMAFrameStack(gym.Wrapper):

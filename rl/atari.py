@@ -174,11 +174,12 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     if args.noop_start:
         env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
 
+    env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
+
     if env_id == "MontezumaRevenge":
         # to record rooms.
-        env = wrappers.MontezumaInfoWrapper(env, room_address=1)
-
-    env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
+        # applied after frameskip, so that rooms is always for most recent frame.
+        env = wrappers.MontezumaInfoWrapper(env)
 
     if args.reward_curve > 0:
         # must come before monitor wrapper as we want 'raw_rewards' to be modified.
