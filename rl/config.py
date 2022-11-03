@@ -682,7 +682,10 @@ class Config(BaseConfig):
 
     @property
     def tvf_return_n_step(self):
-        return int(1-(1/self.lambda_value))
+        if self.lambda_value >= 1:
+            return self.timeout//self.frame_skip
+        else:
+            return int(1/(1-self.lambda_value))
 
     @property
     def get_mutex_key(self):

@@ -23,7 +23,7 @@ def get_return_estimate(
     n_step: int = 40,
     max_samples: int = 40,
     max_h: Optional[int] = None,
-    estimator_mode:str = "default",
+    estimator_mode: str = "default",
     log:Logger = None,
     use_log_interpolation: bool=False,
 ):
