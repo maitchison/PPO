@@ -2139,37 +2139,6 @@ class Runner:
         """
         return self.all_time[-1]
 
-    def generate_sampled_return_targets(self, ext_value_estimates: np.ndarray):
-        """
-        Generates targets for value function, used only in PPO and DNA.
-        """
-        assert not args.use_tvf
-
-        N_plus_one, A = ext_value_estimates.shape
-        N = N_plus_one - 1
-
-        SAMPLES = 10
-
-        # really trying to make samples be different between runs here.
-        h = 1/(1 - args.lambda_value)
-        lambdas = [1 - (1 / (factor * h)) for factor in np.geomspace(0.25, 4.0, SAMPLES)]
-
-        advantage_estimate = np.zeros([SAMPLES, N, A], dtype=np.float32)
-
-        for i, lamb in enumerate(lambdas):
-            advantage_estimate[i] = gae(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                lamb,
-            )
-
-        sample = np.random.randint(size=[N, A], low=0, high=SAMPLES)
-        values = (advantage_estimate + ext_value_estimates[:N])
-        return np.take_along_axis(values, sample[None, :, :], axis=0)
-
     @torch.no_grad()
     def estimate_horizon_from_rediscounting(self):
 

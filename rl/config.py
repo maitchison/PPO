@@ -102,7 +102,6 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
         parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric|advanced]")
         parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
-        parser.add_argument("--tvf_return_n_step", type=int, default=80, help="n step to use for tvf_return estimation")
         parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
         parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
         parser.add_argument("--tvf_value_heads", type=int, default=64, help="Number of value heads to use.")
@@ -283,7 +282,7 @@ class Config(BaseConfig):
         parser.add_argument("--deferred_rewards", type=int, default=0,
                             help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
         # (atari)
-        parser.add_argument("--resolution", type=str, default="nature", help="['full', 'nature', 'half']")
+        parser.add_argument("--resolution", type=str, default="nature", help="[full|nature|half|muzero]")
         parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
         parser.add_argument("--cv2_bw", type=str2bool, default=False, help='uses cv2 to implement black and white filter.')
         parser.add_argument("--full_action_space", type=str2bool, default=False)
@@ -557,7 +556,6 @@ class Config(BaseConfig):
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
         self.tvf_return_samples = int()
-        self.tvf_return_n_step = int()
         self.tvf_return_use_log_interpolation = bool()
         self.tvf_max_horizon = int()
         self.tvf_boost_final_head = float()
@@ -683,6 +681,10 @@ class Config(BaseConfig):
         return self.use_rnd or self.use_ebd or (self.hash_bonus != 0)
 
     @property
+    def tvf_return_n_step(self):
+        return int(1-(1/self.lambda_value))
+
+    @property
     def get_mutex_key(self):
         if self.mutex_key.lower() == 'device':
             return args.device
@@ -723,6 +725,7 @@ def parse_args(args_override=None):
         'tvf_mode': None,
         'tvf_sum_horizons': None,
         'sns_small_samples': None,
+        'tvf_return_n_step': None,
 
         "ag_sns_delay": "ag_delay",
         "ag_sns_min_h": "ag_min_h",

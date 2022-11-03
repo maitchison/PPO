@@ -8,6 +8,7 @@ import gym.version
 resolution_map = {
     "full": (210, 160),
     "nature": (84, 84),
+    "muzero": (96, 96),
     "half": (105, 80)     # this may produce cleaner resampling
 }
 
