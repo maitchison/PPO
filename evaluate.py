@@ -138,6 +138,7 @@ def evaluate_run(run_path, temperature, max_epoch:int = 200, seed=None, eval_epo
                         checkpoint=checkpoint_name,
                         output_file=output_file,
                         temperature=temperature,
+                        seed=seed,
                         **kwargs,
                     )
 
@@ -189,7 +190,7 @@ if __name__ == "__main__":
                         help="Temperatures to generate. e.g. [0.1, 0.5, 1.0] (lower temperature has higher entropy)")
     parser.add_argument("--max_epoch", type=int, default=200, help="Max number of epochs to test up to.")
     parser.add_argument("--max_frames", type=int, default=30*60*15, help="Max number of frames in evaluation or video.")
-    parser.add_argument("--seed", type=int, default=1, help="Random Seed to use.")
+    parser.add_argument("--seed", type=int, default=1, help="Random seed to use.")
     parser.add_argument("--device", type=str, default="cpu", help="Which device to run on")
     parser.add_argument("--samples", type=int, default=100, help="Number of samples to generate in eval mode.")
     parser.add_argument("--eval_horizons", type=str, default="debug",

@@ -81,7 +81,7 @@ class ImpalaCNN(BaseNet):
 
         # super weird, they have it setup so that bias=false enables the bias... which we definitely want here
         # (just not on the convolutions, [except the first])
-        self.dense = tu.NormedLinear(utils.prod(curshape), hidden_units, scale=1.4, bias=False)
+        self.dense = tu.NormedLinear(utils.prod(curshape), hidden_units, scale=1.414)
 
         self.out_shape = curshape
         self.d = utils.prod(self.out_shape)
@@ -541,7 +541,7 @@ class TVFModel(nn.Module):
             tvf_sqrt_transform: bool = False,
             head_scale: float=1.0,
             value_head_names=('ext',),
-            norm_eps: float=1e-5,
+            norm_eps: float = 1e-5,
             head_bias: bool = False,
     ):
         """

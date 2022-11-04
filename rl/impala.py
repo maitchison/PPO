@@ -93,8 +93,7 @@ class CnnDownStack(nn.Module):
         self.inchan = inchan
         self.outchan = outchan
         self.down_sample = down_sample
-        no_bias = kwargs.get('no_bias', True)
-        self.firstconv = tu.NormedConv2d(inchan, outchan, 3, padding=1, stride=2 if down_sample == 'stride' else 1, bias=no_bias) # modification, allow bias on first conv.
+        self.firstconv = tu.NormedConv2d(inchan, outchan, 3, padding=1, stride=2 if down_sample == 'stride' else 1)
         s = scale / math.sqrt(nblock)
         self.blocks = nn.ModuleList(
             [CnnBasicBlock(outchan, scale=s, **kwargs) for _ in range(nblock)]

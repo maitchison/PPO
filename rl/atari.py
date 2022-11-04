@@ -127,11 +127,13 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     # so make sure to pass args in as an argument.
     args = args or config.args
 
+    assert args.color_mode in ["bw", "rgb"]
+
     env_name = f"ALE/{env_id}-v5"
 
     env = gym.make(
         env_name,
-        obs_type='rgb' if (monitor_video or args.color or args.cv2_bw) else 'grayscale',
+        obs_type='rgb' if (monitor_video or args.color_mode=="rgb" or args.cv2_bw) else 'grayscale',
         # ALE will skip over frames without applying max, so we handle the frameskip with our own wrapper
         frameskip=1,
         repeat_action_probability=args.repeat_action_probability,
@@ -199,7 +201,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
             raise ValueError("reward_clipping should be off, sqrt, or a float")
         env = wrappers.ClipRewardWrapper(env, clip)
 
-    env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=not args.color)
+    env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y, grayscale=args.color_mode=="bw")
 
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)

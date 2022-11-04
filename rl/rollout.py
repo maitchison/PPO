@@ -1897,18 +1897,22 @@ class Runner:
         g_b_small_squared = float(np.mean(small_norms_sqr))
         self.process_noise_scale(g_b_small_squared, g_b_big_squared, label, verbose, b_big=b_big)
 
-    @torch.no_grad()
-    def log_dna_value_quality(self):
-
+    def log_feature_statistics(self):
         # also log feature statistics
         model_out = self.detached_batch_forward(
-            self.prev_obs[0, :], # just get the first obs from each agent
+            self.prev_obs[0, :],  # just get the first obs from each agent
             output="full",
             include_features=True,
         )
+
         for key in ["policy", "value"]:
             features = model_out[f"{key}_raw_features"]
+            self.log.watch_stats(f"*{key}_raw_features", features)
+            features = model_out[f"{key}_features"]
             self.log.watch_stats(f"*{key}_features", features)
+
+    @torch.no_grad()
+    def log_dna_value_quality(self):
 
 
         targets = calculate_bootstrapped_returns(
@@ -2506,8 +2510,10 @@ class Runner:
         if not args.disable_ev and self.batch_counter % 4 == 3:
             # only about 3% slower with this on.
             if args.use_tvf:
+                self.log_feature_statistics()
                 self.log_tvf_curve_quality()
             else:
+                self.log_feature_statistics()
                 self.log_dna_value_quality()
 
         if args.noisy_return > 0:
@@ -2599,7 +2605,7 @@ class Runner:
             weights = 1
 
         # weights due to duplicate head removal
-        if args.use_tvf:
+        if args.use_tvf and not args.distil_force_ext:
             head_filter = head_sample if head_sample is not None else slice(None, None)
             weights = weights * torch.from_numpy(self.tvf_weights[None, head_filter]).to(self.model.device)
 

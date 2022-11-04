@@ -171,6 +171,43 @@ def train(model: models.TVFModel, log: Logger):
 
     start_train_time = time.time()
 
+    def save_checkpoint(runner, log):
+
+        checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
+
+        log.info()
+        log.important("Checkpoint: {}".format(args.log_folder))
+
+        if not utils.log_folder_exists():
+            raise Exception("Folder was removed, exiting.")
+
+        if args.debug_checkpoint_slides:
+            image_name = utils.get_checkpoint_path(env_step, "slides.png")
+            from PIL import Image
+            assert not args.obs_compression
+
+
+            obs = runner.obs[:, :3] # just the three color channels
+            N, C, H, W = obs.shape
+            sqrt_n = int(N ** 0.5)
+            assert sqrt_n ** 2 == N, "Must use square number of agents (for the moment)"
+            output_image = obs.transpose(0, 2, 3, 1) # N H W C
+            output_image = output_image.reshape(sqrt_n, sqrt_n*H, W, C)
+            output_image = output_image.transpose(1, 0, 2, 3)
+            output_image = output_image.reshape(sqrt_n * H, sqrt_n * W, C)
+            if args.env_type == "procgen":
+                im = Image.fromarray(output_image)
+                im.save(image_name)
+            else:
+                # other envs not supported yet.
+                pass
+
+        if args.save_checkpoints:
+            runner.save_checkpoint(checkpoint_name, env_step)
+            log.log("  -checkpoint saved")
+
+        log.info()
+
     def log_iteration():
         log.watch("iteration", iteration, display_priority=5)
         log.watch("env_step", env_step, display_priority=4, display_width=12, display_scale=1e-6, display_postfix="M",
@@ -186,6 +223,9 @@ def train(model: models.TVFModel, log: Logger):
     save_progress(log)
 
     old_header = None
+
+    if args.save_initial_checkpoint:
+        save_checkpoint(runner, log)
 
     for _ in range(start_iteration, end_iteration):
 
@@ -285,19 +325,7 @@ def train(model: models.TVFModel, log: Logger):
 
         # periodically save checkpoints
         if ((iteration in checkpoints) and (not did_restore or iteration != start_iteration)) or wants_manual_save:
-
-            log.info()
-            log.important("Checkpoint: {}".format(args.log_folder))
-
-            if not utils.log_folder_exists():
-                raise Exception("Folder was removed, exiting.")
-
-            if args.save_checkpoints:
-                checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
-                runner.save_checkpoint(checkpoint_name, env_step)
-                log.log("  -checkpoint saved")
-
-            log.info()
+            save_checkpoint(runner, log)
 
         log_time = (time.time() - log_start_time) / batch_size
 

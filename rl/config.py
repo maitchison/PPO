@@ -196,6 +196,7 @@ class Config(BaseConfig):
         parser.add_argument("--ignore_lock", type=str2bool, default=False, help="ignores previous lock")
         parser.add_argument("--ignore_device", type=str, default="[]", help="Devices to ignore when using auto")
         parser.add_argument("--save_checkpoints", type=str2bool, default=True)
+        parser.add_argument("--save_initial_checkpoint", type=str2bool, default=True, help="Saves a checkpoint before any training.")
         parser.add_argument("--output_folder", type=str, default="./")
         parser.add_argument("--hostname", type=str, default=socket.gethostname())
         parser.add_argument("--guid", type=str, default=None)
@@ -283,7 +284,7 @@ class Config(BaseConfig):
                             help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
         # (atari)
         parser.add_argument("--resolution", type=str, default="nature", help="[full|nature|half|muzero]")
-        parser.add_argument("--color", type=str2bool, nargs='?', const=True, default=False)
+        parser.add_argument("--color_mode", type=str, default="default", help="default|bw|rgb|yuv|hsv")
         parser.add_argument("--cv2_bw", type=str2bool, default=False, help='uses cv2 to implement black and white filter.')
         parser.add_argument("--full_action_space", type=str2bool, default=False)
         parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)
@@ -335,6 +336,7 @@ class Config(BaseConfig):
         parser.add_argument("--debug_log_rediscount_curve", type=str2bool, default=False, help="")
         parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
         parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
+        parser.add_argument("--debug_checkpoint_slides", type=str2bool, default=True, help="Generates state images during epoch saves.")
 
         # --------------------------------
         # Auto Gamma
@@ -472,6 +474,7 @@ class Config(BaseConfig):
         self.ignore_lock = bool()
         self.ignore_device = str()
         self.save_checkpoints = bool()
+        self.save_initial_checkpoint = bool()
         self.output_folder = str()
         self.hostname = str()
         self.guid = object()
@@ -524,7 +527,7 @@ class Config(BaseConfig):
         self.reward_curve = float()
         self.deferred_rewards = int()
         self.resolution = str()
-        self.color = bool()
+        self.color_mode = str()
         self.cv2_bw = bool()
         self.max_repeated_actions = int()
         self.repeated_action_penalty = float()
@@ -570,6 +573,7 @@ class Config(BaseConfig):
 
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
+        self.debug_checkpoint_slides = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()
@@ -685,7 +689,7 @@ class Config(BaseConfig):
         if self.lambda_value >= 1:
             return self.timeout//self.frame_skip
         else:
-            return int(1/(1-self.lambda_value))
+            return round(1/(1-self.lambda_value))
 
     @property
     def get_mutex_key(self):
@@ -729,6 +733,7 @@ def parse_args(args_override=None):
         'tvf_sum_horizons': None,
         'sns_small_samples': None,
         'tvf_return_n_step': None,
+        'color': None,
 
         "ag_sns_delay": "ag_delay",
         "ag_sns_min_h": "ag_min_h",
@@ -786,8 +791,6 @@ def parse_args(args_override=None):
     if args.reference_policy is not None:
         assert args.architecture == "dual", "Reference policy loading requires a dual network."
     assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
-    assert not (args.color and args.observation_normalization), "Observation normalization averages over channels, so " \
-                                                               "best to not use it with color at the moment."
 
     assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
 
@@ -837,6 +840,17 @@ def parse_args(args_override=None):
     except Exception as e:
         # this just means we are not using the old bool values
         pass
+
+
+    # color mode
+    assert args.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
+    if args.color_mode == "default":
+        args.color_mode = {
+            'atari': 'bw',
+            'procgen': 'rgb',
+        }.get(args.env_type, 'bw')
+    if args.color_mode == "yuv" and args.env_type == "atari":
+        raise Exception("YUV on Atari not supported yet")
 
 
     if args.use_ag and args.ag_mode in ['sns', 'shadow']:

@@ -149,7 +149,12 @@ def get_return_estimate(
     else:
         raise ValueError(f"Invalid returns mode {mode}")
 
-    raise Exception("This return mode is not supported yet.")
+
+    # not tested super well...
+    n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
+    return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
+
+    # raise Exception("This return mode is not supported yet.")
 
 
 

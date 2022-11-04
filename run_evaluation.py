@@ -950,7 +950,7 @@ class QuickPlot():
             y2 = h
         y = y1
         for x in range(x1, x2+1):
-            self.buffer[-int(y), x] = c
+            self.plot_pixel(x, h-int(y), c)
             y += (y2-y1) / (x2+1-x1)
 
     def v_line(self, x:int, y1:int, y2:int, c):
@@ -1053,6 +1053,7 @@ def export_movie(
         include_score_in_filename=False,
         temperature=1.0,
         zero_time=False,
+        seed:int=1,
 ):
     """
     Modified version of export movie that supports display of truncated value functions
@@ -1082,7 +1083,8 @@ def export_movie(
         temperature=temperature,
         mv_return_samples=eval_args.mv_return_samples,
         mv_samples=eval_args.mv_samples,
-        zero_time=zero_time
+        zero_time=zero_time,
+        seed_base=seed,
     )
     rewards = buffer["rewards"]
     raw_rewards = buffer["raw_rewards"]
@@ -1326,6 +1328,7 @@ if __name__ == "__main__":
                 include_score_in_filename=True,
                 temperature=temperature,
                 max_frames=eval_args.max_frames,
+                seed=eval_args.seed,
             )
         elif eval_args.mode == "video_nt":
             video_filename = export_movie(
@@ -1335,6 +1338,7 @@ if __name__ == "__main__":
                 temperature=temperature,
                 zero_time=True,
                 max_frames=eval_args.max_frames,
+                seed=eval_args.seed,
             )
         elif eval_args.mode == "eval":
             evaluate_model(

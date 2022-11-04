@@ -1206,6 +1206,116 @@ class AtariWrapper(gym.Wrapper):
         obs = self.env.reset()
         return self._process_frame(obs)
 
+
+class TimeChannelWrapper(gym.Wrapper):
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        H, W, C = self.env.observation_space.shape
+        assert C < H, f"Input should be in HWC format, not CHW, shape was {self.env.observation_space.shape}"
+        self.observation_space = gym.spaces.Box(0, 255, (H, W, C+1), dtype=np.uint8)
+
+    def _process_frame(self, obs: np.ndarray, time: float):
+        assert obs.dtype == np.uint8
+        H, W, C = obs.shape
+        assert C < H, "Must be channels first."
+        new_obs = np.zeros((H, W, C+1), dtype=np.uint8)
+        new_obs[:, :, :-1] = obs
+        new_obs[:, :, -1] = time * 255
+        return new_obs
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        assert 'time_frac' in info, "must include timelimit wrapper before TimeChannelWrapper"
+        obs = self._process_frame(obs, info['time_frac'])
+        if "channels" in info:
+            info["channels"] += ["Gray"]
+        return obs, reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        return self._process_frame(obs, 0)
+
+class ChannelsFirstWrapper(gym.Wrapper):
+    """
+    Puts observation in channels first order
+
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        H, W, C = self.env.observation_space.shape
+        assert C < H, f"Input should be in HWC format, not CHW, shape was {self.env.observation_space.shape}"
+        self.observation_space = gym.spaces.Box(0, 255, (C, H, W), dtype=np.uint8)
+
+    def _process_frame(self, obs):
+        return obs.transpose(2, 0, 1)
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        return self._process_frame(obs), reward, done, info
+
+    def reset(self):
+        return self._process_frame(self.env.reset())
+
+class ColorTransformWrapper(gym.Wrapper):
+
+    def __init__(self, env, color_mode: str):
+
+        super().__init__(env)
+        self.env = env
+        H, W, C = self.env.observation_space.shape
+
+        assert C < H, f"Input should be in HWC format, not CHW, shape was {self.env.observation_space.shape}"
+        assert color_mode in ["bw", "rgb", "yuv"]
+        self.expected_input_shape = (H, W, C)
+
+        if color_mode in ["bw"]:
+            assert C in [1, 3]
+            output_shape = (H, W, 1)
+        elif color_mode in ["rgb", "yuv", "hsv"]:
+            assert C in [3]
+            output_shape = (H, W, 3)
+        else:
+            raise ValueError("Invalid color mode.")
+
+        self.color_mode = color_mode
+        self.observation_space = gym.spaces.Box(0, 255, output_shape, dtype=np.uint8)
+
+    def _process_frame(self, obs: np.ndarray):
+
+        assert obs.shape == self.expected_input_shape, f"Shape missmatch, expecting {self.expected_input_shape} found {obs.shape}"
+
+        H, W, C = obs.shape
+
+        if C == 1:
+            # this is just a black and white frame
+            return obs
+        elif self.color_mode == "bw":
+            # not teseted yet...
+            return cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)[:, :, None]
+        elif self.color_mode == "yuv":
+            return cv2.cvtColor(obs, cv2.COLOR_RGB2YUV)
+        elif self.color_mode == "hsv":
+            return cv2.cvtColor(obs, cv2.COLOR_RGB2HSV)
+        elif self.color_mode == "rgb":
+            return obs
+        else:
+            raise ValueError(f"Invalid color_mode {self.color_mode}")
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        # present rgb and yuv frames as grayscale
+        info["channels"] = ["Gray"] * (1 if self.color_mode in ["bw"] else 3)
+        return self._process_frame(obs), reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        return self._process_frame(obs)
+
+
+
 class NullActionWrapper(gym.Wrapper):
     """
     Allows passing of a negative action to indicate not to proceed the environment forward.
