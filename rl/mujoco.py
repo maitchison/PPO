@@ -43,7 +43,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = gym.make(env_name)
 
-    env = wrappers.LabelEnvWrapper(env, env_id)
+    env = wrappers.LabelEnvWrapper(env, "env_id", env_id)
 
     if seed is not None:
         np.random.seed(seed)

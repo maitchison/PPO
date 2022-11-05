@@ -157,7 +157,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         if ale_md5 != file_md5:
             raise Exception(f"Expecting ROM {rom_file_name} to have MD5 {ale_md5} but it was {file_md5}")
 
-    env = wrappers.LabelEnvWrapper(env, env_id)
+    env = wrappers.LabelEnvWrapper(env, "env_id", env_id)
+    if seed is not None:
+        env = wrappers.LabelEnvWrapper(env, "seed", seed)
 
     if seed is not None:
         np.random.seed(seed)
@@ -177,7 +179,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
 
     if args.debug_state_distort >= 0:
-        env = wrappers.DelayedStateDistortionWrapper(env, args.debug_state_distort)
+        # only 1/11 envs will have distortion (based on seed)
+        use_distortion = seed is None or (seed % 11 == 10)
+        env = wrappers.DelayedStateDistortionWrapper(env, args.debug_state_distort if use_distortion else float('inf'))
 
     if env_id == "MontezumaRevenge":
         # to record rooms.

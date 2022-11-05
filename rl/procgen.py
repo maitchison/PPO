@@ -61,7 +61,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
 
     env = gym.make(env_name, **env_args)
 
-    env = wrappers.LabelEnvWrapper(env, env_id)
+    env = wrappers.LabelEnvWrapper(env, "env_id", env_id)
 
     if args.timeout > 0:
         env = wrappers.TimeLimitWrapper(env, args.timeout)

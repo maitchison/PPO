@@ -710,13 +710,14 @@ class RandomTerminationWrapper(gym.Wrapper):
         return obs, reward, done, info
 
 class LabelEnvWrapper(gym.Wrapper):
-    def __init__(self, env:gym.Env, label:str):
+    def __init__(self, env:gym.Env, label_name:str, label_value:str):
         super().__init__(env)
-        self.label = label
+        self.label_name = label_name
+        self.label_value = label_value
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        info['env_id'] = self.label
+        info[self.label_name] = self.label_value
         return obs, reward, done, info
 
 
@@ -1327,7 +1328,6 @@ class DelayedStateDistortionWrapper(gym.Wrapper):
     """
 
     def __init__(self, env, delay: int):
-
         super().__init__(env)
         self.env = env
         self.frames_seen = 0
