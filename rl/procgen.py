@@ -54,10 +54,10 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
         env_args['rand_seed'] = seed
 
     # stub
-    if seed is None:
-        print("Generating procgen env with no seed.")
-    else:
-        print(f"Generating procgen env with seed {seed}.")
+    # if seed is None:
+    #     print("Generating procgen env with no seed.")
+    # else:
+    #     print(f"Generating procgen env with seed {seed}.")
 
     env = gym.make(env_name, **env_args)
 
@@ -77,8 +77,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='
 
     # reset of pipeline expects channels first
     env = wrappers.ChannelsFirstWrapper(env)
-
-
 
     env = wrappers.EpisodeScoreWrapper(env)
 

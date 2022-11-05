@@ -263,7 +263,7 @@ class Config(BaseConfig):
         parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
         parser.add_argument("--warmup_period", type=int, default=250,
                             help="Number of random steps to take before training agent.")
-        parser.add_argument("--timeout", type=int, default=60 * 60 * 30,
+        parser.add_argument("--timeout", type=str, default="auto",
                             help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
         parser.add_argument("--repeat_action_probability", type=float, default=0.0)
         parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
@@ -841,6 +841,23 @@ def parse_args(args_override=None):
         # this just means we are not using the old bool values
         pass
 
+    # timeout
+    if args.timeout == "auto":
+        if args.env_type == "atari":
+            args.timeout = 108000 # includes skipped frames
+        elif args.env_type == "procgen":
+            # might be more fair to just set this so something like 8000 for all envs?
+            # the trimming can auto adapt so it's just when we put the time frac into the obs
+            # maybe we should use log time instead?
+            if args.environment in ['bigfish', 'plunder', 'bossfight']:
+                args.timeout = 8000
+            else:
+                args.timeout = 1000
+        else:
+            args.timeout = 0  # unlimited
+
+    else:
+        args.timeout = int(args.timeout)
 
     # color mode
     assert args.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]

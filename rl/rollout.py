@@ -2114,7 +2114,7 @@ class Runner:
         )
         values = self.ext_value[:self.N]
         ev = utils.explained_variance(values.ravel(), targets.ravel())
-        self.log.watch_mean("ev_ext", ev, history_length=1)
+        self.log.watch_mean("*ev_ext", ev, history_length=1)
 
     @property
     def prev_obs(self):

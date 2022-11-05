@@ -950,7 +950,7 @@ class QuickPlot():
             y2 = h
         y = y1
         for x in range(x1, x2+1):
-            self.plot_pixel(x, h-int(y), c)
+            self.plot_pixel(x, int(y), c)
             y += (y2-y1) / (x2+1-x1)
 
     def v_line(self, x:int, y1:int, y2:int, c):
