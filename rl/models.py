@@ -869,7 +869,7 @@ class TVFModel(nn.Module):
                 x = ((x / 255.0)-0.5)*1
             elif self.observation_scaling == "unit":
                 # approximates unit normal
-                x = ((x / 255.0)-0.5)*3
+                x = ((x / 255.0)-0.5)*6 # from -3 to +3, which should be close to unit norm
             else:
                 raise ValueError(f"Invalid observation_scaling mode {self.observation_scaling}")
         return x
