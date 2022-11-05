@@ -1414,7 +1414,7 @@ class Runner:
 
         # give reward for action that lead to a novel state...
         if args.env_type == "atari":
-            channel_filter = slice(args.frame_stack - 1, args.frame_stack)  # last channel is most recent
+            channel_filter = slice(0, 1)  # just take first channel, might not work for rgb...
         else:
             channel_filter = None  # select all channels.
 

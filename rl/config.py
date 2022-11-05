@@ -285,7 +285,6 @@ class Config(BaseConfig):
         # (atari)
         parser.add_argument("--resolution", type=str, default="nature", help="[full|nature|half|muzero]")
         parser.add_argument("--color_mode", type=str, default="default", help="default|bw|rgb|yuv|hsv")
-        parser.add_argument("--cv2_bw", type=str2bool, default=False, help='uses cv2 to implement black and white filter.')
         parser.add_argument("--full_action_space", type=str2bool, default=False)
         parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)
         parser.add_argument("--frame_stack", type=int, default=4)
@@ -528,7 +527,6 @@ class Config(BaseConfig):
         self.deferred_rewards = int()
         self.resolution = str()
         self.color_mode = str()
-        self.cv2_bw = bool()
         self.max_repeated_actions = int()
         self.repeated_action_penalty = float()
         self.full_action_space = bool()
@@ -866,9 +864,6 @@ def parse_args(args_override=None):
             'atari': 'bw',
             'procgen': 'rgb',
         }.get(args.env_type, 'bw')
-    if args.color_mode == "yuv" and args.env_type == "atari":
-        raise Exception("YUV on Atari not supported yet")
-
 
     if args.use_ag and args.ag_mode in ['sns', 'shadow']:
         assert 'value_heads' in ast.literal_eval(args.sns_labels), "sns_labels must include value_head"

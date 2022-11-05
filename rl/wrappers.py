@@ -1139,11 +1139,11 @@ class AtariWrapper(gym.Wrapper):
 
     """
 
-    def __init__(self, env: gym.Env, grayscale=True, width=84, height=84, interpolation=None):
+    def __init__(self, env: gym.Env, width=84, height=84, interpolation=None):
         """
         Stack and do other stuff...
         Input should be (210, 160, 3)
-        Output is a stack of shape (nstacks, width, height)
+        Output of size (width, height, 3)
         """
 
         super().__init__(env)
@@ -1151,7 +1151,7 @@ class AtariWrapper(gym.Wrapper):
         self._width, self._height = width, height
 
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
-        assert env.observation_space.shape in [(210,160), (210, 160, 3)], "Invalid shape {}".format(env.observation_space.shape)
+        assert env.observation_space.shape in [(210, 160), (210, 160, 3)], "Invalid shape {}".format(env.observation_space.shape)
 
         if interpolation is None:
             # sort out default interpolation
@@ -1162,14 +1162,13 @@ class AtariWrapper(gym.Wrapper):
             else:
                 interpolation = cv2.INTER_AREA     # safest option for general resizing.
 
-        self.grayscale = grayscale
-        self.n_channels = 1 if self.grayscale else 3
+        self.n_channels = 3
         self.interpolation = interpolation
 
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(self.n_channels, self._width, self._height),
+            shape=(self._width, self._height, self.n_channels),
             dtype=np.uint8,
         )
 
@@ -1178,13 +1177,6 @@ class AtariWrapper(gym.Wrapper):
         assert len(obs.shape) in [2, 3]
 
         if len(obs.shape) == 2:
-            obs = np.expand_dims(obs, 2)
-
-        input_is_rgb = obs.shape[-1] == 3
-
-        if self.grayscale and input_is_rgb:
-            # convert to grayscale if needed
-            obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
             obs = np.expand_dims(obs, 2)
 
         width, height, channels = obs.shape
@@ -1199,7 +1191,7 @@ class AtariWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        info["channels"] = ["Gray"] if self.grayscale else ["ColorR", "ColorG", "ColorB"]
+        info["channels"] = ["ColorR", "ColorG", "ColorB"]
         return self._process_frame(obs), reward, done, info
 
     def reset(self):
@@ -1208,6 +1200,10 @@ class AtariWrapper(gym.Wrapper):
 
 
 class TimeChannelWrapper(gym.Wrapper):
+    """
+    Adds time as a channel
+    Input should be in HWC order
+    """
 
     def __init__(self, env):
         super().__init__(env)
@@ -1275,7 +1271,7 @@ class ColorTransformWrapper(gym.Wrapper):
             assert C in [1, 3]
             output_shape = (H, W, 1)
         elif color_mode in ["rgb", "yuv", "hsv"]:
-            assert C in [3]
+            assert C == 3, f"Expecting 3 channels, found {C}"
             output_shape = (H, W, 3)
         else:
             raise ValueError("Invalid color mode.")
@@ -1293,7 +1289,6 @@ class ColorTransformWrapper(gym.Wrapper):
             # this is just a black and white frame
             return obs
         elif self.color_mode == "bw":
-            # not teseted yet...
             return cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)[:, :, None]
         elif self.color_mode == "yuv":
             return cv2.cvtColor(obs, cv2.COLOR_RGB2YUV)
@@ -1306,8 +1301,18 @@ class ColorTransformWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        # present rgb and yuv frames as grayscale
-        info["channels"] = ["Gray"] * (1 if self.color_mode in ["bw"] else 3)
+        if self.color_mode == "bw":
+            info["channels"] = ["Gray"]
+        elif self.color_mode == "rgb":
+            # present rgb and yuv frames as grayscale
+            info["channels"] = ["ColorR", "ColorG", "ColorB"]
+        elif self.color_mode == "yuv":
+            # present rgb and yuv frames as grayscale
+            info["channels"] = ["ColorY", "ColorU", "ColorV"]
+        elif self.color_mode == "hsv":
+            # present rgb and yuv frames as grayscale
+            info["channels"] = ["ColorH", "ColorS", "ColorV"]
+
         return self._process_frame(obs), reward, done, info
 
     def reset(self):
@@ -1429,6 +1434,8 @@ class NoopResetWrapper(gym.Wrapper):
 class FrameStack(gym.Wrapper):
     """ This is the original frame stacker that works by making duplicates of the frames,
         For large numbers of frames this can be quite slow.
+
+        Input should be h,w,c order
     """
 
     def __init__(self, env, n_stacks=4):
@@ -1438,41 +1445,44 @@ class FrameStack(gym.Wrapper):
         assert len(env.observation_space.shape) == 3, "Invalid shape {}".format(env.observation_space.shape)
         assert env.observation_space.dtype == np.uint8, "Invalid dtype {}".format(env.observation_space.dtype)
 
-        c, h, w = env.observation_space.shape
+        h, w, c = env.observation_space.shape
 
-        assert c in [1, 3], "Invalid shape {}".format(env.observation_space.shape)
+        assert c < h, "Must have channels first."
 
         self.n_stacks = n_stacks
         self.original_channels = c
         self.n_channels = self.n_stacks * self.original_channels
 
-        self.stack = np.zeros((self.n_channels, h, w), dtype=np.uint8)
+        self.stack = collections.deque(maxlen=n_stacks)
+
+        for i in range(n_stacks):
+            self._push_obs(np.zeros((h, w, c), dtype=np.uint8))
 
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(self.n_channels, h, w),
+            shape=(h, w, self.n_channels),
             dtype=np.uint8,
         )
 
     def _push_obs(self, obs):
-        # note, in this case slot 0 is the oldest observation, not the newest.
-        assert self.original_channels == 1, "Stacking does not support color at the moment."
-        self.stack = np.roll(self.stack, shift=-1, axis=0)
-        self.stack[-1:, :, :] = obs[:, :, 0]
+        self.stack.appendleft(obs)
+
+    def get_obs(self):
+        return np.concatenate(self.stack, axis=-1)
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
         self._push_obs(obs)
         if "channels" in info:
             info["channels"] = info["channels"] * self.n_stacks
-        return self.stack, reward, done, info
+        return self.get_obs(), reward, done, info
 
     def reset(self):
         obs = self.env.reset()
         for _ in range(self.n_stacks):
             self._push_obs(obs)
-        return self.stack
+        return self.get_obs()
 
     def save_state(self, buffer):
         buffer["stack"] = self.stack

@@ -171,6 +171,38 @@ def train(model: models.TVFModel, log: Logger):
 
     start_train_time = time.time()
 
+    def save_checkpoint_image():
+
+        if args.env_type not in ["atari", "mujoco"]:
+            # not supported yet.
+            return
+
+        image_name = utils.get_checkpoint_path(env_step, "slides.png")
+        from PIL import Image
+        assert not args.obs_compression
+
+        A, C, H, W = runner.obs.shape
+
+        if args.color_mode == "bw":
+            obs = np.zeros((A, 3, H, W), dtype=np.uint8)
+            obs[:, 0] = runner.obs[:, 0]
+            obs[:, 1] = runner.obs[:, 0]
+            obs[:, 2] = runner.obs[:, 0]
+        else:
+            obs = runner.obs[:, :3]
+
+        C = 3
+
+        wide = 16
+        assert A % wide == 0, "For image export agents must be divisible by 16"
+        high = A // wide
+        output_image = obs.transpose((0, 2, 3, 1))  # N H W C
+        output_image = output_image.reshape((high, wide * H, W, C))
+        output_image = output_image.transpose(1, 0, 2, 3)
+        output_image = output_image.reshape(high * H, wide * W, C)
+        im = Image.fromarray(output_image)
+        im.save(image_name)
+
     def save_checkpoint(runner, log):
 
         checkpoint_name = utils.get_checkpoint_path(env_step, "params.pt")
@@ -182,25 +214,7 @@ def train(model: models.TVFModel, log: Logger):
             raise Exception("Folder was removed, exiting.")
 
         if args.debug_checkpoint_slides:
-            image_name = utils.get_checkpoint_path(env_step, "slides.png")
-            from PIL import Image
-            assert not args.obs_compression
-
-
-            obs = runner.obs[:, :3] # just the three color channels
-            N, C, H, W = obs.shape
-            sqrt_n = int(N ** 0.5)
-            assert sqrt_n ** 2 == N, "Must use square number of agents (for the moment)"
-            output_image = obs.transpose(0, 2, 3, 1) # N H W C
-            output_image = output_image.reshape(sqrt_n, sqrt_n*H, W, C)
-            output_image = output_image.transpose(1, 0, 2, 3)
-            output_image = output_image.reshape(sqrt_n * H, sqrt_n * W, C)
-            if args.env_type == "procgen":
-                im = Image.fromarray(output_image)
-                im.save(image_name)
-            else:
-                # other envs not supported yet.
-                pass
+            save_checkpoint_image()
 
         if args.save_checkpoints:
             runner.save_checkpoint(checkpoint_name, env_step)
