@@ -83,6 +83,7 @@ def make_model(args, log=None):
         value_head_names=tuple(value_head_names),
         norm_eps=args.observation_normalization_epsilon,
         head_bias=args.head_bias,
+        observation_scaling=args.observation_scaling,
     )
     return model
 

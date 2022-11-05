@@ -543,6 +543,7 @@ class TVFModel(nn.Module):
             value_head_names=('ext',),
             norm_eps: float = 1e-5,
             head_bias: bool = False,
+            observation_scaling: str = "scaled"
     ):
         """
             Truncated Value Function model
@@ -571,6 +572,7 @@ class TVFModel(nn.Module):
         self.tvf_sqrt_transform = tvf_sqrt_transform
         self.encoder_name = encoder
         self.norm_eps = norm_eps
+        self.observation_scaling = observation_scaling
 
         # todo: rename this..
         if architecture == "single":
@@ -861,7 +863,15 @@ class TVFModel(nn.Module):
 
         # then covert the type (faster to upload uint8 then convert on GPU)
         if was_uint8 and scale_int:
-            x = x / 255.0
+            if self.observation_scaling == "scaled":
+                x = x / 255.0
+            elif self.observation_scaling == "centered":
+                x = ((x / 255.0)-0.5)*1
+            elif self.observation_scaling == "unit":
+                # approximates unit normal
+                x = ((x / 255.0)-0.5)*3
+            else:
+                raise ValueError(f"Invalid observation_scaling mode {self.observation_scaling}")
         return x
 
 

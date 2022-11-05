@@ -211,6 +211,8 @@ class Config(BaseConfig):
         parser.add_argument("--quiet_mode", type=str2bool, default=False)
         parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
         parser.add_argument("--log_folder", type=str, default=None)
+
+        parser.add_argument("--observation_scaling", type=str, default="scaled", help="scaled|centered|unit")
         parser.add_argument("--observation_normalization", type=str2bool, default=False)
         parser.add_argument("--observation_normalization_epsilon", type=float, default=0.003)
         parser.add_argument("--freeze_observation_normalization", type=str2bool, default=False,
@@ -489,6 +491,7 @@ class Config(BaseConfig):
         self.debug_log_freq = int()
         self.checkpoint_every = int()
         self.log_folder = object()
+        self.observation_scaling = str()
         self.observation_normalization = bool()
         self.observation_normalization_epsilon = float()
         self.freeze_observation_normalization = bool()
