@@ -1320,6 +1320,43 @@ class ColorTransformWrapper(gym.Wrapper):
         return self._process_frame(obs)
 
 
+class DelayedStateDistortionWrapper(gym.Wrapper):
+
+    """
+    After 5M frames apply an negation filter.
+    """
+
+    def __init__(self, env, delay: int):
+
+        super().__init__(env)
+        self.env = env
+        self.frames_seen = 0
+        self.delay = delay
+
+    def _process_frame(self, obs: np.ndarray):
+        assert obs.dtype == np.uint8
+        if self.frames_seen < self.delay:
+            return obs
+        else:
+            return 255-obs
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.frames_seen += 1
+        return self._process_frame(obs), reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        self.frames_seen += 1
+        return self._process_frame(obs)
+
+    def save_state(self, buffer):
+        buffer["frames_seen"] = self.frames_seen
+
+    def restore_state(self, buffer):
+        self.frames_seen = buffer["frames_seen"]
+
+
 
 class NullActionWrapper(gym.Wrapper):
     """

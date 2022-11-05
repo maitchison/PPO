@@ -813,7 +813,7 @@ def _calculate_sampled_return_multi_threaded(
         all_results[:, :, idx] = returns
 
     # just make sure there are no duplicates here...
-    # as were were adding them before. Should be fine, and can delte.
+    # as we were adding them before. Should be fine, and can delte.
     ids = ([x[0] for x in result])
     assert len(ids) == len(set(ids))
 

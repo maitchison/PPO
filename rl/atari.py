@@ -176,6 +176,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
 
+    if args.debug_state_distort >= 0:
+        env = wrappers.DelayedStateDistortionWrapper(env, args.debug_state_distort)
+
     if env_id == "MontezumaRevenge":
         # to record rooms.
         # applied after frameskip, so that rooms is always for most recent frame.
