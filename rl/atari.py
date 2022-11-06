@@ -180,7 +180,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     if args.debug_state_distort >= 0:
         # only 1/11 envs will have distortion (based on seed)
-        use_distortion = seed is None or (seed % 11 == 10)
+        use_distortion = seed is None or (seed % args.debug_state_modulo == 0)
         env = wrappers.DelayedStateDistortionWrapper(env, args.debug_state_distort if use_distortion else float('inf'))
 
     if env_id == "MontezumaRevenge":

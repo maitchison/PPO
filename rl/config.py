@@ -339,6 +339,7 @@ class Config(BaseConfig):
         parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
         parser.add_argument("--debug_checkpoint_slides", type=str2bool, default=True, help="Generates state images during epoch saves.")
         parser.add_argument("--debug_state_distort", type=int, default=-1, help="After this many (per agent) frames apply a negation filter. (< 0 for disabled)")
+        parser.add_argument("--debug_state_modulo", type=int, default=11)
 
 
         # --------------------------------
@@ -577,7 +578,8 @@ class Config(BaseConfig):
         self.debug_zero_obs = bool()
         self.debug_log_rediscount_curve = bool()
         self.debug_checkpoint_slides = bool()
-        self.debug_state_distort = bool()
+        self.debug_state_distort = int()
+        self.debug_state_modulo = bool()
 
         self.use_ag = bool()
         self.ag_mode = str()
