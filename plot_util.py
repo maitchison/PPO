@@ -26,18 +26,18 @@ PROCGEN_NORM_CONSTANTS = {
     'starpilot': [1.5, 35],
     'caveflyer': [2, 13.4],
     'dodgeball': [1.5, 19],
-    'fruitbot': [-.5, 27.2],
-    'chaser': [.5, 14.2],
+    'fruitbot': [-0.5, 27.2],
+    'chaser': [0.5, 14.2],
     'miner': [1.5, 20],
     'jumper': [1, 10],
     'leaper': [1.5, 10],
-    'maze': [4, 10],
+    'maze': [4, 10], # I don't think 4 is the correct min score for maze?
     'bigfish': [0, 40],
     'heist': [2, 10],
     'climber': [1, 12.6],
     'plunder': [3, 30],
     'ninja': [2, 10],
-    'bossfight': [.5, 13],
+    'bossfight': [0.5, 13],
 }
 
 MUJOCO_NORM_CONSTANTS = {
@@ -889,6 +889,11 @@ class AtariScoreNormalizer:
             "mean",
             0
         ),
+        'Procgen_4': (
+            ["heist", "maze", "bigfish", "bossfight"],
+            "mean",
+            0
+        ),
         'Mujoco': (
             list(MUJOCO_NORM_CONSTANTS.keys()),
             "mean",
@@ -1005,6 +1010,17 @@ class AtariScoreNormalizer:
                 norm_score = (scores[k] - low) / (high-low)
                 normed_scores.append(norm_score)
                 total += norm_score * (1/len(PROCGEN_NORM_CONSTANTS))
+            return total
+
+        if subset_name == "Procgen_4":
+            total = 0
+            normed_scores = []
+            for k, (low, high) in PROCGEN_NORM_CONSTANTS.items():
+                if k not in self.SUBSETS['Procgen_4'][0]:
+                    continue
+                norm_score = (scores[k] - low) / (high-low)
+                normed_scores.append(norm_score)
+                total += norm_score * (1/len(4))
             return total
 
         # because montezuma's revenge often gets 0, and has such low weighting, I often don't test on it and just

@@ -24,7 +24,7 @@ TEMPLATE_SRV3 = SlurmTemplate("gpsrv3", """#!/bin/bash
 #SBATCH --mem=60G                     # 8GB per job is about right
 #SBATCH --time=48:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:3090:4             # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
+#SBATCH --gres=gpu:3090:2             # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
 #SBATCH --output=%j.log     # Standard output and error log
 
 pwd; hostname; date
@@ -34,7 +34,7 @@ cd PPO
 %CMD%
 echo "--- done ---"
 date
-""", n_gpus=4, n_jobs=8)
+""", n_gpus=2, n_jobs=8)
 
 TEMPLATE_SRV5 = SlurmTemplate("gpsrv5", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name

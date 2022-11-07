@@ -80,6 +80,19 @@ def get_return_estimate(
 
         n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
         return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
+    elif mode == "td_lambda":
+        returns = np.zeros([N, A, K], dtype=np.float32)
+        weight = 1
+        total_weight = 0
+        lamb = 1 - (1 / n_step)
+        for n_step in range(1, N+1):
+            n_step_samples = np.zeros([K, 1], dtype=np.int32) + n_step
+            returns += _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args) * weight
+            total_weight += weight
+            weight *= lamb
+        returns /= total_weight
+        return returns
+
     elif mode == "advanced_uniform":
         # the idea here is that each agent and horizon gets a different set of n-step estimates
 
@@ -149,7 +162,7 @@ def get_return_estimate(
     else:
         raise ValueError(f"Invalid returns mode {mode}")
 
-
+    weights = weights / np.sum(weights)
     # not tested super well...
     n_step_samples = np.random.choice(range(1, len(weights)+1), size=(K, max_samples), replace=True, p=weights)
     return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
