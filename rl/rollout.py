@@ -2034,7 +2034,8 @@ class Runner:
 
         total_not_explained_var = 0
         total_var = 0
-        heads_to_log = utils.even_sample_down(range(len(self.tvf_horizons)), args.sns_max_heads)
+        start_head = 1 if self.tvf_horizons[0] == 0 else 0 # skip first head if it is 0
+        heads_to_log = utils.even_sample_down(range(len(self.tvf_horizons[start_head:])), args.sns_max_heads)
         for i, head_index in enumerate(heads_to_log):
             this_var, this_not_explained_var = log_head(head_index)
             total_var += this_var
