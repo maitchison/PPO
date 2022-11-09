@@ -665,6 +665,9 @@ def compose_frame(state_frame, rendered_frame, channels=None):
         # default channels (not very smart, but hopefuly channels is given so we don't need to guess)
         channels = ["Gray-" + str(i) for i in range(s_c)]
 
+    # stub:
+    print(channels)
+
     # combine color frames etc
     frames = []
     for i in range(s_c):
@@ -674,6 +677,9 @@ def compose_frame(state_frame, rendered_frame, channels=None):
             new_frame = expand_gray_frame(state_frame[i], (0.25, 0.25, 1.0))
         elif channels[i].startswith("ColorR"):
             new_frame = state_frame[i:i+3, :, :]
+        elif channels[i].startswith("ColorY") or channels[i].startswith("ColorU") or channels[i].startswith("ColorV"):
+            # show as 3 black and white frames
+            new_frame = expand_gray_frame(state_frame[i])
         else:
             continue
 

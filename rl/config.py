@@ -100,7 +100,8 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_at_minh", type=int, default=128)
         parser.add_argument("--tvf_at_percentile", type=float, default=90)
         parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
-        parser.add_argument("--tvf_return_mode", type=str, default="exponential", help="[fixed|adaptive|exponential|geometric|advanced]")
+        parser.add_argument("--tvf_return_mode", type=str, default="advanced", help="[standard|advanced|full]")
+        parser.add_argument("--tvf_return_distribution", type=str, default="exponential", help="[fixed|exponential|uniform|hyperbolic|quadratic]")
         parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
         parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
         parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
@@ -128,6 +129,8 @@ class OptimizerConfig(BaseConfig):
 
         super().__init__(prefix)
 
+        self.name = prefix
+
         if parser is None:
             return
 
@@ -143,6 +146,7 @@ class OptimizerConfig(BaseConfig):
 
         # general
         parser.add_argument(f"--{prefix}_optimizer", type=str, default="adam", help="[adam|sgd|csgo]")
+        parser.add_argument(f"--{prefix}_per_epoch_optimizer", type=str2bool, default=False)
         parser.add_argument(f"--{prefix}_lr_anneal", type=str2bool, nargs='?', const=True, default=False, help="Anneals learning rate to 0 (linearly) over training")
         parser.add_argument(f"--{prefix}_epochs", type=int, default=epoch_default, help=f"Number of training epochs per {prefix} batch.")
         parser.add_argument(f"--{prefix}_mini_batch_size", type=int, default=256, help="Number of examples used for each optimization step.")
@@ -151,8 +155,8 @@ class OptimizerConfig(BaseConfig):
 
         # adam
         parser.add_argument(f"--{prefix}_adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
-        parser.add_argument(f"--{prefix}_adam_beta1", type=float, default=0.9, help="beta1 parameter for Adam optimizer")
-        parser.add_argument(f"--{prefix}_adam_beta2", type=float, default=0.999, help="beta1 parameter for Adam optimizer")
+        parser.add_argument(f"--{prefix}_adam_beta1", type=float, default=0.9, help="beta1 parameter for Adam optimizer. Set to -1 for auto")
+        parser.add_argument(f"--{prefix}_adam_beta2", type=float, default=0.999, help="beta2 parameter for Adam optimizer")
 
         self.optimizer = str()
         self.lr_anneal = bool()
@@ -162,6 +166,10 @@ class OptimizerConfig(BaseConfig):
         self.adam_epsilon = float()
         self.adam_beta1 = float()
         self.adam_beta2 = float()
+        self.per_epoch_optimizer = str()
+
+    def n_updates(self, rollout_size):
+        return (rollout_size / self.mini_batch_size) * self.epochs
 
 
 class Config(BaseConfig):
@@ -443,6 +451,9 @@ class Config(BaseConfig):
         parser.add_argument("--hash_bias", type=float, default=0.0)
         parser.add_argument("--hash_decay", type=float, default=0.99)
 
+        # -----------------
+        # Experimental
+        parser.add_argument("--ticktok", type=str2bool, default=False)
 
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
@@ -562,6 +573,7 @@ class Config(BaseConfig):
         self.tvf_at_percentile = float()
         self.tvf_horizon_dropout = float()
         self.tvf_return_mode = str()
+        self.tvf_return_distribution = str()
         self.tvf_return_samples = int()
         self.tvf_return_use_log_interpolation = bool()
         self.tvf_max_horizon = int()
@@ -659,6 +671,8 @@ class Config(BaseConfig):
         self.hash_bonus_method = str()
         self.hash_bias = float()
         self.rnd_experience_proportion = float()
+
+        self.ticktok = bool
 
         # noise stuff
         self.noisy_return = float()
@@ -864,6 +878,12 @@ def parse_args(args_override=None):
 
     else:
         args.timeout = int(args.timeout)
+
+    # auto beta
+    for optimizer in [args.policy, args.value, args.distil, args.aux, args.rnd]:
+        if optimizer.adam_beta1 < 0:
+            optimizer.adam_beta1 = 1-(1/optimizer.n_updates(args.n_steps*args.agents))
+            print(f"Set {optimizer.name} beta1 to {optimizer.adam_beta1}")
 
     # color mode
     assert args.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]

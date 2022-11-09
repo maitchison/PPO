@@ -570,6 +570,7 @@ class Runner:
             optimizer_params = {
                 'lr': cfg.lr,
             }
+
             if cfg.optimizer == "adam":
                 optimizer = torch.optim.Adam
                 optimizer_params.update({
@@ -582,7 +583,6 @@ class Runner:
                 raise ValueError(f"Invalid Optimizer {cfg.optimizer}")
             return optimizer(params, **optimizer_params)
 
-        # special case for policy optimizer
         self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.policy)
         self.value_optimizer = make_optimizer(model.value_net.parameters(), args.value)
         if args.distil.epochs > 0 and not args.shared_distil_optimizer:
@@ -1068,6 +1068,7 @@ class Runner:
             rewards=None,
             dones=None,
             tvf_return_mode=None,
+            tvf_return_distribution=None,
             tvf_n_step=None,
     ):
         """
@@ -1085,6 +1086,7 @@ class Runner:
         rewards = rewards if rewards is not None else self.ext_rewards
         dones = dones if dones is not None else self.terminals
         tvf_return_mode = tvf_return_mode or args.tvf_return_mode
+        tvf_return_distribution = tvf_return_distribution or args.tvf_return_distribution
         tvf_n_step = tvf_n_step or args.tvf_return_n_step
 
         N, A, *state_shape = obs[:-1].shape
@@ -1117,6 +1119,7 @@ class Runner:
 
         returns = get_return_estimate(
             mode=tvf_return_mode,
+            distribution=tvf_return_distribution,
             gamma=self.tvf_gamma,
             rewards=rewards,
             dones=dones,
@@ -2101,7 +2104,7 @@ class Runner:
             obs=self.all_obs,
             rewards=self.ext_rewards,
             dones=self.terminals,
-            tvf_return_mode="fixed",  # <-- MC is the least bias method we can do...
+            tvf_return_distribution="fixed",  # <-- MC is the least bias method we can do...
             tvf_n_step=args.n_steps,
         )
 
@@ -3288,6 +3291,9 @@ class Runner:
 
     def train_policy(self):
 
+        if args.ticktok and self.batch_counter % 2 == 0:
+            return
+
         # ----------------------------------------------------
         # policy phase
 
@@ -3410,6 +3416,9 @@ class Runner:
         self.log.watch_mean("t_s_heads", s / args.sns_period)
 
     def train_value(self):
+
+        if args.ticktok and self.batch_counter % 2 == 0:
+            return
 
         # ----------------------------------------------------
         # value phase
@@ -3629,6 +3638,9 @@ class Runner:
         return batch_data
 
     def train_distil(self):
+
+        if args.ticktok and self.batch_counter % 2 == 0:
+            return
 
         # ----------------------------------------------------
         # distil phase

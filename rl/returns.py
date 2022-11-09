@@ -11,6 +11,7 @@ from .logger import Logger
 GLOBAL_CACHE = None
 
 def get_return_estimate(
+    distribution: str,
     mode: str,
     gamma: float,
     rewards: np.ndarray,
@@ -30,7 +31,8 @@ def get_return_estimate(
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
 
-    @param mode: [fixed|exponential]
+    @param distribution: [...]
+    @param mode: [standard|advanced|full]
     @param gamma: discount factor
     @param rewards: float32 ndarray of dims [N, A] containing rewards
     @param dones: bool ndarray of dims [N, A] containing true iff terminal state.
@@ -53,123 +55,60 @@ def get_return_estimate(
 
     N, A = rewards.shape
     K = len(required_horizons)
-    samples = None
-    weights = None
 
-    args = {
-        'gamma': gamma,
-        'rewards': rewards,
-        'dones': dones,
-        'required_horizons': required_horizons,
-        'value_sample_horizons': value_sample_horizons,
-        'value_samples': value_samples,
-        'use_log_interpolation': use_log_interpolation,
-    }
+    def calc_return(samples: np.ndarray):
+        return _calculate_sampled_return_multi_threaded(
+            n_step_samples=samples,
+            gamma=gamma,
+            rewards=rewards,
+            dones=dones,
+            required_horizons=required_horizons,
+            value_sample_horizons=value_sample_horizons,
+            value_samples=value_samples,
+            use_log_interpolation=use_log_interpolation,
+        )
 
-    # fixed is a special case
-    if mode == "fixed":
-        n_step_samples = np.zeros([K, 1], dtype=np.int32) + n_step
-        return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
-    elif mode == "advanced":
-        # the idea here is that each agent and horizon gets a different set of n-step estimates
+    lamb = 1-(1/n_step)
 
-        # get our distribution
-        lamb = 1-(1/n_step)
-        weights = np.asarray([lamb ** x for x in range(N)], dtype=np.float32)
-        weights /= np.sum(weights)
+    def get_weights(f):
+        return np.asarray([f(n) for n in range(1, N + 1)], dtype=np.float32)
 
-        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
-        return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
-    elif mode == "td_lambda":
-        returns = np.zeros([N, A, K], dtype=np.float32)
-        weight = 1
-        total_weight = 0
-        lamb = 1 - (1 / n_step)
-        for n_step in range(1, N+1):
-            n_step_samples = np.zeros([K, 1], dtype=np.int32) + n_step
-            returns += _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args) * weight
-            total_weight += weight
-            weight *= lamb
-        returns /= total_weight
-        return returns
-
-    elif mode == "advanced_uniform":
-        # the idea here is that each agent and horizon gets a different set of n-step estimates
-
-        # get our distribution
-        weights = np.asarray([1 for x in range(N)], dtype=np.float32)
-        weights /= np.sum(weights)
-
-        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
-
-        return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
-    elif mode == "advanced_hyperbolic":
-        # the idea here is that each agent and horizon gets a different set of n-step estimates
-
-        # get our distribution
-        weights = np.asarray([1 / x for x in range(1, N + 1)], dtype=np.float32)
-        weights /= np.sum(weights)
-
-        n_step_samples = np.random.choice(range(1, N + 1), size=(K, max_samples), replace=True, p=weights)
-
-        return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
-
-    elif mode == "adaptive":
-        # we do this by repeated calling exponential, which can be a bit slow...
-        # note: we cut the curve off after h steps, otherwise we end up repeating the same
-        # value estimate. That is R_{>h}=R_{h}
-        result = np.zeros([N, A, K], dtype=np.float32)
-        target_n_step = n_step
-        for h_index, h in enumerate(required_horizons):
-            args_copy = args.copy()
-            args_copy['required_horizons'] = [h]
-            args_copy['max_samples'] = max_samples
-            args_copy['estimator_mode'] = estimator_mode
-            args_copy['log'] = log
-            n_step = int(np.clip(h, 1, 0.5*target_n_step))  # the magic heuristic...
-            result[:, :, h_index] = get_return_estimate(
-                mode="exponential",
-                n_step=n_step,
-                max_h=max(h, 1), **args_copy
-            )[:, :, 0]
-        return result
-    elif mode == "exponential":
-        # this just makes things a bit faster for small n_step horizons
-        # essentially we ignore the very rare, very long n_steps.
-        if max_h is None:
-            max_h = min(n_step * 3, N)
-        lamb = 1-(1/n_step)
-        weights = np.asarray([lamb ** x for x in range(max_h)], dtype=np.float32)
-    elif mode == "hyperbolic":
-        max_h = N
-        k = n_step / 10
-        weights = np.asarray([1 / (1 + k * (x / max_h)) for x in range(max_h)], dtype=np.float32)
-    elif mode == "quadratic":
-        max_h = N
-        k = n_step / 10
-        weights = np.asarray([1 / (1 + k * (x / max_h)**2) for x in range(max_h)], dtype=np.float32)
-    elif mode == "uniform":
-        max_h = N
-        weights = np.asarray([1.0 for _ in range(max_h)], dtype=np.float32)
-    elif mode == "exponential_cap":
-        # this is exponential where the weight not used all falls on the final n_step estimate.
-        # this can improve performance by demphasising the short n-step return estimators.
-        max_h = min(n_step * 3, N)
-        lamb = 1-(1/n_step)
-        weights = np.asarray([lamb ** x for x in range(max_h)], dtype=np.float32)
-        remaining_weight = (lamb ** max_h) / (1 - lamb)
-        weights[-1] += remaining_weight
+    if distribution == "fixed":
+        # fixed is a special case
+        samples = np.zeros([K, 1], dtype=np.int32) + n_step
+        return calc_return(samples)
+    elif distribution == "exponential":
+        weights = get_weights(lambda x: lamb**x)
+    elif distribution == "uniform":
+        weights = get_weights(lambda x: 1)
+    elif distribution == "hyperbolic":
+        weights = get_weights(lambda x: 1/x)
+    elif distribution == "quadratic":
+        weights = get_weights(lambda x: 1/(N+(x*x)))
     else:
-        raise ValueError(f"Invalid returns mode {mode}")
+        raise ValueError(f"Invalid distribution {distribution}")
 
-    weights = weights / np.sum(weights)
-    # not tested super well...
-    n_step_samples = np.random.choice(range(1, len(weights)+1), size=(K, max_samples), replace=True, p=weights)
-    return _calculate_sampled_return_multi_threaded(n_step_samples=n_step_samples, **args)
+    weights /= np.sum(weights)
 
-    # raise Exception("This return mode is not supported yet.")
-
-
+    if mode == "standard":
+        # all horizons get same sample
+        samples = np.random.choice(range(1, len(weights) + 1), size=(1, max_samples), replace=True, p=weights)
+        samples = np.repeat(samples, K, axis=0)
+        return calc_return(samples)
+    elif mode == "advanced":
+        # each horizon gets a random sample.
+        samples = np.random.choice(range(1, len(weights) + 1), size=(K, max_samples), replace=True, p=weights)
+        return calc_return(samples)
+    elif mode == "full":
+        # calculate each horizon and do a weighted average
+        # very slow...
+        returns = np.zeros([N, A, K], dtype=np.float32)
+        for n_step, weight in zip(range(1, N+1), weights):
+            n_step_samples = np.zeros([K, 1], dtype=np.int32) + n_step
+            returns += calc_return(n_step_samples) * weight
+        return returns
+    else:
+        raise ValueError(f"Invalid return mode {mode}")
 
 
 def _get_adaptive_args(mode: str, h:int, c:float):
