@@ -115,6 +115,7 @@ def generate_slurm(experiment:str, job_filter=None, st: SlurmTemplate=TEMPLATE_M
         force_params={
             'mutex_key': '',
             'ignore_lock': True,
+            'device': "cuda",
         }
     )
     n = 0

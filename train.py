@@ -240,7 +240,7 @@ if __name__ == "__main__":
     from rl.rollout import _test_interpolate
     #import rl.unit_tests
 
-    for i in range(2):
+    for i in range(1):
         test_return_estimators(seed=i)
     print("Return verification passed.")
     _test_interpolate()

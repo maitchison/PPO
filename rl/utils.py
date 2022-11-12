@@ -666,7 +666,7 @@ def compose_frame(state_frame, rendered_frame, channels=None):
         channels = ["Gray-" + str(i) for i in range(s_c)]
 
     # stub:
-    print(channels)
+    # print(channels)
 
     # combine color frames etc
     frames = []

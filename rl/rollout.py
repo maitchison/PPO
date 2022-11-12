@@ -1661,10 +1661,10 @@ class Runner:
 
             hash_threshold = calc_threshold(self.hash_recent_counts)
 
-            for t in range(self.N):
-                for a in range(self.A):
-                    obs_hash = obs_hashes[t, a]
-                    if args.hash_bonus != 0:
+            if args.hash_bonus != 0:
+                for t in range(self.N):
+                    for a in range(self.A):
+                        obs_hash = obs_hashes[t, a]
                         self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
 
         # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.

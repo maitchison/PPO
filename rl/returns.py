@@ -10,6 +10,9 @@ from .logger import Logger
 # memory sharing between workers for efficent return estimation
 GLOBAL_CACHE = None
 
+# 64 bit is a bit better than 32... especially when using lots of samples.
+DTYPE = np.float32
+
 def get_return_estimate(
     distribution: str,
     mode: str,
@@ -27,6 +30,7 @@ def get_return_estimate(
     estimator_mode: str = "default",
     log:Logger = None,
     use_log_interpolation: bool=False,
+    seed=None,
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -71,7 +75,7 @@ def get_return_estimate(
     lamb = 1-(1/n_step)
 
     def get_weights(f):
-        return np.asarray([f(n) for n in range(1, N + 1)], dtype=np.float32)
+        return np.asarray([f(n) for n in range(1, N + 1)], dtype=DTYPE)
 
     if distribution == "fixed":
         # fixed is a special case
@@ -90,6 +94,9 @@ def get_return_estimate(
 
     weights /= np.sum(weights)
 
+    if seed is not None:
+        np.random.seed(seed)
+
     if mode == "standard":
         # all horizons get same sample
         samples = np.random.choice(range(1, len(weights) + 1), size=(1, max_samples), replace=True, p=weights)
@@ -102,7 +109,7 @@ def get_return_estimate(
     elif mode == "full":
         # calculate each horizon and do a weighted average
         # very slow...
-        returns = np.zeros([N, A, K], dtype=np.float32)
+        returns = np.zeros([N, A, K], dtype=DTYPE)
         for n_step, weight in zip(range(1, N+1), weights):
             n_step_samples = np.zeros([K, 1], dtype=np.int32) + n_step
             returns += calc_return(n_step_samples) * weight
@@ -229,9 +236,9 @@ def _calculate_sampled_return_multi(
         else:
             h_lookup[h].append(index)
 
-    returns = np.zeros([N, A, K], dtype=np.float32)
-    cumulative_rewards = np.zeros_like(rewards)
-    discount = np.ones_like(rewards)
+    returns = np.zeros([N, A, K], dtype=DTYPE)
+    cumulative_rewards = np.zeros_like(rewards, dtype=DTYPE)
+    discount = np.ones_like(rewards, dtype=DTYPE)
 
     if masked:
         h_weights = []
@@ -243,9 +250,9 @@ def _calculate_sampled_return_multi(
                 n_step_copy.pop()
                 weight -= n_step_weight_copy.pop()
             h_weights.append(weight)
-        h_weights = np.asarray(h_weights, dtype=np.float32)[:, None, None]
+        h_weights = np.asarray(h_weights, dtype=DTYPE)[:, None, None]
     else:
-        h_weights = np.asarray([total_weight for _ in range(N)], dtype=np.float32)[:, None, None]
+        h_weights = np.asarray([total_weight for _ in range(N)], dtype=DTYPE)[:, None, None]
 
     current_n_step = 0
 
@@ -351,14 +358,14 @@ def _calculate_sampled_return(
     # maps from h, to the first instance of h in our array
     h_lookup = {k:v[0] for k,v in h_multi_lookup.items()}
 
-    returns = np.zeros([N, A, K], dtype=np.float32)
+    returns = np.zeros([N, A, K], dtype=DTYPE)
 
     # generate return estimates using n-step returns
     for t in range(N):
 
         # first collect the rewards
-        discount = np.ones([A], dtype=np.float32)
-        reward_sum = np.zeros([A], dtype=np.float32)
+        discount = np.ones([A], dtype=DTYPE)
+        reward_sum = np.zeros([A], dtype=DTYPE)
         steps_made = 0
 
         for n in range(1, n_step + 1):
@@ -500,9 +507,9 @@ def _calculate_sampled_return_multi_reference(
     N, A = rewards.shape
     K = len(required_horizons)
 
-    returns_m1 = np.zeros([N, A, K], dtype=np.float32)
-    returns_m2 = np.zeros([N, A, K], dtype=np.float32)
-    returns_m3 = np.zeros([N, A, K], dtype=np.float32)
+    returns_m1 = np.zeros([N, A, K], dtype=DTYPE)
+    returns_m2 = np.zeros([N, A, K], dtype=DTYPE)
+    returns_m3 = np.zeros([N, A, K], dtype=DTYPE)
 
     total_weight = sum(n_step_weights.values())
 
@@ -523,8 +530,8 @@ def _calculate_sampled_return_multi_reference(
             # calculate the n_step squared return estimate
             for t in range(N):
 
-                reward_sum = np.zeros([A], dtype=np.float32)
-                discount = np.ones([A], dtype=np.float32)
+                reward_sum = np.zeros([A], dtype=DTYPE)
+                discount = np.ones([A], dtype=DTYPE)
 
                 n_step = min(target_n_step, N-t, h)
 
@@ -597,20 +604,22 @@ def _n_step_estimate(params):
 
     if target_h == 0:
         # happens sometimes, always return 0.
-        zeros = np.zeros([N, A], dtype=np.float32)
+        zeros = np.zeros([N, A], dtype=DTYPE)
         return idx, target_h, zeros
 
-    returns = np.zeros_like(rewards)
-    m = np.zeros([N, A], dtype=np.float32)
+    returns = np.zeros_like(rewards, dtype=DTYPE)
+    m = np.zeros([N, A], dtype=DTYPE)
 
     for target_n_step in target_n_steps:
 
         if target_n_step > target_h:
             target_n_step = target_h
 
-        if target_n_step == 0:
+        if target_h == 0:
             # return is 0 by definition
             continue
+
+        assert 1 <= target_n_step <= N
 
         # much quicker to use the cached version of these
         s = reward_cache[target_n_step]
@@ -619,10 +628,10 @@ def _n_step_estimate(params):
         # add the bootstrap estimate
         h_remaining = target_h - target_n_step
 
+        m *= 0
+
         if h_remaining > 0:
             m[:N-target_n_step] = interpolate(value_samples[target_n_step:-1], h_remaining)
-        else:
-            m *= 0
 
         # process the final n_step estimates, this can be slow for large target_n_step
         for i in range(target_n_step):
@@ -632,72 +641,6 @@ def _n_step_estimate(params):
         returns += s + m * discount
 
     returns *= 1/len(target_n_steps)
-
-    return idx, target_h, returns
-
-
-def _n_step_estimate_median(params):
-    """
-    Processes rewards [N, A] and value_estimates [N+1, A, K] into returns [N, A]
-    Uses median over samples instead of mean.
-    """
-
-    (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, log_interpolation) = GLOBAL_CACHE
-
-    target_n_steps, idx, target_h = params
-
-    log_value_sample_horizons = np.log10(10+value_sample_horizons)-1
-
-    def interpolate_linear(value_estimates: np.ndarray, horizon: int):
-        return _interpolate(value_sample_horizons, value_estimates, horizon)
-        # not faster, and matches identically with my interpolate.
-        # from scipy import interpolate as sp_interpolate
-        # return sp_interpolate.interp1d(value_sample_horizons, value_estimates)(horizon)
-
-    def interpolate_log(value_estimates: np.ndarray, horizon: int):
-        return _interpolate(log_value_sample_horizons, value_estimates, np.log10(10+horizon)-1)
-
-    interpolate = interpolate_log if log_interpolation else interpolate_linear
-
-    N, A = rewards.shape
-
-    if target_h == 0:
-        # happens sometimes, always return 0.
-        zeros = np.zeros([N, A], dtype=np.float32)
-        return idx, target_h, zeros
-
-    returns = np.zeros([N, A, len(target_n_steps)], dtype=np.float32)
-    m = np.zeros([N, A], dtype=np.float32)
-
-    for i, target_n_step in enumerate(target_n_steps):
-
-        if target_n_step > target_h:
-            target_n_step = target_h
-
-        if target_n_step == 0:
-            # return is 0 by definition
-            continue
-
-        # much quicker to use the cached version of these
-        s = reward_cache[target_n_step]
-        discount = discount_cache[target_n_step]
-
-        # add the bootstrap estimate
-        h_remaining = target_h - target_n_step
-
-        if h_remaining > 0:
-            m[:N-target_n_step] = interpolate(value_samples[target_n_step:-1], h_remaining)
-        else:
-            m *= 0
-
-        # process the final n_step estimates, this can be slow for large target_n_step
-        for j in range(target_n_step):
-            # small chance we have a bug here, need to test this...
-            m[N-j-1] = interpolate(value_samples[-1], target_h - j - 1)
-
-        returns[:, :, i] = s + m * discount
-
-    returns = np.median(returns, axis=-1)
 
     return idx, target_h, returns
 
@@ -741,8 +684,8 @@ def _calculate_sampled_return_multi_threaded(
     # add up the discounted rewards,
     # that is s[n, a] = sum_{t=n}^{n+n_step} r_t
     required_horizons_set = set(required_horizons)
-    s = np.zeros([N, A], dtype=np.float32)
-    discount = np.ones([N, A], dtype=np.float32)
+    s = np.zeros([N, A], dtype=DTYPE)
+    discount = np.ones([N, A], dtype=DTYPE)
     discount_cache = {}
     reward_cache = {}
 
@@ -753,6 +696,12 @@ def _calculate_sampled_return_multi_threaded(
             reward_cache[i + 1] = s.copy()
             discount_cache[i + 1] = discount.copy()
 
+    # just to be safe..
+    for k, v in discount_cache.items():
+        v.setflags(write=False)
+    for k, v in reward_cache.items():
+        v.setflags(write=False)
+
     # simple way to get this data to all the workers without having to pickle it (which would be too slow)
     global GLOBAL_CACHE
     GLOBAL_CACHE = (rewards, gamma, value_sample_horizons, value_samples, dones, discount_cache, reward_cache, use_log_interpolation)
@@ -760,15 +709,14 @@ def _calculate_sampled_return_multi_threaded(
     # turns out it's faster to just run the jobs (at least for 8 or less samples).
     result = [_n_step_estimate(job) for job in jobs]
 
-    all_results = np.zeros([N, A, K], dtype=np.float32)
+    all_results = np.zeros([N, A, K], dtype=DTYPE)
     for idx, h, returns in result:
         all_results[:, :, idx] = returns
 
     # just make sure there are no duplicates here...
-    # as we were adding them before. Should be fine, and can delte.
+    # as we were adding them before. Should be fine, and can delete.
     ids = ([x[0] for x in result])
     assert len(ids) == len(set(ids))
-
 
     return all_results
 
@@ -784,13 +732,13 @@ def test_return_estimators(seed=123):
     # create random data...
     # k are horizons we need to generate
     # v are horizons we have estimates for
-    N, A, K, V = [128, 16, 16, 8]
+    N, A, K, V = [128, 16, 16, 32]
     default_args = {
         'gamma': 0.9997,
         'rewards': np.random.random_integers(-1, 2, [N, A]).astype('float32'),
-        'dones': (np.random.random_integers(0, 100, [N, A]) > 98),
+        'dones': (np.random.random_integers(0, 100, [N, A]) >= 98),
         'required_horizons': np.geomspace(1, 1024, num=K).astype('int32'),
-        'value_sample_horizons': np.geomspace(1, 1024+1, num=V).astype('int32')-1,
+        'value_sample_horizons': np.geomspace(1, 1024, num=V).astype('int32')-1,
         'value_samples': np.random.normal(0.1, 0.4, [N+1, A, V]).astype('float32'),
     }
 
@@ -816,21 +764,38 @@ def test_return_estimators(seed=123):
         ratio = r1_time / r2_time
 
         # note fp32 has about 7 sg fig, so rel error of around 1e-6 is expected.
-        if e_m1 > 1e-5:
+        if e_m1 > 1e-5*(m1_ref.max()):
             print(f"Times {r1_time:.2f}s / {r2_time:.2f}s ({ratio:.1f}x), error for {label} = {e_m1:.6f}")
             return False
+        print(f" - {label} rel error={e_m1/m1_ref.max()}")
         return True
 
-    n_step = 8
+    n_step = 80
     eff_h = min(n_step * 3, N)
     lamb = 1 - (1 / n_step)
-    weights = np.asarray([lamb ** x for x in range(eff_h)], dtype=np.float32)
+    weights = np.asarray([lamb ** x for x in range(128)], dtype=DTYPE)
     max_n = len(weights)
     probs = weights / weights.sum()
-    samples = np.random.choice(range(1, max_n + 1), 80, replace=True, p=probs)
+    samples = np.random.choice(range(1, max_n + 1), 20, replace=True, p=probs)
 
-    if not verify("n_step=8", n_step_list=[8]) or \
-       not verify("exponential=8", n_step_list=samples):
+    # a little slow but lets try fixxing...
+    # for _ in range(100000):
+    #     default_args = {
+    #         'gamma': 0.9997,
+    #         'rewards': np.random.random_integers(-1, 2, [N, A]).astype('float32'),
+    #         'dones': (np.random.random_integers(0, 100, [N, A]) >= 98),
+    #         'required_horizons': np.geomspace(1, 1024, num=K).astype('int32'),
+    #         'value_sample_horizons': np.geomspace(1, 1024, num=V).astype('int32') - 1,
+    #         'value_samples': np.random.normal(0.1, 0.4, [N + 1, A, V]).astype('float32'),
+    #     }
+    #     n_step_list = [np.random.randint(128)+1, np.random.randint(128)+1]
+    #     verify(f"{n_step_list}", n_step_list=n_step_list)
+
+    if \
+            not verify("n_step=1", n_step_list=[1]) or \
+            not verify("n_step=8", n_step_list=[8]) or \
+            not verify("n_step=128", n_step_list=[128]) or \
+            not verify("exponential=80", n_step_list=samples):
         raise Exception("Return estimator does not match reference.")
 
     np.random.set_state(st0)
