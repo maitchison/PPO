@@ -16,7 +16,7 @@ from typing import Union, Optional
 import math
 
 from .logger import Logger
-from . import utils, hybridVecEnv, wrappers, models, compression, config, vtrace, hash
+from . import utils, hybridVecEnv, wrappers, models, compression, config, hash
 from . import atari, mujoco, procgen
 from .returns import get_return_estimate
 from .config import args
@@ -583,19 +583,19 @@ class Runner:
                 raise ValueError(f"Invalid Optimizer {cfg.optimizer}")
             return optimizer(params, **optimizer_params)
 
-        self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.policy)
-        self.value_optimizer = make_optimizer(model.value_net.parameters(), args.value)
-        if args.distil.epochs > 0 and not args.shared_distil_optimizer:
-            self.distil_optimizer = make_optimizer(model.policy_net.parameters(), args.distil)
+        self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.opt_p)
+        self.value_optimizer = make_optimizer(model.value_net.parameters(), args.opt_v)
+        if args.opt_d.epochs > 0:
+            self.distil_optimizer = make_optimizer(model.policy_net.parameters(), args.opt_d)
         else:
             self.distil_optimizer = None
-        if args.aux.epochs > 0:
-            self.aux_optimizer = make_optimizer(model.parameters(), args.aux)
+        if args.opt_a.epochs > 0:
+            self.aux_optimizer = make_optimizer(model.parameters(), args.opt_a)
         else:
             self.aux_optimizer = None
 
         if args.use_rnd:
-            self.rnd_optimizer = make_optimizer(model.prediction_net.parameters(), args.rnd)
+            self.rnd_optimizer = make_optimizer(model.prediction_net.parameters(), args.opt_r)
         else:
             self.rnd_optimizer = None
 
@@ -780,15 +780,15 @@ class Runner:
     # todo: generalize this
     @property
     def value_lr(self):
-        return self.anneal(args.value.lr, mode="linear" if args.value.lr_anneal else "off")
+        return self.anneal(args.opt_v.lr, mode="linear" if args.opt_v.lr_anneal else "off")
 
     @property
     def distil_lr(self):
-        return self.anneal(args.distil.lr, mode="linear" if args.distil.lr_anneal else "off")
+        return self.anneal(args.opt_d.lr, mode="linear" if args.opt_d.lr_anneal else "off")
 
     @property
     def policy_lr(self):
-        return self.anneal(args.policy.lr, mode="linear" if args.policy.lr_anneal else "off")
+        return self.anneal(args.opt_p.lr, mode="linear" if args.opt_p.lr_anneal else "off")
 
     @property
     def ppo_epsilon(self):
@@ -796,7 +796,7 @@ class Runner:
 
     @property
     def rnd_lr(self):
-        return args.rnd.lr
+        return args.opt_r.lr
 
     def update_learning_rates(self):
         """
@@ -846,7 +846,6 @@ class Runner:
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
                 gamma=args.reward_normalization_gamma,
-                ed_type=args.ed_mode if args.use_ed else None,
                 mode="rms",
                 clip=args.reward_normalization_clipping,
             )
@@ -951,7 +950,7 @@ class Runner:
             self.rnd_optimizer.load_state_dict(checkpoint['rnd_optimizer_state_dict'])
         if 'distil_optimizer_state_dict' in checkpoint:
             self.distil_optimizer.load_state_dict(checkpoint['distil_optimizer_state_dict'])
-        if args.aux.epochs > 0:
+        if args.opt_a.epochs > 0:
             self.aux_optimizer.load_state_dict(checkpoint['aux_optimizer_state_dict'])
 
         step = checkpoint['step']
@@ -1103,19 +1102,8 @@ class Runner:
         if re_mode == "verify" and self.batch_counter % 31 != 1:
             re_mode = "default"
 
-        # episodic discounting correction
-        if args.use_ed:
-            # time was time before action, we want time after action
-            normalization_factors = wrappers.EpisodicDiscounting.get_normalization_constant(
-                self.all_time,
-                discount_type=args.ed_mode,
-                discount_bias=args.ed_bias,
-            )[:, :, None]
-        else:
-            normalization_factors = 1
-
         # we must unnormalize the value estimates, then renormalize after
-        values = self.tvf_value[..., self.value_heads.index(value_head)] * normalization_factors
+        values = self.tvf_value[..., self.value_heads.index(value_head)]
 
         returns = get_return_estimate(
             mode=tvf_return_mode,
@@ -1132,9 +1120,6 @@ class Runner:
             log=self.log,
             use_log_interpolation=args.tvf_return_use_log_interpolation,
         )
-
-        if args.use_ed:
-            returns = returns / normalization_factors[:N]
 
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -1383,26 +1368,6 @@ class Runner:
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
 
-    def apply_reward_scale_adjustment(self, ratio):
-        """
-        Adjusts rewards, values estimates, and model weights so that all are using reward_scales[-1]
-
-        Assumptions
-            * rewards have not been scaled (or clipped)
-            * value estimates where under old_beta
-
-        """
-
-        # modify value estimates made during rollout
-        # for some reason this might hurt the agent's performance?
-        if not args.rnc_no_value:
-            self.value *= ratio
-            self.tvf_value *= ratio
-
-        # adjust the model weights to future predictions should be close
-        self.model.adjust_value_scale(ratio, process_value=args.tvf_include_ext or not args.use_tvf,
-                                      value_net_only=args.rnc_value_only)
-
     def generate_hashes(self, obs: np.ndarray):
         """
         Applies hash preprocessing, returns hashing for obs
@@ -1519,10 +1484,6 @@ class Runner:
             if args.use_rnd:
                 # update the intrinsic rewards
                 self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
-
-            if args.use_ebd:
-                ebd_error = (model_out["value_value"][..., 0] - model_out["policy_value"][..., 0]) ** 2
-                self.int_rewards[t] = ebd_error.detach().cpu().numpy()
 
             # save raw rewards for monitoring the agents progress
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
@@ -1667,48 +1628,6 @@ class Runner:
                         obs_hash = obs_hashes[t, a]
                         self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
 
-        # apply reward scale adjustment, so that rewards, value, and model weights are all at the final reward scale.
-        if args.reward_normalization == "ema":
-            # I would have preferred to not use batch variance, however PPO's normalization used "variance of returns"
-            # meaning variance of all returns over all time for all agents. This does seem to work better though.
-            # The issue is that returns across time are highly correlated, which decreases the variance.
-            # perhaps there are environments where the batch method is less applicable? not sure.. (skiing for example).
-            batch_variance = True
-            if batch_variance:
-                return_var = np.var(rollout_discounted_returns)
-            else:
-                return_var = np.var(rollout_discounted_returns, axis=1).mean()
-
-            RS = self.N * self.A # rollout size
-            alpha = 1 - (RS / min(self.step+RS, args.reward_normalization_horizon))
-            utils.dictionary_ema(self.vars, 'return_variance', target=return_var, default=0, alpha=alpha)
-            new_beta = self.reward_scale
-
-            # need at least one update before we can get started.
-            if self.step > 0:
-                ratio = new_beta/initial_beta
-                # logging...
-                self.log.watch_mean("rs_ratio", ratio)
-                if args.use_tvf:
-                    self.log.watch_mean("rs_vtv", self.model.value_net.tvf_head.weight.data[-1].std())
-                    self.log.watch_mean("rs_ptv", self.model.policy_net.tvf_head.weight.data[-1].std())
-                    for head in [0, 1, 15, 31, 63, 127]:
-                        if head >= args.tvf_value_heads:
-                            continue
-                        self.log.watch_mean(f"rs_vtv_{head}", self.model.value_net.tvf_head.weight.data[head].std())
-                        self.log.watch_mean(f"rs_ptv_{head}", self.model.policy_net.tvf_head.weight.data[head].std())
-                if args.reward_normalization_correction and self.step > 1e6:
-                    # delay onset of value and weight adjustment a little.
-                    # the reason for this is that the value network hasn't learned the value function yet.
-                    # if we don't do this the initial few updates will dramatically reduce / inflate the value
-                    # head weight scale.
-                    self.apply_reward_scale_adjustment(ratio)
-
-            # update rewards
-            self.ext_rewards *= new_beta
-            if args.reward_normalization_clipping >= 0:
-                self.ext_rewards = np.clip(self.ext_rewards, -args.reward_normalization_clipping, +args.reward_normalization_clipping)
-
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
 
@@ -1717,7 +1636,7 @@ class Runner:
         aux_fields = {}
 
         # calculate targets for ppg
-        if args.aux.epochs > 0:
+        if args.opt_a.epochs > 0:
             v_target = td_lambda(
                 self.ext_rewards,
                 self.ext_value[:self.N],
@@ -2211,63 +2130,6 @@ class Runner:
             ratio = ratios[i]
             return 0.2 * np.log(100 + hs[i]) - np.log(ratio+2e-1)
 
-        if args.debug_log_rediscount_curve and self.batch_counter % 64 == 0:
-
-            import matplotlib.pyplot as plt
-
-            data = []
-            keys = ['returns', 'value', 'td', 'advantages']
-            for source in keys:
-                data.append(get_ratios(source))
-
-            plt.figure(figsize=(12, 6))
-            cm = plt.get_cmap('tab10')
-            for i, (ratio, vars, means) in enumerate(data):
-                key = keys[i]
-                plt.plot(hs, vars, label=f'{key}_var', color=cm(i), ls="-")
-                plt.plot(hs, means, label=f'{key}_norm', color=cm(i), ls="--")
-            plt.xscale('log')
-            plt.yscale('log')
-            plt.grid(alpha=0.25)
-            plt.legend()
-            epoch = self.step / 1e6
-            plt.savefig(args.log_folder + f"/rediscount_{epoch:05.2f}.png")
-            plt.close()
-
-            plt.figure(figsize=(12, 6))
-            for key, (ratios, vars, means) in zip(keys, data):
-                plt.plot(hs, np.minimum(ratios, 5), label=f'ratio_{key}')
-            plt.xscale('log')
-            plt.yscale('log')
-            plt.hlines(args.ag_ratio_threshold, args.ag_min_h, args.ag_max_h, ls="--", color="gray")
-            plt.ylim(1e-3, 1e1)
-            plt.grid(alpha=0.25)
-            plt.legend()
-
-            plt.savefig(args.log_folder + f"/rediscount_ratio_{epoch:05.2f}.png")
-            plt.close()
-
-            plt.figure(figsize=(12, 6))
-            for key, (ratios, vars, means) in zip(keys, data):
-                scores = [score(ratios, i) for i in range(len(ratios))]
-                plt.plot(hs, scores, label=f'score_{key}')
-            plt.legend()
-            plt.xscale('log')
-            plt.grid(alpha=0.25)
-            plt.savefig(args.log_folder + f"/rediscount_score_{epoch:05.2f}.png")
-            plt.close()
-
-            # save data for later...
-            with open(args.log_folder + f"/data_{epoch:05.2f}.dat", 'wb') as f:
-                import pickle
-                save = {
-                    'data': data,
-                    'returns': self.tvf_returns[..., VALUE_HEAD_INDEX], # just in case we need these...
-                    'horizons': self.tvf_horizons
-                }
-                pickle.dump(save, f)
-
-
         ratios, vars, means = get_ratios(args.ag_ratio_source)
 
         scores = [score(ratios, i) for i in range(len(ratios))]
@@ -2421,42 +2283,23 @@ class Runner:
         # mostly interested in how noisy these are...
         self.log.watch_mean_std("*ext_value_estimates", ext_value_estimates)
 
-        if args.use_ed:
-            # most of these requirements aren't strictly needed, I just can' be bothered coding them up.
-            assert self.gamma == 1.0, "ed requires gamma=1.0 for the moment."
-            assert args.use_tvf, "ed requires tvf enabled for the moment."
-            normalization_factors = wrappers.EpisodicDiscounting.get_normalization_constant(
-                self.all_time,
-                discount_type=args.ed_mode,
-                discount_bias=args.ed_bias,
-            )
-            ext_advantage = ed_gae(
-                rewards=self.ext_rewards,
-                values=ext_value_estimates,
-                normalization_factors=normalization_factors,
-                batch_terminal=self.terminals,
-                lamb=args.lambda_policy,
-            )
-            # ext_returns should probably not be used... they might work I guess...
-            self.ext_returns[:] = ext_advantage + ext_value_estimates[:N]
-        else:
-            ext_advantage = gae(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_policy
-            )
-            # calculate ext_returns.
-            self.ext_returns[:] = td_lambda(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_value,
-            )
+        ext_advantage = gae(
+            self.ext_rewards,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
+            self.terminals,
+            self.gamma,
+            args.lambda_policy
+        )
+        # calculate ext_returns.
+        self.ext_returns[:] = td_lambda(
+            self.ext_rewards,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
+            self.terminals,
+            self.gamma,
+            args.lambda_value,
+        )
 
         self.advantage = ext_advantage.copy()
         if args.use_intrinsic_rewards:
@@ -2592,14 +2435,14 @@ class Runner:
         else:
             extra_debugging = False
 
-        if args.use_tvf and not args.distil_force_ext:
+        if args.use_tvf and not args.distil.force_ext:
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
-            head_sample = utils.even_sample_down(np.arange(len(self.tvf_horizons)), max_values=args.distil_max_heads)
+            head_sample = utils.even_sample_down(np.arange(len(self.tvf_horizons)), max_values=args.distil.max_heads)
         else:
             head_sample = None
 
-        if args.distil_reweighing and head_sample is not None:
+        if args.distil.reweighing and head_sample is not None:
             weights = [args.gamma**self.tvf_horizons[i]/args.tvf_gamma**self.tvf_horizons[i] for i in head_sample]
             weights = np.clip(weights, 0, 1).astype(np.float32)[None, :]
             weights = torch.from_numpy(weights).to(self.model.device)
@@ -2609,44 +2452,44 @@ class Runner:
             weights = 1
 
         # weights due to duplicate head removal
-        if args.use_tvf and not args.distil_force_ext:
+        if args.use_tvf and not args.distil.force_ext:
             head_filter = head_sample if head_sample is not None else slice(None, None)
             weights = weights * torch.from_numpy(self.tvf_weights[None, head_filter]).to(self.model.device)
 
         model_out = self.model.forward(
             data["prev_state"],
             output="policy",
-            exclude_tvf=not args.use_tvf or args.distil_force_ext,
+            exclude_tvf=not args.use_tvf or args.distil.force_ext,
             required_tvf_heads=head_sample,
         )
 
         targets = data["distil_targets"] # targets are [B or B, K]
 
-        if args.use_tvf and not args.distil_force_ext:
+        if args.use_tvf and not args.distil.force_ext:
             predictions = model_out["tvf_value"][:, :, 0] # [B, K, VH] -> [B, K]
             if head_sample is not None:
                 targets = targets[:, head_sample]
         else:
-            if args.distil_target == "value":
+            if args.distil.target == "value":
                 predictions = model_out["value"][:, 0]
             else:
                 actions = data["distil_actions"]
                 predictions = model_out["advantage"][range(len(actions)), actions]
 
-        if args.distil_value_loss == "mse":
+        if args.distil.value.loss == "mse":
             loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
-        elif args.distil_value_loss == "l1":
+        elif args.distil.value_loss == "l1":
             # l1 will be much higher (if errors are less than 1)
-            loss_value = args.distil_l1_scale * torch.abs(targets - predictions)  # [B, K]
-        elif args.distil_value_loss == "clipped_mse":
+            loss_value = args.distil.l1_scale * torch.abs(targets - predictions)  # [B, K]
+        elif args.distil.value_loss == "clipped_mse":
             loss_value = torch.square(torch.clip(targets - predictions, -1, 1))  # [B, K]
-        elif args.distil_value_loss == "huber":
-            if args.distil_delta == 0:
+        elif args.distil.value_loss == "huber":
+            if args.distil.delta == 0:
                 loss_value = torch.abs(targets - predictions)
             else:
-                loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=args.distil_delta)
+                loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=args.distil.delta)
         else:
-            raise ValueError(f"Invalid loss distil loss {args.distil_loss}")
+            raise ValueError(f"Invalid loss distil loss {args.distil.loss}")
 
         if extra_debugging:
             # first distil update
@@ -2664,35 +2507,6 @@ class Runner:
         # which can happen if we apply different discounts to the environment. This makes
         # beta hard to tune.
 
-        if args.distil_loss_value_target is not None and 'context' in data:
-            # calibrate distil loss to be roughly the same each time
-            # if no context then this implies we are doing sns.
-
-            if args.distil_lvt_mode == "first":
-                # we do this only during the first few updates though, as loss will get very small after that.
-                if data['context']['epoch'] == 0 and data['context']['mini_batch'] == 0:
-                    with torch.no_grad():
-                        loss_value_norm2 = float(torch.norm(loss_value.view(-1), p=2).detach().cpu().numpy())
-                    self.vars['distil_loss_scale'] = dls = self.vars.get('distil_loss_scale', 1.0) * 0.9 + 0.1 * loss_value_norm2
-                    self.log.watch_mean("distil_loss_scale", dls, history_length=64 * args.distil.epochs,
-                                        display_width=8, display_name="dls")
-                else:
-                    dls = self.vars['distil_loss_scale']
-            elif args.distil_lvt_mode == "mean":
-                # still, just over first epoch
-                if data['context']['epoch'] == 0:
-                    with torch.no_grad():
-                        loss_value_norm2 = float(torch.norm(loss_value.view(-1), p=2).detach().cpu().numpy())
-                    self.vars['distil_loss_scale'] = dls = self.vars.get('distil_loss_scale', 1.0) * 0.9 + 0.1 * loss_value_norm2
-                    self.log.watch_mean("distil_loss_scale", dls, history_length=64 * args.distil.epochs,
-                                        display_width=8, display_name="dls")
-                else:
-                    dls = self.vars['distil_loss_scale']
-            else:
-                raise ValueError(f'invalid distil_lvt_mode {args.distil_lvt_mode}')
-
-            loss_value = loss_value * args.distil_loss_value_target / (dls+1e-3)
-
         if len(loss_value.shape) == 2:
             loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
         loss = loss_value
@@ -2708,17 +2522,17 @@ class Runner:
             epsilon = 1e-5
             delta = torch.square(data["old_raw_policy"] - model_out["raw_policy"]) / (
                         epsilon + 2 * self.get_current_actions_std().detach() ** 2)
-            loss_policy = args.distil_beta * 0.5 * delta.mean(dim=-1)
+            loss_policy = args.distil.beta * 0.5 * delta.mean(dim=-1)
             loss = loss + loss_policy
         else:
-            if args.distil_loss == "mse_logit":
-                loss_policy = args.distil_beta * 0.5 * torch.square(data["old_raw_policy"] - model_out["raw_policy"]).mean(dim=-1)
-            elif args.distil_loss == "mse_policy":
-                loss_policy = args.distil_beta * 0.5 * torch.square(data["old_log_policy"] - model_out["log_policy"]).mean(dim=-1)
-            elif args.distil_loss == "kl_policy":
-                loss_policy = args.distil_beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none").sum(dim=-1)
+            if args.distil.loss == "mse_logit":
+                loss_policy = args.distil.beta * 0.5 * torch.square(data["old_raw_policy"] - model_out["raw_policy"]).mean(dim=-1)
+            elif args.distil.loss == "mse_policy":
+                loss_policy = args.distil.beta * 0.5 * torch.square(data["old_log_policy"] - model_out["log_policy"]).mean(dim=-1)
+            elif args.distil.loss == "kl_policy":
+                loss_policy = args.distil.beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none").sum(dim=-1)
             else:
-                raise ValueError(f"Invalid distil_loss {args.distil_loss}")
+                raise ValueError(f"Invalid distil_loss {args.distil.loss}")
 
         loss = loss + loss_policy
 
@@ -2727,16 +2541,16 @@ class Runner:
 
         # some debugging stats
         with torch.no_grad():
-            self.log.watch_mean("distil_targ_var", targ_var, history_length=64 * args.distil.epochs, display_width=0)
-            self.log.watch_mean("distil_pred_var", pred_var, history_length=64 * args.distil.epochs,
+            self.log.watch_mean("distil_targ_var", targ_var, history_length=64 * args.opt_d.epochs, display_width=0)
+            self.log.watch_mean("distil_pred_var", pred_var, history_length=64 * args.opt_d.epochs,
                                 display_width=0)
             delta = (predictions - targets) * weights
             mse = torch.square(delta).mean()
             ev = 1 - torch.var(delta) / (torch.var(targets * weights) + 1e-8)
-            self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil.epochs,
+            self.log.watch_mean("distil_ev", ev, history_length=64 * args.opt_d.epochs,
                                 display_name="ev_dist",
                                 display_width=8)
-            self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil.epochs,
+            self.log.watch_mean("distil_mse", mse, history_length=64 * args.opt_d.epochs,
                                 display_width=0)
 
         # check model sparsity
@@ -2757,9 +2571,9 @@ class Runner:
         loss = loss * loss_scale
         loss.mean().backward()
 
-        self.log.watch_mean("loss_distil_policy", loss_policy.mean(), history_length=64 * args.distil.epochs, display_width=0)
-        self.log.watch_mean("loss_distil_value", loss_value.mean(), history_length=64 * args.distil.epochs, display_width=0)
-        self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.distil.epochs, display_name="ls_distil", display_width=8)
+        self.log.watch_mean("loss_distil_policy", loss_policy.mean(), history_length=64 * args.opt_d.epochs, display_width=0)
+        self.log.watch_mean("loss_distil_value", loss_value.mean(), history_length=64 * args.opt_d.epochs, display_width=0)
+        self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.opt_d.epochs, display_name="ls_distil", display_width=8)
 
         # this is a lot, just do this for the moment...
         if 'context' in data:
@@ -2806,7 +2620,7 @@ class Runner:
         policy_ev = 1 - torch.var(policy_predictions - targets) / (torch.var(targets) + 1e-8)
 
         # we do a lot of minibatches, so makes sure we average over them all.
-        history_length = 2 * args.aux.epochs*args.distil_batch_size // args.distil.mini_batch_size
+        history_length = 2 * args.opt_a.epochs * args.distil.batch_size // args.opt_d.mini_batch_size
 
         self.log.watch_mean("aux_value_ev", value_ev, history_length=history_length, display_width=0)
         self.log.watch_mean("aux_policy_ev", policy_ev, history_length=history_length, display_width=0)
@@ -2992,7 +2806,7 @@ class Runner:
             tvf_loss = tvf_loss.mean(dim=-1) # mean over horizons
             loss = loss + tvf_loss
 
-            self.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64*args.value.epochs, display_name="ls_tvf", display_width=8)
+            self.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64*args.opt_v.epochs, display_name="ls_tvf", display_width=8)
 
         # -------------------------------------------------------------------------
         # Calculate loss_value
@@ -3133,7 +2947,7 @@ class Runner:
             if args.gkl_penalty != 0:
                 gkl_loss = global_kl * args.gkl_penalty
                 gain = gain - gkl_loss
-                self.log.watch_mean("*loss_gkl", gkl_loss, history_length=64 * args.policy.epochs, display_name=f"ls_gkl", display_width=8)
+                self.log.watch_mean("*loss_gkl", gkl_loss, history_length=64 * args.opt_p.epochs, display_name=f"ls_gkl", display_width=8)
 
             result["global_kl"] = global_kl.detach().cpu()
 
@@ -3156,7 +2970,7 @@ class Runner:
         # Generate log values
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("loss_pg", loss_clip.mean(), history_length=64*args.policy.epochs, display_name=f"ls_pg", display_width=8)
+        self.log.watch_mean("loss_pg", loss_clip.mean(), history_length=64*args.opt_p.epochs, display_name=f"ls_pg", display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("loss_policy", gain.mean(), display_name=f"ls_policy")
 
@@ -3231,8 +3045,6 @@ class Runner:
         if args.noisy_zero > 0:
             # no reward scaling for noisy zero rewards.
             return 1.0
-        if args.reward_normalization == "ema":
-            return 1.0 / math.sqrt(1e-8 + self.vars.get('return_variance', 0))
         elif args.reward_normalization == "rms":
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
@@ -3269,11 +3081,11 @@ class Runner:
 
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])[:round(B*args.rnd_experience_proportion)]
 
-        for epoch in range(args.rnd.epochs):
+        for epoch in range(args.opt_r.epochs):
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_rnd_minibatch,
-                mini_batch_size=args.rnd.mini_batch_size,
+                mini_batch_size=args.opt_r.mini_batch_size,
                 optimizer=self.rnd_optimizer,
                 epoch=epoch,
                 label="rnd",
@@ -3291,15 +3103,12 @@ class Runner:
 
     def train_policy(self):
 
-        if args.ticktok and self.batch_counter % 2 == 0:
-            return
-
         # ----------------------------------------------------
         # policy phase
 
         start_time = clock.time()
 
-        if args.policy.epochs == 0:
+        if args.opt_p.epochs == 0:
             return
 
         batch_data = {}
@@ -3355,16 +3164,16 @@ class Runner:
             batch_data["*global_log_policy"] = model_out["log_policy"].detach()
 
         epochs = 0
-        for epoch in range(args.policy.epochs):
+        for epoch in range(args.opt_p.epochs):
             results = self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_policy_minibatch,
-                mini_batch_size=args.policy.mini_batch_size,
+                mini_batch_size=args.opt_p.mini_batch_size,
                 optimizer=self.policy_optimizer,
                 label="policy",
                 epoch=epoch,
             )
-            expected_mini_batches = (args.batch_size / args.policy.mini_batch_size)
+            expected_mini_batches = (args.batch_size / args.opt_p.mini_batch_size)
             epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
@@ -3417,15 +3226,12 @@ class Runner:
 
     def train_value(self):
 
-        if args.ticktok and self.batch_counter % 2 == 0:
-            return
-
         # ----------------------------------------------------
         # value phase
 
         start_time = clock.time()
 
-        if args.value.epochs == 0:
+        if args.opt_v.epochs == 0:
             return
 
         batch_data = {}
@@ -3455,11 +3261,11 @@ class Runner:
                     self.log_fake_accumulated_gradient_norms(optimizer=self.value_optimizer)
 
 
-        for value_epoch in range(args.value.epochs):
+        for value_epoch in range(args.opt_v.epochs):
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
-                mini_batch_size=args.value.mini_batch_size,
+                mini_batch_size=args.opt_v.mini_batch_size,
                 optimizer=self.value_optimizer,
                 label="value",
                 epoch=value_epoch,
@@ -3553,15 +3359,13 @@ class Runner:
             batch_data = {"prev_state": obs}
 
             # get targets from rollout
-            if args.use_tvf and not args.distil_force_ext: # tvf_value is [N, A, K, VH]
-                assert args.distil_target == "value", "Only value targets supported for TVF distil"
+            if args.use_tvf and not args.distil.force_ext: # tvf_value is [N, A, K, VH]
+                assert args.distil.target == "value", "Only value targets supported for TVF distil"
                 batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0]) # N*A, K
-                if args.distil_rediscount:
-                    batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
             else:
-                if args.distil_target == "value":
+                if args.distil.target == "value":
                     batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
-                elif args.distil_target in ["return", "advantage"]:
+                elif args.distil.target in ["return", "advantage"]:
                     # note, we use the value estimates, which are tvf_gamma,
                     # perhaps we want to use policy gamma instead, which would mean
                     # transforming the value estimates. This can be done with rediscounting... I probably won't
@@ -3573,26 +3377,16 @@ class Runner:
                         self.ext_value[self.N],
                         self.terminals,
                         self.tvf_gamma,
-                        args.distil_lambda,
+                        args.distil.adv_lambda,
                     )
-                    if args.distil_target == "return":
+                    if args.distil.target == "return":
                         batch_data["distil_targets"] = utils.merge_down(advantage_estimate + self.ext_value[:self.N])
                     else:
                         batch_data["distil_targets"] = utils.merge_down(advantage_estimate)
                 else:
-                    raise ValueError(f"Invalid distil target {args.distil_target}")
+                    raise ValueError(f"Invalid distil target {args.distil.target}")
 
-
-            # returns should have unit variance, if they do not, divide by the standard deviation.
-            # this can occur, for example, when rediscounting.
-            if args.distil_renormalize:
-                targets = batch_data["distil_targets"]
-                std = np.std(targets)
-                smooth_std = utils.dictionary_ema(self.vars, "distil_target_std", std, 0.9)
-                batch_data["distil_targets"] /= (smooth_std+1e-1) # 1e-1 so we don't multiply by more than 10.
-                self.log.watch("distil_target_std", std, display_width=0)
-
-            if args.distil_order == "before_policy":
+            if args.distil.order == "before_policy":
                 # in this case we can just use the rollout policy
                 batch_data["old_raw_policy"] = utils.merge_down(self.raw_policy)
                 batch_data["old_log_policy"] = utils.merge_down(self.log_policy)
@@ -3609,8 +3403,7 @@ class Runner:
             return batch_data
 
         # slower path, for when replay is used and we need to regenerate all targets
-        assert not args.distil_renormalize, "renormalization only supported under a complete rollout distil batch."
-        assert args.distil_target == "value", "Replay distil required value targets."
+        assert args.distil.target == "value", "Replay distil required value targets."
         obs, distil_aux = self.get_replay_sample(samples_wanted)
 
         batch_data = {}
@@ -3623,11 +3416,9 @@ class Runner:
             output="full",
         )
 
-        if args.use_tvf and not args.distil_force_ext:
+        if args.use_tvf and not args.distil.force_ext:
             # we could skip this if we trained on rollout rather then replay
             batch_data["distil_targets"] = model_out["value_tvf_value"][:, :, 0].detach().cpu().numpy()
-            if args.distil_rediscount:
-                batch_data["distil_targets"] = self.rediscount_horizons(batch_data["distil_targets"])
         else:
             batch_data["distil_targets"] = model_out["value_value"][:, 0].detach().cpu().numpy()
 
@@ -3639,31 +3430,28 @@ class Runner:
 
     def train_distil(self):
 
-        if args.ticktok and self.batch_counter % 2 == 0:
-            return
-
         # ----------------------------------------------------
         # distil phase
 
         start_time = clock.time()
 
-        if args.distil.epochs == 0:
+        if args.opt_d.epochs == 0:
             return
 
-        batch_data = self.get_distil_batch(args.distil_batch_size)
+        batch_data = self.get_distil_batch(args.distil.batch_size)
 
-        for distil_epoch in range(args.distil.epochs):
+        for distil_epoch in range(args.opt_d.epochs):
 
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
-                mini_batch_size=args.distil.mini_batch_size,
-                optimizer=self.policy_optimizer if args.shared_distil_optimizer else self.distil_optimizer,
+                mini_batch_size=args.opt_d.mini_batch_size,
+                optimizer=self.distil_optimizer,
                 label="distil",
                 epoch=distil_epoch,
             )
 
-        self.log.watch(f"time_train_distil", (clock.time() - start_time) / args.distil_period,
+        self.log.watch(f"time_train_distil", (clock.time() - start_time) / args.distil.period,
                        display_width=6, display_name='t_dis', display_precision=3)
 
     def train_aux(self):
@@ -3674,13 +3462,13 @@ class Runner:
 
         start_time = clock.time()
 
-        if args.aux.epochs == 0:
+        if args.opt_a.epochs == 0:
             return
 
         # we could train on terminals, or reward.
         # time would be policy dependant, and is aliased.
 
-        replay_obs, replay_aux = self.get_replay_sample(args.distil_batch_size)
+        replay_obs, replay_aux = self.get_replay_sample(args.distil.batch_size)
         batch_data = {}
         batch_data['prev_state'] = replay_obs
         batch_data['aux_reward'] = replay_aux[:, ExperienceReplayBuffer.AUX_REWARD].astype(np.float32)
@@ -3696,12 +3484,12 @@ class Runner:
         batch_data['old_value'] = model_out['value_ext_value'].cpu().numpy()
         batch_data['old_log_policy'] = model_out['policy_log_policy'].cpu().numpy()
 
-        for aux_epoch in range(args.aux.epochs):
+        for aux_epoch in range(args.opt_a.epochs):
 
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_aux_minibatch,
-                mini_batch_size=args.aux.mini_batch_size,
+                mini_batch_size=args.opt_a.mini_batch_size,
                 optimizer=self.aux_optimizer,
                 epoch=aux_epoch,
                 label="aux",
@@ -3761,11 +3549,11 @@ class Runner:
 
 
     def wants_distil_update(self, location=None):
-        location_match = location is None or location == args.distil_order
+        location_match = location is None or location == args.distil.order
         return \
-            args.architecture == "dual" and  \
-            args.distil.epochs > 0 and \
-            self.batch_counter % args.distil_period == args.distil_period - 1 and \
+            args.architecture == "dual" and \
+            args.opt_d.epochs > 0 and \
+            self.batch_counter % args.distil.period == args.distil.period - 1 and \
             location_match
 
     def train(self):
@@ -3797,7 +3585,7 @@ class Runner:
             if self.wants_distil_update("after_policy"):
                 self.train_distil()
 
-        if args.aux.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period-1):
+        if args.opt_a.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period - 1):
             self.train_aux()
 
         if args.use_rnd:

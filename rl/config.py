@@ -1,7 +1,13 @@
 import ast
+import sys
 import uuid
 import socket
 import argparse
+
+from tap import Tap
+from typing import Sequence
+
+from tap.tap import TapType
 
 """
 Colors class for use with terminal.
@@ -31,8 +37,53 @@ def str2bool(v):
 
 class BaseConfig:
 
-    def __init__(self, prefix=''):
+    def __init__(self, prefix='', parser: argparse.ArgumentParser=None):
         self._prefix = prefix
+        if parser is not None:
+            self._auto_add_params(parser)
+
+    def _auto_add_params(self, parser):
+        """
+        Adds parser entry for each class variable
+        """
+        class_vars = vars(self.__class__)
+        var_types = class_vars['__annotations__']
+        var_helps = {}
+        try:
+            import inspect
+            source_code = inspect.getsource(self.__class__).split("\n")
+            for line in source_code:
+                line = line.lstrip(' \t')
+                if line == "" or '#' not in line:
+                    continue
+                comment_part = line[line.find('#')+1:].lstrip(' ')
+                first_word = line.split(' ')[0]
+                if first_word == "":
+                    continue
+                if first_word.endswith(':'):
+                    first_word = first_word[:-1]
+
+                if first_word in class_vars:
+                    var_helps[first_word] = comment_part
+        except:
+            # getsource might fail
+            pass
+
+        for var_name, var_default in class_vars.items():
+            if var_name.startswith("_"):
+                continue
+
+            var_type = var_types.get(var_name, object)
+            var_help = var_helps.get(var_name, None)
+
+            prefix_part = "" if (self._prefix == "") else self._prefix.lower()+"_"
+
+            parser.add_argument(
+                f"--{prefix_part}{var_name}",
+                type=var_type,
+                default=var_default,
+                help=var_help,
+            )
 
     def update(self, **kwargs):
 
@@ -119,8 +170,6 @@ class TVFConfig(BaseConfig):
         parser.add_argument("--tvf_boost_final_head", type=float, default=0.0,
                             help="Increases loss on final tvf head.")
 
-
-
 class OptimizerConfig(BaseConfig):
     """
     Config settings for (generic) optimizer
@@ -172,13 +221,79 @@ class OptimizerConfig(BaseConfig):
         return (rollout_size / self.mini_batch_size) * self.epochs
 
 
+class DebugConfig(BaseConfig):
+    """
+    Config settings for debug settings
+    """
+
+    zero_obs: bool = False  # Zeros the environments observation. Useful to see if the model can learn from time only.
+    checkpoint_slides: bool = False  # Generates images containing states during epoch saves.
+    print_freq: int = 60  # Number of seconds between debug prints.
+    log_freq: int = 300  # Number of seconds between log writes.
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="Debug", parser=parser)
+
+class DistilConfig(BaseConfig):
+
+    order: str = "after_policy"  # [after_policy|before_policy]
+    beta: float = 1.0
+    target: str = "value"  # [return|value|advantage]
+    batch_size: int = -1  # Size of batch to use when training distil. Negative for rollout_size.
+    adv_lambda: float = 0.6  # Used for return or advantage distil targets.
+    period: int = 1
+    loss: str = "kl_policy" # [mse_logit|mse_policy|kl_policy]
+    max_heads: int = -1  # Max number of heads to apply distillation to, -1 for all.
+    force_ext: bool = False  # Use value_ext instead of value_tvf for distillation.
+    reweighing: bool = False  # Reduces loss for horizons which have been rediscounted away.
+    value_loss: str = "mse"  # [mse|clipped_mse|l1|huber]
+    delta: float = 0.1       # delta for huber loss
+    l1_scale: float = 1 / 30  # scaling for l1 loss
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="Distil", parser=parser)
+
+
 class Config(BaseConfig):
 
-    def __init__(self):
+    # list of params that have been remapped
+    REMAPPED_PARAMS = {
+        'gae_lambda': 'lambda_policy',
+        'td_lambda': 'lambda_value',
+        'use_compression': 'obs_compression',
+        'tvf_head_sparsity': 'tvf_feature_sparsity',
+        'export_video': None,
+        'tvf_value_distribution': None,
+        'tvf_horizon_distribution': None,
+        'tvf_value_samples': None,
+        'tvf_horizon_samples': 'tvf_value_heads',
+        'tvf_hidden_units': None,
+        'tvf_horizon_trimming': None,
+        'tvf_force_ext_value_distil': None,
+        'tvf_horizon_scale': None,
+        'tvf_time_scale': None,
+        'tvf_mode': None,
+        'tvf_sum_horizons': None,
+        'sns_small_samples': None,
+        'tvf_return_n_step': None,
+        'color': None,
+
+        "ag_sns_delay": "ag_delay",
+        "ag_sns_min_h": "ag_min_h",
+        "ag_sns_max_h": "ag_max_h",
+        "ag_sns_initial_h": "ag_initial_h",
+
+    }
+
+    def __init__(self, **arg_overrides):
 
         super().__init__()
 
         self._parser = parser = argparse.ArgumentParser(description="Trainer for RL")
+
+        # modules...
+        self.debug = DebugConfig(self._parser)
+        self.distil = DistilConfig(self._parser)
 
         # --------------------------------
         # main arguments
@@ -230,13 +345,6 @@ class Config(BaseConfig):
                             help="Enables synchronous environments (slower, but helpful for debuging env errors).")
         parser.add_argument("--benchmark_mode", type=str2bool, default=False, help="Enables benchmarking mode.")
         parser.add_argument("--precision", type=str, default="medium", help="low|medium|high")
-        parser.add_argument("--head_bias", type=str2bool, default=True, help="Enables bias on output heads")
-
-        # --------------------------------
-        # Episodic Discounting
-        parser.add_argument("--use_ed", type=str2bool, default=False, help="Enables episodic discounting.")
-        parser.add_argument("--ed_mode", type=str, default="power", help="power|quadratic|none")
-        parser.add_argument("--ed_bias", type=float, default=1, help="added to t.")
 
         # --------------------------------
         # Rewards
@@ -259,15 +367,18 @@ class Config(BaseConfig):
         parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clipping used when global_norm is set.")
         parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm]")
         parser.add_argument("--head_scale", type=float, default=0.1, help="Scales weights for value and policy heads.")
+        parser.add_argument("--head_bias", type=str2bool, default=True, help="Enables bias on output heads")
 
         # --------------------------------
-        # Extra
+        # Global KL constraint
+        # Not fully tested...
 
         parser.add_argument("--use_gkl", type=str2bool, default=False, help="Use a global kl constraint.")
         parser.add_argument("--gkl_threshold", type=float, default=-1) # 0.004 is probably good.
         parser.add_argument("--gkl_penalty", type=float, default=0.01)
         parser.add_argument("--gkl_source", type=str, default="rollout", help="[rollout]")
         parser.add_argument("--gkl_samples", type=int, default=1024, help="Number of samples to use for global sample of state distrubtion.")
+
         # --------------------------------
         # Environment
         parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
@@ -282,13 +393,6 @@ class Config(BaseConfig):
         parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
         parser.add_argument("--reward_normalization", type=str, default="rms", help="off|rms|ema")
         parser.add_argument("--reward_normalization_clipping", type=float, default=10, help="how much to clip rewards after normalization, negative to disable")
-        parser.add_argument("--reward_normalization_horizon", type=float, default=5e6, help="how much to smooth variance estimates for ema mode.")
-        parser.add_argument("--reward_normalization_correction", type=str2bool, default=False, help="")
-        parser.add_argument("--rnc_no_value", type=str2bool, default=False)
-        parser.add_argument("--rnc_value_only", type=str2bool, default=False)
-
-        parser.add_argument("--reward_curve", type=float, default=-1,
-                            help="Rewards get larger over time, set to 1/1000 or so. Negative means disabled.")
 
         parser.add_argument("--deferred_rewards", type=int, default=0,
                             help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
@@ -317,11 +421,11 @@ class Config(BaseConfig):
 
         # --------------------------------
 
-        self.policy = OptimizerConfig('policy', parser)
-        self.value = OptimizerConfig('value', parser)
-        self.distil = OptimizerConfig('distil', parser)
-        self.aux = OptimizerConfig('aux', parser)
-        self.rnd = OptimizerConfig('rnd', parser)
+        self.opt_p = OptimizerConfig('opt_p', parser)
+        self.opt_v = OptimizerConfig('opt_v', parser)
+        self.opt_d = OptimizerConfig('opt_d', parser)
+        self.opt_a = OptimizerConfig('opt_a', parser)
+        self.opt_r = OptimizerConfig('opt_r', parser)
 
         # --------------------------------
         # PPO
@@ -338,17 +442,6 @@ class Config(BaseConfig):
         # --------------------------------
         # TVF
         self.tvf = TVFConfig(parser)
-
-        # --------------------------------
-        # Debugging
-        parser.add_argument("--debug_zero_obs", type=str2bool, default=False, help="")
-        parser.add_argument("--debug_log_rediscount_curve", type=str2bool, default=False, help="")
-        parser.add_argument("--debug_print_freq", type=int, default=60, help="Number of seconds between debug prints.")
-        parser.add_argument("--debug_log_freq", type=int, default=300, help="Number of seconds between log writes.")
-        parser.add_argument("--debug_checkpoint_slides", type=str2bool, default=True, help="Generates state images during epoch saves.")
-        parser.add_argument("--debug_state_distort", type=int, default=-1, help="After this many (per agent) frames apply a negation filter. (< 0 for disabled)")
-        parser.add_argument("--debug_state_modulo", type=int, default=11)
-
 
         # --------------------------------
         # Auto Gamma
@@ -392,34 +485,6 @@ class Config(BaseConfig):
         parser.add_argument("--aux_source", type=str, default='aux', help="[aux|value]]")
         parser.add_argument("--aux_period", type=int, default=0, help="")
 
-        # --------------------------------
-        # Distil phase
-        parser.add_argument("--distil_order", type=str, default="after_policy", help="after_policy|before_policy")
-        parser.add_argument("--distil_beta", type=float, default=10.0)
-        parser.add_argument("--distil_l1_scale", type=float, default=1/30)
-        parser.add_argument("--shared_distil_optimizer", type=str2bool, default=False)
-
-        # extra
-        parser.add_argument("--distil_target", type=str, default="value", help="return|value|advantage")
-        parser.add_argument("--distil_lambda", type=float, default=0.6, help="Used for return or advantage distil targets")
-
-        parser.add_argument("--distil_delta", type=float, default=0.1)
-        parser.add_argument("--distil_period", type=int, default=1)
-        parser.add_argument("--distil_loss", type=str, default="kl_policy", help="[mse_logit|mse_policy|kl_policy]")
-        parser.add_argument("--distil_batch_size", type=int, default=None, help="Size of batch to use when training distil. Defaults to rollout_size.")
-        parser.add_argument("--distil_freq_ratio", type=float, default=None, help="Sets distil period to replay_size / batch_size * distil_freq_ratio")
-        parser.add_argument("--distil_batch_size_ratio", type=float, default=None, help="Sets distil_batch_size to rollout_size * distil_batch_size_ratio")
-        parser.add_argument("--distil_max_heads", type=int, default=8+1, help="Max number of heads to apply distillation to.")
-        parser.add_argument("--distil_force_ext", type=str2bool, default=False,
-                            help="use value_ext instead of tvf heads for distilation.")
-        parser.add_argument("--distil_rediscount", type=str2bool, default=False, help="uses rediscounted targets for distillation.")
-        parser.add_argument("--distil_renormalize", type=str2bool, default=False)
-        parser.add_argument("--distil_reweighing", type=str2bool, default=False,
-                            help="Reduces loss for horizons which have been discounted away. Generally better than rediscounting")
-        parser.add_argument("--distil_loss_value_target", type=float, default=None,
-                            help="Normalizes loss_value_distil to approximately this level. Useful if distil_rediscount is enabled.")
-        parser.add_argument("--distil_lvt_mode", type=str, default="first", help="first|mean")
-        parser.add_argument("--distil_value_loss", type=str, default="mse", help="mse|clipped_mse|l1|huber")
 
         # --------------------------------
         # Replay
@@ -433,8 +498,6 @@ class Config(BaseConfig):
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
 
-        parser.add_argument("--use_ebd", type=str2bool, default=False,
-                            help="Enables Exploration by Disagreement (EBD) module (a poor mans rnd).")
         parser.add_argument("--use_hashing", type=str2bool, default=False,
                             help="Enables state hashing (used to track exploration.")
         parser.add_argument("--hash_bits", type=int, default=16,
@@ -451,20 +514,13 @@ class Config(BaseConfig):
         parser.add_argument("--hash_bias", type=float, default=0.0)
         parser.add_argument("--hash_decay", type=float, default=0.99)
 
-        # -----------------
-        # Experimental
-        parser.add_argument("--ticktok", type=str2bool, default=False)
-
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
         parser.add_argument("--ir_normalize", type=str2bool, default=True, help="Normalizes intrinsic rewards such that they have unit variance")
 
-
-
         # --------------------------------
         # Temp, remove
         parser.add_argument("--tmp_median_return", type=str2bool, default=False, help="Use median of return samples rather than mean")
-
 
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
@@ -499,8 +555,7 @@ class Config(BaseConfig):
         self.seed = int()
         self.description = object()
         self.quiet_mode = bool()
-        self.debug_print_freq = int()
-        self.debug_log_freq = int()
+
         self.checkpoint_every = int()
         self.log_folder = object()
         self.observation_scaling = str()
@@ -536,11 +591,6 @@ class Config(BaseConfig):
         self.reward_clipping = str()
         self.reward_normalization = str()
         self.reward_normalization_clipping = float()
-        self.reward_normalization_horizon = float()
-        self.reward_normalization_correction = bool()
-        self.rnc_no_value = bool()
-        self.rnc_value_only = bool()
-        self.reward_curve = float()
         self.deferred_rewards = int()
         self.resolution = str()
         self.color_mode = str()
@@ -554,7 +604,6 @@ class Config(BaseConfig):
         self.embed_action = bool()
         self.embed_state = bool()
         self.atari_rom_check = bool()
-        self.shared_distil_optimizer = bool()
 
         self.ppo_vf_coef = float()
         self.entropy_bonus = float()
@@ -587,12 +636,6 @@ class Config(BaseConfig):
         self.tvf_include_ext = bool()
         self.tvf_sqrt_transform = bool()
 
-        self.debug_zero_obs = bool()
-        self.debug_log_rediscount_curve = bool()
-        self.debug_checkpoint_slides = bool()
-        self.debug_state_distort = int()
-        self.debug_state_modulo = bool()
-
         self.use_ag = bool()
         self.ag_mode = str()
         self.ag_target = str()
@@ -620,10 +663,6 @@ class Config(BaseConfig):
         self.sns_smoothing_horizon_g2 = int()
         self.sns_smoothing_horizon_policy = int()
 
-        self.use_ed = bool()
-        self.ed_mode = str()
-        self.ed_bias = float()
-
         # extra
         self.use_gkl = bool()
         self.gkl_threshold = float()
@@ -635,31 +674,12 @@ class Config(BaseConfig):
         self.aux_target = str()
         self.aux_source = str()
         self.aux_period = int()
-        self.distil_order = str()
-        self.distil_target = str()
-        self.distil_lambda = str()
-        self.distil_beta = float()
-        self.distil_l1_scale = float()
-        self.distil_delta = float()
-        self.distil_period = int()
-        self.distil_loss = str()
-        self.distil_batch_size = object()
-        self.distil_freq_ratio = float()
-        self.distil_batch_size_ratio = float()
-        self.distil_max_heads = int()
-        self.distil_force_ext = bool()
-        self.distil_rediscount = bool()
-        self.distil_renormalize = bool()
-        self.distil_reweighing = bool()
-        self.distil_loss_value_target = float()
-        self.distil_lvt_mode = str()
-        self.distil_value_loss = str()
+
         self.replay_mode = str()
         self.replay_size = int()
         self.replay_mixing = bool()
         self.replay_thinning = float()
         self.use_rnd = bool()
-        self.use_ebd = bool()
         self.use_hashing = bool()
         self.hash_method = str()
         self.hash_input = str()
@@ -672,8 +692,6 @@ class Config(BaseConfig):
         self.hash_bias = float()
         self.rnd_experience_proportion = float()
 
-        self.ticktok = bool
-
         # noise stuff
         self.noisy_return = float()
         self.noisy_reward = float()
@@ -682,6 +700,11 @@ class Config(BaseConfig):
         self.precision = str()
 
         self.head_bias = bool()
+
+        self._update_auto_defaults()
+        self._add_remappings()
+        self._parse()
+
 
     def get_env_name(self, n: int=0):
         """
@@ -693,6 +716,144 @@ class Config(BaseConfig):
             return self.environment[n % len(self.environment)]
         raise ValueError(f"Invalid type for environment {type(self.environment)} expecting str or list.")
 
+    def _update_auto_defaults(self):
+        """
+        Apply special config settings.
+        """
+        if self.distil.batch_size < 0:
+            self.distil.batch_size = self.batch_size
+
+    def _add_remappings(self):
+        """
+        Add stubs for parameters that have been removed.
+        """
+        for k, v in self.REMAPPED_PARAMS.items():
+            self._parser.add_argument(f"--{k}", type=str, default=None, help=argparse.SUPPRESS)
+
+    def _parse(self, args_override=None):
+        """
+        Setup config values based on commandline args and (potentially) and specified overrides.
+        """
+
+        # clean this up...
+        parser = self._parser
+        REMAPPED_PARAMS = self.REMAPPED_PARAMS
+        args = self
+
+        cmd_args = parser.parse_args(args_override).__dict__
+        args.update(**cmd_args)
+
+        # fix restore using legacy settings
+        if args.restore is True or args.restore == "True":
+            args.restore = "always"
+        if args.restore is False or args.restore == "False":
+            args.restore = "never"
+
+        # mappings
+        for old_name, new_name in REMAPPED_PARAMS.items():
+            if vars(args).get(old_name, None) is None:
+                continue
+
+            if new_name is None:
+                print(f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being ignored.")
+                continue
+
+            legacy_value = vars(args)[old_name]
+            new_type = type(vars(args)[new_name])
+            if new_type is bool:
+                cast_legacy_value = str2bool(legacy_value)
+            else:
+                cast_legacy_value = new_type(legacy_value)
+            if vars(args)[new_name] is None:
+                print(
+                    f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being mapped to {BOLD}{new_name}{ENDC} with value {legacy_value}")
+                vars(args)[new_name] = cast_legacy_value
+                del vars(args)[old_name]
+            else:
+                non_legacy_value = vars(args)[new_name]
+                print(
+                    f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
+                vars(args)[new_name] = cast_legacy_value
+
+        # conversions
+        try:
+            # handle environment as an array.
+            args.environment = ast.literal_eval(args.environment)
+        except:
+            # just assume this is a normal unformatted string.
+            args.environment = args.environment
+
+        # checks
+        if args.reference_policy is not None:
+            assert args.architecture == "dual", "Reference policy loading requires a dual network."
+        assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
+
+        assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
+
+        # set defaults
+        if args.tvf_gamma is None:
+            args.tvf_gamma = args.gamma
+
+        if args.hash_bonus != 0:
+            assert args.use_hashing, "use_hashing must be enabled."
+
+        if args.replay_mode == "off":
+            args.replay_size = 0
+
+        # fixup horizon trimming
+        if str(args.tvf_horizon_trimming) == 'False':
+            args.tvf_horizon_trimming = "off"
+        if str(args.tvf_horizon_trimming) == 'True':
+            args.tvf_horizon_trimming = "interpolate"
+
+        # normalization used to be a bool
+        try:
+            bool_value = str2bool(args.reward_normalization)
+            print(
+                f"Warning! Using deprecated version of {FAIL}reward_normalization {ENDC}. This should now be a string, not a bool.")
+            if bool_value:
+                args.reward_normalization = "rms"
+            else:
+                args.reward_normalization = "off"
+        except Exception as e:
+            # this just means we are not using the old bool values
+            pass
+
+        # timeout
+        if args.timeout == "auto":
+            if args.env_type == "atari":
+                args.timeout = 108000  # includes skipped frames
+            elif args.env_type == "procgen":
+                # might be more fair to just set this so something like 8000 for all envs?
+                # the trimming can auto adapt so it's just when we put the time frac into the obs
+                # maybe we should use log time instead?
+                if args.environment in ['bigfish', 'plunder', 'bossfight']:
+                    args.timeout = 8000
+                else:
+                    args.timeout = 1000
+            else:
+                args.timeout = 0  # unlimited
+
+        else:
+            args.timeout = int(args.timeout)
+
+        # auto beta
+        for optimizer in [args.opt_p, args.opt_v, args.opt_d, args.opt_a, args.opt_r]:
+            if optimizer.adam_beta1 < 0:
+                optimizer.adam_beta1 = 1 - (1 / optimizer.n_updates(args.n_steps * args.agents))
+                print(f"Set {optimizer.name} beta1 to {optimizer.adam_beta1}")
+
+        # color mode
+        assert args.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
+        if args.color_mode == "default":
+            args.color_mode = {
+                'atari': 'bw',
+                'procgen': 'rgb',
+            }.get(args.env_type, 'bw')
+
+        if args.use_ag and args.ag_mode in ['sns', 'shadow']:
+            assert 'value_heads' in ast.literal_eval(args.sns_labels), "sns_labels must include value_head"
+
     @property
     def reward_normalization_gamma(self):
         gamma = self.tvf_gamma if self.use_tvf else self.gamma
@@ -702,7 +863,7 @@ class Config(BaseConfig):
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or self.use_ebd or (self.hash_bonus != 0)
+        return self.use_rnd or (self.hash_bonus != 0)
 
     @property
     def tvf_return_n_step(self):
@@ -726,181 +887,8 @@ class Config(BaseConfig):
     def batch_size(self):
         return self.n_steps * self.agents
 
-
 LOCK_KEY = str(uuid.uuid4().hex)
 args:Config = Config()
 
-def parse_args(args_override=None):
-
-    parser = args._parser
-
-    REMAPPED_PARAMS = {
-        'gae_lambda': 'lambda_policy',
-        'td_lambda': 'lambda_value',
-        'use_compression': 'obs_compression',
-        'tvf_head_sparsity': 'tvf_feature_sparsity',
-        'export_video': None,
-        'tvf_value_distribution': None,
-        'tvf_horizon_distribution': None,
-        'tvf_value_samples': None,
-        'tvf_horizon_samples': 'tvf_value_heads',
-        'tvf_hidden_units': None,
-        'tvf_horizon_trimming': None,
-        'tvf_force_ext_value_distil': None,
-        'tvf_horizon_scale': None,
-        'tvf_time_scale': None,
-        'tvf_mode': None,
-        'tvf_sum_horizons': None,
-        'sns_small_samples': None,
-        'tvf_return_n_step': None,
-        'color': None,
-
-        "ag_sns_delay": "ag_delay",
-        "ag_sns_min_h": "ag_min_h",
-        "ag_sns_max_h": "ag_max_h",
-        "ag_sns_initial_h": "ag_initial_h",
-
-    }
-
-    for k,v in REMAPPED_PARAMS.items():
-        parser.add_argument(f"--{k}", type=str, default=None, help=argparse.SUPPRESS)
-
-    cmd_args = parser.parse_args(args_override).__dict__
-    args.update(**cmd_args)
-
-    # fix restore using legacy settings
-    if args.restore is True or args.restore == "True":
-        args.restore = "always"
-    if args.restore is False or args.restore == "False":
-        args.restore = "never"
-
-    # mappings
-    for old_name, new_name in REMAPPED_PARAMS.items():
-        if vars(args).get(old_name, None) is None:
-            continue
-
-        if new_name is None:
-            print(f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being ignored.")
-            continue
-
-        legacy_value = vars(args)[old_name]
-        new_type = type(vars(args)[new_name])
-        if new_type is bool:
-            cast_legacy_value = str2bool(legacy_value)
-        else:
-            cast_legacy_value = new_type(legacy_value)
-        if vars(args)[new_name] is None:
-            print(f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} which is being mapped to {BOLD}{new_name}{ENDC} with value {legacy_value}")
-            vars(args)[new_name] = cast_legacy_value
-            del vars(args)[old_name]
-        else:
-            non_legacy_value = vars(args)[new_name]
-            print(
-                f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
-            vars(args)[new_name] = cast_legacy_value
-
-    # conversions
-    try:
-        # handle environment as an array.
-        args.environment = ast.literal_eval(args.environment)
-    except:
-        # just assume this is a normal unformatted string.
-        args.environment = args.environment
-
-    # checks
-    if args.reference_policy is not None:
-        assert args.architecture == "dual", "Reference policy loading requires a dual network."
-    assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
-
-    assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
-
-    # set defaults
-    if args.tvf_gamma is None:
-        args.tvf_gamma = args.gamma
-    if args.distil_batch_size is None:
-        args.distil_batch_size = args.batch_size
-
-    if args.hash_bonus != 0:
-        assert args.use_hashing, "use_hashing must be enabled."
-
-    # smart config
-    buffer_size = args.replay_size if args.replay_size > 0 else args.batch_size
-    rollout_size = args.agents * args.n_steps
-    if args.distil_batch_size_ratio is not None:
-        args.distil_batch_size = round(rollout_size * args.distil_batch_size_ratio)
-
-    if args.distil_freq_ratio is not None:
-        # for period faster than 1 per epoch just up the epochs.
-        args.distil_period = buffer_size / args.batch_size / args.distil_freq_ratio
-        while args.distil_period < 1:
-            args.distil_period *= 2
-            args.distil.epochs *= 2
-        args.distil_period = round(args.distil_period)
-
-    if args.replay_mode == "off":
-        args.replay_size = 0
-
-    if args.use_ebd:
-        assert args.distil.epochs > 0, "EBD requires distilation to be enabled."
-
-    # fixup horizon trimming
-    if str(args.tvf_horizon_trimming) == 'False':
-        args.tvf_horizon_trimming = "off"
-    if str(args.tvf_horizon_trimming) == 'True':
-        args.tvf_horizon_trimming = "interpolate"
-
-    # normalization used to be a bool
-    try:
-        bool_value = str2bool(args.reward_normalization)
-        print(f"Warning! Using deprecated version of {FAIL}reward_normalization {ENDC}. This should now be a string, not a bool.")
-        if bool_value:
-            args.reward_normalization = "rms"
-        else:
-            args.reward_normalization = "off"
-    except Exception as e:
-        # this just means we are not using the old bool values
-        pass
-
-    # timeout
-    if args.timeout == "auto":
-        if args.env_type == "atari":
-            args.timeout = 108000 # includes skipped frames
-        elif args.env_type == "procgen":
-            # might be more fair to just set this so something like 8000 for all envs?
-            # the trimming can auto adapt so it's just when we put the time frac into the obs
-            # maybe we should use log time instead?
-            if args.environment in ['bigfish', 'plunder', 'bossfight']:
-                args.timeout = 8000
-            else:
-                args.timeout = 1000
-        else:
-            args.timeout = 0  # unlimited
-
-    else:
-        args.timeout = int(args.timeout)
-
-    # auto beta
-    for optimizer in [args.policy, args.value, args.distil, args.aux, args.rnd]:
-        if optimizer.adam_beta1 < 0:
-            optimizer.adam_beta1 = 1-(1/optimizer.n_updates(args.n_steps*args.agents))
-            print(f"Set {optimizer.name} beta1 to {optimizer.adam_beta1}")
-
-    # color mode
-    assert args.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
-    if args.color_mode == "default":
-        args.color_mode = {
-            'atari': 'bw',
-            'procgen': 'rgb',
-        }.get(args.env_type, 'bw')
-
-    if args.use_ag and args.ag_mode in ['sns', 'shadow']:
-        assert 'value_heads' in ast.literal_eval(args.sns_labels), "sns_labels must include value_head"
-
-
 if __name__ == "__main__":
     pass
-    # c = Config()
-    # args = c.parser.parse_args({'environment': 'Pong'})
-    # c.update(**vars(args))
-    #
-    # c._print_vars()
