@@ -4,11 +4,6 @@ import uuid
 import socket
 import argparse
 
-from tap import Tap
-from typing import Sequence
-
-from tap.tap import TapType
-
 """
 Colors class for use with terminal.
 """
@@ -234,7 +229,11 @@ class DebugConfig(BaseConfig):
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="Debug", parser=parser)
 
+
 class DistilConfig(BaseConfig):
+    """
+    Config settings for Distilation
+    """
 
     order: str = "after_policy"  # [after_policy|before_policy]
     beta: float = 1.0
@@ -252,6 +251,24 @@ class DistilConfig(BaseConfig):
 
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="Distil", parser=parser)
+
+class GlobalKLConfig(BaseConfig):
+    """
+    Config settings for Global KL constraint
+    """
+
+    # --------------------------------
+    # Global KL constraint
+    # Not fully tested...
+
+    enabled: bool = False    # Use a global kl constraint.
+    threshold: float = -1    # 0.004 is probably good.
+    penalty: float = 0.01
+    source: str = "rollout"  # help=[rollout]
+    samples: int = 1024      # Number of samples to use for global sample of state distribution."
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="gkl", parser=parser)
 
 
 class Config(BaseConfig):
@@ -278,11 +295,6 @@ class Config(BaseConfig):
         'tvf_return_n_step': None,
         'color': None,
 
-        "ag_sns_delay": "ag_delay",
-        "ag_sns_min_h": "ag_min_h",
-        "ag_sns_max_h": "ag_max_h",
-        "ag_sns_initial_h": "ag_initial_h",
-
     }
 
     def __init__(self, **arg_overrides):
@@ -294,6 +306,7 @@ class Config(BaseConfig):
         # modules...
         self.debug = DebugConfig(self._parser)
         self.distil = DistilConfig(self._parser)
+        self.gkl = GlobalKLConfig(self._parser)
 
         # --------------------------------
         # main arguments
@@ -369,15 +382,6 @@ class Config(BaseConfig):
         parser.add_argument("--head_scale", type=float, default=0.1, help="Scales weights for value and policy heads.")
         parser.add_argument("--head_bias", type=str2bool, default=True, help="Enables bias on output heads")
 
-        # --------------------------------
-        # Global KL constraint
-        # Not fully tested...
-
-        parser.add_argument("--use_gkl", type=str2bool, default=False, help="Use a global kl constraint.")
-        parser.add_argument("--gkl_threshold", type=float, default=-1) # 0.004 is probably good.
-        parser.add_argument("--gkl_penalty", type=float, default=0.01)
-        parser.add_argument("--gkl_source", type=str, default="rollout", help="[rollout]")
-        parser.add_argument("--gkl_samples", type=int, default=1024, help="Number of samples to use for global sample of state distrubtion.")
 
         # --------------------------------
         # Environment
@@ -442,27 +446,6 @@ class Config(BaseConfig):
         # --------------------------------
         # TVF
         self.tvf = TVFConfig(parser)
-
-        # --------------------------------
-        # Auto Gamma
-        parser.add_argument("--use_ag", type=str2bool, default=False, help="Enables auto gamma")
-        parser.add_argument("--ag_mode", type=str, default="episode_length", help="[episode_length|training|sns|shadow|h_best]")
-        parser.add_argument("--ag_target", type=str, default="policy", help="[policy|value|both]")
-        parser.add_argument("--ag_ratio_threshold", type=float, default=0.3, help="target variance ratio for gamma.")
-        parser.add_argument("--ag_ratio_source", type=str, default="value", help="returns|value|td|advantages")
-        parser.add_argument("--ag_ratio_algorithm", type=str, default="best", help="min|best|adv")
-        parser.add_argument("--ag_ratio_factor", type=float, default=0.1, help="how much noise can we accept to increase horizon by 10x")
-        parser.add_argument("--ag_sns_threshold", type=float, default=10.0, help="target noise level for gamma.")
-        parser.add_argument("--ag_sns_ema_horizon", type=float, default=int(5e6),
-                            help="horizon used in EMA for horizon.")
-        parser.add_argument("--ag_delay", type=int, default=int(5e6),
-                            help="alpha value used in EMA for horizon.")
-        parser.add_argument("--ag_min_h", type=int, default=100,  # I'd like to make this 50
-                            help="Minimum auto gamma horizon.")
-        parser.add_argument("--ag_initial_h", type=int, default=1000,
-                            help="Initial auto gamma horizon.")
-        parser.add_argument("--ag_max_h", type=int, default=10000,
-                            help="Maximum auto gamma horizon.")
 
         # --------------------------------
         # Simple Noise Scale
@@ -636,20 +619,6 @@ class Config(BaseConfig):
         self.tvf_include_ext = bool()
         self.tvf_sqrt_transform = bool()
 
-        self.use_ag = bool()
-        self.ag_mode = str()
-        self.ag_target = str()
-        self.ag_sns_threshold = float()
-        self.ag_sns_ema_horizon = float()
-        self.ag_ratio_threshold = float()
-        self.ag_ratio_source = str()
-        self.ag_ratio_algorithm = str()
-        self.ag_ratio_factor = float()
-        self.ag_delay = int()
-        self.ag_min_h = int()
-        self.ag_initial_h = int()
-        self.ag_max_h = int()
-
         self.use_sns = bool()
         self.sns_labels = str()
         self.sns_period = int()
@@ -664,11 +633,6 @@ class Config(BaseConfig):
         self.sns_smoothing_horizon_policy = int()
 
         # extra
-        self.use_gkl = bool()
-        self.gkl_threshold = float()
-        self.gkl_penalty = float()
-        self.gkl_source = str()
-        self.gkl_samples = int()
         self.head_scale = float()
 
         self.aux_target = str()
@@ -850,9 +814,6 @@ class Config(BaseConfig):
                 'atari': 'bw',
                 'procgen': 'rgb',
             }.get(args.env_type, 'bw')
-
-        if args.use_ag and args.ag_mode in ['sns', 'shadow']:
-            assert 'value_heads' in ast.literal_eval(args.sns_labels), "sns_labels must include value_head"
 
     @property
     def reward_normalization_gamma(self):
