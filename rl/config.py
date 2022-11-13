@@ -233,12 +233,6 @@ class Config(BaseConfig):
         parser.add_argument("--head_bias", type=str2bool, default=True, help="Enables bias on output heads")
 
         # --------------------------------
-        # Episodic Discounting
-        parser.add_argument("--use_ed", type=str2bool, default=False, help="Enables episodic discounting.")
-        parser.add_argument("--ed_mode", type=str, default="power", help="power|quadratic|none")
-        parser.add_argument("--ed_bias", type=float, default=1, help="added to t.")
-
-        # --------------------------------
         # Rewards
         parser.add_argument("--tvf_return_estimator_mode", type=str, default="default",
                             help='Allows the use of the reference return estimator (very slow). [default|reference|verify|historic]')
@@ -619,10 +613,6 @@ class Config(BaseConfig):
         self.sns_smoothing_horizon_s = int()
         self.sns_smoothing_horizon_g2 = int()
         self.sns_smoothing_horizon_policy = int()
-
-        self.use_ed = bool()
-        self.ed_mode = str()
-        self.ed_bias = float()
 
         # extra
         self.use_gkl = bool()

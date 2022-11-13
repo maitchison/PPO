@@ -846,7 +846,6 @@ class Runner:
             self.vec_env = wrappers.VecNormalizeRewardWrapper(
                 self.vec_env,
                 gamma=args.reward_normalization_gamma,
-                ed_type=args.ed_mode if args.use_ed else None,
                 mode="rms",
                 clip=args.reward_normalization_clipping,
             )
@@ -1103,16 +1102,7 @@ class Runner:
         if re_mode == "verify" and self.batch_counter % 31 != 1:
             re_mode = "default"
 
-        # episodic discounting correction
-        if args.use_ed:
-            # time was time before action, we want time after action
-            normalization_factors = wrappers.EpisodicDiscounting.get_normalization_constant(
-                self.all_time,
-                discount_type=args.ed_mode,
-                discount_bias=args.ed_bias,
-            )[:, :, None]
-        else:
-            normalization_factors = 1
+        normalization_factors = 1
 
         # we must unnormalize the value estimates, then renormalize after
         values = self.tvf_value[..., self.value_heads.index(value_head)] * normalization_factors
@@ -1132,9 +1122,6 @@ class Runner:
             log=self.log,
             use_log_interpolation=args.tvf_return_use_log_interpolation,
         )
-
-        if args.use_ed:
-            returns = returns / normalization_factors[:N]
 
         return_estimate_time = clock.time() - start_time
         self.log.watch_mean(
@@ -2421,42 +2408,23 @@ class Runner:
         # mostly interested in how noisy these are...
         self.log.watch_mean_std("*ext_value_estimates", ext_value_estimates)
 
-        if args.use_ed:
-            # most of these requirements aren't strictly needed, I just can' be bothered coding them up.
-            assert self.gamma == 1.0, "ed requires gamma=1.0 for the moment."
-            assert args.use_tvf, "ed requires tvf enabled for the moment."
-            normalization_factors = wrappers.EpisodicDiscounting.get_normalization_constant(
-                self.all_time,
-                discount_type=args.ed_mode,
-                discount_bias=args.ed_bias,
-            )
-            ext_advantage = ed_gae(
-                rewards=self.ext_rewards,
-                values=ext_value_estimates,
-                normalization_factors=normalization_factors,
-                batch_terminal=self.terminals,
-                lamb=args.lambda_policy,
-            )
-            # ext_returns should probably not be used... they might work I guess...
-            self.ext_returns[:] = ext_advantage + ext_value_estimates[:N]
-        else:
-            ext_advantage = gae(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_policy
-            )
-            # calculate ext_returns.
-            self.ext_returns[:] = td_lambda(
-                self.ext_rewards,
-                ext_value_estimates[:N],
-                ext_value_estimates[N],
-                self.terminals,
-                self.gamma,
-                args.lambda_value,
-            )
+        ext_advantage = gae(
+            self.ext_rewards,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
+            self.terminals,
+            self.gamma,
+            args.lambda_policy
+        )
+        # calculate ext_returns.
+        self.ext_returns[:] = td_lambda(
+            self.ext_rewards,
+            ext_value_estimates[:N],
+            ext_value_estimates[N],
+            self.terminals,
+            self.gamma,
+            args.lambda_value,
+        )
 
         self.advantage = ext_advantage.copy()
         if args.use_intrinsic_rewards:
