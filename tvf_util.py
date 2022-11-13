@@ -1,5 +1,9 @@
-from tools.plot_util import *
 
+from ps_util import *
+from plot_util import *
+import plot_util
+from runner_tools import ATARI_57
+from bisect import bisect_left
 
 def gamma_plot(path: str, color, key:str, label=None, seeds=5, subset='Atari_3_Val', x_offset=0):
     # show scores for td vs gae returns

@@ -808,6 +808,8 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
             scale: float = 1.0,
             returns_transform=lambda x: x,
             mode: str = "rms",
+            ed_type: Optional[str] = None,
+            ed_bias: float = 1.0,
             ema_horizon: float = 5e6,
     ):
         """
@@ -827,6 +829,8 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         self.scale = scale
         self.mode = mode
         self.returns_transform = returns_transform
+        self.ed_type = ed_type
+        self.ed_bias = ed_bias
         self.ret_var = 0.0
         self.ema_horizon = ema_horizon
         if initial_state is not None:
@@ -862,7 +866,14 @@ class VecNormalizeRewardWrapper(gym.Wrapper):
         # but it is what OpenAI does...
         self.current_returns = rewards + self.gamma * self.current_returns * (1-dones)
 
-        self.ret_rms.update(self.returns_transform(self.current_returns))
+        # episodic discounting return normalization
+        if self.ed_type is not None:
+            times = np.asarray([info.get('time', 0) for info in infos]) # during warmup we occasionally get some empty infos
+            norms = EpisodicDiscounting.get_normalization_constant(times, self.ed_type, discount_bias=self.ed_bias)
+        else:
+            norms = 1
+
+        self.ret_rms.update(self.returns_transform(self.current_returns/norms)) # stub /norms
 
         if self.mode == "ema":
             # note: we move EMA a bit faster at the beginning

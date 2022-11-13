@@ -2,7 +2,7 @@
 
 import torch
 import numpy as np
-from rl import ppo, rollout
+from rl import ppo, rollout, vtrace
 from rl.utils import entropy, log_entropy, log_kl, kl
 from rl.rollout import  interpolate
 
@@ -101,6 +101,65 @@ def test_information_theory_functions():
         assert_is_similar(log_kl(np.log(x1), np.log(x2)), y, "Log KL test failed.")
 
     return True
+
+def test_vtrace():
+
+    value_estimates = np.asarray([[0.1, -0.1],[0.0, 0.4],[0.4, -0.2],[-0.2, 0.6] ,[0.3, 0.9]])
+    rewards = np.asarray([[1, -2],[3, 4],[5, 1],[6, 12] ,[-5, 2]])
+
+    final_value_estimate = np.asarray([3,1])
+
+    # just for moment... will many this non-false later.
+    dones = np.asarray([[False, False], [False, False], [True, False], [False, False], [False, False]])
+
+    gamma = 0.90
+    lamb = 1.0
+
+    # first calculate the returns
+    returns = rollout.calculate_bootstrapped_returns(rewards, dones, final_value_estimate, gamma)
+
+    gae = rollout.gae(rewards, value_estimates, final_value_estimate, dones, gamma, lamb=lamb, normalize=False)
+
+    behaviour_log_policy = np.zeros([5,2,1], dtype=np.float)
+    target_log_policy = np.zeros([5,2,1], dtype=np.float)
+    actions = np.zeros([5, 2], dtype=np.int)
+
+    vs, pg_adv, cs = vtrace.importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
+                                                     value_estimates, final_value_estimate, gamma, lamb=lamb)
+
+    assert_is_similar(returns, vs, "V-trace returns do not match.")
+    assert_is_similar(pg_adv, gae, "V-trace advantages do not match.")
+
+    # check mine matches theres...
+
+    behaviour_log_policy = np.zeros([5,2,1], dtype=np.float)
+    target_log_policy = np.zeros([5,2,1], dtype=np.float)
+
+    # set some off polcyness
+    behaviour_log_policy[:,0,0] = [-3,-2,3,-2,-5.5]
+    behaviour_log_policy[:,1,0] = [-2,0,5,-4,-2]
+    target_log_policy[:,0,0] = [-2,-4,-4,2,-1]
+    target_log_policy[:,1,0] = [-6,-5,-4,-4,-3]
+
+    lamb = 0.9
+
+    discounts = np.ones_like(value_estimates) * gamma * (1-dones)
+    log_rhos = (select_from(target_log_policy,actions) - select_from(behaviour_log_policy,actions))
+
+    gt_vs, gt_adv = _ground_truth_vtrace_calculation(discounts, log_rhos, rewards, value_estimates,
+                                                     final_value_estimate, lamb=lamb)
+
+    vs, pg_adv, cs = vtrace.importance_sampling_v_trace(behaviour_log_policy, target_log_policy, actions, rewards, dones,
+                                                     value_estimates, final_value_estimate, gamma, lamb=lamb)
+
+    assert_is_similar(gt_adv, pg_adv, "V-trace advantages do not match reference.")
+    assert_is_similar(gt_vs, vs, "V-trace values do not match reference.")
+
+    return True
+
+def test_trust_region():
+    """ Tests for trust region calculations. """
+    pass
 
 def get_tvf_test_params_one():
     """
