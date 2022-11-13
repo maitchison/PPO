@@ -71,11 +71,6 @@ class BaseConfig:
             var_type = var_types.get(var_name, object)
             var_help = var_helps.get(var_name, None)
 
-            if var_type is bool:
-                # parse bool correctly.
-                # otherwise "False" will evaluate to True.
-                var_type = str2bool
-
             prefix_part = "" if (self._prefix == "") else self._prefix.lower()+"_"
 
             parser.add_argument(
@@ -276,25 +271,6 @@ class GlobalKLConfig(BaseConfig):
         super().__init__(prefix="gkl", parser=parser)
 
 
-class HashConfig(BaseConfig):
-    """
-    Config settings for State hashing
-    """
-
-    enabled: bool = False  # Enables state hashing (used to track exploration.
-    bits: int = 16  # Number of bits to hash to, requires O(2^n) memory.
-    bonus: float = 0.0  # Intrinsic reward bonus for novel hashed states.
-    method: str = "linear"  # [linear|conv]
-    input: str = "raw"  # [raw|raw_centered|normed|normed_offset]
-    bonus_method: str = "hyperbolic"  # [hyperbolic|quadratic|binary]
-    rescale: int = 1
-    quantize: float = 1
-    bias: float = 0.0
-    decay: float = 0.99
-
-    def __init__(self, parser: argparse.ArgumentParser):
-        super().__init__(prefix="hash", parser=parser)
-
 class Config(BaseConfig):
 
     # list of params that have been remapped
@@ -331,7 +307,6 @@ class Config(BaseConfig):
         self.debug = DebugConfig(self._parser)
         self.distil = DistilConfig(self._parser)
         self.gkl = GlobalKLConfig(self._parser)
-        self.hash = HashConfig(self._parser)
 
         # --------------------------------
         # main arguments
@@ -506,7 +481,21 @@ class Config(BaseConfig):
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
 
-
+        parser.add_argument("--use_hashing", type=str2bool, default=False,
+                            help="Enables state hashing (used to track exploration.")
+        parser.add_argument("--hash_bits", type=int, default=16,
+                            help="Number of bits to hash to, requires O(2^n) memory.")
+        parser.add_argument("--hash_bonus", type=float, default=0.0,
+                            help="Intrinsic reward bonus for novel hashed states")
+        parser.add_argument("--hash_method", type=str, default="linear",
+                            help="linear|conv")
+        parser.add_argument("--hash_input", type=str, default="raw",
+                            help="raw|raw_centered|normed|normed_offset")
+        parser.add_argument("--hash_bonus_method", type=str, default="hyperbolic", help="hyperbolic|quadratic|binary")
+        parser.add_argument("--hash_rescale", type=int, default=1)
+        parser.add_argument("--hash_quantize", type=float, default=1)
+        parser.add_argument("--hash_bias", type=float, default=0.0)
+        parser.add_argument("--hash_decay", type=float, default=0.99)
 
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
@@ -655,7 +644,16 @@ class Config(BaseConfig):
         self.replay_mixing = bool()
         self.replay_thinning = float()
         self.use_rnd = bool()
-
+        self.use_hashing = bool()
+        self.hash_method = str()
+        self.hash_input = str()
+        self.hash_rescale = int()
+        self.hash_quantize = float()
+        self.hash_bits = int()
+        self.hash_bonus = float()
+        self.hash_decay = float()
+        self.hash_bonus_method = str()
+        self.hash_bias = float()
         self.rnd_experience_proportion = float()
 
         # noise stuff

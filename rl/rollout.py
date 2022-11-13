@@ -687,14 +687,14 @@ class Runner:
         self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
 
         # hashing
-        if args.hash.enabled:
-            self.hash_global_counts = np.zeros([2 ** args.hash.bits], dtype=np.float)
-            self.hash_recent_counts = np.zeros([2 ** args.hash.bits], dtype=np.float)
+        if args.use_hashing:
+            self.hash_global_counts = np.zeros([2 ** args.hash_bits], dtype=np.float)
+            self.hash_recent_counts = np.zeros([2 ** args.hash_bits], dtype=np.float)
             hashers = {
                 'linear': hash.LinearStateHasher,
                 'conv': hash.ConvStateHasher,
             }
-            assert args.hash.method in hashers.keys(), f"Invalid hashing method '{args.hash.method}' ({hashers.keys()})"
+            assert args.hash_method in hashers.keys(), f"Invalid hashing method '{args.hash_method}' ({hashers.keys()})"
 
             if args.env_type == "atari":
                 # for atari, because of frame stacking only use the first state.
@@ -703,11 +703,11 @@ class Runner:
             else:
                 hash_state_shape = self.state_shape
 
-            if args.hash.rescale != 1:
+            if args.hash_rescale != 1:
                 C, H, W = hash_state_shape
-                hash_state_shape = (C, H//args.hash.rescale, W//args.hash.rescale)
+                hash_state_shape = (C, H//args.hash_rescale, W//args.hash_rescale)
 
-            self.hash_fn = hashers[args.hash.method](hash_state_shape, args.hash.bits, device=args.device, bias=args.hash.bias)
+            self.hash_fn = hashers[args.hash_method](hash_state_shape, args.hash_bits, device=args.device, bias=args.hash_bias)
 
         # returns generation
         self.advantage = np.zeros([N, A], dtype=np.float32)
@@ -874,7 +874,7 @@ class Runner:
             'vars': self.vars,
         }
 
-        if args.hash.enabled:
+        if args.use_hashing:
             data['hash_global_counts'] = self.hash_global_counts
             data['hash_recent_counts'] = self.hash_recent_counts
 
@@ -965,7 +965,7 @@ class Runner:
         self.episode_score = checkpoint['episode_score']
         self.discounted_episode_score = checkpoint['discounted_episode_score']
 
-        if args.hash.enabled:
+        if args.use_hashing:
             self.hash_global_counts = checkpoint['hash_global_counts']
             self.hash_recent_counts = checkpoint['hash_recent_counts']
 
@@ -996,7 +996,7 @@ class Runner:
         self.episode_len *= 0
         self.step = 0
         self.time *= 0
-        if args.hash.enabled:
+        if args.use_hashing:
             self.hash_recent_counts *= 0
             self.hash_global_counts *= 0
 
@@ -1386,33 +1386,33 @@ class Runner:
         else:
             channel_filter = None  # select all channels.
 
-        if args.hash.quantize:
-            obs = ((obs // args.hash.quantize) * args.hash.quantize).astype(np.uint8)
+        if args.hash_quantize:
+            obs = ((obs // args.hash_quantize) * args.hash_quantize).astype(np.uint8)
 
         # process the observations
-        if args.hash.input == "raw":
+        if args.hash_input == "raw":
             hash_input = obs[:, channel_filter]
-        elif args.hash.input == "raw_centered":
+        elif args.hash_input == "raw_centered":
             hash_input = (obs[:, channel_filter].astype(np.float) - 128)
-        elif args.hash.input == "normed":
+        elif args.hash_input == "normed":
             hash_input = self.model.prep_for_model(obs)
             hash_input = self.model.perform_normalization(hash_input)[:, channel_filter]
-        elif args.hash.input == "normed_offset":
-            # this should make the cosine distance more stable.
+        elif args.hash_input == "normed_offset":
+            # this should make the cosign distance more stable.
             hash_input = self.model.prep_for_model(obs)
             hash_input = self.model.perform_normalization(hash_input)[:, channel_filter] + 3.0
         else:
             raise ValueError("Invalid hash_input {args.hash_input}")
 
         # downscale
-        if args.hash.rescale:
+        if args.hash_rescale:
             import cv2
             if type(hash_input) == torch.Tensor:
                 hash_input = hash_input.cpu().numpy()
             new_frames = []
             for a in range(A):
-                new_frames.append(cv2.resize(hash_input[a, 0], (H//args.hash.rescale, W//args.hash.rescale), interpolation=cv2.INTER_AREA))
-            new_frames = np.asarray(new_frames).reshape([A, 1, H//args.hash.rescale, W//args.hash.rescale])
+                new_frames.append(cv2.resize(hash_input[a, 0], (H//args.hash_rescale, W//args.hash_rescale), interpolation=cv2.INTER_AREA))
+            new_frames = np.asarray(new_frames).reshape([A, 1, H//args.hash_rescale, W//args.hash_rescale])
             hash_input = new_frames
 
         return self.hash_fn(hash_input)
@@ -1473,9 +1473,9 @@ class Runner:
             self.time = np.asarray([info["time"] for info in infos], dtype=np.int32)
 
             # hashing if needed...
-            if args.hash.enabled:
+            if args.use_hashing:
                 hashes = self.generate_hashes(self.obs)
-                self.hash_recent_counts *= args.hash.decay
+                self.hash_recent_counts *= args.hash_decay
                 for a, obs_hash in enumerate(hashes):
                     self.hash_global_counts[obs_hash] += 1
                     self.hash_recent_counts[obs_hash] += 1
@@ -1601,16 +1601,16 @@ class Runner:
         # note: could make this much faster
 
         def get_bonus(hashes: np.ndarray, x: int, threshold=None):
-            if args.hash.bonus_method == "hyperbolic":
+            if args.hash_bonus_method == "hyperbolic":
                 return 1 / hashes[x]
-            elif args.hash.bonus_method == "quadratic":
+            elif args.hash_bonus_method == "quadratic":
                 return 1 / (hashes[x] ** 2)
-            elif args.hash.bonus_method == "binary":
+            elif args.hash_bonus_method == "binary":
                 return 1 if hashes[x] < threshold else -1
             else:
-                raise ValueError(f"Invalid hash_bonus_method {args.hash.bonus_method}")
+                raise ValueError(f"Invalid hash_bonus_method {args.hash_bonus_method}")
 
-        if args.hash.enabled:
+        if args.use_hashing:
             # calculate threshold
             def calc_threshold(counts: np.ndarray):
                 x = counts.copy()
@@ -1622,11 +1622,11 @@ class Runner:
 
             hash_threshold = calc_threshold(self.hash_recent_counts)
 
-            if args.hash.bonus != 0:
+            if args.hash_bonus != 0:
                 for t in range(self.N):
                     for a in range(self.A):
                         obs_hash = obs_hashes[t, a]
-                        self.int_rewards[t, a] += args.hash.bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
+                        self.int_rewards[t, a] += args.hash_bonus * get_bonus(self.hash_recent_counts, obs_hash, hash_threshold)
 
         # turn off train mode (so batch norm doesn't update more than once per example)
         self.model.eval()
@@ -2197,7 +2197,7 @@ class Runner:
             self.log.watch_mean("norm_scale_obs_mean", np.mean(self.model.obs_rms.mean), display_width=0)
             self.log.watch_mean("norm_scale_obs_var", np.mean(self.model.obs_rms.var), display_width=0)
 
-        if args.hash.enabled:
+        if args.use_hashing:
             try:
                 old_delta = self.log['hash_states']
             except:
