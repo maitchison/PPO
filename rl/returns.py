@@ -778,19 +778,6 @@ def test_return_estimators(seed=123):
     probs = weights / weights.sum()
     samples = np.random.choice(range(1, max_n + 1), 20, replace=True, p=probs)
 
-    # a little slow but lets try fixxing...
-    # for _ in range(100000):
-    #     default_args = {
-    #         'gamma': 0.9997,
-    #         'rewards': np.random.random_integers(-1, 2, [N, A]).astype('float32'),
-    #         'dones': (np.random.random_integers(0, 100, [N, A]) >= 98),
-    #         'required_horizons': np.geomspace(1, 1024, num=K).astype('int32'),
-    #         'value_sample_horizons': np.geomspace(1, 1024, num=V).astype('int32') - 1,
-    #         'value_samples': np.random.normal(0.1, 0.4, [N + 1, A, V]).astype('float32'),
-    #     }
-    #     n_step_list = [np.random.randint(128)+1, np.random.randint(128)+1]
-    #     verify(f"{n_step_list}", n_step_list=n_step_list)
-
     if \
             not verify("n_step=1", n_step_list=[1]) or \
             not verify("n_step=8", n_step_list=[8]) or \
@@ -799,4 +786,3 @@ def test_return_estimators(seed=123):
         raise Exception("Return estimator does not match reference.")
 
     np.random.set_state(st0)
-
