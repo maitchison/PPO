@@ -101,8 +101,6 @@ def main():
     from rl.config import args
     import numpy as np
 
-    config.parse_args()
-
     if args.quiet_mode:
         log.print_level = log.WARN
 
