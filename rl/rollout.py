@@ -1108,7 +1108,7 @@ class Runner:
         returns = get_return_estimate(
             mode=tvf_return_mode,
             distribution=tvf_return_distribution,
-            gamma=args.tvf_gamma,
+            gamma=self.tvf_gamma,
             rewards=rewards,
             dones=dones,
             required_horizons=np.asarray(self.tvf_horizons),
@@ -1494,7 +1494,7 @@ class Runner:
                 raw_rewards *= 0
 
             self.episode_score += raw_rewards
-            self.discounted_episode_score = args.gamma * self.discounted_episode_score + ext_rewards
+            self.discounted_episode_score = self.gamma * self.discounted_episode_score + ext_rewards
             rollout_discounted_returns[t] = self.discounted_episode_score
             self.episode_len += 1
 
@@ -1642,7 +1642,7 @@ class Runner:
                 self.ext_value[:self.N],
                 self.ext_value[self.N],
                 self.terminals,
-                args.gamma,
+                self.gamma,
                 args.lambda_value
             )
             aux_fields['vtarg'] = utils.merge_down(v_target)
@@ -1838,7 +1838,7 @@ class Runner:
 
 
         targets = calculate_bootstrapped_returns(
-            self.ext_rewards, self.terminals, self.ext_value[self.N], args.gamma
+            self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
         )
         values = self.ext_value[:self.N]
         ev = utils.explained_variance(values.ravel(), targets.ravel())
@@ -1979,7 +1979,7 @@ class Runner:
         if args.noisy_zero >= 0:
             # todo: clean this up..
             targets = calculate_bootstrapped_returns(
-                self.ext_rewards, self.terminals, self.ext_value[self.N], args.gamma
+                self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
             )
             values = self.ext_value[:self.N]
             self.log.watch_mean(
@@ -2033,7 +2033,7 @@ class Runner:
 
         # also log ev_ext
         targets = calculate_bootstrapped_returns(
-            self.ext_rewards, self.terminals, self.ext_value[self.N], args.gamma
+            self.ext_rewards, self.terminals, self.ext_value[self.N], self.gamma
         )
         values = self.ext_value[:self.N]
         ev = utils.explained_variance(values.ravel(), targets.ravel())
@@ -2067,6 +2067,128 @@ class Runner:
         return self.all_time[-1]
 
     @torch.no_grad()
+    def estimate_horizon_from_rediscounting(self):
+
+        VALUE_HEAD_INDEX = 0
+
+        def rve(h, source=None):
+            if source is None:
+                source = self.tvf_value[..., VALUE_HEAD_INDEX]
+            # for debuging
+            N, A, K = source.shape
+            return get_rediscounted_value_estimate(
+                values=source.reshape([N * A, K]),
+                old_gamma=self.tvf_gamma,
+                new_gamma=1-(1/h),
+                horizons=self.tvf_horizons,
+            ).reshape([-1])
+
+        hs = np.geomspace(args.ag_min_h, args.ag_max_h, 128)
+
+        def get_ratios(source: str):
+
+            N, A = self.N, self.A
+
+            vars = []
+            means = []
+            ratios = []
+            for h in hs:
+
+                if source == "returns":
+                    _rve = rve(h, source=self.tvf_returns[..., VALUE_HEAD_INDEX])
+                elif source == "value":
+                    _rve = rve(h)
+                elif source == "td":
+                    _rve = rve(h)
+                    _rve = td_lambda(self.ext_rewards, _rve[:N], _rve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
+                elif source == "advantages":
+                    _ve = rve(h)
+                    _rve = td_lambda(self.ext_rewards, _ve[:N], _ve[N], self.terminals, 1 - (1 / h), args.lambda_policy)
+                    _rve += _ve[:N]
+                else:
+                    raise ValueError(f"Invalid ratio source {args.ag_ratio_source}")
+
+                # I fell this is the correct way to do it, go std over each trajectory, but std over the entire
+                # thing works a lot better in practice.
+
+                var = _rve.var()
+                l2s = _rve.mean()**2 # squared mean
+                ratio = var / (l2s + 1e-6)
+
+                # old method..
+                # std = _rve.std()
+                # mean = _rve.mean()
+                # ratio = std / (np.abs(mean) + 1e-6)
+
+                vars.append(var)
+                means.append(l2s)
+                ratios.append(ratio)
+
+            return np.asarray(ratios), np.asarray(vars), np.asarray(means),
+
+        def score(ratios, i: int):
+            ratio = ratios[i]
+            return 0.2 * np.log(100 + hs[i]) - np.log(ratio+2e-1)
+
+        ratios, vars, means = get_ratios(args.ag_ratio_source)
+
+        scores = [score(ratios, i) for i in range(len(ratios))]
+
+        # find and log the gamma the minimized variance
+        min_h = hs[np.argmin(ratios)]
+        max_h = 0
+        for ratio, h in zip(ratios, hs):
+            if ratio < args.ag_ratio_threshold:
+                max_h = h
+
+        best_h = max(min_h, max_h)
+        self.log.watch("*dc_min", min_h)
+        self.log.watch("*dc_max", max_h)
+        self.log.watch("*dc_best", best_h)
+        self.vars['dc_best'] = best_h
+
+        if args.ag_ratio_algorithm == "min":
+            target_h = min_h
+        elif args.ag_ratio_algorithm == "best":
+            target_h = best_h
+        elif args.ag_ratio_algorithm == "fixed":
+            target_h = args.ag_initial_h
+        elif args.ag_ratio_algorithm == "adv":
+            best_i = np.argmax(scores)
+            target_h = hs[best_i]
+        elif args.ag_ratio_algorithm == "adv2":
+            best_ratio = np.min(ratios)
+            if best_ratio < args.ag_ratio_threshold:
+                target_h = args.ag_max_h
+            else:
+                target_h = hs[np.argmin(ratios)]
+        else:
+            raise ValueError(f"Invalid ag_ratio_algorithm {args.ag_ratio_algorithm}")
+
+        utils.dictionary_ema(self.vars, 'dc_h', target_h, 0.99, default=args.ag_initial_h, log=True)
+        self.log.watch("*dc_h", self.vars['dc_h'])
+        self.log.watch("*dc_target", target_h)
+
+        # plt.figure(figsize=(12, 6))
+        # plt.plot(hs, td_stds, label='std')
+        # plt.plot(hs, td_means, label='mean')
+        # plt.xscale('log')
+        # plt.grid(alpha=0.25)
+        # plt.legend()
+        # epoch = self.step / 1e6
+        # plt.savefig(args.log_folder+f"/td_{epoch:05.2f}.png")
+        # plt.close()
+        #
+        # td_ratios = td_stds / (np.abs(td_means) + 1e-6)
+        # plt.figure(figsize=(12, 6))
+        # plt.plot(hs, np.minimum(td_ratios, 5))
+        # plt.xscale('log')
+        # plt.grid(alpha=0.25)
+        # plt.savefig(args.log_folder + f"/td_ratio_{epoch:05.2f}.png")
+        # plt.close()
+
+
+    @torch.no_grad()
     def get_tvf_ext_value_estimate(self, new_gamma: float):
         """
 
@@ -2087,13 +2209,13 @@ class Runner:
         # [N, A, K]
         tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
 
-        if abs(new_gamma - args.tvf_gamma) < 1e-8:
+        if abs(new_gamma - self.tvf_gamma) < 1e-8:
             return tvf_values[:, :, -1]
 
         # otherwise... we need to rediscount...
         return get_rediscounted_value_estimate(
             values=tvf_values.reshape([(N + 1) * A, -1]),
-            old_gamma=args.tvf_gamma,
+            old_gamma=self.tvf_gamma,
             new_gamma=new_gamma,
             horizons=self.tvf_horizons,
         ).reshape([(N + 1), A])
@@ -2153,7 +2275,7 @@ class Runner:
 
         # 1. first we calculate 'ext_value' estimate, which is the primarily value estimate
         if args.use_tvf:
-            ext_value_estimates = self.get_tvf_ext_value_estimate(new_gamma=args.gamma)
+            ext_value_estimates = self.get_tvf_ext_value_estimate(new_gamma=self.gamma)
         else:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
@@ -2166,7 +2288,7 @@ class Runner:
             ext_value_estimates[:N],
             ext_value_estimates[N],
             self.terminals,
-            args.gamma,
+            self.gamma,
             args.lambda_policy
         )
         # calculate ext_returns.
@@ -2175,7 +2297,7 @@ class Runner:
             ext_value_estimates[:N],
             ext_value_estimates[N],
             self.terminals,
-            args.gamma,
+            self.gamma,
             args.lambda_value,
         )
 
@@ -2220,9 +2342,9 @@ class Runner:
         for k, v in self.stats.items():
             self.log.watch(k, v, display_width=0)
 
-        self.log.watch("gamma", args.gamma, display_width=0)
+        self.log.watch("gamma", self.gamma, display_width=0)
         if args.use_tvf:
-            self.log.watch("tvf_gamma", args.tvf_gamma)
+            self.log.watch("tvf_gamma", self.tvf_gamma)
             # just want to know th max horizon std, should be about 3 I guess, but also the max.
             self.log.watch_stats("*tvf_return_ext", self.tvf_returns[:, :, -1])
 
@@ -2245,6 +2367,13 @@ class Runner:
             self.returns = add_relative_noise(self.returns, args.noisy_return)
             self.tvf_returns = add_relative_noise(self.tvf_returns, args.noisy_return)
             self.tvf_returns[:, :, 0] = 0 # by definition...
+
+        if (self.batch_counter * self.N * self.A) >= args.ag_delay and args.use_tvf:
+            if self.batch_counter % 4 == 0:
+                self.estimate_horizon_from_rediscounting()
+        else:
+            self.vars['dc_h'] = args.ag_initial_h
+            self.log.watch("*dc_h", self.vars['dc_h'])
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
@@ -2805,7 +2934,7 @@ class Runner:
 
         # the idea here is to get an estimate for E_{s ~ \mu, \pi} KL(\pi^{new}(s), \pi^{old}(s)
 
-        if args.gkl.enabled:
+        if args.use_gkl:
             old_global_log_policy = data["*global_log_policy"]
             global_states = data["*global_states"]
             global_model_out = self.model.forward(global_states, output="policy", exclude_tvf=True)
@@ -2815,8 +2944,8 @@ class Runner:
                 reduction="batchmean", log_target=True
             )
 
-            if args.gkl.penalty != 0:
-                gkl_loss = global_kl * args.gkl.penalty
+            if args.gkl_penalty != 0:
+                gkl_loss = global_kl * args.gkl_penalty
                 gain = gain - gkl_loss
                 self.log.watch_mean("*loss_gkl", gkl_loss, history_length=64 * args.opt_p.epochs, display_name=f"ls_gkl", display_width=8)
 
@@ -2873,6 +3002,42 @@ class Runner:
         Measure individual agents age, so if 128 agents each walk 10 steps, agents will be 10 steps old, not 1280.
         """
         return self.step / args.agents
+
+    @property
+    def _auto_horizon(self):
+        if args.ag_mode == "episode_length":
+            if len(self.episode_length_buffer) == 0:
+                auto_horizon = 0
+            else:
+                auto_horizon = self.episode_length_mean + (2 * self.episode_length_std)
+            return auto_horizon
+        elif args.ag_mode == "training":
+            return (1/1000) * self.step # todo make this a parameter
+        elif args.ag_mode == "sns":
+            return self.noise_stats.get('ag_sns_horizon', args.ag_initial_h)
+        elif args.ag_mode == "h_best":
+            return np.clip(self.vars.get('dc_h', args.ag_initial_h), args.ag_min_h, args.ag_max_h)
+        else:
+            raise ValueError(f"Invalid auto_strategy {args.ag_mode}")
+
+    @property
+    def _auto_gamma(self):
+        horizon = float(np.clip(self._auto_horizon, 10, float("inf")))
+        return 1 - (1 / horizon)
+
+    @property
+    def gamma(self):
+        if args.use_ag and (args.ag_target in ["policy", "both"]) and args.ag_mode != "shadow":
+            return self._auto_gamma
+        else:
+            return args.gamma
+
+    @property
+    def tvf_gamma(self):
+        if args.use_ag and (args.ag_target in ["value", "both"]) and args.ag_mode != "shadow":
+            return self._auto_gamma
+        else:
+            return args.tvf_gamma
 
     @property
     def reward_scale(self):
@@ -2985,11 +3150,11 @@ class Runner:
         batch_data["advantages"] = advantages
 
         # get global kl states (if needed)
-        if args.gkl.enabled:
-            assert args.gkl.source == "rollout", "Only rollout source supported at the moment"
+        if args.use_gkl:
+            assert args.gkl_source == "rollout", "Only rollout source supported at the moment"
 
             global_states = utils.merge_down(self.prev_obs)
-            global_states = global_states[np.random.choice(len(global_states), args.gkl.samples, replace=False)]
+            global_states = global_states[np.random.choice(len(global_states), args.gkl_samples, replace=False)]
             batch_data["*global_states"] = global_states.clone()
 
             model_out = self.detached_batch_forward(
@@ -3158,7 +3323,7 @@ class Runner:
         Input is [B, K]
         Output is [B, K]
         """
-        if args.tvf_gamma == args.gamma:
+        if self.tvf_gamma == self.gamma:
             return old_value_estimates
 
         # old_distil_targets = batch_data["distil_targets"].copy()  # B, K
@@ -3167,8 +3332,8 @@ class Runner:
         for k in range(K):
             new_value_estimates[:, k] = get_rediscounted_value_estimate(
                 old_value_estimates[:, :k+1],
-                args.tvf_gamma,
-                args.gamma,
+                self.tvf_gamma,
+                self.gamma,
                 self.tvf_horizons[:k+1]
             )
         return new_value_estimates
@@ -3211,7 +3376,7 @@ class Runner:
                         self.ext_value[:self.N],
                         self.ext_value[self.N],
                         self.terminals,
-                        args.tvf_gamma,
+                        self.tvf_gamma,
                         args.distil.adv_lambda,
                     )
                     if args.distil.target == "return":
@@ -3333,6 +3498,56 @@ class Runner:
         self.log.watch(f"time_train_aux", (clock.time() - start_time) * 1000,
                        display_width=8, display_name='t_aux', display_precision=1)
 
+    def update_sns_horizon_target(self):
+        """
+        New version of sns_horizon estimation
+
+        The idea is to work out the noise level for training up to k heads, then force it to be montonic, then
+        use interpolation to find the first horizon that has a noise level above some threshold.
+        """
+
+        assert args.use_sns, "SNS must be enabled."
+        assert args.use_tvf, "TVF must be enabled"
+
+        if self.step < args.ag_delay:
+            # it's too early to modify gamma, but log what we can anyway.
+            self.noise_stats['ag_sns_horizon'] = args.ag_initial_h
+            self.log.watch_mean('ag_sns_target', args.ag_initial_h, display_width=0)
+            self.log.watch_mean('*ag_sns_horizon', args.ag_initial_h)
+            return
+
+        if len(self.noise_stats.get('active_heads', [])) <= 0:
+            # no noise levels logged yes
+            return
+
+        # data used to interpolate noise levels
+        logged_heads = np.asarray(sorted(self.noise_stats['active_heads']))
+
+        clean_and_sqrt = lambda x: max(x, 0) ** 0.5
+
+        logged_noise_levels = np.asarray([clean_and_sqrt(self.noise_stats.get(f'acc_head_{i}_ratio', float('inf'))) for i in logged_heads])
+
+        # force plot to be monotonic
+        #logged_noise_levels = np.asarray([np.max(logged_noise_levels[:i+1]) for i in range(len(logged_noise_levels))])
+
+        # step 1: work out our target (with a cap at min_h)
+        new_target = args.ag_min_h
+        for i, h in enumerate(self.tvf_horizons):
+            noise_level = interpolate(logged_heads, logged_noise_levels[None, :], np.asarray([i]))[0]
+            if noise_level < args.ag_sns_threshold:
+                new_target = max(h, new_target)
+
+        # step 2: move towards (clipped) log target
+        alpha = 1-(1/(args.ag_sns_ema_horizon / (self.N * self.A)))
+        old_log_horizon = math.log(1 + self.noise_stats.get('ag_sns_horizon', args.ag_initial_h))
+        target_log_horizon = math.log(1+new_target)
+        new_log_horizon = alpha * old_log_horizon + (1-alpha) * target_log_horizon
+        self.noise_stats['ag_sns_horizon'] = np.clip(math.exp(new_log_horizon) - 1, args.ag_min_h, args.ag_max_h)
+
+        self.log.watch_mean('ag_sns_target', new_target, display_width=0)
+        self.log.watch_mean('ag_sns_horizon', self.noise_stats['ag_sns_horizon'], display_name="auto_horizon")
+
+
     def wants_distil_update(self, location=None):
         location_match = location is None or location == args.distil.order
         return \
@@ -3375,6 +3590,9 @@ class Runner:
 
         if args.use_rnd:
             self.train_rnd()
+
+        if args.use_tvf and args.ag_mode in ["sns", "shadow"]:
+            self.update_sns_horizon_target()
 
         self.batch_counter += 1
 
