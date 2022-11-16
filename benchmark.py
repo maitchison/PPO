@@ -12,7 +12,7 @@ from rl.config import str2bool
 from rl.utils import Color
 from rl import utils
 
-from tools import runner_tools
+import runner_tools
 import Notebooks.plot_util as pu
 
 # todo:

@@ -70,7 +70,7 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     assert horizons[0] == 0, "first horizon must be 0"
 
     # we do not extrapolate...
-    target_horizons = np.clip(target_horizons, min(horizons), max(horizons))
+    target_horizons = np.clip(target_horizons, horizons[0], horizons[-1])
 
     *shape, K = values.shape
     shape = tuple(shape)
@@ -1253,9 +1253,15 @@ class Runner:
         if method == "off":
             return tvf_value_estimates
         elif method == "timelimit":
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, self.N)
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 1)
         elif method == "av_term":
-            time_till_termination = np.maximum(np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int) - time, 0) + args.tvf_at_minh
+            # changed
+            historic_max_time = np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int)
+            current_max_time = np.percentile(self.time, args.tvf_at_percentile).astype(int)
+            max_time = max(historic_max_time, current_max_time)
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 1)
+            est_time_till_termination = np.maximum(max_time - time, 0) + args.tvf_at_minh
+            time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int))
             self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
             self.log.watch_stats("ttt", time_till_termination, display_width=0)
@@ -1269,13 +1275,20 @@ class Runner:
         if mode == "interpolate":
             # this can work a little bit better if trimming is only minimal.
             # however, all horizons still end up sharing the same estimate.
+            # note: we now interpolate on log scale.
+
+            def log_scale(x):
+                return np.log10(10+x)-1
+
+            scale = log_scale
+
             old_tvf_value_estimates = tvf_value_estimates.copy()
             A, K, VH = tvf_value_estimates.shape
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
             trimmed_value_estimate = interpolate(
-                    np.asarray(self.tvf_horizons),
+                    scale(np.asarray(self.tvf_horizons)),
                     old_tvf_value_estimates[..., 0], # select final value head
-                    time_till_termination
+                    scale(time_till_termination)
                 )
             for a in range(A):
                 tvf_value_estimates[a, trimmed_ks[a]:] = trimmed_value_estimate[a]
@@ -1330,6 +1343,7 @@ class Runner:
             # this is based on the following ideas
             # 1. average over as many horizons as we can.
             # 2. try to not refer to ourself (bootstrap) or any future horizons.
+            # note: instead of k-1 it should be h-n_step maybe this is close enough though?
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
             # v2 = tvf_value_estimates.copy()
             # note, this is going to be quite slow...
