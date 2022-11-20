@@ -674,6 +674,8 @@ class Runner:
         self.all_time = np.zeros([N+1, A], dtype=np.int32)  # time for each step in rollout
         self.time = np.zeros([A], dtype=np.int32)  # current step for all agents
 
+        self.ttt_predictions = [[] for _ in range(self.N)]  # our prediction of when a termination will occur.
+
         self.replay_value_estimates = np.zeros([N, A], dtype=np.float32) # what is this?
 
         # intrinsic rewards
@@ -727,6 +729,7 @@ class Runner:
         }
         self.ep_count = 0
         self.episode_length_buffer = collections.deque(maxlen=1000)
+        self.ttt_error_buffer = collections.deque(maxlen=1000)
 
         # create the replay buffer if needed
         self.replay_buffer: Optional[ExperienceReplayBuffer] = None
@@ -1237,10 +1240,11 @@ class Runner:
         so long as the episodes are fairly long. If episodes are short compared to max_horizon this might not
         help at all.
 
-        @param tvf_value_estimates: np array of dims [A, K]
+        @param tvf_value_estimates: np array of dims [A, K, VH]
         @param time: np array of dims [A] containing time associated with the states that generated these estimates.
 
-        @returns new trimmed estimates of [A, K]
+        @returns new trimmed estimates of [A, K, VH],
+        @returns predicted_time_till_termination of [A, K]
         """
 
         old_value_estimates = tvf_value_estimates
@@ -1248,12 +1252,12 @@ class Runner:
 
         # by definition h=0 is 0.0
         assert self.tvf_horizons[0] == 0, "First horizon must be zero"
-        tvf_value_estimates[:, 0] = 0 # always make sure h=0 is fixed to zero.
+        tvf_value_estimates[:, 0, :] = 0 # always make sure h=0 is fixed to zero.
 
         # step 1: work out the trimmed horizon
         # output is [A]
         if method == "off":
-            return tvf_value_estimates
+            return tvf_value_estimates, None
         elif method == "timelimit":
             time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, args.tvf_at_minh)
         elif method == "av_term":
@@ -1272,7 +1276,7 @@ class Runner:
         else:
             raise ValueError(f"Invalid trimming method {method}")
 
-        self.log.watch_stats("ttt", time_till_termination, display_width=0)
+        self.log.watch_stats("ttt", time_till_termination, display_width=0, history_length=4)
 
         # step 2: calculate new estimates
         if mode == "interpolate":
@@ -1293,7 +1297,7 @@ class Runner:
                     scale(time_till_termination)
                 )
             for a in range(A):
-                tvf_value_estimates[a, trimmed_ks[a]:] = trimmed_value_estimate[a]
+                tvf_value_estimates[a, trimmed_ks[a]:, 0] = trimmed_value_estimate[a]
         elif mode == "average":
             # we can use any horizon with h > remaining_time interchangeably with h.
             # so may as well average over them.
@@ -1332,9 +1336,9 @@ class Runner:
                 for k in range(trimmed_k, self.K):
                     # note: this could be tvf_value_estimate, but I want to make it explicit that we're using
                     # the original values.
-                    acc += old_value_estimates[a, k]
+                    acc += old_value_estimates[a, k, :]
                     counter += 1
-                    tvf_value_estimates[a, k] = acc / counter
+                    tvf_value_estimates[a, k, :] = acc / counter
         elif mode == "average3":
             # average up to but not including h but no further
             # this is based on the following ideas
@@ -1371,9 +1375,7 @@ class Runner:
             untrimmed_ks = np.arange(self.K)[None, :]
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)[:, None]
             trimmed_ks = np.minimum(trimmed_ks, untrimmed_ks)
-            # old_tvf_value_estimates = tvf_value_estimates.copy()
             tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], trimmed_ks, axis=1)
-            # stub:
             tvf_value_estimates = tvf_value_estimates[:, :, None]
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
@@ -1381,8 +1383,8 @@ class Runner:
         # monitor how much we modified the return estimates...
         # if max is large then maybe there's an off-by-one bug on time.
         delta = np.abs(tvf_value_estimates-old_value_estimates)
-        self.log.watch_stats("ved", delta.ravel(), display_width=0)
-        return tvf_value_estimates
+        self.log.watch_stats("ved", delta.ravel(), display_width=0, history_length=4)
+        return tvf_value_estimates, time_till_termination
 
     def apply_reward_scale_adjustment(self, ratio):
         """
@@ -1472,6 +1474,8 @@ class Runner:
         self.value *= 0
         self.tvf_value *= 0
         self.all_time *= 0
+
+        predicted_ttt = np.zeros_like(self.int_rewards)
 
         obs_hashes = np.zeros([self.N, self.A], dtype=np.int32)
 
@@ -1572,6 +1576,15 @@ class Runner:
                         # this is a fake reset on loss of life...
                         continue
 
+                    predictions = self.ttt_predictions[i]
+                    # check how good our ttt predictions were
+                    for j, pred_ttt in enumerate(predictions):
+                        true_ttt = len(predictions) - j
+                        delta = pred_ttt-true_ttt
+                        self.ttt_error_buffer.append(delta)
+
+                    predictions.clear()
+
                     # reset is handled automatically by vectorized environments
                     # so just need to keep track of book keeping
                     self.ep_count += 1
@@ -1598,12 +1611,16 @@ class Runner:
             if args.use_tvf:
                 start_time = clock.time()
                 tvf_values = model_out["tvf_value"].cpu().numpy()
-                self.tvf_value[t] = self.trim_horizons(
+                self.tvf_value[t], ttt = self.trim_horizons(
                     tvf_values,
                     prev_time,
                     method=args.tvf_trimming,
                     mode=args.tvf_trimming_mode
                 )
+                if ttt is not None:
+                    for a in range(self.A):
+                        self.ttt_predictions[a].append(ttt[a])
+
                 ms = (clock.time() - start_time) * 100
                 self.log.watch_mean("*t_trim", ms)
 
@@ -1629,12 +1646,15 @@ class Runner:
         self.value[-1] = final_model_out["value"].cpu().numpy()
 
         if args.use_tvf:
-            self.tvf_value[-1] = self.trim_horizons(
+            self.tvf_value[-1], ttt = self.trim_horizons(
                 final_model_out["tvf_value"].cpu().numpy(),
                 self.time,
                 method=args.tvf_trimming,
                 mode=args.tvf_trimming_mode
             )
+            if ttt is not None:
+                for a in range(self.A):
+                    self.ttt_predictions[a].append(ttt[a])
 
         # -----------------------------------------------
         # give hashing bonus
@@ -1716,6 +1736,10 @@ class Runner:
         self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
         aux_fields = {}
+
+        # log how well our termination predictiosn are going
+        if len(self.ttt_error_buffer) > 0:
+            self.log.watch_stats("teb", self.ttt_error_buffer, display_width=8, history_length=1)
 
         # calculate targets for ppg
         if args.aux.epochs > 0:
