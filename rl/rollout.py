@@ -40,9 +40,10 @@ def add_10x_noise(X:np.ndarray, p:float):
     return X * factors.numpy()
 
 def _test_interpolate():
-    horizons = np.asarray([0, 1, 2, 10, 100])
-    values = np.asarray([0, 5, 10, -1, 2])[None, :].repeat(11, axis=0)
-    results = interpolate(horizons, values, np.asarray([-100, -1, 0, 1, 2, 3, 4, 99, 100, 101, 200]))
+    horizons = np.asarray([0, 1, 2, 10, 100]) # K
+    values = np.asarray([0, 5, 10, -1, 2])[None, :].repeat(11, axis=0) # [11, K]
+    target_horizons = np.asarray([-100, -1, 0, 1, 2, 3, 4, 99, 100, 101, 200]) # [11]
+    results = interpolate(horizons, values, target_horizons)
     expected_results = [0, 0, 0, 5, 10, (7/8)*10+(1/8)*-1, (6/8)*10+(2/8)*-1, 1.96666667, 2, 2, 2]
     if np.max(np.abs(np.asarray(expected_results) - results)) > 1e-6:
         print("Expected:", expected_results)
@@ -1242,6 +1243,7 @@ class Runner:
         @returns new trimmed estimates of [A, K]
         """
 
+        old_value_estimates = tvf_value_estimates
         tvf_value_estimates = tvf_value_estimates.copy() # don't modify input
 
         # by definition h=0 is 0.0
@@ -1253,23 +1255,24 @@ class Runner:
         if method == "off":
             return tvf_value_estimates
         elif method == "timelimit":
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 1)
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, args.tvf_at_minh)
         elif method == "av_term":
             # changed
             historic_max_time = np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int)
             current_max_time = np.percentile(self.time, args.tvf_at_percentile).astype(int)
             max_time = max(historic_max_time, current_max_time)
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 1)
-            est_time_till_termination = np.maximum(max_time - time, 0) + args.tvf_at_minh
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, args.tvf_at_minh)
+            est_time_till_termination = np.maximum(max_time - time, args.tvf_at_minh)
             time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int))
             self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
-            self.log.watch_stats("ttt", time_till_termination, display_width=0)
         elif method == "est_term":
             # todo implement per state estimate of remaining time
             raise NotImplementedError()
         else:
             raise ValueError(f"Invalid trimming method {method}")
+
+        self.log.watch_stats("ttt", time_till_termination, display_width=0)
 
         # step 2: calculate new estimates
         if mode == "interpolate":
@@ -1282,17 +1285,15 @@ class Runner:
 
             scale = log_scale
 
-            old_tvf_value_estimates = tvf_value_estimates.copy()
             A, K, VH = tvf_value_estimates.shape
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
             trimmed_value_estimate = interpolate(
                     scale(np.asarray(self.tvf_horizons)),
-                    old_tvf_value_estimates[..., 0], # select final value head
+                    old_value_estimates[..., 0], # select final value head
                     scale(time_till_termination)
                 )
             for a in range(A):
                 tvf_value_estimates[a, trimmed_ks[a]:] = trimmed_value_estimate[a]
-            return tvf_value_estimates
         elif mode == "average":
             # we can use any horizon with h > remaining_time interchangeably with h.
             # so may as well average over them.
@@ -1318,12 +1319,9 @@ class Runner:
                 # using this method all horizons longer than ttt can be trimmed to the same value
                 # it might be better to use the average up to the h rather than up to h_max
                 tvf_value_estimates[a, trimmed_k:] = averaged_tvf_value_estimates[a, trimmed_k]
-
-            return tvf_value_estimates
         elif mode == "average2":
             # average up to h but no further
             # implementation is a bit slow, drop if it's not better.
-            old_value_estimates = tvf_value_estimates.copy()
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
             for a, trimmed_k in enumerate(trimmed_ks):
                 if trimmed_k >= len(self.tvf_horizons)-1:
@@ -1337,7 +1335,6 @@ class Runner:
                     acc += old_value_estimates[a, k]
                     counter += 1
                     tvf_value_estimates[a, k] = acc / counter
-            return tvf_value_estimates
         elif mode == "average3":
             # average up to but not including h but no further
             # this is based on the following ideas
@@ -1369,8 +1366,6 @@ class Runner:
                 #     tvf_value_estimates[a, k, 0] = acc / counter
                 #     acc += old_value
                 #     counter += 1
-
-            return tvf_value_estimates
         elif mode == "substitute":
             # just use the smallest h we can, very simple.
             untrimmed_ks = np.arange(self.K)[None, :]
@@ -1379,10 +1374,15 @@ class Runner:
             # old_tvf_value_estimates = tvf_value_estimates.copy()
             tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], trimmed_ks, axis=1)
             # stub:
-            # delta = (old_tvf_value_estimates[:, :, 0] - tvf_value_estimates)
-            return tvf_value_estimates[:, :, None]
+            tvf_value_estimates = tvf_value_estimates[:, :, None]
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
+
+        # monitor how much we modified the return estimates...
+        # if max is large then maybe there's an off-by-one bug on time.
+        delta = np.abs(tvf_value_estimates-old_value_estimates)
+        self.log.watch_stats("ved", delta.ravel(), display_width=0)
+        return tvf_value_estimates
 
     def apply_reward_scale_adjustment(self, ratio):
         """

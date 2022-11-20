@@ -106,6 +106,13 @@ def get_return_estimate(
         # each horizon gets a random sample.
         samples = np.random.choice(range(1, len(weights) + 1), size=(K, max_samples), replace=True, p=weights)
         return calc_return(samples)
+    elif mode == "advanced2":
+        # each horizon gets a random sample, but we sample without replacement
+        C = max_samples
+        samples = np.zeros([K, C], dtype=np.int32)
+        for k in range(K):
+            samples[k, :] = np.random.choice(range(1, len(weights) + 1), size=C, replace=False, p=weights)
+        return calc_return(samples)
     elif mode == "full":
         # calculate each horizon and do a weighted average
         # very slow...
@@ -467,7 +474,6 @@ def reweigh_samples(n_step_list:list, weights=None, max_n: Optional[int] = None)
 
 
 def _calculate_sampled_return_multi_reference(
-    n_step_list: list,
     gamma: float,
     rewards: np.ndarray,
     dones: np.ndarray,
@@ -477,7 +483,9 @@ def _calculate_sampled_return_multi_reference(
     value_samples_m2: np.ndarray=None,
     value_samples_m3: np.ndarray=None,
     n_step_weights: list = None,
-    use_log_interpolation: bool=False # ignored
+    n_step_samples: np.ndarray=None,
+    n_step_list: list=None,
+    use_log_interpolation: bool=False, # ignored
 ):
     """
     Very slow reference version of return calculation. Calculates a weighted average of multiple n_step returns
@@ -492,6 +500,7 @@ def _calculate_sampled_return_multi_reference(
     @param value_samples_m2: float32 ndarray of dims [N+1, A, V] bootstrap second moment estimates
     @param value_samples_m3: float32 ndarray of dims [N+1, A, V] bootstrap third moment estimates
     @param n_step_weights: list of weights corresponding to n_step_list, if not given defaults to a uniform weighting
+    @param n_step_samples: ndarray if dims [K, C] (use list or samples, but not both)
 
     returns
         E(r),                       (if only value_samples are provided)
@@ -501,6 +510,27 @@ def _calculate_sampled_return_multi_reference(
     Where return estimates are a float32 numpy array of dims [N, A, K]
 
     """
+
+    assert n_step_list is None or n_step_samples is None
+    assert n_step_list is not None or n_step_samples is not None
+
+    if n_step_samples is not None:
+        # this reference method does not support per horizon samples, so calculate each horizon individually
+        K, C = n_step_samples.shape
+        assert value_samples_m2 is None
+        assert value_samples_m3 is None
+        N, A = rewards.shape
+        K = len(required_horizons)
+        result = np.zeros([N, A, K], dtype=np.float32)
+        for k in range(K):
+            result_part = _calculate_sampled_return_multi_reference(
+                gamma=gamma, rewards=rewards, dones=dones,
+                required_horizons=np.asarray([required_horizons[k]]),
+                value_sample_horizons=value_sample_horizons, value_samples=value_samples, n_step_weights=n_step_weights,
+                n_step_list=n_step_samples[k, :],
+            )
+            result[:, :, k:k+1] = result_part
+        return result
 
     n_step_list, n_step_weights = reweigh_samples(n_step_list, n_step_weights)
 
@@ -545,7 +575,7 @@ def _calculate_sampled_return_multi_reference(
                 m = 0
                 m2 = 0
                 m3 = 0
-
+                
                 if h-n_step > 0:
                     m = _interpolate(value_sample_horizons, value_samples[t+n_step], h-n_step) * discount
                     if moment in [2, 3]:
@@ -770,19 +800,79 @@ def test_return_estimators(seed=123):
         print(f" - {label} rel error={e_m1/m1_ref.max()}")
         return True
 
-    n_step = 80
-    eff_h = min(n_step * 3, N)
+    def print_sample_error():
+        """
+        Returns the approximate error due to sampling.
+        """
+        n_step = 20
+        args = default_args.copy()
+        ref = get_return_estimate(
+            distribution='exponential',
+            mode='full',
+            n_step=n_step,
+            **args
+        )
+
+        xs = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        y_adv = []
+        y_std = []
+
+        for samples in xs:
+            adv = []
+            std = []
+            for _ in range(10):
+                adv.append(get_return_estimate(
+                    distribution='exponential',
+                    max_samples=samples,
+                    mode='advanced',
+                    n_step=n_step,
+                    **args
+                ))
+                std.append(get_return_estimate(
+                    distribution='exponential',
+                    max_samples=samples,
+                    mode='standard',
+                    n_step=n_step,
+                    **args
+                ))
+            adv = np.asarray(adv) # S,N,A,K
+            std = np.asarray(std) # S,N,A,K
+
+            adv_mae = np.mean([np.mean(np.abs(ref - adv[i])) for i in range(len(adv))])
+            std_mae = np.mean([np.mean(np.abs(ref - std[i])) for i in range(len(std))])
+            adv_bias = np.mean([np.mean(ref - adv[i]) for i in range(len(adv))])
+            std_bias = np.mean([np.mean(ref - std[i]) for i in range(len(std))])
+
+            print(f"{samples}:",
+                  adv_mae, std_mae, adv_bias, std_bias
+            )
+
+            y_adv.append(adv_mae)
+            y_std.append(std_mae)
+        import matplotlib.pyplot as plt
+        xs = [str(x) for x in xs]
+        plt.plot(xs, y_adv, label='adv')
+        plt.plot(xs, y_std, label='std')
+        plt.legend()
+        plt.grid(alpha=0.25)
+        plt.show()
+
+
+    n_step = 20
+    n_samples = 8
     lamb = 1 - (1 / n_step)
     weights = np.asarray([lamb ** x for x in range(128)], dtype=DTYPE)
     max_n = len(weights)
     probs = weights / weights.sum()
-    samples = np.random.choice(range(1, max_n + 1), 20, replace=True, p=probs)
+    samples = np.random.choice(range(1, max_n + 1), [K, n_samples], replace=True, p=probs)
 
     if \
-            not verify("n_step=1", n_step_list=[1]) or \
-            not verify("n_step=8", n_step_list=[8]) or \
-            not verify("n_step=128", n_step_list=[128]) or \
-            not verify("exponential=80", n_step_list=samples):
+            not verify("n_step:1", n_step_list=[1]) or \
+            not verify("n_step:8", n_step_list=[8]) or \
+            not verify("n_step:128", n_step_list=[128]) or \
+            not verify("exponential:20", n_step_samples=samples):
         raise Exception("Return estimator does not match reference.")
+
+    # print_sample_error()
 
     np.random.set_state(st0)
