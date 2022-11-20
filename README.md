@@ -21,9 +21,11 @@ Specific experiments in dna_experiments.py can be commented out or reprioritised
 ## Citation
 Please cite using the following bibtex entry:
 
+```
 @article{aitchison2022dna,
   title={DNA: Proximal Policy Optimization with a Dual Network Architecture},
   author={Aitchison, Mathew and Sweetser, Penny},
   journal={arXiv preprint arXiv:2206.10027},
   year={2022}
 }
+```
