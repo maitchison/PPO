@@ -25,50 +25,6 @@ def select_from(a,b):
             r[i,j] = a[i,j,b[i,j]]
     return r
 
-def _ground_truth_vtrace_calculation(discounts, log_rhos, rewards, values,
-                                     bootstrap_value, clip_rho_threshold=1,
-                                     clip_pg_rho_threshold=1, lamb=1.0):
-  """Calculates the ground truth for V-trace in Python/Numpy."""
-
-  # this is the ground truth calculation from https://github.com/deepmind/scalable_agent/blob/master/vtrace_test.py
-  # modifed by me to include lambda (see remark 2 from paper)
-
-  vs = []
-  seq_len = len(discounts)
-  rhos = np.exp(log_rhos)
-  cs = lamb * np.minimum(rhos, 1.0)
-  clipped_rhos = rhos
-  if clip_rho_threshold:
-    clipped_rhos = np.minimum(rhos, clip_rho_threshold)
-  clipped_pg_rhos = rhos
-  if clip_pg_rho_threshold:
-    clipped_pg_rhos = np.minimum(rhos, clip_pg_rho_threshold)
-
-  # This is a very inefficient way to calculate the V-trace ground truth.
-  # We calculate it this way because it is close to the mathematical notation of
-  # V-trace.
-  # v_s = V(x_s)
-  #       + \sum^{T-1}_{t=s} \gamma^{t-s}
-  #         * \prod_{i=s}^{t-1} c_i
-  #         * \rho_t (r_t + \gamma V(x_{t+1}) - V(x_t))
-  # Note that when we take the product over c_i, we write `s:t` as the notation
-  # of the paper is inclusive of the `t-1`, but Python is exclusive.
-  # Also note that np.prod([]) == 1.
-  values_t_plus_1 = np.concatenate([values, bootstrap_value[None, :]], axis=0)
-  for s in range(seq_len):
-    v_s = np.copy(values[s])  # Very important copy.
-    for t in range(s, seq_len):
-      v_s += (
-          np.prod(discounts[s:t], axis=0) * np.prod(cs[s:t], axis=0) * clipped_rhos[t] *
-          (rewards[t] + discounts[t] * values_t_plus_1[t + 1] - values[t]))
-    vs.append(v_s)
-  vs = np.stack(vs, axis=0)
-  pg_advantages = (
-      clipped_pg_rhos * (rewards + discounts * np.concatenate(
-          [vs[1:], bootstrap_value[None, :]], axis=0) - values))
-
-  return vs, pg_advantages
-
 def test_information_theory_functions():
 
     tests = [

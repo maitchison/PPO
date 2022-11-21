@@ -16,6 +16,7 @@ import pickle
 from os import listdir
 from os.path import isfile, join
 from typing import Union
+import pandas as pd
 
 LOG_CAP = 1e-6 # when computing logs values <= 0 will be replaced with this
 
@@ -82,6 +83,7 @@ def safe_len(x):
     return len(x)
 
 def read_log(file_path):
+
     if not os.path.exists(file_path + "/params.txt"):
         return None
 
@@ -94,31 +96,21 @@ def read_log(file_path):
     params["value_updates"] = (params["agents"] * params["n_steps"]) / params["value_mini_batch_size"] * params[
         "value_epochs"]
 
-    reader = csv.reader(open(file_path + "/training_log.csv", 'r'))
-    col_names = next(reader, None)
+    # I should probably be using pandas rather than a dictionary tbh.
+    X = pd.read_csv(file_path+"/training_log.csv", delimiter=',')
     result = {}
-    data = [row for row in reader]
-
-    for col in col_names:
-        result[col] = []
-
-    for row in data:
-        for col_name, value in zip(col_names, row):
-            result[col_name].append(safe_float(value))
+    for column in X:
+        result[column] = np.nan_to_num(np.asarray(X[column]), nan=0.0)
 
     good_rows = len(result["env_step"])
     if good_rows <= 1:
-        print(f"not enough data for {file_path} found only {good_rows} good rows from {len(data)}.")
+        print(f"not enough data for {file_path} found only {good_rows} good rows.")
         return None
 
     batch_size = int(result['env_step'][1] / result['iteration'][1])
     result["batch_size"] = batch_size
     result["params"] = params
     params["batch_size"] = params["agents"] * params["n_steps"]
-    # for v in ["tvf_max_horizon", "distil_beta", "tvf_n_step", "tvf_horizon_samples", "tvf_value_samples",
-    #           "tvf_soft_anchor", "tvf_coef"]:
-    #     if v in params:
-    #         params["quant_" + v] = 2 ** int(math.log2(params[v]))
 
     # this is a fixup for double dunk, where score is 0 at the start before any real scores have arrived.
     if params["environment"] == "DoubleDunk":
@@ -129,34 +121,6 @@ def read_log(file_path):
                 ep_scores[i] = min_score
             else:
                 break
-
-    for k in list(result.keys()):
-        v = result[k]
-        # this is a bit dodgy it's because the old version used to sometimes not calculate this until step 2.
-        if k in ["err_trunc", "err_model"]:
-            if v[0] is None:
-                v[0] = v[1]
-        if v is not None and type(v) is list:
-
-            if k == "value_loss":
-                v = [-x for x in v]
-
-            if v is not None and len(v) > 0 and all(x is not None for x in v):
-                if min(v) > 0:
-                    result["log_" + k] = np.log2(np.clip(v, LOG_CAP, float('inf')))
-                if min(v) > -1e-6:
-                    result["elog10_" + k] = np.log10(np.asarray(v) + 1e-6)
-                if max(v) < 0:
-                    result["logn_" + k] = np.log2([-x for x in v])
-                if max(v) < 10:
-                    result["exp_" + k] = np.exp(v)
-
-    for k, v in params.items():
-        result[k] = v
-        if type(v) in [int, float] and v > 0:
-            result["log2_" + k] = np.log2(v)
-            result["rlog2_" + k] = np.round(np.log2(v))
-            result["log10_" + k] = np.log10(v)
 
     result["score"] = compute_score(result)
     result["score_alt"] = compute_score_alt(result)
@@ -958,7 +922,6 @@ class AtariScoreNormalizer:
         def pascal_case(s):
             return "".join(x.capitalize() for x in s.split(" "))
 
-        import pandas as pd
         data = pd.read_csv(filename)
         result = {}
         for index, row in data.iterrows():
@@ -1146,34 +1109,6 @@ def read_combined_log(path: str, key: str, subset: typing.Union[list, str] = 'At
     result["final_epoch"] = result["epoch"][-1] + 1 # if we processed epoch 2.x then say we went up to epoch 3.
     result["run_name"] = key
 
-    keys = list(result.keys())
-    for k in keys:
-
-        v = result[k]
-
-        if v is None:
-            continue
-
-        if type(v) in [int, float]:
-            if v > 0:
-                result["log2_" + k] = np.log2(v)
-            if v > 0:
-                result["log10_" + k] = np.log10(v)
-            if v < 10:
-                result["exp_" + k] = np.exp(v)
-
-        if v is not None and type(v) is list:
-            if len(v) == 0:
-                continue
-            if min(v) > 0:
-                result["log_" + k] = np.log2(v)
-            if min(v) > -1e-6:
-                result["elog10_" + k] = np.log10(np.asarray(v) + 1e-6)
-            if max(v) < 0:
-                result["logn_" + k] = np.log2([-x for x in v])
-            if max(v) < 10:
-                result["exp_" + k] = np.exp(v)
-
     return result
 
 def plot_validation(path, keys, hold=False, color=None, label=None, subset="Atari_3_Val"):
@@ -1275,6 +1210,10 @@ def plot_mode(path):
 def mean_of_top(X, top_k=5):
     data = sorted(X)
     return np.mean(data[-top_k:])
+
+def std_of_top(X, top_k=5):
+    data = sorted(X)
+    return np.std(data[-top_k:])
 
 
 def min_of_top(X):
@@ -1906,20 +1845,24 @@ def experiment(
     if figure:
         setup_plot(title)
 
+    style_map = defaultdict(list)
+
     for i, key in enumerate(keys):
         first = True
+
+        if style_filter is not None:
+            style = style_filter(key)
+        else:
+            style = "-"
+
+        style_map[style].append(key)
 
         if color_filter is not None:
             c = color_filter(key, i)
         else:
-            c = cmap(i)
+            c = cmap(len(style_map[style]))
+
         try:
-
-            if style_filter is not None:
-                style = style_filter(key)
-            else:
-                style = "-"
-
             plot_seeded_validation(
                 paths,
                 key,

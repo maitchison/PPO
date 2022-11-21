@@ -142,9 +142,8 @@ if __name__ == "__main__":
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
     # load in the jobs...
-    import exp_tvf_new
-
-    exp_tvf_new.setup()
+    import tvf_experiments
+    tvf_experiments.setup()
 
     # todo: switch to proper command line args...
 

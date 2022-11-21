@@ -8,6 +8,7 @@ import json
 import time
 import platform
 import socket
+import gzip
 
 import torchvision
 
@@ -37,6 +38,46 @@ class Color:
 # -------------------------------------------------------------
 # Utils
 # -------------------------------------------------------------
+
+
+def expand_to_na(n, a, x):
+    """
+    takes 1d input and returns it duplicated [N,A] times
+    in form [n, a, *]
+    """
+    x = x[None, None, :]
+    x = np.repeat(x, n, axis=0)
+    x = np.repeat(x, a, axis=1)
+    return x
+
+
+def open_checkpoint(checkpoint_path: str, **pt_args):
+    """
+    Load checkpoint. Supports zip format.
+    """
+    # gzip support
+
+    try:
+        with gzip.open(os.path.join(checkpoint_path, ".gz"), 'rb') as f:
+            return torch.load(f, **pt_args)
+    except:
+        pass
+
+    try:
+        # unfortunately some checkpoints were saved without the .gz so just try and fail to load them...
+        with gzip.open(checkpoint_path, 'rb') as f:
+            return torch.load(f, **pt_args)
+    except:
+        pass
+
+    try:
+        # unfortunately some checkpoints were saved without the .gz so just try and fail to load them...
+        with open(checkpoint_path, 'rb') as f:
+            return torch.load(f, **pt_args)
+    except:
+        pass
+
+    raise Exception(f"Could not open checkpoint {checkpoint_path}")
 
 def even_sample_down(X, max_values:int):
     """
@@ -451,7 +492,7 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
 
     while any(is_running) and counter < max_length:
 
-        logprobs = model.policy(state).detach().cpu().numpy()
+        logprobs = model.opt_p(state).detach().cpu().numpy()
         actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
 
         state, reward, done, info = env.step(actions)
@@ -1032,3 +1073,4 @@ class Timer:
             return 0.0
         else:
             return np.mean(self.times)
+

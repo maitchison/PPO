@@ -316,7 +316,6 @@ class DualHeadNet(nn.Module):
             activation_fn="relu",
 
             tvf_fixed_head_horizons: Union[None, list] = None,
-            tvf_per_head_hidden_units:int = 0,
             tvf_feature_sparsity: float = 0.0,
             tvf_feature_window: int = -1,
 
@@ -325,7 +324,6 @@ class DualHeadNet(nn.Module):
             # value_head_names: Union[list, tuple] = ('ext', 'int', 'ext_m2', 'int_m2', 'uni'),
             value_head_names: Union[list, tuple] = ('ext',), # keeping it simple
 
-            tvf_sqrt_transform: bool = False,
             head_bias: bool=False,
 
             device=None,
@@ -349,10 +347,6 @@ class DualHeadNet(nn.Module):
         super().__init__()
 
         self.encoder = construct_network(encoder, input_dims, hidden_units=hidden_units, **kwargs).to(device)
-
-        self.tvf_sqrt_transform = tvf_sqrt_transform
-
-        assert tvf_per_head_hidden_units == 0, "NIY"
 
         self.hidden_units = hidden_units
 
@@ -502,9 +496,6 @@ class DualHeadNet(nn.Module):
                 # even though they were zeroed out they still become non-zero after an optimizer update.
                 self.mask_feature_weights()
                 tvf_values = self.tvf_head(encoder_features)
-                if self.tvf_sqrt_transform:
-                    # sqr, so that model learns the sqrt.
-                    tvf_values = torch.sign(tvf_values) * torch.pow(tvf_values, 2)
                 K = len(self.tvf_fixed_head_horizons)
                 result[f'tvf_value'] = tvf_values.reshape([-1, K, len(self.value_head_names)])
                 if required_tvf_heads is not None:
@@ -535,10 +526,8 @@ class TVFModel(nn.Module):
             freeze_observation_normalization=False,
             tvf_fixed_head_horizons: Union[None, list] = None,
             tvf_fixed_head_weights: Union[None, list] = None,
-            tvf_per_head_hidden_units: int = 0,
             tvf_feature_sparsity: float = 0.0,
             tvf_feature_window: int = -1,
-            tvf_sqrt_transform: bool = False,
             head_scale: float=1.0,
             value_head_names=('ext',),
             norm_eps: float = 1e-5,
@@ -569,7 +558,6 @@ class TVFModel(nn.Module):
         self.dtype = dtype
         self.observation_normalization = observation_normalization
         self.tvf_fixed_head_weights = tvf_fixed_head_weights
-        self.tvf_sqrt_transform = tvf_sqrt_transform
         self.encoder_name = encoder
         self.norm_eps = norm_eps
         self.observation_scaling = observation_scaling
@@ -603,12 +591,10 @@ class TVFModel(nn.Module):
                 hidden_units=hidden_units,
                 activation_fn=encoder_activation_fn,
                 tvf_fixed_head_horizons=tvf_fixed_head_horizons,
-                tvf_per_head_hidden_units=tvf_per_head_hidden_units,
                 tvf_feature_sparsity=tvf_feature_sparsity,
                 tvf_feature_window=tvf_feature_window,
                 n_actions=actions,
                 device=device,
-                tvf_sqrt_transform=tvf_sqrt_transform,
                 head_scale=head_scale,
                 value_head_names=value_head_names,
                 head_bias=head_bias,
@@ -645,11 +631,6 @@ class TVFModel(nn.Module):
         """
         Scales the value predictions of all models by given amount by scaling weights on the final layer.
         """
-
-        if self.tvf_sqrt_transform:
-            # if we are using the sqrt transform on returns we should sqrt the ratio too.
-            # this is great as it will adjust the weights less (as the sqrt will make the factor tend to 1.
-            factor = math.sqrt(factor)
 
         if value_net_only:
             models = [self.value_net]

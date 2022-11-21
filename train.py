@@ -1,7 +1,12 @@
+import io
+import unittest
 import os
-
+from datetime import datetime
 import uuid
+import rl.config
 import multiprocessing
+
+import code_diff
 
 import gym.version
 
@@ -49,9 +54,9 @@ def make_model(args, log=None):
     if log is not None:
         log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
-    if args.use_tvf:
-        tvf_fixed_head_horizons, tvf_weights = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing, include_weight=True)
-        args.tvf_value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
+    if args.tvf.enabled:
+        tvf_fixed_head_horizons, tvf_weights = rl.tvf.get_value_head_horizons(args.tvf.value_heads, args.tvf.max_horizon, args.tvf.head_spacing, include_weight=True)
+        args.tvf.value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
     else:
         tvf_fixed_head_horizons = None
         tvf_weights = None
@@ -73,12 +78,10 @@ def make_model(args, log=None):
         tvf_fixed_head_weights=tvf_weights,
         architecture=args.architecture,
         hidden_units=args.hidden_units,
-        tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
-        tvf_feature_sparsity=args.tvf_feature_sparsity,
-        tvf_feature_window=args.tvf_feature_window,
-        tvf_sqrt_transform=args.tvf_sqrt_transform,
+        tvf_feature_sparsity=args.tvf.feature_sparsity,
+        tvf_feature_window=args.tvf.feature_window,
         head_scale=args.head_scale,
         value_head_names=tuple(value_head_names),
         norm_eps=args.observation_normalization_epsilon,
@@ -96,7 +99,7 @@ def main():
 
     # import here to make workers load faster / use less memory
     import torch.backends.cudnn, torch.backends.cuda
-    from rl import utils, config, rollout
+    from rl import utils, rollout
     from rl import ppo
     from rl.config import args
     import numpy as np
@@ -114,8 +117,9 @@ def main():
         log.important("Training preempted, no device available.")
         exit()
 
+    log.info(f"System is host:<white>{args.hostname}<end> torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
     log.info(f"Using device: <white>{args.device}<end>")
-    log.info(f"System is host:{args.hostname} torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
+
 
     # check to see if the device we are using has been disallowed
     if args.device in utils.get_disallowed_devices():
@@ -205,7 +209,7 @@ def main():
     if args.reference_policy is not None:
         assert args.architecture == "dual"
         # load only the policy parameters, and the normalization constants
-        checkpoint = rollout._open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
+        checkpoint = rollout.open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
         policy_checkpoint = {k[len('policy_net.'):]: v for k, v in checkpoint["model_state_dict"].items() if k.startswith("policy_net.")}
         actor_critic_model.policy_net.load_state_dict(policy_checkpoint)
         actor_critic_model.obs_rms = checkpoint['obs_rms']
@@ -215,7 +219,36 @@ def main():
 
     utils.release_lock()
 
+def log_code_info():
+    """
+    Logs information about codebase.
+    """
+    code_hash = code_diff.get_code_hash()
+    code_date = code_diff.get_code_date()
+    log.info(f"Using code {datetime.fromtimestamp(code_date).strftime('%m/%d/%Y, %H:%M:%S')} [{code_hash[:8]}]")
+
+def run_unit_tests():
+    """
+    Runs the units tests.
+    """
+    loader = unittest.TestLoader()
+    start_dir = 'tests'
+    suite = loader.discover(start_dir)
+
+    s = io.StringIO()
+    runner = unittest.TextTestRunner(verbosity=2, stream=s)
+    runner.run(suite)
+    for line in s.getvalue().split("\n"):
+        if line.strip() != "":
+            log.info(line)
+
+
 if __name__ == "__main__":
+
+    # run unit tests every time we run
+    # this way we get verification in the log file for each experiment.
+
+    rl.config.args.setup()
 
     # install procgen... this is a bit dodgy, but it'll get things working on the cluster
     import sys
@@ -227,7 +260,6 @@ if __name__ == "__main__":
 
     # special setup for mujoco
     if "--env_type=mujoco" in sys.argv:
-        import os
         print("Setting up for mujoco")
         mujoco_path="/home/matthew/.mujoco/mujoco210/bin"
         # print("Old path was", os.environ["LD_LIBRARY_PATH"])
@@ -235,20 +267,13 @@ if __name__ == "__main__":
             print(" - updating path.")
             os.environ["LD_LIBRARY_PATH"] = f":{mujoco_path}:/usr/lib/nvidia"
 
-    # quick check that returns work
-    from rl.returns import test_return_estimators
-    from rl.rollout import _test_interpolate
-    #import rl.unit_tests
-
-    for i in range(1):
-        test_return_estimators(seed=i)
-    print("Return verification passed.")
-    _test_interpolate()
-    print("Interpolation verification passed.")
-
     from rl import logger
 
     log = logger.Logger()
+    print("=" * 80)
+    log_code_info()
+    run_unit_tests()
+    print("=" * 90)
     try:
         main()
     except Exception as e:
