@@ -1752,9 +1752,9 @@ class Runner:
 
         # log how well our termination predictiosn are going
         if len(self.ttt_error_buffer) > 0:
-            self.log.watch_stats("teb", self.ttt_error_buffer, display_width=8, history_length=1)
-            self.log.watch_stats("ateb", np.abs(self.ttt_error_buffer), display_width=8, history_length=1)
-            self.log.watch_stats("zteb", np.minimum(self.ttt_error_buffer, 0), display_width=8, history_length=1)
+            self.log.watch_stats("teb", self.ttt_error_buffer, display_width=0, history_length=1)
+            self.log.watch_stats("teba", np.abs(self.ttt_error_buffer), display_width=0, history_length=1)
+            self.log.watch_stats("tebz", np.minimum(self.ttt_error_buffer, 0), display_width=0, history_length=1)
 
         # calculate targets for ppg
         if args.aux.epochs > 0:
