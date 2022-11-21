@@ -14,7 +14,7 @@ from .utils import Color
 
 import torch.multiprocessing
 
-from . import utils, models, keyboard
+from . import utils, models, keyboard, envs
 from .config import args
 
 
@@ -78,8 +78,15 @@ def train(model: models.TVFModel, log: Logger):
     end_iteration = math.ceil((final_epoch * 1e6) / batch_size)
 
     runner = Runner(model, log, action_dist="gaussian" if args.env_type == "mujoco" else "discrete")
-    runner.create_envs()
+    runner.vec_env = envs.create_envs_classic()
     runner.reset()
+
+    # logging
+    model_total_size = runner.model.model_size(trainable_only=True) / 1e6
+    log.important("Generated {} agents ({}) using {} ({:.2f}M params) {} model.".
+                       format(args.agents, "async" if not args.sync_envs else "sync", runner.model.name,
+                              model_total_size, runner.model.dtype))
+
 
     # detect a previous experiment
     checkpoints = runner.get_checkpoints(args.log_folder)

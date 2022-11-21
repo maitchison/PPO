@@ -42,10 +42,10 @@ def make_model(args, log=None):
     Construct model based on env, and arguments.
     """
 
-    from rl import rollout, models
+    from rl import models, envs
     import torch
 
-    fake_env = rollout.make_env(args.env_type, args.get_env_name())
+    fake_env = envs.make_env(args.env_type, args.get_env_name())
     n_actions = get_n_actions(fake_env.action_space)
     obs_space = fake_env.observation_space.shape
 

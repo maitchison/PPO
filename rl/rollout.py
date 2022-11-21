@@ -386,43 +386,6 @@ class Runner:
             for g in self.rnd_optimizer.param_groups:
                 g['lr'] = self.rnd_lr
 
-
-    def create_envs(self, N=None, verbose=True, monitor_video=False):
-        """ Creates (vectorized) environments for runner"""
-        N = N or args.agents
-        base_seed = args.seed
-        if base_seed is None or base_seed < 0:
-            base_seed = np.random.randint(0, 9999)
-        env_fns = [lambda i=i: make_env(args.env_type, env_id=args.get_env_name(i), args=args, seed=base_seed+(i*997), monitor_video=monitor_video) for i in range(N)]
-
-        if args.sync_envs:
-            self.vec_env = gym.vector.SyncVectorEnv(env_fns)
-        else:
-            self.vec_env = hybridVecEnv.HybridAsyncVectorEnv(
-                env_fns,
-                copy=False,
-                max_cpus=args.workers,
-                verbose=True
-            )
-
-        # ema normalization is handled externally.
-        if args.reward_normalization == "rms":
-            self.vec_env = wrappers.VecNormalizeRewardWrapper(
-                self.vec_env,
-                gamma=args.reward_normalization_gamma,
-                mode="rms",
-                clip=args.reward_normalization_clipping,
-            )
-
-        if args.max_repeated_actions > 0 and args.env_type != "mujoco":
-            self.vec_env = wrappers.VecRepeatedActionPenalty(self.vec_env, args.max_repeated_actions, args.repeated_action_penalty)
-
-        if verbose:
-            model_total_size = self.model.model_size(trainable_only=True)/1e6
-            self.log.important("Generated {} agents ({}) using {} ({:.2f}M params) {} model.".
-                           format(args.agents, "async" if not args.sync_envs else "sync", self.model.name,
-                                  model_total_size, self.model.dtype))
-
     def save_checkpoint(self, filename, step, disable_replay=False, disable_optimizer=False, disable_log=False, disable_env_state=False):
 
         data = {
@@ -2340,15 +2303,3 @@ class Runner:
         optimizer.zero_grad(set_to_none=True)
 
         return context
-
-
-def make_env(env_type, env_id, **kwargs):
-    if env_type == "atari":
-        make_fn = atari.make
-    elif env_type == "mujoco":
-        make_fn = mujoco.make
-    elif env_type == "procgen":
-        make_fn = procgen.make
-    else:
-        raise ValueError(f"Invalid environment type {env_type}")
-    return make_fn(env_id, **kwargs)
