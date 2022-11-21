@@ -178,19 +178,10 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
 
-    if args.debug_state_distort >= 0:
-        # only 1/11 envs will have distortion (based on seed)
-        use_distortion = seed is None or (seed % args.debug_state_modulo == 0)
-        env = wrappers.DelayedStateDistortionWrapper(env, args.debug_state_distort if use_distortion else float('inf'))
-
     if env_id == "MontezumaRevenge":
         # to record rooms.
         # applied after frameskip, so that rooms is always for most recent frame.
         env = wrappers.MontezumaInfoWrapper(env)
-
-    if args.reward_curve > 0:
-        # must come before monitor wrapper as we want 'raw_rewards' to be modified.
-        env = wrappers.RewardCurveWrapper(env, args.reward_curve)
 
     env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
     env = wrappers.EpisodeScoreWrapper(env)
@@ -208,13 +199,13 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y)
 
+    if args.debug_zero_obs:
+        env = wrappers.ZeroObsWrapper(env)
+
     env = wrappers.ColorTransformWrapper(env, args.color_mode)
 
     if args.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
-
-    if args.use_ed:
-        env = wrappers.EpisodicDiscounting(env, discount_type=args.ed_mode, discount_bias=args.ed_bias)
 
     if args.deferred_rewards != 0:
         env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
@@ -230,9 +221,6 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     if args.embed_state:
         env = wrappers.StateHistoryWrapper(env)
-
-    if args.debug_zero_obs:
-        env = wrappers.ZeroObsWrapper(env)
 
     # for some reason the rest of my code wants it in this order...
     env = wrappers.ChannelsFirstWrapper(env)

@@ -1,5 +1,4 @@
 import ast
-import sys
 import uuid
 import socket
 import argparse
@@ -130,12 +129,50 @@ class BaseConfig:
             except:
                 pass
 
+class SimpleNoiseScaleConfig(BaseConfig):
+    """
+    Config settings for simple noise scale
+    """
+    enabled:bool = False # Enables generation of simple noise scale estimates.
+    labels: str = ['policy','distil','value', 'value_heads']  # value|value_heads|distil|policy
+    period: int = 3  # Generate estimates every n updates.
+    max_heads: int = 7  # Limit to this number of heads when doing per head noise estimate.
+    b_big: int = 2048
+    b_small: int = 128
+    fake_noise: bool = False # Replaces value_head gradient with noise based on horizon.
+    smoothing_mode: str = "ema" # ema|avg
+    smoothing_horizon_avg: int = 1e6, # how big to make averaging window
+    smoothing_horizon_s: int = 0.2e6, # how much to smooth s
+    smoothing_horizon_g2: int = 1.0e6, # how much to smooth g2
+    smoothing_horizon_policy: int = 5e6, # how much to smooth g2 for policy (normally much higher)
+
+    def __init__(self, parser):
+        super().__init__(prefix="sns", parser=parser)
+
 class TVFConfig(BaseConfig):
     """
     Config settings for TVF
     """
 
-    def __init__(self, parser: argparse.ArgumentParser = None):
+    enabled: bool = False
+    gamma: float = None             # Gamma for TVF, defaults to gamma.
+    coef: float = 1.0               # Loss is multiplied by this.
+    trimming: str = "off"           # off|timelimit|est_term
+    trimming_mode: str = "average"  # interpolate|average|average2|substitute
+    at_minh: int = 128
+    at_percentile: float = 90
+    horizon_dropout: float = 0.0    # fraction of horizons to exclude per epoch.
+    return_mode: str = "advanced"   # standard|advanced|full "
+    return_distribution: str = "exponential"  # fixed|exponential|uniform|hyperbolic|quadratic
+    return_samples: int = 8,        # Number of n-step samples to use for distributional return calculation.
+    return_use_log_interpolation: bool = False # Interpolates in log space.
+    max_horizon: int = 30000        # Max horizon for TVF.
+    value_heads: int = 128          # Number of value heads to use.
+    head_spacing: str = "geometric" # geometric|linear|even_x
+    head_weighting: str = "off"     # off|h_weighted.
+    feature_window: int = -1        # Limits each head to a window of this many features.
+    feature_sparsity: float = 0.0   # Zeros out this proprition of features for each head.
+    include_ext: bool = False       # Also learn the rediscounted value estimate that will be used for advantages.
 
     def __init__(self, parser):
         super().__init__(prefix="tvf", parser=parser)
@@ -339,8 +376,6 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Rewards
-        parser.add_argument("--tvf_return_estimator_mode", type=str, default="default",
-                            help='Allows the use of the reference return estimator (very slow). [default|reference|verify|historic]')
         parser.add_argument("--ir_propagation", type=str2bool, default=True, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
@@ -422,25 +457,6 @@ class Config(BaseConfig):
                             help="Anneals learning rate to 0 (linearly) over training") # remove
 
         # --------------------------------
-        # TVF
-        self.tvf = TVFConfig(parser)
-
-        # --------------------------------
-        # Simple Noise Scale
-        parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
-        parser.add_argument("--sns_labels", type=str, default="['policy','distil','value', 'value_heads']", help="value|value_heads|distil|policy"),
-        parser.add_argument("--sns_period", type=int, default=3, help="Generate estimates every n updates.")
-        parser.add_argument("--sns_max_heads", type=int, default=7, help="Limit to this number of heads when doing per head noise estimate.")
-        parser.add_argument("--sns_b_big", type=int, default=2048, help="")
-        parser.add_argument("--sns_b_small", type=int, default=128, help="")
-        parser.add_argument("--sns_fake_noise", type=str2bool, default=False, help="Replaces value_head gradient with noise based on horizon.")
-        parser.add_argument("--sns_smoothing_mode", type=str, default="ema", help="ema|avg")
-        parser.add_argument("--sns_smoothing_horizon_avg", type=int, default=1e6, help="how big to make averaging window")
-        parser.add_argument("--sns_smoothing_horizon_s", type=int, default=0.2e6, help="how much to smooth s")
-        parser.add_argument("--sns_smoothing_horizon_g2", type=int, default=1.0e6, help="how much to smooth g2")
-        parser.add_argument("--sns_smoothing_horizon_policy", type=int, default=5e6, help="how much to smooth g2 for policy (normally much higher)")
-
-        # --------------------------------
         # Auxiliary phase
         parser.add_argument("--aux_target", type=str, default='reward', help="[reward|vtarg]]")
         parser.add_argument("--aux_source", type=str, default='aux', help="[aux|value]]")
@@ -459,8 +475,6 @@ class Config(BaseConfig):
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
 
-
-
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
         parser.add_argument("--ir_normalize", type=str2bool, default=True, help="Normalizes intrinsic rewards such that they have unit variance")
@@ -471,7 +485,6 @@ class Config(BaseConfig):
 
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
-        self.use_tvf = bool()
         self.environment = str()
         self.experiment_name = str()
         self.run_name = str()
@@ -560,41 +573,6 @@ class Config(BaseConfig):
         self.advantage_epsilon = float()
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
-        self.tvf_return_estimator_mode = str()
-        self.tvf_gamma = object()
-        self.tvf_coef = float()
-        self.tvf_trimming = str()
-        self.tvf_trimming_mode = str()
-        self.tvf_at_minh = int()
-        self.tvf_at_percentile = float()
-        self.tvf_horizon_dropout = float()
-        self.tvf_return_mode = str()
-        self.tvf_return_distribution = str()
-        self.tvf_return_samples = int()
-        self.tvf_return_use_log_interpolation = bool()
-        self.tvf_max_horizon = int()
-        self.tvf_boost_final_head = float()
-        self.tvf_value_heads = int()
-        self.tvf_head_spacing = str()
-        self.tvf_head_weighting = str()
-        self.tvf_per_head_hidden_units = int()
-        self.tvf_feature_sparsity = float()
-        self.tvf_feature_window = int()
-        self.tvf_include_ext = bool()
-        self.tvf_sqrt_transform = bool()
-
-        self.use_sns = bool()
-        self.sns_labels = str()
-        self.sns_period = int()
-        self.sns_max_heads = int()
-        self.sns_b_big = int()
-        self.sns_b_small = int()
-        self.sns_fake_noise = int()
-        self.sns_smoothing_mode = str()
-        self.sns_smoothing_horizon_avg = int()
-        self.sns_smoothing_horizon_s = int()
-        self.sns_smoothing_horizon_g2 = int()
-        self.sns_smoothing_horizon_policy = int()
 
         # extra
         self.head_scale = float()
