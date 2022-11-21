@@ -13,9 +13,27 @@ import collections
 
 import time as clock
 
+
 class TVFRunnerModule(rl.rollout.RunnerModule):
 
-    # todo: move tvf_value etc to here...
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        N, A = parent.ext_rewards.shape
+        VH = len(parent.value_heads)
+        K = len(parent.tvf_horizons)
+
+        self.tvf_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)
+        self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
+
+
+    def on_reset(self):
+        self.tvf_value *= 0
+        self.tvf_returns *= 0
+
+    def on_before_generate_rollout(self):
+        self.tvf_value *= 0
+        self.tvf_returns *= 0
 
     def trim_horizons(self, tvf_value_estimates, time, method: str = "timelimit", mode: str = "interpolate"):
         """
@@ -154,7 +172,7 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
             re_mode = "default"
 
         # we must unnormalize the value estimates, then renormalize after
-        values = self.runner.tvf_value[..., self.runner.value_heads.index(value_head)]
+        values = self.tvf_value[..., self.runner.value_heads.index(value_head)]
 
         returns = get_return_estimate(
             mode=tvf_return_mode,
@@ -200,7 +218,7 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         )
 
         first_moment_targets = targets
-        first_moment_estimates = self.runner.tvf_value[:N, :, :, 0].reshape(N, A, K)
+        first_moment_estimates = self.tvf_value[:N, :, :, 0].reshape(N, A, K)
         self.runner._log_curve_quality(first_moment_estimates, first_moment_targets)
 
         # also log ev_ext

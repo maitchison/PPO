@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import time as clock
 import json
 import gzip
-from typing import Union, Optional
+from typing import Union, Optional, List
 import math
 
 from .logger import Logger
@@ -87,6 +87,30 @@ def calculate_tp_returns(dones: np.ndarray, final_tp_estimate: np.ndarray):
 
     return returns
 
+
+class RunnerModule:
+    """
+    Used to provide extensions to rollout.
+    Modules can access the runner data (e.g. the rollout)
+    """
+
+    def __init__(self, parent):
+        self.runner: Runner = parent
+
+    def on_reset(self):
+        pass
+
+    def on_before_generate_rollout(self):
+        pass
+
+    def save(self):
+        pass
+
+    def load(self):
+        pass
+
+
+
 class Runner:
 
     def __init__(self, model: models.TVFModel, log, name="agent", action_dist='discrete'):
@@ -95,8 +119,6 @@ class Runner:
         self.name = name
         self.model = model
         self.step = 0
-
-        self.previous_rollout = None
 
         def make_optimizer(params, cfg: config.OptimizerConfig):
             optimizer_params = {
@@ -217,9 +239,8 @@ class Runner:
 
         # value and returns
         self.value = np.zeros([N+1, A, VH], dtype=np.float32)
-        self.tvf_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)
         self.returns = np.zeros([N, A, VH], dtype=np.float32)
-        self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
+
 
         # hashing
         if args.hash.enabled:
@@ -280,7 +301,8 @@ class Runner:
             )
 
         # modules
-        self.tvf = rl.tvf.TVFRunnerModule(self)
+        if args.use_tvf:
+            self.tvf = rl.tvf.TVFRunnerModule(self)
 
     @property
     def ext_value(self):
@@ -523,9 +545,19 @@ class Runner:
 
         return step
 
+    def get_modules(self) -> List[RunnerModule]:
+        result = []
+        for child in self.__dict__.values():
+            if issubclass(type(child), RunnerModule):
+                result.append(child)
+        return result
+
     def reset(self):
 
         assert self.vec_env is not None, "Please call create_envs first."
+
+        for module in self.get_modules():
+            module.on_reset()
 
         # initialize agent
         self.obs = self.vec_env.reset()
@@ -696,7 +728,6 @@ class Runner:
         return self.hash_fn(hash_input)
 
 
-
     @torch.no_grad()
     def generate_rollout(self):
 
@@ -712,8 +743,10 @@ class Runner:
         self.int_rewards *= 0
         self.ext_rewards *= 0
         self.value *= 0
-        self.tvf_value *= 0
         self.all_time *= 0
+
+        for module in self.get_modules():
+            module.on_before_generate_rollout()
 
         obs_hashes = np.zeros([self.N, self.A], dtype=np.int32)
 
@@ -722,8 +755,6 @@ class Runner:
         for k in self.stats.keys():
             if k.startswith("batch_"):
                 self.stats[k] *= 0
-
-        initial_beta = self.reward_scale
 
         for t in range(self.N):
 
@@ -797,7 +828,7 @@ class Runner:
             if args.use_tvf:
                 start_time = clock.time()
                 tvf_values = model_out["tvf_value"].cpu().numpy()
-                self.tvf_value[t], ttt = self.tvf.trim_horizons(
+                self.tvf.tvf_value[t], ttt = self.tvf.trim_horizons(
                     tvf_values,
                     prev_time,
                     method=args.tvf_trimming,
@@ -885,7 +916,7 @@ class Runner:
         self.value[-1] = final_model_out["value"].cpu().numpy()
 
         if args.use_tvf:
-            self.tvf_value[-1], ttt = self.tvf.trim_horizons(
+            self.tvf.tvf_value[-1], ttt = self.tvf.trim_horizons(
                 final_model_out["tvf_value"].cpu().numpy(),
                 self.time,
                 method=args.tvf_trimming,
@@ -1194,12 +1225,12 @@ class Runner:
         """
 
         assert args.use_tvf
-        N, A, K, VH = self.tvf_value[:self.N].shape
+        N, A, K, VH = self.tvf.tvf_value[:self.N].shape
 
         VALUE_HEAD_INDEX = self.value_heads.index('ext')
 
         # [N, A, K]
-        tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
+        tvf_values = self.tvf.tvf_value[:, :, :, VALUE_HEAD_INDEX]
 
         if abs(new_gamma - args.tvf_gamma) < 1e-8:
             return tvf_values[:, :, -1]
@@ -1260,7 +1291,7 @@ class Runner:
         """
 
         self.returns *= 0
-        self.tvf_returns *= 0
+        self.tvf.tvf_returns *= 0
         N, A, *state_shape = self.prev_obs.shape
 
         self.model.eval()
@@ -1304,7 +1335,7 @@ class Runner:
         # tvf
         if args.use_tvf:
             # only ext enabled at the moment...
-            self.tvf_returns[..., 0] = self.tvf.calculate_tvf_returns(value_head='ext')
+            self.tvf.tvf_returns[..., 0] = self.tvf.calculate_tvf_returns(value_head='ext')
 
         # logging
         if args.observation_normalization:
@@ -1338,7 +1369,7 @@ class Runner:
         if args.use_tvf:
             self.log.watch("tvf_gamma", args.tvf_gamma)
             # just want to know th max horizon std, should be about 3 I guess, but also the max.
-            self.log.watch_stats("*tvf_return_ext", self.tvf_returns[:, :, -1])
+            self.log.watch_stats("*tvf_return_ext", self.tvf.tvf_returns[:, :, -1])
 
         if self.batch_counter % 4 == 0:
             # this can be a little slow, ~2 seconds, compared to ~40 seconds for the rollout generation.
@@ -1357,7 +1388,7 @@ class Runner:
 
         if args.noisy_return > 0:
             self.returns = add_relative_noise(self.returns, args.noisy_return)
-            self.tvf_returns = add_relative_noise(self.tvf_returns, args.noisy_return)
+            self.tvf_returns = add_relative_noise(self.tvf.tvf_returns, args.noisy_return)
             self.tvf_returns[:, :, 0] = 0 # by definition...
 
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
@@ -2067,7 +2098,6 @@ class Runner:
                 if args.sns.fake_noise:
                     rl.sns.log_fake_accumulated_gradient_norms(self, optimizer=self.value_optimizer)
 
-
         for value_epoch in range(args.opt_v.epochs):
             self.train_batch(
                 batch_data=batch_data,
@@ -2168,7 +2198,7 @@ class Runner:
             # get targets from rollout
             if args.use_tvf and not args.distil.force_ext: # tvf_value is [N, A, K, VH]
                 assert args.distil.target == "value", "Only value targets supported for TVF distil"
-                batch_data["distil_targets"] = utils.merge_down(self.tvf_value[:self.N, :, :, 0]) # N*A, K
+                batch_data["distil_targets"] = utils.merge_down(self.tvf.tvf_value[:self.N, :, :, 0]) # N*A, K
             else:
                 if args.distil.target == "value":
                     batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
@@ -2484,22 +2514,6 @@ class Runner:
         optimizer.zero_grad(set_to_none=True)
 
         return context
-
-
-class RunnerModule:
-    """
-    Used to provide extensions to rollout.
-    Modules can access the runner data (e.g. the rollout)
-    """
-
-    def __init__(self, parent: Runner):
-        self.runner = parent
-
-    def save(self):
-        pass
-
-    def load(self):
-        pass
 
 
 def make_env(env_type, env_id, **kwargs):
