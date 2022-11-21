@@ -32,7 +32,7 @@ def str2bool(v):
 class BaseConfig:
 
     def __init__(self, prefix='', parser: argparse.ArgumentParser=None):
-        self._prefix = prefix
+        self.prefix = prefix
         if parser is not None:
             self._auto_add_params(parser)
 
@@ -75,7 +75,7 @@ class BaseConfig:
                 # otherwise "False" will evaluate to True.
                 var_type = str2bool
 
-            prefix_part = "" if (self._prefix == "") else self._prefix.lower()+"_"
+            prefix_part = "" if (self.prefix == "") else self.prefix.lower() + "_"
 
             parser.add_argument(
                 f"--{prefix_part}{var_name}",
@@ -86,12 +86,12 @@ class BaseConfig:
 
     def update(self, **kwargs):
 
-        if self._prefix == '':
+        if self.prefix == '':
             self.__dict__.update(kwargs)
         else:
             for k, v in kwargs.items():
-                if k.startswith(f"{self._prefix}_"):
-                    self.__dict__[k[len(self._prefix)+1:]] = v
+                if k.startswith(f"{self.prefix}_"):
+                    self.__dict__[k[len(self.prefix) + 1:]] = v
 
         # children
         for k, v in vars(self).items():
@@ -104,10 +104,10 @@ class BaseConfig:
             if k.startswith('_'):
                 continue
             if issubclass(type(v), BaseConfig):
-                if v._prefix == '':
+                if v.prefix == '':
                     continue
                 sub_params = v.flatten()
-                prefix = v._prefix
+                prefix = v.prefix
                 params.update({
                     f"{prefix}_{k}": v for k, v in sub_params.items()
                 })
