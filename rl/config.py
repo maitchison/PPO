@@ -4,6 +4,9 @@ import uuid
 import socket
 import argparse
 
+# modules...
+from . import sns
+
 """
 Colors class for use with terminal.
 """
@@ -332,6 +335,7 @@ class Config(BaseConfig):
         self.distil = DistilConfig(self._parser)
         self.gkl = GlobalKLConfig(self._parser)
         self.hash = HashConfig(self._parser)
+        self.sns = sns.SimpleNoiseScaleConfig(self._parser)
 
         # --------------------------------
         # main arguments
@@ -472,20 +476,6 @@ class Config(BaseConfig):
         # TVF
         self.tvf = TVFConfig(parser)
 
-        # --------------------------------
-        # Simple Noise Scale
-        parser.add_argument("--use_sns", type=str2bool, default=False, help="Enables generation of simple noise scale estimates")
-        parser.add_argument("--sns_labels", type=str, default="['policy','distil','value', 'value_heads']", help="value|value_heads|distil|policy"),
-        parser.add_argument("--sns_period", type=int, default=3, help="Generate estimates every n updates.")
-        parser.add_argument("--sns_max_heads", type=int, default=7, help="Limit to this number of heads when doing per head noise estimate.")
-        parser.add_argument("--sns_b_big", type=int, default=2048, help="")
-        parser.add_argument("--sns_b_small", type=int, default=128, help="")
-        parser.add_argument("--sns_fake_noise", type=str2bool, default=False, help="Replaces value_head gradient with noise based on horizon.")
-        parser.add_argument("--sns_smoothing_mode", type=str, default="ema", help="ema|avg")
-        parser.add_argument("--sns_smoothing_horizon_avg", type=int, default=1e6, help="how big to make averaging window")
-        parser.add_argument("--sns_smoothing_horizon_s", type=int, default=0.2e6, help="how much to smooth s")
-        parser.add_argument("--sns_smoothing_horizon_g2", type=int, default=1.0e6, help="how much to smooth g2")
-        parser.add_argument("--sns_smoothing_horizon_policy", type=int, default=5e6, help="how much to smooth g2 for policy (normally much higher)")
 
         # --------------------------------
         # Auxiliary phase
@@ -505,8 +495,6 @@ class Config(BaseConfig):
         # RND
         parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
         parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
-
-
 
         parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
@@ -629,19 +617,6 @@ class Config(BaseConfig):
         self.tvf_feature_window = int()
         self.tvf_include_ext = bool()
         self.tvf_sqrt_transform = bool()
-
-        self.use_sns = bool()
-        self.sns_labels = str()
-        self.sns_period = int()
-        self.sns_max_heads = int()
-        self.sns_b_big = int()
-        self.sns_b_small = int()
-        self.sns_fake_noise = int()
-        self.sns_smoothing_mode = str()
-        self.sns_smoothing_horizon_avg = int()
-        self.sns_smoothing_horizon_s = int()
-        self.sns_smoothing_horizon_g2 = int()
-        self.sns_smoothing_horizon_policy = int()
 
         # extra
         self.head_scale = float()
