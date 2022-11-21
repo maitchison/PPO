@@ -52,7 +52,8 @@ class KBHit:
                 # Support normal-terminal reset at exit
                 atexit.register(self.set_normal_term)
             except:
-                print("Warning, kb hit failed to initialize.")
+                # print("Warning, kb hit failed to initialize.")
+                pass
 
 
     def set_normal_term(self):

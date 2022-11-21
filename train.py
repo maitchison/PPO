@@ -1,8 +1,13 @@
+import io
 import unittest
 import os
+import sys
+from datetime import datetime
 import uuid
 import rl.config
 import multiprocessing
+
+import code_diff
 
 import gym.version
 
@@ -97,7 +102,7 @@ def main():
 
     # import here to make workers load faster / use less memory
     import torch.backends.cudnn, torch.backends.cuda
-    from rl import utils, config, rollout
+    from rl import utils, rollout
     from rl import ppo
     from rl.config import args
     import numpy as np
@@ -113,8 +118,9 @@ def main():
         log.important("Training preempted, no device available.")
         exit()
 
+    log.info(f"System is host:<white>{args.hostname}<end> torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
     log.info(f"Using device: <white>{args.device}<end>")
-    log.info(f"System is host:{args.hostname} torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
+
 
     # check to see if the device we are using has been disallowed
     if args.device in utils.get_disallowed_devices():
@@ -214,10 +220,34 @@ def main():
 
     utils.release_lock()
 
+def log_code_info():
+    """
+    Logs information about codebase.
+    """
+    code_hash = code_diff.get_code_hash()
+    code_date = code_diff.get_code_date()
+    log.info(f"Using code {datetime.fromtimestamp(code_date).strftime('%m/%d/%Y, %H:%M:%S')} [{code_hash[:8]}]")
+
+def run_unit_tests():
+    """
+    Runs the units tests.
+    """
+    loader = unittest.TestLoader()
+    start_dir = 'tests'
+    suite = loader.discover(start_dir)
+
+    s = io.StringIO()
+    runner = unittest.TextTestRunner(verbosity=2, stream=s)
+    runner.run(suite)
+    for line in s.getvalue().split("\n"):
+        if line.strip() != "":
+            log.info(line)
+
 
 if __name__ == "__main__":
 
-    # unittest.main()
+    # run unit tests every time we run
+    # this way we get verification in the log file for each experiment.
 
     rl.config.args.setup()
 
@@ -238,19 +268,13 @@ if __name__ == "__main__":
             print(" - updating path.")
             os.environ["LD_LIBRARY_PATH"] = f":{mujoco_path}:/usr/lib/nvidia"
 
-    # quick check that returns work
-    from rl.returns import test_return_estimators
-    from rl.tvf import _test_horizon_interpolate
-
-    for i in range(1):
-        test_return_estimators(seed=i)
-    print("Return verification passed.")
-    _test_horizon_interpolate()
-    print("Interpolation verification passed.")
-
     from rl import logger
 
     log = logger.Logger()
+    print("=" * 80)
+    log_code_info()
+    run_unit_tests()
+    print("=" * 90)
     try:
         main()
     except Exception as e:

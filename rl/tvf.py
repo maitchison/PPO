@@ -1,10 +1,6 @@
-import unittest
-
 import torch
 from typing import Union
 import numpy as np
-
-import unittest
 
 import rl
 
@@ -360,16 +356,6 @@ def calculate_gae_tvf(
 
     return advantages
 
-def _test_horizon_interpolate():
-    horizons = np.asarray([0, 1, 2, 10, 100])
-    values = np.asarray([0, 5, 10, -1, 2])[None, :].repeat(11, axis=0)
-    results = horizon_interpolate(horizons, values, np.asarray([-100, -1, 0, 1, 2, 3, 4, 99, 100, 101, 200]))
-    expected_results = [0, 0, 0, 5, 10, (7/8)*10+(1/8)*-1, (6/8)*10+(2/8)*-1, 1.96666667, 2, 2, 2]
-    if np.max(np.abs(np.asarray(expected_results) - results)) > 1e-6:
-        print("Expected:", expected_results)
-        print("Found:", results)
-        raise ValueError("Interpolation check failed")
-
 
 def horizon_interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.ndarray):
     """
@@ -455,11 +441,3 @@ def get_value_head_horizons(n_heads: int, max_horizon: int, spacing: str="geomet
         return (result, counts) if include_weight else result
     else:
         raise ValueError(f"Invalid spacing value {spacing}")
-
-
-class TestTVF(unittest.TestCase):
-    pass
-
-    # def test_x(self):
-    #     # self.assertEqual(1, "hello")
-    #     self.assertEqual(0, 0, "hello")
