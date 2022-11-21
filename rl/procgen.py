@@ -31,7 +31,7 @@ class ProcGenWrapper(gym.Wrapper):
         return obs
 
 
-def make(env_id:str, monitor_video=False, seed=None, args=None, difficulty:str='hard', determanistic_saving=True):
+def make(env_id: str, monitor_video=False, seed=None, args=None, difficulty:str='hard', determanistic_saving=True):
     """
     Construct environment of given name, including any required wrappers.
     @determanistic_saving: When true RND is saved with the environment, so restoring will always produce the same

@@ -1,4 +1,3 @@
-import rl
 import ast
 import uuid
 import socket
@@ -155,40 +154,28 @@ class TVFConfig(BaseConfig):
     Config settings for TVF
     """
 
-    def __init__(self, parser: argparse.ArgumentParser = None):
+    enabled: bool = False
+    gamma: float = None             # Gamma for TVF, defaults to gamma.
+    coef: float = 1.0               # Loss is multiplied by this.
+    trimming: str = "off"           # off|timelimit|est_term
+    trimming_mode: str = "average"  # interpolate|average|average2|substitute
+    at_minh: int = 128
+    at_percentile: float = 90
+    horizon_dropout: float = 0.0    # fraction of horizons to exclude per epoch.
+    return_mode: str = "advanced"   # standard|advanced|full "
+    return_distribution: str = "exponential"  # fixed|exponential|uniform|hyperbolic|quadratic
+    return_samples: int = 8,        # Number of n-step samples to use for distributional return calculation.
+    return_use_log_interpolation: bool = False # Interpolates in log space.
+    max_horizon: int = 30000        # Max horizon for TVF.
+    value_heads: int = 128          # Number of value heads to use.
+    head_spacing: str = "geometric" # geometric|linear|even_x
+    head_weighting: str = "off"     # off|h_weighted.
+    feature_window: int = -1        # Limits each head to a window of this many features.
+    feature_sparsity: float = 0.0   # Zeros out this proprition of features for each head.
+    include_ext: bool = False       # Also learn the rediscounted value estimate that will be used for advantages.
 
-        super().__init__()
-
-        if parser is None:
-            return
-
-        parser.add_argument("--use_tvf", type=str2bool, default=False)
-
-        parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
-        parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss is multiplied by this")
-        parser.add_argument("--tvf_trimming", type=str, default='off', help="off|timelimit|est_term")
-        parser.add_argument("--tvf_trimming_mode", type=str, default='average', help="interpolate|average")
-        parser.add_argument("--tvf_at_minh", type=int, default=128)
-        parser.add_argument("--tvf_at_percentile", type=float, default=90)
-        parser.add_argument("--tvf_horizon_dropout", type=float, default=0.0, help="fraction of horizons to exclude per epoch")
-        parser.add_argument("--tvf_return_mode", type=str, default="advanced", help="[standard|advanced|full]")
-        parser.add_argument("--tvf_return_distribution", type=str, default="exponential", help="[fixed|exponential|uniform|hyperbolic|quadratic]")
-        parser.add_argument("--tvf_return_samples", type=int, default=32, help="Number of n-step samples to use for distributional return calculation")
-        parser.add_argument("--tvf_return_use_log_interpolation", type=str2bool, default=False, help="Interpolates in log space.")
-        parser.add_argument("--tvf_max_horizon", type=int, default=1000, help="Max horizon for TVF.")
-        parser.add_argument("--tvf_value_heads", type=int, default=64, help="Number of value heads to use.")
-        parser.add_argument("--tvf_head_spacing", type=str, default="geometric", help="[geometric|linear|even_x]")
-        parser.add_argument("--tvf_head_weighting", type=str, default="off", help="[off|h_weighted]")
-        parser.add_argument("--tvf_activation", type=str, default="relu", help="[relu|tanh|sigmoid]")
-        parser.add_argument("--tvf_per_head_hidden_units", type=int, default=0, help="Number of units in each heads hidden layer")
-        parser.add_argument("--tvf_feature_window", type=int, default=-1,
-                            help="Limits each head to a window of this many features.")
-        parser.add_argument("--tvf_feature_sparsity", type=float, default=0.0, help="Zeros out this proprition of features for each head")
-        parser.add_argument("--tvf_include_ext", type=str2bool, default=True, help="Also learn the rediscounted value estimate that will be used for advantages.")
-        parser.add_argument("--tvf_sqrt_transform", type=str2bool, default=False,
-                            help="Learns the (signed) sqrt of the return. May make weight scale more uniform across heads.")
-        parser.add_argument("--tvf_boost_final_head", type=float, default=0.0,
-                            help="Increases loss on final tvf head.")
+    def __init__(self, parser):
+        super().__init__(prefix="tvf", parser=parser)
 
 class OptimizerConfig(BaseConfig):
     """
@@ -269,7 +256,6 @@ class DistilConfig(BaseConfig):
     loss: str = "kl_policy" # [mse_logit|mse_policy|kl_policy]
     max_heads: int = -1  # Max number of heads to apply distillation to, -1 for all.
     force_ext: bool = False  # Use value_ext instead of value_tvf for distillation.
-    reweighing: bool = False  # Reduces loss for horizons which have been rediscounted away.
     value_loss: str = "mse"  # [mse|clipped_mse|l1|huber]
     delta: float = 0.1       # delta for huber loss
     l1_scale: float = 1 / 30  # scaling for l1 loss
@@ -319,26 +305,6 @@ class Config(BaseConfig):
 
     # list of params that have been remapped
     REMAPPED_PARAMS = {
-        'gae_lambda': 'lambda_policy',
-        'td_lambda': 'lambda_value',
-        'use_compression': 'obs_compression',
-        'tvf_head_sparsity': 'tvf_feature_sparsity',
-        'export_video': None,
-        'tvf_value_distribution': None,
-        'tvf_horizon_distribution': None,
-        'tvf_value_samples': None,
-        'tvf_horizon_samples': 'tvf_value_heads',
-        'tvf_hidden_units': None,
-        'tvf_horizon_trimming': None,
-        'tvf_force_ext_value_distil': None,
-        'tvf_horizon_scale': None,
-        'tvf_time_scale': None,
-        'tvf_mode': None,
-        'tvf_sum_horizons': None,
-        'sns_small_samples': None,
-        'tvf_return_n_step': None,
-        'color': None,
-
     }
 
     def __init__(self):
@@ -355,6 +321,7 @@ class Config(BaseConfig):
         self.gkl = GlobalKLConfig(self._parser)
         self.hash = HashConfig(self._parser)
         self.sns = SimpleNoiseScaleConfig(self._parser)
+        self.tvf = TVFConfig(self._parser)
 
         # --------------------------------
         # main arguments
@@ -409,8 +376,6 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Rewards
-        parser.add_argument("--tvf_return_estimator_mode", type=str, default="default",
-                            help='Allows the use of the reference return estimator (very slow). [default|reference|verify|historic]')
         parser.add_argument("--ir_propagation", type=str2bool, default=True, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
@@ -492,11 +457,6 @@ class Config(BaseConfig):
                             help="Anneals learning rate to 0 (linearly) over training") # remove
 
         # --------------------------------
-        # TVF
-        self.tvf = TVFConfig(parser)
-
-
-        # --------------------------------
         # Auxiliary phase
         parser.add_argument("--aux_target", type=str, default='reward', help="[reward|vtarg]]")
         parser.add_argument("--aux_source", type=str, default='aux', help="[aux|value]]")
@@ -525,7 +485,6 @@ class Config(BaseConfig):
 
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
-        self.use_tvf = bool()
         self.environment = str()
         self.experiment_name = str()
         self.run_name = str()
@@ -614,28 +573,6 @@ class Config(BaseConfig):
         self.advantage_epsilon = float()
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
-        self.tvf_return_estimator_mode = str()
-        self.tvf_gamma = object()
-        self.tvf_coef = float()
-        self.tvf_trimming = str()
-        self.tvf_trimming_mode = str()
-        self.tvf_at_minh = int()
-        self.tvf_at_percentile = float()
-        self.tvf_horizon_dropout = float()
-        self.tvf_return_mode = str()
-        self.tvf_return_distribution = str()
-        self.tvf_return_samples = int()
-        self.tvf_return_use_log_interpolation = bool()
-        self.tvf_max_horizon = int()
-        self.tvf_boost_final_head = float()
-        self.tvf_value_heads = int()
-        self.tvf_head_spacing = str()
-        self.tvf_head_weighting = str()
-        self.tvf_per_head_hidden_units = int()
-        self.tvf_feature_sparsity = float()
-        self.tvf_feature_window = int()
-        self.tvf_include_ext = bool()
-        self.tvf_sqrt_transform = bool()
 
         # extra
         self.head_scale = float()
@@ -748,23 +685,15 @@ class Config(BaseConfig):
             assert args.architecture == "dual", "Reference policy loading requires a dual network."
         assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
 
-        assert args.tvf_return_estimator_mode in ["default", "reference", "verify", "historic"]
-
         # set defaults
-        if args.tvf_gamma is None:
-            args.tvf_gamma = args.gamma
+        if args.tvf.gamma is None:
+            args.tvf.gamma = args.gamma
 
         if args.hash.bonus != 0:
             assert args.hash.enabled, "use_hashing must be enabled."
 
         if args.replay_mode == "off":
             args.replay_size = 0
-
-        # fixup horizon trimming
-        if str(args.tvf_horizon_trimming) == 'False':
-            args.tvf_horizon_trimming = "off"
-        if str(args.tvf_horizon_trimming) == 'True':
-            args.tvf_horizon_trimming = "interpolate"
 
         # normalization used to be a bool
         try:
@@ -813,7 +742,7 @@ class Config(BaseConfig):
 
     @property
     def reward_normalization_gamma(self):
-        gamma = self.tvf_gamma if self.use_tvf else self.gamma
+        gamma = self.tvf.gamma if self.tvf.enabled else self.gamma
         if self.override_reward_normalization_gamma is not None:
             gamma = self.override_reward_normalization_gamma
         return gamma

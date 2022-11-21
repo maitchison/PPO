@@ -103,6 +103,9 @@ class RunnerModule:
     def on_before_generate_rollout(self):
         pass
 
+    def on_train_value_minibatch(self, loss, model_out, data, **kwargs):
+        pass
+
     def save(self):
         pass
 
@@ -159,7 +162,7 @@ class Runner:
         self.N = N = args.n_steps
         self.A = A = args.agents
         self.VH = VH = len(self.value_heads)
-        if args.use_tvf:
+        if args.tvf.enabled:
             self.K = K = len(self.tvf_horizons)
         else:
             self.K = K = 0
@@ -301,7 +304,7 @@ class Runner:
             )
 
         # modules
-        if args.use_tvf:
+        if args.tvf.enabled:
             self.tvf = rl.tvf.TVFRunnerModule(self)
 
     @property
@@ -628,7 +631,7 @@ class Runner:
 
     @property
     def tvf_horizons(self):
-        assert args.use_tvf
+        assert args.tvf.enabled
         return self.model.tvf_fixed_head_horizons
 
     def export_debug_frames(self, filename, obs, marker=None):
@@ -773,7 +776,7 @@ class Runner:
             model_out['value'] = model_out['value_value']
             model_out['log_policy'] = model_out['policy_log_policy']
             model_out['raw_policy'] = model_out['policy_raw_policy']
-            if args.use_tvf:
+            if args.tvf.enabled:
                 model_out['tvf_value'] = model_out['value_tvf_value']
 
             # sample actions and run through environment.
@@ -825,14 +828,14 @@ class Runner:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
 
             # take advantage of the fact that V_h = V_min(h, remaining_time).
-            if args.use_tvf:
+            if args.tvf.enabled:
                 start_time = clock.time()
                 tvf_values = model_out["tvf_value"].cpu().numpy()
                 self.tvf.tvf_value[t], ttt = self.tvf.trim_horizons(
                     tvf_values,
                     prev_time,
-                    method=args.tvf_trimming,
-                    mode=args.tvf_trimming_mode
+                    method=args.tvf.trimming,
+                    mode=args.tvf.trimming_mode
                 )
                 if ttt is not None:
                     for a in range(self.A):
@@ -915,12 +918,12 @@ class Runner:
         final_model_out = self.detached_batch_forward(self.obs, output="default")
         self.value[-1] = final_model_out["value"].cpu().numpy()
 
-        if args.use_tvf:
+        if args.tvf.enabled:
             self.tvf.tvf_value[-1], ttt = self.tvf.trim_horizons(
                 final_model_out["tvf_value"].cpu().numpy(),
                 self.time,
-                method=args.tvf_trimming,
-                mode=args.tvf_trimming_mode
+                method=args.tvf.trimming,
+                mode=args.tvf.trimming_mode
             )
             if ttt is not None:
                 for a in range(self.A):
@@ -1211,37 +1214,6 @@ class Runner:
         """
         return self.all_time[-1]
 
-    @torch.no_grad()
-    def get_tvf_ext_value_estimate(self, new_gamma: float):
-        """
-
-        Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
-        Usually this is just GAE, but if gamma != tvf_gamma, then rediscounting is applied.
-
-        We expect:
-        self.tvf_value: np array of dims [N+1, A, K, VH] containing value estimates for each horizon K and each value head VH
-
-        @returns value estimate for gamma=gamma for example [N+1, A]
-        """
-
-        assert args.use_tvf
-        N, A, K, VH = self.tvf.tvf_value[:self.N].shape
-
-        VALUE_HEAD_INDEX = self.value_heads.index('ext')
-
-        # [N, A, K]
-        tvf_values = self.tvf.tvf_value[:, :, :, VALUE_HEAD_INDEX]
-
-        if abs(new_gamma - args.tvf_gamma) < 1e-8:
-            return tvf_values[:, :, -1]
-
-        # otherwise... we need to rediscount...
-        return rl.tvf.get_rediscounted_value_estimate(
-            values=tvf_values.reshape([(N + 1) * A, -1]),
-            old_gamma=args.tvf_gamma,
-            new_gamma=new_gamma,
-            horizons=self.tvf_horizons,
-        ).reshape([(N + 1), A])
 
     def calculate_intrinsic_returns(self):
 
@@ -1297,8 +1269,8 @@ class Runner:
         self.model.eval()
 
         # 1. first we calculate 'ext_value' estimate, which is the primarily value estimate
-        if args.use_tvf:
-            ext_value_estimates = self.get_tvf_ext_value_estimate(new_gamma=args.gamma)
+        if args.tvf.enabled:
+            ext_value_estimates = self.tvf.get_tvf_ext_value_estimate(new_gamma=args.gamma)
         else:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
@@ -1333,7 +1305,7 @@ class Runner:
             self.log.watch_mean("*ir_scale", self.intrinsic_reward_norm_scale)
 
         # tvf
-        if args.use_tvf:
+        if args.tvf.enabled:
             # only ext enabled at the moment...
             self.tvf.tvf_returns[..., 0] = self.tvf.calculate_tvf_returns(value_head='ext')
 
@@ -1366,8 +1338,8 @@ class Runner:
             self.log.watch(k, v, display_width=0)
 
         self.log.watch("gamma", args.gamma, display_width=0)
-        if args.use_tvf:
-            self.log.watch("tvf_gamma", args.tvf_gamma)
+        if args.tvf.enabled:
+            self.log.watch("tvf_gamma", args.tvf.gamma)
             # just want to know th max horizon std, should be about 3 I guess, but also the max.
             self.log.watch_stats("*tvf_return_ext", self.tvf.tvf_returns[:, :, -1])
 
@@ -1379,7 +1351,7 @@ class Runner:
 
         if not args.disable_ev and self.batch_counter % 4 == 3:
             # only about 3% slower with this on.
-            if args.use_tvf:
+            if args.tvf.enabled:
                 self.log_feature_statistics()
                 self.tvf.log_tvf_curve_quality()
             else:
@@ -1433,11 +1405,6 @@ class Runner:
         """ Returns (loss) weight for each tvf head """
         # these are due to duplication removal.
         base_weights = np.asarray(self.model.tvf_fixed_head_weights, dtype=np.float32).copy()
-        if args.tvf_boost_final_head > 0:
-            # setting boost to 1.0 means last head gets 50% of loss.
-            # we also renormalize.
-            base_weights[-1] += sum(base_weights) * args.tvf_boost_final_head
-            base_weights /= np.mean(base_weights)
         return base_weights
 
 
@@ -1451,37 +1418,30 @@ class Runner:
         else:
             extra_debugging = False
 
-        if args.use_tvf and not args.distil.force_ext:
+        if args.tvf.enabled and not args.distil.force_ext:
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
             head_sample = utils.even_sample_down(np.arange(len(self.tvf_horizons)), max_values=args.distil.max_heads)
         else:
             head_sample = None
 
-        if args.distil.reweighing and head_sample is not None:
-            weights = [args.gamma**self.tvf_horizons[i]/args.tvf_gamma**self.tvf_horizons[i] for i in head_sample]
-            weights = np.clip(weights, 0, 1).astype(np.float32)[None, :]
-            weights = torch.from_numpy(weights).to(self.model.device)
-            weights = weights ** 2 # square as we want to manage the squared loss.
-            # that is to say, we want the loss as if we were learning the discounted return.
-        else:
-            weights = 1
-
         # weights due to duplicate head removal
-        if args.use_tvf and not args.distil.force_ext:
+        if args.tvf.enabled and not args.distil.force_ext:
             head_filter = head_sample if head_sample is not None else slice(None, None)
-            weights = weights * torch.from_numpy(self.tvf_weights[None, head_filter]).to(self.model.device)
+            weights = torch.from_numpy(self.tvf_weights[None, head_filter]).to(self.model.device)
+        else:
+            weights = 1.0
 
         model_out = self.model.forward(
             data["prev_state"],
             output="policy",
-            exclude_tvf=not args.use_tvf or args.distil.force_ext,
+            exclude_tvf=not args.tvf.enabled or args.distil.force_ext,
             required_tvf_heads=head_sample,
         )
 
         targets = data["distil_targets"] # targets are [B or B, K]
 
-        if args.use_tvf and not args.distil.force_ext:
+        if args.tvf.enabled and not args.distil.force_ext:
             predictions = model_out["tvf_value"][:, :, 0] # [B, K, VH] -> [B, K]
             if head_sample is not None:
                 targets = targets[:, head_sample]
@@ -1576,7 +1536,7 @@ class Runner:
             active_edges = torch.ge(model.tvf_head.weight.data.abs(), 1e-6).sum().detach().cpu().numpy()
             self.log.watch(f"*ae_{label}", active_edges / total_edges)
 
-        if args.use_tvf:
+        if args.tvf.enabled:
             log_model_sparsity(self.model.value_net, "value")
             log_model_sparsity(self.model.policy_net, "policy")
 
@@ -1679,57 +1639,17 @@ class Runner:
 
         B = len(data["prev_state"])
 
-        # -------------------------------------------------------------------------
-        # Calculate loss_value_function_horizons
-        # -------------------------------------------------------------------------
-
         loss = torch.zeros(size=[B], dtype=torch.float32, device=self.model.device, requires_grad=True)
-
-        if "tvf_returns" in data:
-            # targets "tvf_returns" are [B, K]
-            # predictions "tvf_value" are [B, K, VH]
-            # predictions need to be generated... this could take a lot of time so just sample a few..
-            targets = data["tvf_returns"] # locked to "ext" head for the moment [B, K]
-            predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment [B, K, VH] -> [B, K]
-
-            if required_tvf_heads is not None:
-                targets = targets[:, required_tvf_heads]
-
-            # this will be [B, K]
-            tvf_loss = 0.5 * torch.square(targets - predictions) * args.tvf_coef
-
-            # account for weights due to duplicate head removal
-            if args.use_tvf:
-                head_filter = required_tvf_heads if required_tvf_heads is not None else slice(None, None)
-                tvf_loss = tvf_loss * torch.from_numpy(self.tvf_weights[head_filter])[None, :].to(self.model.device)
-
-            # h_weighting adjustment
-            if args.tvf_head_weighting == "h_weighted" and single_value_head is None:
-                def h_weight(h):
-                    # roughly the number of times an error will be copied, plus the original error
-                    return 1 + ((args.tvf_max_horizon - h) / args.tvf_return_n_step)
-                weighting = np.asarray([h_weight(h) for h in self.tvf_horizons], dtype=np.float32)[None, :]
-                adjustment = 2 / (np.min(weighting) + np.max(weighting)) # try to make MSE roughly the same scale as before
-                tvf_loss = tvf_loss * torch.tensor(weighting).to(device=tvf_loss.device) * adjustment
-
-            if args.tvf_horizon_dropout > 0:
-                # note: we weight the mask so that after the average the loss per example will be approximately the same
-                # magnitude.
-                keep_prob = (1-args.tvf_horizon_dropout)
-                mask = torch.bernoulli(torch.ones_like(tvf_loss)*keep_prob) / keep_prob
-                tvf_loss = tvf_loss * mask
-
-            tvf_loss = tvf_loss.mean(dim=-1) # mean over horizons
-            loss = loss + tvf_loss
-
-            self.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64*args.opt_v.epochs, display_name="ls_tvf", display_width=8)
-
-        # -------------------------------------------------------------------------
-        # Calculate loss_value
-        # -------------------------------------------------------------------------
 
         if "returns" in data:
             loss = loss + self.train_value_heads(model_out, data)
+
+        for module in self.get_modules():
+            context = {
+                'single_value_head': single_value_head,
+                'required_tvf_heads': required_tvf_heads
+            }
+            module.on_train_value_minibatch(loss, model_out, data, **context)
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -2077,13 +1997,13 @@ class Runner:
 
         batch_data["prev_state"] = self.prev_obs.reshape([N*A, *state_shape])
 
-        if not args.use_tvf or args.tvf_include_ext:
+        if not args.tvf.enabled or args.tvf.include_ext:
             # these are not really needed, maybe they provide better features, I don't know.
             # one issue is that they will be the wrong scale if rediscounting is applied.
             # e.g. if gamma defaults to 0.99997, but these are calculated at 0.999 they might be extremely large
             batch_data["returns"] = self.returns.reshape(N*A, self.VH)
 
-        if args.use_tvf:
+        if args.tvf.enabled:
             # just train ext heads for the moment
             batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, self.K)
 
@@ -2155,26 +2075,6 @@ class Runner:
 
         return obs, aux
 
-    def rediscount_horizons(self, old_value_estimates):
-        """
-        Input is [B, K]
-        Output is [B, K]
-        """
-        if args.tvf_gamma == args.gamma:
-            return old_value_estimates
-
-        # old_distil_targets = batch_data["distil_targets"].copy()  # B, K
-        new_value_estimates = old_value_estimates.copy()
-        B, K = old_value_estimates.shape
-        for k in range(K):
-            new_value_estimates[:, k] = rl.tvf.get_rediscounted_value_estimate(
-                old_value_estimates[:, :k+1],
-                args.tvf_gamma,
-                args.gamma,
-                self.tvf_horizons[:k+1]
-            )
-        return new_value_estimates
-
     def get_distil_batch(self, samples_wanted: int):
         """
         Creates a batch of data to train on during distil phase.
@@ -2196,7 +2096,7 @@ class Runner:
             batch_data = {"prev_state": obs}
 
             # get targets from rollout
-            if args.use_tvf and not args.distil.force_ext: # tvf_value is [N, A, K, VH]
+            if args.tvf.enabled and not args.distil.force_ext: # tvf_value is [N, A, K, VH]
                 assert args.distil.target == "value", "Only value targets supported for TVF distil"
                 batch_data["distil_targets"] = utils.merge_down(self.tvf.tvf_value[:self.N, :, :, 0]) # N*A, K
             else:
@@ -2213,7 +2113,7 @@ class Runner:
                         self.ext_value[:self.N],
                         self.ext_value[self.N],
                         self.terminals,
-                        args.tvf_gamma,
+                        args.tvf.gamma,
                         args.distil.adv_lambda,
                     )
                     if args.distil.target == "return":
@@ -2253,7 +2153,7 @@ class Runner:
             output="full",
         )
 
-        if args.use_tvf and not args.distil.force_ext:
+        if args.tvf.enabled and not args.distil.force_ext:
             # we could skip this if we trained on rollout rather then replay
             batch_data["distil_targets"] = model_out["value_tvf_value"][:, :, 0].detach().cpu().numpy()
         else:

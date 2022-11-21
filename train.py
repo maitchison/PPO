@@ -1,7 +1,6 @@
 import io
 import unittest
 import os
-import sys
 from datetime import datetime
 import uuid
 import rl.config
@@ -55,9 +54,9 @@ def make_model(args, log=None):
     if log is not None:
         log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
-    if args.use_tvf:
-        tvf_fixed_head_horizons, tvf_weights = rl.tvf.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing, include_weight=True)
-        args.tvf_value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
+    if args.tvf.enabled:
+        tvf_fixed_head_horizons, tvf_weights = rl.tvf.get_value_head_horizons(args.tvf.value_heads, args.tvf.max_horizon, args.tvf.head_spacing, include_weight=True)
+        args.tvf.value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
     else:
         tvf_fixed_head_horizons = None
         tvf_weights = None
@@ -79,12 +78,10 @@ def make_model(args, log=None):
         tvf_fixed_head_weights=tvf_weights,
         architecture=args.architecture,
         hidden_units=args.hidden_units,
-        tvf_per_head_hidden_units=args.tvf_per_head_hidden_units,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
-        tvf_feature_sparsity=args.tvf_feature_sparsity,
-        tvf_feature_window=args.tvf_feature_window,
-        tvf_sqrt_transform=args.tvf_sqrt_transform,
+        tvf_feature_sparsity=args.tvf.feature_sparsity,
+        tvf_feature_window=args.tvf.feature_window,
         head_scale=args.head_scale,
         value_head_names=tuple(value_head_names),
         norm_eps=args.observation_normalization_epsilon,

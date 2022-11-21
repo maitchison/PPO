@@ -6,7 +6,8 @@ import rl
 
 from . config import args
 from . import utils
-from . returns import calculate_bootstrapped_returns, get_return_estimate
+from . returns import calculate_bootstrapped_returns
+from . returns_truncated import get_return_estimate
 
 import math
 import collections
@@ -25,6 +26,52 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
 
         self.tvf_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)
         self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
+
+
+    def on_train_value_minibatch(self, loss, model_out, data, **kwargs):
+
+        assert "tvf_returns" in data, "TVF returns were not uploaded with batch."
+
+        required_tvf_heads = kwargs['required_tvf_heads']
+        single_value_head = kwargs['single_value_head']
+
+        # targets "tvf_returns" are [B, K]
+        # predictions "tvf_value" are [B, K, VH]
+        # predictions need to be generated... this could take a lot of time so just sample a few..
+        targets = data["tvf_returns"] # locked to "ext" head for the moment [B, K]
+        predictions = model_out["tvf_value"][:, :, 0] # locked to ext for the moment [B, K, VH] -> [B, K]
+
+        if required_tvf_heads is not None:
+            targets = targets[:, required_tvf_heads]
+
+        # this will be [B, K]
+        tvf_loss = 0.5 * torch.square(targets - predictions)
+
+        # account for weights due to duplicate head removal
+        if args.tvf.enabled:
+            head_filter = required_tvf_heads if required_tvf_heads is not None else slice(None, None)
+            tvf_loss = tvf_loss * torch.from_numpy(self.runner.tvf_weights[head_filter])[None, :].to(self.runner.model.device)
+
+        # h_weighting adjustment
+        if args.tvf.head_weighting == "h_weighted" and single_value_head is None:
+            def h_weight(h):
+                # roughly the number of times an error will be copied, plus the original error
+                return 1 + ((args.tvf.max_horizon - h) / args.tvf_return_n_step)
+            weighting = np.asarray([h_weight(h) for h in self.runner.tvf_horizons], dtype=np.float32)[None, :]
+            adjustment = 2 / (np.min(weighting) + np.max(weighting)) # try to make MSE roughly the same scale as before
+            tvf_loss = tvf_loss * torch.tensor(weighting).to(device=tvf_loss.device) * adjustment
+
+        if args.tvf.horizon_dropout > 0:
+            # note: we weight the mask so that after the average the loss per example will be approximately the same
+            # magnitude.
+            keep_prob = (1-args.tvf.horizon_dropout)
+            mask = torch.bernoulli(torch.ones_like(tvf_loss)*keep_prob) / keep_prob
+            tvf_loss = tvf_loss * mask
+
+        tvf_loss = tvf_loss.mean(dim=-1) # mean over horizons
+        loss += tvf_loss
+
+        self.runner.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64 * args.opt_v.epochs, display_name="ls_tvf", display_width=8)
 
 
     def on_reset(self):
@@ -63,14 +110,14 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         elif method == "timelimit":
             time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
         elif method == "est_term":
-            est_ep_length = np.percentile(list(self.runner.episode_length_buffer) + list(time), args.tvf_at_percentile).astype(
+            est_ep_length = np.percentile(list(self.runner.episode_length_buffer) + list(time), args.tvf.at_percentile).astype(
                 int)
-            est_ep_length += args.tvf_at_minh / 4  # apply small buffer
+            est_ep_length += args.tvf.at_minh / 4  # apply small buffer
             time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
-            est_time_till_termination = np.maximum(est_ep_length - time, args.tvf_at_minh)
+            est_time_till_termination = np.maximum(est_ep_length - time, args.tvf.at_minh)
             time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.runner.log.watch_mean("*ttt_ep_length",
-                                np.percentile(self.runner.episode_length_buffer, args.tvf_at_percentile).astype(int))
+                                np.percentile(self.runner.episode_length_buffer, args.tvf.at_percentile).astype(int))
             self.runner.log.watch_mean("*ttt_ep_std", np.std(self.runner.episode_length_buffer))
         else:
             raise ValueError(f"Invalid trimming method {method}")
@@ -153,8 +200,8 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         obs = obs if obs is not None else self.runner.all_obs
         rewards = rewards if rewards is not None else self.runner.ext_rewards
         dones = dones if dones is not None else self.runner.terminals
-        tvf_return_mode = tvf_return_mode or args.tvf_return_mode
-        tvf_return_distribution = tvf_return_distribution or args.tvf_return_distribution
+        tvf_return_mode = tvf_return_mode or args.tvf.return_mode
+        tvf_return_distribution = tvf_return_distribution or args.tvf.return_distribution
         tvf_n_step = tvf_n_step or args.tvf_return_n_step
 
         N, A, *state_shape = obs[:-1].shape
@@ -166,28 +213,21 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         # step 2: calculate the returns
         start_time = clock.time()
 
-        # setup return estimator mode, but only verify occasionally.
-        re_mode = args.tvf_return_estimator_mode
-        if re_mode == "verify" and self.runner.batch_counter % 31 != 1:
-            re_mode = "default"
-
         # we must unnormalize the value estimates, then renormalize after
         values = self.tvf_value[..., self.runner.value_heads.index(value_head)]
 
         returns = get_return_estimate(
             mode=tvf_return_mode,
             distribution=tvf_return_distribution,
-            gamma=args.tvf_gamma,
+            gamma=args.tvf.gamma,
             rewards=rewards,
             dones=dones,
             required_horizons=np.asarray(self.runner.tvf_horizons),
             value_sample_horizons=np.asarray(self.runner.tvf_horizons),
             value_samples=values,
             n_step=tvf_n_step,
-            max_samples=args.tvf_return_samples,
-            estimator_mode=re_mode,
-            log=self.runner.log,
-            use_log_interpolation=args.tvf_return_use_log_interpolation,
+            max_samples=args.tvf.return_samples,
+            use_log_interpolation=args.tvf.return_use_log_interpolation,
         )
 
         return_estimate_time = clock.time() - start_time
@@ -229,6 +269,57 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         ev = utils.explained_variance(values.ravel(), targets.ravel())
         self.runner.log.watch_mean("*ev_ext", ev, history_length=1)
 
+    @torch.no_grad()
+    def get_tvf_ext_value_estimate(self, new_gamma: float):
+        """
+
+        Returns rediscounted value estimate for given rollout (i.e. rewards + value if using given gamma)
+        Usually this is just GAE, but if gamma != tvf_gamma, then rediscounting is applied.
+
+        We expect:
+        self.tvf_value: np array of dims [N+1, A, K, VH] containing value estimates for each horizon K and each value head VH
+
+        @returns value estimate for gamma=gamma for example [N+1, A]
+        """
+
+        assert args.tvf.enabled
+        N, A, K, VH = self.tvf_value[:self.runner.N].shape
+
+        VALUE_HEAD_INDEX = self.runner.value_heads.index('ext')
+
+        # [N, A, K]
+        tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
+
+        if abs(new_gamma - args.tvf.gamma) < 1e-8:
+            return tvf_values[:, :, -1]
+
+        # otherwise... we need to rediscount...
+        return rl.tvf.get_rediscounted_value_estimate(
+            values=tvf_values.reshape([(N + 1) * A, -1]),
+            old_gamma=args.tvf.gamma,
+            new_gamma=new_gamma,
+            horizons=self.runner.tvf_horizons,
+        ).reshape([(N + 1), A])
+
+    def rediscount_horizons(self, old_value_estimates):
+        """
+        Input is [B, K]
+        Output is [B, K]
+        """
+        if args.tvf.gamma == args.gamma:
+            return old_value_estimates
+
+        # old_distil_targets = batch_data["distil_targets"].copy()  # B, K
+        new_value_estimates = old_value_estimates.copy()
+        B, K = old_value_estimates.shape
+        for k in range(K):
+            new_value_estimates[:, k] = rl.tvf.get_rediscounted_value_estimate(
+                old_value_estimates[:, :k+1],
+                args.tvf.gamma,
+                args.gamma,
+                self.runner.tvf_horizons[:k+1]
+            )
+        return new_value_estimates
 
     def save(self):
         pass
@@ -320,7 +411,7 @@ def calculate_gae_tvf(
     values = np.concatenate([batch_value, final_value_estimate[None, :, :]], axis=0)
 
     # get expected rewards. Note: I'm assuming here that the rewards have not been discounted
-    assert args.tvf_gamma == 1, "General discounting function requires TVF estimates to be undiscounted (might fix later)"
+    assert args.tvf.gamma == 1, "General discounting function requires TVF estimates to be undiscounted (might fix later)"
     expected_rewards = values[:, :, 0] - batch_value[:, :, 1]
 
     def calculate_g(t, n:int):
