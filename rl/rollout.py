@@ -3,7 +3,6 @@ import os
 import rl
 
 import numpy as np
-import gym
 
 import torch
 import torch.nn as nn
@@ -16,8 +15,8 @@ from typing import Union, Optional, List
 import math
 
 from .logger import Logger
-from . import utils, hybridVecEnv, wrappers, models, compression, config, hash
-from . import atari, mujoco, procgen
+from . import utils, wrappers, models, compression, config, hash
+
 from .config import args
 from .mutex import Mutex
 from .replay import ExperienceReplayBuffer
@@ -1303,11 +1302,6 @@ class Runner:
         # todo: make sure heads all line up... I think they might be offset sometimes. Perhaps make sure that
         # we always pass in all heads, and maybe just generate them all the time aswell?
 
-        if 'context' in data:
-            extra_debugging = data['context']['is_first'] and data['context']['epoch'] == 0
-        else:
-            extra_debugging = False
-
         if args.tvf.enabled and not args.distil.force_ext:
             # the following is used to only apply distil to every nth head, which can be useful as multi value head involves
             # learning a very complex function. We go backwards so that the final head is always included.
@@ -1356,14 +1350,6 @@ class Runner:
                 loss_value = torch.nn.functional.huber_loss(targets, predictions, reduction='none', delta=args.distil.delta)
         else:
             raise ValueError(f"Invalid loss distil loss {args.distil.loss}")
-
-        if extra_debugging:
-            # first distil update
-            self.log.watch("*fd_mse", torch.square(targets - predictions).mean())
-            self.log.watch("*fd_bias", torch.mean(targets - predictions))
-            self.log.watch("*fd_max", abs(torch.max(targets - predictions)))
-            self.log.watch("*fd_ratio", torch.mean(targets)/torch.mean(predictions))
-            self.log.watch("*fd_loss", loss_value.mean())
 
         # apply discount reweighing
         loss_value = loss_value * weights
@@ -1418,17 +1404,6 @@ class Runner:
                                 display_width=8)
             self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil_opt.epochs,
                                 display_width=0)
-
-        # check model sparsity
-        def log_model_sparsity(model, label):
-            # quick check out weight sparsity is correct
-            total_edges = np.prod(model.tvf_head.weight.data.shape)
-            active_edges = torch.ge(model.tvf_head.weight.data.abs(), 1e-6).sum().detach().cpu().numpy()
-            self.log.watch(f"*ae_{label}", active_edges / total_edges)
-
-        if args.tvf.enabled:
-            log_model_sparsity(self.model.value_net, "value")
-            log_model_sparsity(self.model.policy_net, "policy")
 
         # -------------------------------------------------------------------------
         # Generate Gradient
