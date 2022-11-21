@@ -599,54 +599,6 @@ class Runner:
         assert args.use_tvf
         return self.model.tvf_fixed_head_horizons
 
-    @torch.no_grad()
-    def get_diversity(self, obs, buffer:np.ndarray, reduce_fn=np.nanmean, mask=None):
-        """
-        Returns an estimate of the feature-wise distance between input obs, and the given buffer.
-        Only a sample of buffer is used.
-        @param mask: list of indexes where obs[i] should not match with buffer[mask[i]]
-        """
-
-        samples = len(buffer)
-        sample = np.random.choice(len(buffer), [samples], replace=False)
-        sample.sort()
-
-        if mask is not None:
-            assert len(mask) == len(obs)
-            assert max(mask) < len(buffer)
-
-        buffer_output = self.detached_batch_forward(
-            buffer[sample],
-            output="value",
-            include_features=True,
-        )
-
-        obs_output = self.detached_batch_forward(
-            obs,
-            output="value",
-            include_features=True,
-        )
-
-        replay_features = buffer_output["raw_features"]
-        obs_features = obs_output["raw_features"]
-
-        distances = torch.cdist(replay_features[None, :, :], obs_features[None, :, :], p=2)
-        distances = distances[0, :, :].cpu().numpy()
-
-        # mask out any distances where buffer matches obs
-        index_lookup = {index: i for i, index in enumerate(sample)}
-        if mask is not None:
-            for i, idx in enumerate(mask):
-                if idx in index_lookup:
-                    distances[index_lookup[idx], i] = float('NaN')
-
-        reduced_values = reduce_fn(distances, axis=0)
-        is_nan = np.isnan(reduced_values)
-        if np.any(is_nan):
-            self.log.warn("NaNs found in diversity calculation. Setting to zero.")
-            reduced_values[is_nan] = 0
-        return reduced_values
-
     def export_debug_frames(self, filename, obs, marker=None):
         # obs will be [N, 4, 84, 84]
         if type(obs) is torch.Tensor:
@@ -1619,16 +1571,6 @@ class Runner:
         self.log.watch_mean("loss_distil_policy", loss_policy.mean(), history_length=64 * args.opt_d.epochs, display_width=0)
         self.log.watch_mean("loss_distil_value", loss_value.mean(), history_length=64 * args.opt_d.epochs, display_width=0)
         self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.opt_d.epochs, display_name="ls_distil", display_width=8)
-
-        # this is a lot, just do this for the moment...
-        if 'context' in data:
-            epoch = data['context']['epoch']
-            mini_batch = data['context']['mini_batch']
-            key = f"{epoch}_{mini_batch:02d}"
-            self.log.watch_mean(f"ldp_{key}", loss_policy.mean(), history_length=10,
-                                display_width=0)
-            self.log.watch_mean(f"ldv_{key}", loss_value.mean(), history_length=10,
-                                display_width=0)
 
         return {
             'losses': loss.detach()

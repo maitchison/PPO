@@ -1,5 +1,4 @@
 import ast
-import sys
 import uuid
 import socket
 import argparse
@@ -735,8 +734,8 @@ class Config(BaseConfig):
         if args.tvf_gamma is None:
             args.tvf_gamma = args.gamma
 
-        if args.hash_bonus != 0:
-            assert args.use_hashing, "use_hashing must be enabled."
+        if args.hash.bonus != 0:
+            assert args.hash.enabled, "use_hashing must be enabled."
 
         if args.replay_mode == "off":
             args.replay_size = 0
@@ -801,7 +800,7 @@ class Config(BaseConfig):
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or (self.hash_bonus != 0)
+        return self.use_rnd or (self.hash.bonus != 0)
 
     @property
     def tvf_return_n_step(self):
