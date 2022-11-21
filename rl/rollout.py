@@ -294,13 +294,13 @@ class Runner:
         else:
             replay_dtype = self.prev_obs.dtype
 
-        if args.replay_size > 0:
+        if args.replay.enabled:
             self.replay_buffer = ExperienceReplayBuffer(
-                max_size=args.replay_size,
+                max_size=args.replay.size,
                 obs_shape=self.prev_obs.shape[2:],
                 obs_dtype=replay_dtype,
-                mode=args.replay_mode,
-                thinning=args.replay_thinning,
+                mode=args.replay.mode,
+                thinning=args.replay.thinning,
             )
 
         # modules
@@ -1269,16 +1269,16 @@ class Runner:
         for k, v in self.stats.items():
             self.log.watch(k, v, display_width=0)
 
-        self.log.watch("gamma", args.gamma, display_width=0)
+        self.log.watch("*gamma", args.gamma)
         if args.tvf.enabled:
-            self.log.watch("tvf_gamma", args.tvf.gamma)
+            self.log.watch("*tvf_gamma", args.tvf.gamma)
             # just want to know th max horizon std, should be about 3 I guess, but also the max.
             self.log.watch_stats("*tvf_return_ext", self.tvf.tvf_returns[:, :, -1])
 
         if self.batch_counter % 4 == 0:
             # this can be a little slow, ~2 seconds, compared to ~40 seconds for the rollout generation.
             # so under normal conditions we do it every other update.
-            if args.replay_size > 0:
+            if args.replay.size > 0:
                 self.replay_buffer.log_stats(self.log)
 
         if not args.disable_ev and self.batch_counter % 4 == 3:
@@ -1379,7 +1379,7 @@ class Runner:
                 actions = data["distil_actions"]
                 predictions = model_out["advantage"][range(len(actions)), actions]
 
-        if args.distil.value.loss == "mse":
+        if args.distil.value_loss == "mse":
             loss_value = 0.5 * torch.square(targets - predictions) # [B, K]
         elif args.distil.value_loss == "l1":
             # l1 will be much higher (if errors are less than 1)
@@ -1976,7 +1976,7 @@ class Runner:
             # buffer is 1D, need to reshape to 2D
             _, *state_shape = self.replay_buffer.data.shape
 
-            if args.replay_mixing:
+            if args.replay.mixing:
                 # use mixture of replay buffer and current batch of data
                 obs = np.concatenate([
                     self.replay_buffer.data,

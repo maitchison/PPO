@@ -2,7 +2,7 @@ from collections import deque
 import time
 import datetime
 from . import utils
-import zipfile
+import gzip
 
 import numpy as np
 import csv
@@ -308,16 +308,19 @@ class Logger():
             return
 
         if self.compress_csv:
-            file_name = file_name + ".zip"
+            file_name = file_name + ".gz"
 
-        open_fn = zipfile.ZipFile.open if self.compress_csv else open
+        open_fn = lambda x: gzip.open(x, 'wt') if self.compress_csv else lambda x: open(x, 'wt')
 
-        with open_fn(file_name, "w") as f:
+        f = open_fn(file_name)
+        try:
             field_names = self._history[-1].keys()
             writer = csv.DictWriter(f, fieldnames=field_names)
             writer.writeheader()
             for row in self._history:
                 writer.writerow(row)
+        finally:
+            f.close()
 
     def save_log(self, file_name=None):
 

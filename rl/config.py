@@ -268,7 +268,7 @@ class DebugConfig(BaseConfig):
     checkpoint_slides: bool = False  # Generates images containing states during epoch saves.
     print_freq: int = 60  # Number of seconds between debug prints.
     log_freq: int = 300  # Number of seconds between log writes.
-    compress_csv: bool = False # Enables log compression.
+    compress_csv: bool = False  # Enables log compression.
 
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="debug", parser=parser)
@@ -297,7 +297,29 @@ class DistilConfig(BaseConfig):
 
     def auto(self):
         if DistilConfig.batch_size < 0:
-            DistilConfig.batch_size = DistilConfig.batch_size
+            DistilConfig.batch_size = args.batch_size
+
+
+class ReplayConfig(BaseConfig):
+    """
+    Config settings for replay buffer
+    """
+
+    mode: str = "off"         # [overwrite|sequential|uniform|off]
+    size: int = 0                   # Size of replay buffer. 0=off.")
+    mixing: bool = False
+    thinning: float = 1.0           # Adds this fraction of experience to replay buffer.
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="replay", parser=parser)
+
+    @property
+    def enabled(self):
+        return ReplayConfig.size > 0 and ReplayConfig.mode != "off"
+
+    def auto(self):
+        pass
+
 
 class GlobalKLConfig(BaseConfig):
     """
@@ -358,6 +380,16 @@ class Config(BaseConfig):
         self.hash = HashConfig(self._parser)
         self.sns = SimpleNoiseScaleConfig(self._parser)
         self.tvf = TVFConfig(self._parser)
+        self.replay = ReplayConfig(self._parser)
+
+        # --------------------------------
+
+        self.policy_opt = OptimizerConfig('policy_opt', parser)
+        self.value_opt = OptimizerConfig('value_opt', parser)
+        self.distil_opt = OptimizerConfig('distil_opt', parser)
+        self.aux_opt = OptimizerConfig('aux_opt', parser)
+        self.rnd_opt = OptimizerConfig('rnd_opt', parser)
+
 
         # --------------------------------
         # main arguments
@@ -365,7 +397,7 @@ class Config(BaseConfig):
         parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
         parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
         parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
-        parser.add_argument("--procgen_difficulty", type=str, default="hard", help="[hard|]")
+        parser.add_argument("--procgen_difficulty", type=str, default="hard", help="[hard|easy]")
         parser.add_argument("--restore", type=str, default='never', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
         parser.add_argument("--reference_policy", type=str, default=None, help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
         parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
@@ -467,14 +499,6 @@ class Config(BaseConfig):
         parser.add_argument("--repeated_action_penalty", type=float, default=0.0, help="Penalty if agent repeats the same action more than this many times.")
 
         # --------------------------------
-
-        self.policy_opt = OptimizerConfig('policy_opt', parser)
-        self.value_opt = OptimizerConfig('value_opt', parser)
-        self.distil_opt = OptimizerConfig('distil_opt', parser)
-        self.aux_opt = OptimizerConfig('aux_opt', parser)
-        self.rnd_opt = OptimizerConfig('rnd_opt', parser)
-
-        # --------------------------------
         # PPO
         parser.add_argument("--ppo_vf_coef", type=float, default=0.5, help="Loss multiplier for default value loss.")
         parser.add_argument("--entropy_bonus", type=float, default=0.01)
@@ -491,14 +515,6 @@ class Config(BaseConfig):
         parser.add_argument("--aux_target", type=str, default='reward', help="[reward|vtarg]]")
         parser.add_argument("--aux_source", type=str, default='aux', help="[aux|value]]")
         parser.add_argument("--aux_period", type=int, default=0, help="")
-
-
-        # --------------------------------
-        # Replay
-        parser.add_argument("--replay_mode", type=str, default="overwrite", help="[overwrite|sequential|uniform|off]")
-        parser.add_argument("--replay_size", type=int, default=0, help="Size of replay buffer. 0=off.")
-        parser.add_argument("--replay_mixing", type=str2bool, default=False)
-        parser.add_argument("--replay_thinning", type=float, default=1.0, help="Adds this fraction of experience to replay buffer.")
 
         # -----------------
         # RND
@@ -608,10 +624,6 @@ class Config(BaseConfig):
         self.aux_source = str()
         self.aux_period = int()
 
-        self.replay_mode = str()
-        self.replay_size = int()
-        self.replay_mixing = bool()
-        self.replay_thinning = float()
         self.use_rnd = bool()
 
         self.rnd_experience_proportion = float()
@@ -620,9 +632,10 @@ class Config(BaseConfig):
 
         self.head_bias = bool()
 
-        self.auto()
         self._add_remappings()
         self._parse()
+        self.auto()
+        self.verify()
 
 
     def get_env_name(self, n: int=0):
@@ -703,22 +716,6 @@ class Config(BaseConfig):
 
         if args.hash.bonus != 0:
             assert args.hash.enabled, "use_hashing must be enabled."
-
-        if args.replay_mode == "off":
-            args.replay_size = 0
-
-        # normalization used to be a bool
-        # try:
-        #     bool_value = str2bool(args.reward_normalization)
-        #     print(
-        #         f"Warning! Using deprecated version of {FAIL}reward_normalization {ENDC}. This should now be a string, not a bool.")
-        #     if bool_value:
-        #         args.reward_normalization = "rms"
-        #     else:
-        #         args.reward_normalization = "off"
-        # except Exception as e:
-        #     # this just means we are not using the old bool values
-        #     pass
 
         # timeout
         if args.timeout == "auto":

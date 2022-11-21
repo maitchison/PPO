@@ -318,7 +318,7 @@ def train(model: models.TVFModel, log: Logger):
             c = keyboard.kb.getch()
             if c == "q":
                 pause_at_end = not pause_at_end
-                log.info(f"Pausing at end of chunk [<bold>{pause_at_end}<end>]")
+                log.info(f"Pausing at end of chunk [<warn>{pause_at_end}<end>]")
             if c == "s":
                 wants_manual_save = True
                 log.info(f"Manual checkpoint saving")

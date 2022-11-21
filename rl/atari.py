@@ -199,7 +199,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y)
 
-    if args.debug_zero_obs:
+    if args.debug.zero_obs:
         env = wrappers.ZeroObsWrapper(env)
 
     env = wrappers.ColorTransformWrapper(env, args.color_mode)
