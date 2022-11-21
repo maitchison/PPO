@@ -5,6 +5,7 @@ Handles noise estimation.
 import rl
 
 from . import utils
+from . config import args
 
 import torch
 import numpy as np

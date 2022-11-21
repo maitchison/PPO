@@ -1,6 +1,6 @@
 import unittest
 
-import rl.returns as returns
+import rl.returns_truncated as returns
 import rl.tvf as tvf
 import numpy as np
 import time as clock
@@ -33,7 +33,7 @@ class TestTVF(unittest.TestCase):
             r1_time = clock.time() - start_time
 
             start_time = clock.time()
-            m1 = returns._calculate_sampled_return_multi_threaded(**args)
+            m1 = returns._calculate_sampled_return_multi_fast(**args)
             r2_time = clock.time() - start_time
 
             delta_m1 = np.abs(m1_ref - m1)

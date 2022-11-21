@@ -363,7 +363,7 @@ class Config(BaseConfig):
         parser.add_argument("--seed", type=int, default=-1)
         parser.add_argument("--description", type=str, default=None, help="Can be used as needed. (logged in params.txt)")
         parser.add_argument("--quiet_mode", type=str2bool, default=False)
-        parser.add_argument("--checkpoint_every", type=int, default=int(5e6), help="Number of environment steps between checkpoints.")
+        parser.add_argument("--checkpoint_every", type=int, default=int(10e6), help="Number of environment steps between checkpoints.")
         parser.add_argument("--log_folder", type=str, default=None)
 
         parser.add_argument("--observation_scaling", type=str, default="scaled", help="scaled|centered|unit")
@@ -431,21 +431,13 @@ class Config(BaseConfig):
         parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
         parser.add_argument("--repeated_action_penalty", type=float, default=0.0, help="Penalty if agent repeats the same action more than this many times.")
 
-        # -----------------
-        # Noisy environments
-        parser.add_argument("--noisy_return", type=float, default=0, help="Relative error applied after return calculations. Used to simulate a noisy environment.")
-        parser.add_argument("--noisy_reward", type=float, default=0, help="Relative error applied to all rewards. Used to simulate a noisy environment.")
-        parser.add_argument("--noisy_reward_v2", type=float, default=0,
-                            help="Relative error applied to all rewards. Used to simulate a noisy environment.")
-        parser.add_argument("--noisy_zero", type=float, default=-1, help="Instead of environment rewards, agent is given random rewards drawn from gausian with this std.")
-
         # --------------------------------
 
-        self.opt_p = OptimizerConfig('opt_p', parser)
-        self.opt_v = OptimizerConfig('opt_v', parser)
-        self.opt_d = OptimizerConfig('opt_d', parser)
-        self.opt_a = OptimizerConfig('opt_a', parser)
-        self.opt_r = OptimizerConfig('opt_r', parser)
+        self.policy_opt = OptimizerConfig('policy_opt', parser)
+        self.value_opt = OptimizerConfig('value_opt', parser)
+        self.distil_opt = OptimizerConfig('distil_opt', parser)
+        self.aux_opt = OptimizerConfig('aux_opt', parser)
+        self.rnd_opt = OptimizerConfig('rnd_opt', parser)
 
         # --------------------------------
         # PPO
@@ -594,10 +586,6 @@ class Config(BaseConfig):
         self.rnd_experience_proportion = float()
 
         # noise stuff
-        self.noisy_return = float()
-        self.noisy_reward = float()
-        self.noisy_reward_v2 = float()
-        self.noisy_zero = float()
         self.precision = str()
 
         self.head_bias = bool()
@@ -731,7 +719,7 @@ class Config(BaseConfig):
             args.timeout = int(args.timeout)
 
         # auto beta
-        for optimizer in [args.opt_p, args.opt_v, args.opt_d, args.opt_a, args.opt_r]:
+        for optimizer in [args.policy_opt, args.value_opt, args.distil_opt, args.aux_opt, args.rnd_opt]:
             if optimizer.adam_beta1 < 0:
                 optimizer.adam_beta1 = 1 - (1 / optimizer.n_updates(args.n_steps * args.agents))
                 print(f"Set {optimizer.name} beta1 to {optimizer.adam_beta1}")

@@ -6,8 +6,6 @@ import uuid
 import rl.config
 import multiprocessing
 
-import code_diff
-
 import gym.version
 
 resolution_map = {
@@ -263,7 +261,7 @@ if __name__ == "__main__":
             print(" - updating path.")
             os.environ["LD_LIBRARY_PATH"] = f":{mujoco_path}:/usr/lib/nvidia"
 
-    from rl import logger
+    from rl import logger, code_diff
 
     log = logger.Logger()
     print("=" * 80)

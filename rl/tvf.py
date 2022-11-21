@@ -27,8 +27,7 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         self.tvf_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)
         self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
 
-
-    def on_train_value_minibatch(self, loss, model_out, data, **kwargs):
+    def on_train_value_minibatch(self, model_out, data, **kwargs):
 
         assert "tvf_returns" in data, "TVF returns were not uploaded with batch."
 
@@ -69,9 +68,10 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
             tvf_loss = tvf_loss * mask
 
         tvf_loss = tvf_loss.mean(dim=-1) # mean over horizons
-        loss += tvf_loss
 
-        self.runner.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64 * args.opt_v.epochs, display_name="ls_tvf", display_width=8)
+        self.runner.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64 * args.value_opt.epochs, display_name="ls_tvf", display_width=8)
+
+        return tvf_loss
 
 
     def on_reset(self):

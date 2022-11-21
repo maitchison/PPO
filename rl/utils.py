@@ -492,7 +492,7 @@ def generate_rollouts(num_rollouts, model, env_name, resolution=0.5, max_length=
 
     while any(is_running) and counter < max_length:
 
-        logprobs = model.opt_p(state).detach().cpu().numpy()
+        logprobs = model.policy_opt(state).detach().cpu().numpy()
         actions = np.asarray([sample_action_from_logp(prob) for prob in logprobs], dtype=np.int32)
 
         state, reward, done, info = env.step(actions)

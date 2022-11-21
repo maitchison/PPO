@@ -103,7 +103,7 @@ class RunnerModule:
     def on_before_generate_rollout(self):
         pass
 
-    def on_train_value_minibatch(self, loss, model_out, data, **kwargs):
+    def on_train_value_minibatch(self, model_out, data, **kwargs):
         pass
 
     def save(self):
@@ -140,19 +140,19 @@ class Runner:
                 raise ValueError(f"Invalid Optimizer {cfg.optimizer}")
             return optimizer(params, **optimizer_params)
 
-        self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.opt_p)
-        self.value_optimizer = make_optimizer(model.value_net.parameters(), args.opt_v)
-        if args.opt_d.epochs > 0:
-            self.distil_optimizer = make_optimizer(model.policy_net.parameters(), args.opt_d)
+        self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.policy_opt)
+        self.value_optimizer = make_optimizer(model.value_net.parameters(), args.value_opt)
+        if args.distil_opt.epochs > 0:
+            self.distil_optimizer = make_optimizer(model.policy_net.parameters(), args.distil_opt)
         else:
             self.distil_optimizer = None
-        if args.opt_a.epochs > 0:
-            self.aux_optimizer = make_optimizer(model.parameters(), args.opt_a)
+        if args.aux_opt.epochs > 0:
+            self.aux_optimizer = make_optimizer(model.parameters(), args.aux_opt)
         else:
             self.aux_optimizer = None
 
         if args.use_rnd:
-            self.rnd_optimizer = make_optimizer(model.prediction_net.parameters(), args.opt_r)
+            self.rnd_optimizer = make_optimizer(model.prediction_net.parameters(), args.rnd_opt)
         else:
             self.rnd_optimizer = None
 
@@ -344,15 +344,15 @@ class Runner:
     # todo: generalize this
     @property
     def value_lr(self):
-        return self.anneal(args.opt_v.lr, mode="linear" if args.opt_v.lr_anneal else "off")
+        return self.anneal(args.value_opt.lr, mode="linear" if args.value_opt.lr_anneal else "off")
 
     @property
     def distil_lr(self):
-        return self.anneal(args.opt_d.lr, mode="linear" if args.opt_d.lr_anneal else "off")
+        return self.anneal(args.distil_opt.lr, mode="linear" if args.distil_opt.lr_anneal else "off")
 
     @property
     def policy_lr(self):
-        return self.anneal(args.opt_p.lr, mode="linear" if args.opt_p.lr_anneal else "off")
+        return self.anneal(args.policy_opt.lr, mode="linear" if args.policy_opt.lr_anneal else "off")
 
     @property
     def ppo_epsilon(self):
@@ -360,7 +360,7 @@ class Runner:
 
     @property
     def rnd_lr(self):
-        return args.opt_r.lr
+        return args.rnd_opt.lr
 
     def update_learning_rates(self):
         """
@@ -514,7 +514,7 @@ class Runner:
             self.rnd_optimizer.load_state_dict(checkpoint['rnd_optimizer_state_dict'])
         if 'distil_optimizer_state_dict' in checkpoint:
             self.distil_optimizer.load_state_dict(checkpoint['distil_optimizer_state_dict'])
-        if args.opt_a.epochs > 0:
+        if args.aux_opt.epochs > 0:
             self.aux_optimizer.load_state_dict(checkpoint['aux_optimizer_state_dict'])
 
         step = checkpoint['step']
@@ -801,21 +801,10 @@ class Runner:
             raw_rewards = np.asarray([info.get("raw_reward", reward) for reward, info in zip(ext_rewards, infos)],
                                      dtype=np.float32)
 
-            if args.noisy_zero >= 0:
-                ext_rewards = np.random.normal(0, args.noisy_zero, size=ext_rewards.shape).astype(np.float32)
-                raw_rewards *= 0
-
             self.episode_score += raw_rewards
             self.discounted_episode_score = args.gamma * self.discounted_episode_score + ext_rewards
             rollout_discounted_returns[t] = self.discounted_episode_score
             self.episode_len += 1
-
-            # per step reward noise
-            # (should be after discounted return...)
-            if args.noisy_reward > 0:
-                ext_rewards = add_relative_noise(ext_rewards, args.noisy_reward)
-            if args.noisy_reward_v2 > 0:
-                ext_rewards = add_10x_noise(ext_rewards, args.noisy_reward_v2)
 
             # log repeated action stats
             if 'max_repeats' in infos[0]:
@@ -975,7 +964,7 @@ class Runner:
             self.log.watch_stats("tebz", np.minimum(self.ttt_error_buffer, 0), display_width=0, history_length=1)
 
         # calculate targets for ppg
-        if args.opt_a.epochs > 0:
+        if args.aux_opt.epochs > 0:
             v_target = td_lambda(
                 self.ext_rewards,
                 self.ext_value[:self.N],
@@ -1106,32 +1095,6 @@ class Runner:
                 history_length=1
             )
 
-            if args.noisy_zero >= 0:
-                # special stats for learning zero rewards
-                self.log.watch_mean(
-                    f"z_value_bias_{name}" + postfix,
-                    np.mean(value),
-                    display_width=0,
-                    history_length=1
-                )
-                self.log.watch_mean(
-                    f"z_target_bias_{name}" + postfix,
-                    np.mean(target),
-                    display_width=0,
-                    history_length=1
-                )
-                self.log.watch_mean(
-                    f"z_value_var_{name}" + postfix,
-                    np.var(value),
-                    display_width=0,
-                    history_length=1
-                )
-                self.log.watch_mean(
-                    f"z_target_var_{name}" + postfix,
-                    np.var(target),
-                    display_width=0,
-                    history_length=1
-                )
             return var, not_explained_var
 
         total_not_explained_var = 0
@@ -1155,37 +1118,6 @@ class Runner:
             display_name="ev_avg"+postfix,
             history_length=1
         )
-
-        if args.noisy_zero >= 0:
-            # todo: clean this up..
-            targets = calculate_bootstrapped_returns(
-                self.ext_rewards, self.terminals, self.ext_value[self.N], args.gamma
-            )
-            values = self.ext_value[:self.N]
-            self.log.watch_mean(
-                f"z_value_bias",
-                np.mean(values),
-                display_width=0,
-                history_length=1
-            )
-            self.log.watch_mean(
-                f"z_target_bias",
-                np.mean(targets),
-                display_width=0,
-                history_length=1
-            )
-            self.log.watch_mean(
-                f"z_value_var",
-                np.var(values),
-                display_width=0,
-                history_length=1
-            )
-            self.log.watch_mean(
-                f"z_target_var",
-                np.var(targets),
-                display_width=0,
-                history_length=1
-            )
 
     @property
     def prev_obs(self):
@@ -1358,11 +1290,6 @@ class Runner:
                 self.log_feature_statistics()
                 self.log_dna_value_quality()
 
-        if args.noisy_return > 0:
-            self.returns = add_relative_noise(self.returns, args.noisy_return)
-            self.tvf_returns = add_relative_noise(self.tvf.tvf_returns, args.noisy_return)
-            self.tvf_returns[:, :, 0] = 0 # by definition...
-
     def optimizer_step(self, optimizer: torch.optim.Optimizer, label: str = "opt"):
 
         # get parameters
@@ -1517,16 +1444,16 @@ class Runner:
 
         # some debugging stats
         with torch.no_grad():
-            self.log.watch_mean("distil_targ_var", targ_var, history_length=64 * args.opt_d.epochs, display_width=0)
-            self.log.watch_mean("distil_pred_var", pred_var, history_length=64 * args.opt_d.epochs,
+            self.log.watch_mean("distil_targ_var", targ_var, history_length=64 * args.distil_opt.epochs, display_width=0)
+            self.log.watch_mean("distil_pred_var", pred_var, history_length=64 * args.distil_opt.epochs,
                                 display_width=0)
             delta = (predictions - targets) * weights
             mse = torch.square(delta).mean()
             ev = 1 - torch.var(delta) / (torch.var(targets * weights) + 1e-8)
-            self.log.watch_mean("distil_ev", ev, history_length=64 * args.opt_d.epochs,
+            self.log.watch_mean("distil_ev", ev, history_length=64 * args.distil_opt.epochs,
                                 display_name="ev_dist",
                                 display_width=8)
-            self.log.watch_mean("distil_mse", mse, history_length=64 * args.opt_d.epochs,
+            self.log.watch_mean("distil_mse", mse, history_length=64 * args.distil_opt.epochs,
                                 display_width=0)
 
         # check model sparsity
@@ -1547,9 +1474,9 @@ class Runner:
         loss = loss * loss_scale
         loss.mean().backward()
 
-        self.log.watch_mean("loss_distil_policy", loss_policy.mean(), history_length=64 * args.opt_d.epochs, display_width=0)
-        self.log.watch_mean("loss_distil_value", loss_value.mean(), history_length=64 * args.opt_d.epochs, display_width=0)
-        self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.opt_d.epochs, display_name="ls_distil", display_width=8)
+        self.log.watch_mean("loss_distil_policy", loss_policy.mean(), history_length=64 * args.distil_opt.epochs, display_width=0)
+        self.log.watch_mean("loss_distil_value", loss_value.mean(), history_length=64 * args.distil_opt.epochs, display_width=0)
+        self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.distil_opt.epochs, display_name="ls_distil", display_width=8)
 
         return {
             'losses': loss.detach()
@@ -1586,7 +1513,7 @@ class Runner:
         policy_ev = 1 - torch.var(policy_predictions - targets) / (torch.var(targets) + 1e-8)
 
         # we do a lot of minibatches, so makes sure we average over them all.
-        history_length = 2 * args.opt_a.epochs * args.distil.batch_size // args.opt_d.mini_batch_size
+        history_length = 2 * args.aux_opt.epochs * args.distil.batch_size // args.distil_opt.mini_batch_size
 
         self.log.watch_mean("aux_value_ev", value_ev, history_length=history_length, display_width=0)
         self.log.watch_mean("aux_policy_ev", policy_ev, history_length=history_length, display_width=0)
@@ -1649,7 +1576,9 @@ class Runner:
                 'single_value_head': single_value_head,
                 'required_tvf_heads': required_tvf_heads
             }
-            module.on_train_value_minibatch(loss, model_out, data, **context)
+            module_loss = module.on_train_value_minibatch(model_out, data, **context)
+            if module_loss is not None:
+                loss = loss + module_loss
 
         # -------------------------------------------------------------------------
         # Generate Gradient
@@ -1783,7 +1712,7 @@ class Runner:
             if args.gkl.penalty != 0:
                 gkl_loss = global_kl * args.gkl.penalty
                 gain = gain - gkl_loss
-                self.log.watch_mean("*loss_gkl", gkl_loss, history_length=64 * args.opt_p.epochs, display_name=f"ls_gkl", display_width=8)
+                self.log.watch_mean("*loss_gkl", gkl_loss, history_length=64 * args.policy_opt.epochs, display_name=f"ls_gkl", display_width=8)
 
             result["global_kl"] = global_kl.detach().cpu()
 
@@ -1806,7 +1735,7 @@ class Runner:
         # Generate log values
         # -------------------------------------------------------------------------
 
-        self.log.watch_mean("loss_pg", loss_clip.mean(), history_length=64*args.opt_p.epochs, display_name=f"ls_pg", display_width=8)
+        self.log.watch_mean("loss_pg", loss_clip.mean(), history_length=64*args.policy_opt.epochs, display_name=f"ls_pg", display_width=8)
         self.log.watch_mean("clip_frac", clip_frac, display_width=8, display_name="clip")
         self.log.watch_mean("loss_policy", gain.mean(), display_name=f"ls_policy")
 
@@ -1842,10 +1771,7 @@ class Runner:
     @property
     def reward_scale(self):
         """ The amount rewards have been multiplied by. """
-        if args.noisy_zero > 0:
-            # no reward scaling for noisy zero rewards.
-            return 1.0
-        elif args.reward_normalization == "rms":
+        if args.reward_normalization == "rms":
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
         elif args.reward_normalization == "off":
@@ -1881,11 +1807,11 @@ class Runner:
 
         batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])[:round(B*args.rnd_experience_proportion)]
 
-        for epoch in range(args.opt_r.epochs):
+        for epoch in range(args.rnd_opt.epochs):
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_rnd_minibatch,
-                mini_batch_size=args.opt_r.mini_batch_size,
+                mini_batch_size=args.rnd_opt.mini_batch_size,
                 optimizer=self.rnd_optimizer,
                 epoch=epoch,
                 label="rnd",
@@ -1908,7 +1834,7 @@ class Runner:
 
         start_time = clock.time()
 
-        if args.opt_p.epochs == 0:
+        if args.policy_opt.epochs == 0:
             return
 
         batch_data = {}
@@ -1964,16 +1890,16 @@ class Runner:
             batch_data["*global_log_policy"] = model_out["log_policy"].detach()
 
         epochs = 0
-        for epoch in range(args.opt_p.epochs):
+        for epoch in range(args.policy_opt.epochs):
             results = self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_policy_minibatch,
-                mini_batch_size=args.opt_p.mini_batch_size,
+                mini_batch_size=args.policy_opt.mini_batch_size,
                 optimizer=self.policy_optimizer,
                 label="policy",
                 epoch=epoch,
             )
-            expected_mini_batches = (args.batch_size / args.opt_p.mini_batch_size)
+            expected_mini_batches = (args.batch_size / args.policy_opt.mini_batch_size)
             epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
@@ -1989,7 +1915,7 @@ class Runner:
 
         start_time = clock.time()
 
-        if args.opt_v.epochs == 0:
+        if args.value_opt.epochs == 0:
             return
 
         batch_data = {}
@@ -2005,7 +1931,7 @@ class Runner:
 
         if args.tvf.enabled:
             # just train ext heads for the moment
-            batch_data["tvf_returns"] = self.tvf_returns[:, :, :, -1].reshape(N*A, self.K)
+            batch_data["tvf_returns"] = self.tvf.tvf_returns[:, :, :, -1].reshape(N*A, self.K)
 
             # per horizon noise estimates
             # note: it's about 2x faster to generate accumulated noise all at one go, but this means
@@ -2018,11 +1944,11 @@ class Runner:
                 if args.sns.fake_noise:
                     rl.sns.log_fake_accumulated_gradient_norms(self, optimizer=self.value_optimizer)
 
-        for value_epoch in range(args.opt_v.epochs):
+        for value_epoch in range(args.value_opt.epochs):
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
-                mini_batch_size=args.opt_v.mini_batch_size,
+                mini_batch_size=args.value_opt.mini_batch_size,
                 optimizer=self.value_optimizer,
                 label="value",
                 epoch=value_epoch,
@@ -2172,17 +2098,17 @@ class Runner:
 
         start_time = clock.time()
 
-        if args.opt_d.epochs == 0:
+        if args.distil_opt.epochs == 0:
             return
 
         batch_data = self.get_distil_batch(args.distil.batch_size)
 
-        for distil_epoch in range(args.opt_d.epochs):
+        for distil_epoch in range(args.distil_opt.epochs):
 
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
-                mini_batch_size=args.opt_d.mini_batch_size,
+                mini_batch_size=args.distil_opt.mini_batch_size,
                 optimizer=self.distil_optimizer,
                 label="distil",
                 epoch=distil_epoch,
@@ -2199,7 +2125,7 @@ class Runner:
 
         start_time = clock.time()
 
-        if args.opt_a.epochs == 0:
+        if args.aux_opt.epochs == 0:
             return
 
         # we could train on terminals, or reward.
@@ -2221,12 +2147,12 @@ class Runner:
         batch_data['old_value'] = model_out['value_ext_value'].cpu().numpy()
         batch_data['old_log_policy'] = model_out['policy_log_policy'].cpu().numpy()
 
-        for aux_epoch in range(args.opt_a.epochs):
+        for aux_epoch in range(args.aux_opt.epochs):
 
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_aux_minibatch,
-                mini_batch_size=args.opt_a.mini_batch_size,
+                mini_batch_size=args.aux_opt.mini_batch_size,
                 optimizer=self.aux_optimizer,
                 epoch=aux_epoch,
                 label="aux",
@@ -2239,7 +2165,7 @@ class Runner:
         location_match = location is None or location == args.distil.order
         return \
             args.architecture == "dual" and \
-            args.opt_d.epochs > 0 and \
+            args.distil_opt.epochs > 0 and \
             self.batch_counter % args.distil.period == args.distil.period - 1 and \
             location_match
 
@@ -2272,7 +2198,7 @@ class Runner:
             if self.wants_distil_update("after_policy"):
                 self.train_distil()
 
-        if args.opt_a.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period - 1):
+        if args.aux_opt.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period - 1):
             self.train_aux()
 
         if args.use_rnd:

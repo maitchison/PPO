@@ -144,6 +144,8 @@ if __name__ == "__main__":
     # load in the jobs...
     import tvf_experiments
     tvf_experiments.setup()
+    import tvf_exp2
+    tvf_exp2.setup()
 
     # todo: switch to proper command line args...
 
