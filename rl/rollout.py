@@ -1259,14 +1259,12 @@ class Runner:
         if method == "off":
             return tvf_value_estimates, None
         elif method == "timelimit":
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, args.tvf_at_minh)
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
         elif method == "av_term":
-            # changed
-            historic_max_time = np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int)
-            current_max_time = np.percentile(self.time, args.tvf_at_percentile).astype(int)
-            max_time = max(historic_max_time, current_max_time)
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, args.tvf_at_minh)
-            est_time_till_termination = np.maximum(max_time - time, args.tvf_at_minh)
+            est_ep_length = np.percentile(list(self.episode_length_buffer)+list(time), args.tvf_at_percentile).astype(int)
+            est_ep_length += args.tvf_at_minh / 4 # apply small buffer
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
+            est_time_till_termination = np.maximum(est_ep_length - time, args.tvf_at_minh)
             time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int))
             self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
@@ -1475,8 +1473,6 @@ class Runner:
         self.tvf_value *= 0
         self.all_time *= 0
 
-        predicted_ttt = np.zeros_like(self.int_rewards)
-
         obs_hashes = np.zeros([self.N, self.A], dtype=np.int32)
 
         rollout_discounted_returns = np.zeros_like(self.ext_rewards)
@@ -1555,54 +1551,6 @@ class Runner:
             if 'mean_repeats' in infos[0]:
                 self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'], display_width=0)
 
-            # process each environment, check if they have finished
-            for i, (done, info) in enumerate(zip(dones, infos)):
-                if "reward_clips" in info:
-                    self.stats['reward_clips'] += info["reward_clips"]
-                if "game_freeze" in info:
-                    self.stats['game_crashes'] += 1
-                if "repeated_action" in info:
-                    self.stats['action_repeats'] += 1
-                if "repeated_action" in info:
-                    self.stats['batch_action_repeats'] += 1
-                if "room_count" in info:
-                    self.log.watch_mean("av_room_count", info["room_count"], history_length=100, display_name="rooms_av")
-
-                if done:
-                    # this should be always updated, even if it's just a loss of life terminal
-                    self.episode_length_buffer.append(info["ep_length"])
-
-                    if "fake_done" in info:
-                        # this is a fake reset on loss of life...
-                        continue
-
-                    predictions = self.ttt_predictions[i]
-                    # check how good our ttt predictions were
-                    for j, pred_ttt in enumerate(predictions):
-                        true_ttt = len(predictions) - j
-                        delta = pred_ttt-true_ttt
-                        self.ttt_error_buffer.append(delta)
-
-                    predictions.clear()
-
-                    # reset is handled automatically by vectorized environments
-                    # so just need to keep track of book keeping
-                    self.ep_count += 1
-                    self.log.watch_full("ep_score", info["ep_score"], history_length=100)
-                    self.log.watch_full("ep_length", info["ep_length"], history_length=100)
-                    if "room_count" in info:
-                        self.log.watch_mean("ep_room_count", info["room_count"], history_length=100, display_name="rooms_ep")
-                        try:
-                            old_room_count = self.log['max_room_count']
-                        except:
-                            old_room_count = 0
-                        self.log.watch("*max_room_count", max(old_room_count, info["room_count"]))
-                    self.log.watch_mean("ep_count", self.ep_count, history_length=1)
-
-                    self.episode_score[i] = 0
-                    self.episode_len[i] = 0
-                    self.discounted_episode_score[i] = 0
-
             # compress observations if needed
             if args.obs_compression:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
@@ -1634,6 +1582,71 @@ class Runner:
             self.raw_policy[t] = model_out["raw_policy"].cpu().numpy()
             self.terminals[t] = dones
             self.done = dones
+
+            # process each environment, check if they have finished
+            for i, (done, info) in enumerate(zip(dones, infos)):
+                if "reward_clips" in info:
+                    self.stats['reward_clips'] += info["reward_clips"]
+                if "game_freeze" in info:
+                    self.stats['game_crashes'] += 1
+                if "repeated_action" in info:
+                    self.stats['action_repeats'] += 1
+                if "repeated_action" in info:
+                    self.stats['batch_action_repeats'] += 1
+                if "room_count" in info:
+                    self.log.watch_mean("av_room_count", info["room_count"], history_length=100,
+                                        display_name="rooms_av")
+
+                if done:
+                    # this should be always updated, even if it's just a loss of life terminal
+                    self.episode_length_buffer.append(info["ep_length"])
+
+                    if "fake_done" in info:
+                        # this is a fake reset on loss of life...
+                        continue
+
+                    predictions = self.ttt_predictions[i]
+
+                    def plot_curve(pred):
+                        import matplotlib.pyplot as plt
+                        true = range(len(pred), 0, -1)
+                        plt.plot(pred, label='pred')
+                        plt.plot(true, label='true')
+                        plt.legend()
+                        plt.grid(alpha=0.25)
+                        plt.show()
+
+                    # check how good our ttt predictions were
+                    deltas = []
+                    for j, pred_ttt in enumerate(predictions):
+                        true_ttt = len(predictions) - j
+                        delta = pred_ttt - true_ttt
+                        self.ttt_error_buffer.append(delta)
+                        deltas.append(delta)
+
+                    # if min(deltas) < 0:
+                    #     plot_curve(predictions)
+
+                    predictions.clear()
+
+                    # reset is handled automatically by vectorized environments
+                    # so just need to keep track of book keeping
+                    self.ep_count += 1
+                    self.log.watch_full("ep_score", info["ep_score"], history_length=100)
+                    self.log.watch_full("ep_length", info["ep_length"], history_length=100)
+                    if "room_count" in info:
+                        self.log.watch_mean("ep_room_count", info["room_count"], history_length=100,
+                                            display_name="rooms_ep")
+                        try:
+                            old_room_count = self.log['max_room_count']
+                        except:
+                            old_room_count = 0
+                        self.log.watch("*max_room_count", max(old_room_count, info["room_count"]))
+                    self.log.watch_mean("ep_count", self.ep_count, history_length=1)
+
+                    self.episode_score[i] = 0
+                    self.episode_len[i] = 0
+                    self.discounted_episode_score[i] = 0
 
         # process the final state
         if args.obs_compression:
@@ -1740,6 +1753,8 @@ class Runner:
         # log how well our termination predictiosn are going
         if len(self.ttt_error_buffer) > 0:
             self.log.watch_stats("teb", self.ttt_error_buffer, display_width=8, history_length=1)
+            self.log.watch_stats("ateb", np.abs(self.ttt_error_buffer), display_width=8, history_length=1)
+            self.log.watch_stats("zteb", np.minimum(self.ttt_error_buffer, 0), display_width=8, history_length=1)
 
         # calculate targets for ppg
         if args.aux.epochs > 0:
