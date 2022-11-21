@@ -36,6 +36,17 @@ class SimpleNoiseScaleConfig(BaseConfig):
         super().__init__(prefix="sns", parser=parser)
 
 
+def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
+    """
+    Returns an ema coefficent to match given horizon (in environment interactions), when updates will be applied
+    every "updates_every" rollouts
+    """
+    if required_horizon == 0:
+        return 0
+    updates_every_steps = (updates_every * self.N * self.A)
+    ema_horizon = required_horizon / updates_every_steps
+    return 1 - (1 / ema_horizon)
+
 def process_noise_scale(
         runner: Runner,
         g_b_small_squared: float,
@@ -67,9 +78,9 @@ def process_noise_scale(
             runner.noise_stats[f'{label}_{var_name}_history'].append(var_value)
             runner.noise_stats[f'{label}_{var_name}'] = np.mean(runner.noise_stats[f'{label}_{var_name}_history'])
     elif args.sns.smoothing_mode == "ema":
-        ema_s = runner.get_ema_constant(args.sns.smoothing_horizon_s, args.sns.period)
+        ema_s = get_ema_constant(args.sns.smoothing_horizon_s, args.sns.period)
         g2_horizon = args.sns.smoothing_horizon_policy if label == "policy" else args.sns.smoothing_horizon_g2
-        ema_g2 = runner.get_ema_constant(g2_horizon, args.sns.period)
+        ema_g2 = get_ema_constant(g2_horizon, args.sns.period)
         # question: we do we need to smooth both of these? which is more noisy? I think it's just g2 right?
         utils.dictionary_ema(runner.noise_stats, f'{label}_s', est_s, ema_s)
         utils.dictionary_ema(runner.noise_stats, f'{label}_g2', est_g2, ema_g2)
