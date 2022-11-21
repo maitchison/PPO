@@ -70,7 +70,7 @@ def interpolate(horizons: np.ndarray, values: np.ndarray, target_horizons: np.nd
     assert horizons[0] == 0, "first horizon must be 0"
 
     # we do not extrapolate...
-    target_horizons = np.clip(target_horizons, min(horizons), max(horizons))
+    target_horizons = np.clip(target_horizons, horizons[0], horizons[-1])
 
     *shape, K = values.shape
     shape = tuple(shape)
@@ -632,6 +632,7 @@ class Runner:
         self.episode_score = np.zeros([A], dtype=np.float32)
         self.discounted_episode_score = np.zeros([A], dtype=np.float32)
         self.episode_len = np.zeros([A], dtype=np.int32)
+
         self.obs = np.zeros([A, *self.state_shape], dtype=obs_type)
         self.done = np.zeros([A], dtype=np.bool)
 
@@ -672,6 +673,8 @@ class Runner:
 
         self.all_time = np.zeros([N+1, A], dtype=np.int32)  # time for each step in rollout
         self.time = np.zeros([A], dtype=np.int32)  # current step for all agents
+
+        self.ttt_predictions = [[] for _ in range(self.N)]  # our prediction of when a termination will occur.
 
         self.replay_value_estimates = np.zeros([N, A], dtype=np.float32) # what is this?
 
@@ -726,6 +729,7 @@ class Runner:
         }
         self.ep_count = 0
         self.episode_length_buffer = collections.deque(maxlen=1000)
+        self.ttt_error_buffer = collections.deque(maxlen=1000)
 
         # create the replay buffer if needed
         self.replay_buffer: Optional[ExperienceReplayBuffer] = None
@@ -1225,7 +1229,7 @@ class Runner:
         else:
             raise ValueError(f"invalid action distribution {self.action_dist}")
 
-    def trim_horizons(self, tvf_value_estimates, time, method: str = "timelimit", mode:str = "interpolate"):
+    def trim_horizons(self, tvf_value_estimates, time, method: str = "timelimit", mode: str = "interpolate"):
         """
         Adjusts horizons by reducing horizons that extend over the timeout back to the timeout.
         This is for a few reasons.
@@ -1233,85 +1237,66 @@ class Runner:
         2. it can be that shorter horizons get learned more quickly, and this will make use of them earlier on
         so long as the episodes are fairly long. If episodes are short compared to max_horizon this might not
         help at all.
-
-        @param tvf_value_estimates: np array of dims [A, K]
+        @param tvf_value_estimates: np array of dims [A, K, VH]
         @param time: np array of dims [A] containing time associated with the states that generated these estimates.
-
-        @returns new trimmed estimates of [A, K]
+        @returns new trimmed estimates of [A, K, VH],
+        @returns predicted_time_till_termination of [A, K]
         """
 
-        tvf_value_estimates = tvf_value_estimates.copy() # don't modify input
+        old_value_estimates = tvf_value_estimates
+        tvf_value_estimates = tvf_value_estimates.copy()  # don't modify input
 
         # by definition h=0 is 0.0
         assert self.tvf_horizons[0] == 0, "First horizon must be zero"
-        tvf_value_estimates[:, 0] = 0 # always make sure h=0 is fixed to zero.
+        tvf_value_estimates[:, 0, :] = 0  # always make sure h=0 is fixed to zero.
 
         # step 1: work out the trimmed horizon
         # output is [A]
         if method == "off":
-            return tvf_value_estimates
+            return tvf_value_estimates, None
         elif method == "timelimit":
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, self.N)
-        elif method == "av_term":
-            time_till_termination = np.maximum(np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int) - time, 0) + args.tvf_at_minh
-            self.log.watch_mean("*ttt_ep_length", np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int))
-            self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
-            self.log.watch_stats("ttt", time_till_termination, display_width=0)
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
         elif method == "est_term":
-            # todo implement per state estimate of remaining time
-            raise NotImplementedError()
+            est_ep_length = np.percentile(list(self.episode_length_buffer) + list(time), args.tvf_at_percentile).astype(
+                int)
+            est_ep_length += args.tvf_at_minh / 4  # apply small buffer
+            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
+            est_time_till_termination = np.maximum(est_ep_length - time, args.tvf_at_minh)
+            time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
+            self.log.watch_mean("*ttt_ep_length",
+                                np.percentile(self.episode_length_buffer, args.tvf_at_percentile).astype(int))
+            self.log.watch_mean("*ttt_ep_std", np.std(self.episode_length_buffer))
         else:
             raise ValueError(f"Invalid trimming method {method}")
+
+        self.log.watch_stats("ttt", time_till_termination, display_width=0, history_length=4)
 
         # step 2: calculate new estimates
         if mode == "interpolate":
             # this can work a little bit better if trimming is only minimal.
             # however, all horizons still end up sharing the same estimate.
-            old_tvf_value_estimates = tvf_value_estimates.copy()
+            # note: we now interpolate on log scale.
+
+            def log_scale(x):
+                return np.log10(10 + x) - 1
+
+            scale = log_scale
+
             A, K, VH = tvf_value_estimates.shape
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
             trimmed_value_estimate = interpolate(
-                    np.asarray(self.tvf_horizons),
-                    old_tvf_value_estimates[..., 0], # select final value head
-                    time_till_termination
-                )
+                scale(np.asarray(self.tvf_horizons)),
+                old_value_estimates[..., 0],  # select final value head
+                scale(time_till_termination)
+            )
             for a in range(A):
-                tvf_value_estimates[a, trimmed_ks[a]:] = trimmed_value_estimate[a]
-            return tvf_value_estimates
+                tvf_value_estimates[a, trimmed_ks[a]:, 0] = trimmed_value_estimate[a]
         elif mode == "average":
-            # we can use any horizon with h > remaining_time interchangeably with h.
-            # so may as well average over them.
-
-            # first compute the averaged values
-            # output is averaged_tvf_value_estimate of dims [A, K] where averaged_tvf_value_estimate[:, k] is the
-            # sum over the final K-k horizons. For example averaged_tvf_value_estimate[:,-1] is the final horizon
-            # and averaged_tvf_value_estimate[:,-2] is the average of the final two horizon estimates.
-            averaged_tvf_value_estimates = tvf_value_estimates.copy()
-            accumulator = averaged_tvf_value_estimates[:, -1].copy()
-            counter = 1
-            for k in reversed(range(len(self.tvf_horizons)-1)):
-                accumulator += averaged_tvf_value_estimates[:, k]
-                counter += 1
-                averaged_tvf_value_estimates[:, k] = accumulator / counter
-
-            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
-
-            for a, trimmed_k in enumerate(trimmed_ks):
-                if trimmed_k >= len(self.tvf_horizons)-1:
-                    # this means no trimming
-                    continue
-                # using this method all horizons longer than ttt can be trimmed to the same value
-                # it might be better to use the average up to the h rather than up to h_max
-                tvf_value_estimates[a, trimmed_k:] = averaged_tvf_value_estimates[a, trimmed_k]
-
-            return tvf_value_estimates
-        elif mode == "average2":
             # average up to h but no further
             # implementation is a bit slow, drop if it's not better.
-            old_value_estimates = tvf_value_estimates.copy()
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
             for a, trimmed_k in enumerate(trimmed_ks):
-                if trimmed_k >= len(self.tvf_horizons)-1:
+                if trimmed_k >= len(self.tvf_horizons) - 1:
                     # this means no trimming
                     continue
                 acc = 0
@@ -1319,54 +1304,24 @@ class Runner:
                 for k in range(trimmed_k, self.K):
                     # note: this could be tvf_value_estimate, but I want to make it explicit that we're using
                     # the original values.
-                    acc += old_value_estimates[a, k]
+                    acc += old_value_estimates[a, k, :]
                     counter += 1
-                    tvf_value_estimates[a, k] = acc / counter
-            return tvf_value_estimates
-        elif mode == "average3":
-            # average up to but not including h but no further
-            # this is based on the following ideas
-            # 1. average over as many horizons as we can.
-            # 2. try to not refer to ourself (bootstrap) or any future horizons.
-            trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)
-            # v2 = tvf_value_estimates.copy()
-            # note, this is going to be quite slow...
-            for a, trimmed_k in enumerate(trimmed_ks):
-                if trimmed_k >= len(self.tvf_horizons)-1:
-                    # this means no trimming
-                    continue
-                # if we can trim to head x then we want...
-                # head_x = head_x
-                # head_{x+1} = head_x
-                # head_{x+2} = (head_x+head_{x+1}) / 2
-                # ....
-                # the final head is never used, as we only use heads *less* than ourselves, and the last head can
-                # never be less than any head (unless no trimming is required)
-                averages = np.cumsum(tvf_value_estimates[a, trimmed_k:-1, 0]) / np.arange(1, self.K-trimmed_k, dtype=np.float32)
-                tvf_value_estimates[a, trimmed_k+1:, 0] = averages
-
-                # old method
-                # acc = float(tvf_value_estimates[a, trimmed_k, 0])
-                # counter = 1
-                # for k in range(trimmed_k+1, self.K):
-                #     old_value = tvf_value_estimates[a, k, 0]
-                #     tvf_value_estimates[a, k, 0] = acc / counter
-                #     acc += old_value
-                #     counter += 1
-
-            return tvf_value_estimates
+                    tvf_value_estimates[a, k, :] = acc / counter
         elif mode == "substitute":
             # just use the smallest h we can, very simple.
             untrimmed_ks = np.arange(self.K)[None, :]
             trimmed_ks = np.searchsorted(self.tvf_horizons, time_till_termination)[:, None]
             trimmed_ks = np.minimum(trimmed_ks, untrimmed_ks)
-            # old_tvf_value_estimates = tvf_value_estimates.copy()
             tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], trimmed_ks, axis=1)
-            # stub:
-            # delta = (old_tvf_value_estimates[:, :, 0] - tvf_value_estimates)
-            return tvf_value_estimates[:, :, None]
+            tvf_value_estimates = tvf_value_estimates[:, :, None]
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
+
+        # monitor how much we modified the return estimates...
+        # if max is large then maybe there's an off-by-one bug on time.
+        delta = np.abs(tvf_value_estimates - old_value_estimates)
+        self.log.watch_stats("ved", delta.ravel(), display_width=0, history_length=4)
+        return tvf_value_estimates, time_till_termination
 
     def generate_hashes(self, obs: np.ndarray):
         """
@@ -1511,45 +1466,6 @@ class Runner:
             if 'mean_repeats' in infos[0]:
                 self.log.watch_mean('mean_repeats', infos[0]['mean_repeats'], display_width=0)
 
-            # process each environment, check if they have finished
-            for i, (done, info) in enumerate(zip(dones, infos)):
-                if "reward_clips" in info:
-                    self.stats['reward_clips'] += info["reward_clips"]
-                if "game_freeze" in info:
-                    self.stats['game_crashes'] += 1
-                if "repeated_action" in info:
-                    self.stats['action_repeats'] += 1
-                if "repeated_action" in info:
-                    self.stats['batch_action_repeats'] += 1
-                if "room_count" in info:
-                    self.log.watch_mean("av_room_count", info["room_count"], history_length=100, display_name="rooms_av")
-
-                if done:
-                    # this should be always updated, even if it's just a loss of life terminal
-                    self.episode_length_buffer.append(info["ep_length"])
-
-                    if "fake_done" in info:
-                        # this is a fake reset on loss of life...
-                        continue
-
-                    # reset is handled automatically by vectorized environments
-                    # so just need to keep track of book keeping
-                    self.ep_count += 1
-                    self.log.watch_full("ep_score", info["ep_score"], history_length=100)
-                    self.log.watch_full("ep_length", info["ep_length"], history_length=100)
-                    if "room_count" in info:
-                        self.log.watch_mean("ep_room_count", info["room_count"], history_length=100, display_name="rooms_ep")
-                        try:
-                            old_room_count = self.log['max_room_count']
-                        except:
-                            old_room_count = 0
-                        self.log.watch("*max_room_count", max(old_room_count, info["room_count"]))
-                    self.log.watch_mean("ep_count", self.ep_count, history_length=1)
-
-                    self.episode_score[i] = 0
-                    self.episode_len[i] = 0
-                    self.discounted_episode_score[i] = 0
-
             # compress observations if needed
             if args.obs_compression:
                 prev_obs = np.asarray([compression.BufferSlot(prev_obs[i]) for i in range(len(prev_obs))])
@@ -1558,12 +1474,16 @@ class Runner:
             if args.use_tvf:
                 start_time = clock.time()
                 tvf_values = model_out["tvf_value"].cpu().numpy()
-                self.tvf_value[t] = self.trim_horizons(
+                self.tvf_value[t], ttt = self.trim_horizons(
                     tvf_values,
                     prev_time,
                     method=args.tvf_trimming,
                     mode=args.tvf_trimming_mode
                 )
+                if ttt is not None:
+                    for a in range(self.A):
+                        self.ttt_predictions[a].append(ttt[a])
+
                 ms = (clock.time() - start_time) * 100
                 self.log.watch_mean("*t_trim", ms)
 
@@ -1578,6 +1498,71 @@ class Runner:
             self.terminals[t] = dones
             self.done = dones
 
+            # process each environment, check if they have finished
+            for i, (done, info) in enumerate(zip(dones, infos)):
+                if "reward_clips" in info:
+                    self.stats['reward_clips'] += info["reward_clips"]
+                if "game_freeze" in info:
+                    self.stats['game_crashes'] += 1
+                if "repeated_action" in info:
+                    self.stats['action_repeats'] += 1
+                if "repeated_action" in info:
+                    self.stats['batch_action_repeats'] += 1
+                if "room_count" in info:
+                    self.log.watch_mean("av_room_count", info["room_count"], history_length=100,
+                                        display_name="rooms_av")
+
+                if done:
+                    # this should be always updated, even if it's just a loss of life terminal
+                    self.episode_length_buffer.append(info["ep_length"])
+
+                    if "fake_done" in info:
+                        # this is a fake reset on loss of life...
+                        continue
+
+                    predictions = self.ttt_predictions[i]
+
+                    def plot_curve(pred):
+                        import matplotlib.pyplot as plt
+                        true = range(len(pred), 0, -1)
+                        plt.plot(pred, label='pred')
+                        plt.plot(true, label='true')
+                        plt.legend()
+                        plt.grid(alpha=0.25)
+                        plt.show()
+
+                    # check how good our ttt predictions were
+                    deltas = []
+                    for j, pred_ttt in enumerate(predictions):
+                        true_ttt = len(predictions) - j
+                        delta = pred_ttt - true_ttt
+                        self.ttt_error_buffer.append(delta)
+                        deltas.append(delta)
+
+                    # if min(deltas) < 0:
+                    #     plot_curve(predictions)
+
+                    predictions.clear()
+
+                    # reset is handled automatically by vectorized environments
+                    # so just need to keep track of book keeping
+                    self.ep_count += 1
+                    self.log.watch_full("ep_score", info["ep_score"], history_length=100)
+                    self.log.watch_full("ep_length", info["ep_length"], history_length=100)
+                    if "room_count" in info:
+                        self.log.watch_mean("ep_room_count", info["room_count"], history_length=100,
+                                            display_name="rooms_ep")
+                        try:
+                            old_room_count = self.log['max_room_count']
+                        except:
+                            old_room_count = 0
+                        self.log.watch("*max_room_count", max(old_room_count, info["room_count"]))
+                    self.log.watch_mean("ep_count", self.ep_count, history_length=1)
+
+                    self.episode_score[i] = 0
+                    self.episode_len[i] = 0
+                    self.discounted_episode_score[i] = 0
+
         # process the final state
         if args.obs_compression:
             last_obs = np.asarray([compression.BufferSlot(self.obs[i]) for i in range(len(self.obs))])
@@ -1589,12 +1574,15 @@ class Runner:
         self.value[-1] = final_model_out["value"].cpu().numpy()
 
         if args.use_tvf:
-            self.tvf_value[-1] = self.trim_horizons(
+            self.tvf_value[-1], ttt = self.trim_horizons(
                 final_model_out["tvf_value"].cpu().numpy(),
                 self.time,
                 method=args.tvf_trimming,
                 mode=args.tvf_trimming_mode
             )
+            if ttt is not None:
+                for a in range(self.A):
+                    self.ttt_predictions[a].append(ttt[a])
 
         # -----------------------------------------------
         # give hashing bonus
@@ -1634,6 +1622,12 @@ class Runner:
         self.int_rewards = np.clip(self.int_rewards, -5, 5) # just in case there are extreme values here
 
         aux_fields = {}
+
+        # log how well our termination predictiosn are going
+        if len(self.ttt_error_buffer) > 0:
+            self.log.watch_stats("teb", self.ttt_error_buffer, display_width=0, history_length=1)
+            self.log.watch_stats("teba", np.abs(self.ttt_error_buffer), display_width=0, history_length=1)
+            self.log.watch_stats("tebz", np.minimum(self.ttt_error_buffer, 0), display_width=0, history_length=1)
 
         # calculate targets for ppg
         if args.opt_a.epochs > 0:

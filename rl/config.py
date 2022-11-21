@@ -146,7 +146,7 @@ class TVFConfig(BaseConfig):
 
         parser.add_argument("--tvf_gamma", type=float, default=None, help="Gamma for TVF, defaults to gamma")
         parser.add_argument("--tvf_coef", type=float, default=1.0, help="Loss is multiplied by this")
-        parser.add_argument("--tvf_trimming", type=str, default='off', help="off|timelimit|av_term|est_term")
+        parser.add_argument("--tvf_trimming", type=str, default='off', help="off|timelimit|est_term")
         parser.add_argument("--tvf_trimming_mode", type=str, default='average', help="interpolate|average")
         parser.add_argument("--tvf_at_minh", type=int, default=128)
         parser.add_argument("--tvf_at_percentile", type=float, default=90)

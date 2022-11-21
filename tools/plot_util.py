@@ -96,21 +96,6 @@ def read_log(file_path):
     params["value_updates"] = (params["agents"] * params["n_steps"]) / params["value_mini_batch_size"] * params[
         "value_epochs"]
 
-    # old method of loading CSV... a bit slow, 400ms for large logs
-
-    # reader = csv.reader(open(file_path + "/training_log.csv", 'r'))
-    # col_names = next(reader, None)
-    # result = {}
-    # data = [row for row in reader]
-    #
-    # for col in col_names:
-    #     result[col] = []
-    #
-    # for row in data:
-    #     for col_name, value in zip(col_names, row):
-    #         result[col_name].append(safe_float(value))
-
-    # new method of loading CSV, about 4x faster
     # I should probably be using pandas rather than a dictionary tbh.
     X = pd.read_csv(file_path+"/training_log.csv", delimiter=',')
     result = {}
