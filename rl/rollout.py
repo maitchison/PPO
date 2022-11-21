@@ -1,5 +1,7 @@
 import os
 
+import rl
+
 import numpy as np
 import gym
 
@@ -14,16 +16,14 @@ from typing import Union, Optional
 import math
 
 from .logger import Logger
-from . import utils, hybridVecEnv, wrappers, models, compression, config, hash, tvf
+from . import utils, hybridVecEnv, wrappers, models, compression, config, hash
 from . import atari, mujoco, procgen
-from . import sns
 from .config import args
 from .mutex import Mutex
 from .replay import ExperienceReplayBuffer
 
-from returns import gae, calculate_bootstrapped_returns, td_lambda
+from .returns import gae, calculate_bootstrapped_returns, td_lambda
 
-from .tvf import get_rediscounted_value_estimate
 from .utils import open_checkpoint
 
 import collections
@@ -280,7 +280,7 @@ class Runner:
             )
 
         # modules
-        self.tvf = tvf.TVFRunnerModule(self)
+        self.tvf = rl.tvf.TVFRunnerModule(self)
 
     @property
     def ext_value(self):
@@ -845,15 +845,6 @@ class Runner:
 
                     predictions = self.ttt_predictions[i]
 
-                    def plot_curve(pred):
-                        import matplotlib.pyplot as plt
-                        true = range(len(pred), 0, -1)
-                        plt.plot(pred, label='pred')
-                        plt.plot(true, label='true')
-                        plt.legend()
-                        plt.grid(alpha=0.25)
-                        plt.show()
-
                     # check how good our ttt predictions were
                     deltas = []
                     for j, pred_ttt in enumerate(predictions):
@@ -861,9 +852,6 @@ class Runner:
                         delta = pred_ttt - true_ttt
                         self.ttt_error_buffer.append(delta)
                         deltas.append(delta)
-
-                    # if min(deltas) < 0:
-                    #     plot_curve(predictions)
 
                     predictions.clear()
 
@@ -1217,7 +1205,7 @@ class Runner:
             return tvf_values[:, :, -1]
 
         # otherwise... we need to rediscount...
-        return get_rediscounted_value_estimate(
+        return rl.tvf.get_rediscounted_value_estimate(
             values=tvf_values.reshape([(N + 1) * A, -1]),
             old_gamma=args.tvf_gamma,
             new_gamma=new_gamma,
@@ -2071,13 +2059,13 @@ class Runner:
             # per horizon noise estimates
             # note: it's about 2x faster to generate accumulated noise all at one go, but this means
             # the generic code for noise estimation no longer works well.
-            if sns.wants_noise_estimate(self, 'value_heads') and args.sns.max_heads > 0:
+            if rl.sns.wants_noise_estimate(self, 'value_heads') and args.sns.max_heads > 0:
                 if args.upload_batch:
                     self.upload_batch(batch_data)
                 # generate our per-horizon estimates
-                sns.log_accumulated_gradient_norms(self, batch_data)
+                rl.sns.log_accumulated_gradient_norms(self, batch_data)
                 if args.sns.fake_noise:
-                    sns.log_fake_accumulated_gradient_norms(self, optimizer=self.value_optimizer)
+                    rl.sns.log_fake_accumulated_gradient_norms(self, optimizer=self.value_optimizer)
 
 
         for value_epoch in range(args.opt_v.epochs):
@@ -2149,7 +2137,7 @@ class Runner:
         new_value_estimates = old_value_estimates.copy()
         B, K = old_value_estimates.shape
         for k in range(K):
-            new_value_estimates[:, k] = get_rediscounted_value_estimate(
+            new_value_estimates[:, k] = rl.tvf.get_rediscounted_value_estimate(
                 old_value_estimates[:, :k+1],
                 args.tvf_gamma,
                 args.gamma,
@@ -2389,9 +2377,9 @@ class Runner:
             assert batch_data["prev_state"].dtype != object, "obs_compression can no be enabled with upload_batch."
             self.upload_batch(batch_data)
 
-        if epoch == 0 and sns.wants_noise_estimate(self, label): # check noise of first update only
+        if epoch == 0 and rl.sns.wants_noise_estimate(self, label): # check noise of first update only
             start_time = clock.time()
-            sns.estimate_noise_scale(self, batch_data, mini_batch_func, optimizer, label)
+            rl.sns.estimate_noise_scale(self, batch_data, mini_batch_func, optimizer, label)
             s = clock.time()-start_time
             self.log.watch_mean(f"sns_time_{label}", s / args.sns.period, display_width=8, display_name=f"t_s{label[:3]}")
 

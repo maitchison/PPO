@@ -1,6 +1,7 @@
+import unittest
 import os
-
 import uuid
+import rl.config
 import multiprocessing
 
 import gym.version
@@ -50,7 +51,7 @@ def make_model(args, log=None):
         log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
 
     if args.use_tvf:
-        tvf_fixed_head_horizons, tvf_weights = rollout.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing, include_weight=True)
+        tvf_fixed_head_horizons, tvf_weights = rl.tvf.get_value_head_horizons(args.tvf_value_heads, args.tvf_max_horizon, args.tvf_head_spacing, include_weight=True)
         args.tvf_value_heads = len(tvf_fixed_head_horizons) # sometimes this will not match (with even distribution for example)
     else:
         tvf_fixed_head_horizons = None
@@ -203,7 +204,7 @@ def main():
     if args.reference_policy is not None:
         assert args.architecture == "dual"
         # load only the policy parameters, and the normalization constants
-        checkpoint = rollout._open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
+        checkpoint = rollout.open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
         policy_checkpoint = {k[len('policy_net.'):]: v for k, v in checkpoint["model_state_dict"].items() if k.startswith("policy_net.")}
         actor_critic_model.policy_net.load_state_dict(policy_checkpoint)
         actor_critic_model.obs_rms = checkpoint['obs_rms']
@@ -213,7 +214,12 @@ def main():
 
     utils.release_lock()
 
+
 if __name__ == "__main__":
+
+    # unittest.main()
+
+    rl.config.args.setup()
 
     # install procgen... this is a bit dodgy, but it'll get things working on the cluster
     import sys
@@ -225,7 +231,6 @@ if __name__ == "__main__":
 
     # special setup for mujoco
     if "--env_type=mujoco" in sys.argv:
-        import os
         print("Setting up for mujoco")
         mujoco_path="/home/matthew/.mujoco/mujoco210/bin"
         # print("Old path was", os.environ["LD_LIBRARY_PATH"])
@@ -235,13 +240,12 @@ if __name__ == "__main__":
 
     # quick check that returns work
     from rl.returns import test_return_estimators
-    from rl.rollout import _test_interpolate
-    #import rl.unit_tests
+    from rl.tvf import _test_horizon_interpolate
 
     for i in range(1):
         test_return_estimators(seed=i)
     print("Return verification passed.")
-    _test_interpolate()
+    _test_horizon_interpolate()
     print("Interpolation verification passed.")
 
     from rl import logger

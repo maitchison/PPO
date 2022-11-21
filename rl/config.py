@@ -1,10 +1,8 @@
+import rl
 import ast
 import uuid
 import socket
 import argparse
-
-# modules...
-from . import sns
 
 """
 Colors class for use with terminal.
@@ -131,6 +129,26 @@ class BaseConfig:
                     print(f"self.{k} = {type(v).__name__}()")
             except:
                 pass
+
+class SimpleNoiseScaleConfig(BaseConfig):
+    """
+    Config settings for simple noise scale
+    """
+    enabled:bool = False # Enables generation of simple noise scale estimates.
+    labels: str = ['policy','distil','value', 'value_heads']  # value|value_heads|distil|policy
+    period: int = 3  # Generate estimates every n updates.
+    max_heads: int = 7  # Limit to this number of heads when doing per head noise estimate.
+    b_big: int = 2048
+    b_small: int = 128
+    fake_noise: bool = False # Replaces value_head gradient with noise based on horizon.
+    smoothing_mode: str = "ema" # ema|avg
+    smoothing_horizon_avg: int = 1e6, # how big to make averaging window
+    smoothing_horizon_s: int = 0.2e6, # how much to smooth s
+    smoothing_horizon_g2: int = 1.0e6, # how much to smooth g2
+    smoothing_horizon_policy: int = 5e6, # how much to smooth g2 for policy (normally much higher)
+
+    def __init__(self, parser):
+        super().__init__(prefix="sns", parser=parser)
 
 class TVFConfig(BaseConfig):
     """
@@ -323,9 +341,11 @@ class Config(BaseConfig):
 
     }
 
-    def __init__(self, **arg_overrides):
+    def __init__(self):
 
         super().__init__()
+
+    def setup(self):
 
         self._parser = parser = argparse.ArgumentParser(description="Trainer for RL")
 
@@ -334,7 +354,7 @@ class Config(BaseConfig):
         self.distil = DistilConfig(self._parser)
         self.gkl = GlobalKLConfig(self._parser)
         self.hash = HashConfig(self._parser)
-        self.sns = sns.SimpleNoiseScaleConfig(self._parser)
+        self.sns = SimpleNoiseScaleConfig(self._parser)
 
         # --------------------------------
         # main arguments

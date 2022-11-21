@@ -2,8 +2,8 @@
 Handles noise estimation.
 """
 
-from config import BaseConfig, args
-from rollout import Runner
+import rl
+
 from . import utils
 
 import torch
@@ -13,28 +13,6 @@ from collections import deque
 import math
 import ast
 import time as clock
-
-
-class SimpleNoiseScaleConfig(BaseConfig):
-    """
-    Config settings for simple noise scale
-    """
-    enabled:bool = False # Enables generation of simple noise scale estimates.
-    labels: str = ['policy','distil','value', 'value_heads']  # value|value_heads|distil|policy
-    period: int = 3  # Generate estimates every n updates.
-    max_heads: int = 7  # Limit to this number of heads when doing per head noise estimate.
-    b_big: int = 2048
-    b_small: int = 128
-    fake_noise: bool = False # Replaces value_head gradient with noise based on horizon.
-    smoothing_mode: str = "ema" # ema|avg
-    smoothing_horizon_avg: int = 1e6, # how big to make averaging window
-    smoothing_horizon_s: int = 0.2e6, # how much to smooth s
-    smoothing_horizon_g2: int = 1.0e6, # how much to smooth g2
-    smoothing_horizon_policy: int = 5e6, # how much to smooth g2 for policy (normally much higher)
-
-    def __init__(self, parser):
-        super().__init__(prefix="sns", parser=parser)
-
 
 def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
     """
@@ -48,7 +26,7 @@ def get_ema_constant(self, required_horizon: int, updates_every: int = 1):
     return 1 - (1 / ema_horizon)
 
 def process_noise_scale(
-        runner: Runner,
+        runner: rl.rollout.Runner,
         g_b_small_squared: float,
         g_b_big_squared: float,
         label: str,
@@ -128,7 +106,7 @@ def process_noise_scale(
 
 
 def estimate_noise_scale(
-        runner: Runner,
+        runner: rl.rollout.Runner,
         batch_data,
         mini_batch_func,
         optimizer: torch.optim.Optimizer,
@@ -201,7 +179,7 @@ def estimate_noise_scale(
 
 
 def get_value_head_accumulated_gradient_norms(
-        runner: Runner,
+        runner: rl.rollout.Runner,
         optimizer,
         prev_state,
         targets,
@@ -247,7 +225,7 @@ def get_value_head_accumulated_gradient_norms(
     return float(np.mean(small_norms_sqr)), float(big_norm_sqr)
 
 
-def log_fake_accumulated_gradient_norms(runner:Runner, optimizer: torch.optim.Optimizer):
+def log_fake_accumulated_gradient_norms(runner:rl.rollout.Runner, optimizer: torch.optim.Optimizer):
 
     required_heads = utils.even_sample_down(range(len(runner.tvf_horizons)), args.sns.max_heads)
     b_small = args.sns.b_small
@@ -317,7 +295,7 @@ def wants_noise_estimate(self, label:str):
     return True
 
 
-def log_accumulated_gradient_norms(rollout: Runner, batch_data):
+def log_accumulated_gradient_norms(rollout: rl.rollout.Runner, batch_data):
 
     required_heads = utils.even_sample_down(range(len(rollout.tvf_horizons)), args.sns.max_heads)
 
@@ -347,3 +325,6 @@ def log_accumulated_gradient_norms(rollout: Runner, batch_data):
             g_small_sqr, g_big_sqr, label=f"acc_head_{head_id}", verbose=False)
     s = clock.time() - start_time
     rollout.log.watch_mean("t_s_heads", s / args.sns.period)
+
+if __name__ == "__main__":
+    args = rl.config.args
