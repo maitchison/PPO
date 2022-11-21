@@ -113,6 +113,8 @@ def main():
         log.important("Training preempted, no device available.")
         exit()
 
+    log.compress_csv = args.debug.compress_csv
+
     log.info(f"System is host:<white>{args.hostname}<end> torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
     log.info(f"Using device: <white>{args.device}<end>")
 

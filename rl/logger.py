@@ -1,8 +1,8 @@
-from collections import defaultdict
 from collections import deque
 import time
 import datetime
 from . import utils
+import zipfile
 
 import numpy as np
 import csv
@@ -148,6 +148,7 @@ class Logger():
 
         self._vars = {}
         self._history = []
+        self.compress_csv = False
 
         self.mode = self.LM_DEFAULT
 
@@ -256,31 +257,6 @@ class Logger():
             output_string = output_string + (var.display.rjust(var.display_width - 1, " ") + " ")
         self.log(output_string)
 
-    def aggretate_logs(self, logs, ignore=None):
-        """ Records the mean of the int/float/stats variables in logs the this log. """
-
-        values = logs[0]._vars.values()
-
-        for var in sorted(values):
-            if var.name in ignore:
-                continue
-            summary = []
-            for log in logs:
-                if not var.name in log._vars:
-                    continue
-                this_var = log._vars[var.name]
-                if this_var._type in ["int", "float"]:
-                    summary.append(this_var.value)
-                if this_var._type in ["stats"]:
-                    summary.append(this_var.value[0]) # just record mean for the moment.
-
-            self.watch(
-                var.name, np.mean(summary),
-                type = "int" if this_var._type == "int" else "float",
-                display_width=this_var.display_width,
-                display_precision=this_var.display_precision
-            )
-
     def record_step(self):
         """ Records state of all watched variables for this given step. """
         row = {}
@@ -331,7 +307,12 @@ class Logger():
         if file_name is None:
             return
 
-        with open(file_name, "w") as f:
+        if self.compress_csv:
+            file_name = file_name + ".zip"
+
+        open_fn = zipfile.ZipFile.open if self.compress_csv else open
+
+        with open_fn(file_name, "w") as f:
             field_names = self._history[-1].keys()
             writer = csv.DictWriter(f, fieldnames=field_names)
             writer.writeheader()

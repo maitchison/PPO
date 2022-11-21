@@ -91,11 +91,6 @@ def read_log(file_path):
     if "n_mini_batches" in params:
         params["mini_batch_size"] = int(params["agents"] * params["n_steps"] / params["n_mini_batches"])
 
-    params["policy_updates"] = (params["agents"] * params["n_steps"]) / params["policy_mini_batch_size"] * params[
-        "policy_epochs"]
-    params["value_updates"] = (params["agents"] * params["n_steps"]) / params["value_mini_batch_size"] * params[
-        "value_epochs"]
-
     # I should probably be using pandas rather than a dictionary tbh.
     X = pd.read_csv(file_path+"/training_log.csv", delimiter=',')
     result = {}

@@ -1,4 +1,3 @@
-import ast
 import uuid
 import socket
 import argparse
@@ -36,6 +35,20 @@ class BaseConfig:
         if parser is not None:
             self._auto_add_params(parser)
 
+    def verify(self):
+        """
+        Make sure parameters are ok.
+        """
+        for child in self._children():
+            child.verify()
+
+    def auto(self):
+        """
+        Apply any auto logic.
+        """
+        for child in self._children():
+            child.auto()
+
     def _auto_add_params(self, parser):
         """
         Adds parser entry for each class variable
@@ -64,7 +77,7 @@ class BaseConfig:
             pass
 
         for var_name, var_default in class_vars.items():
-            if var_name.startswith("_"):
+            if var_name.startswith("_") or var_name == "prefix":
                 continue
 
             var_type = var_types.get(var_name, object)
@@ -84,19 +97,36 @@ class BaseConfig:
                 help=var_help,
             )
 
-    def update(self, **kwargs):
-
-        if self.prefix == '':
-            self.__dict__.update(kwargs)
-        else:
-            for k, v in kwargs.items():
-                if k.startswith(f"{self.prefix}_"):
-                    self.__dict__[k[len(self.prefix) + 1:]] = v
-
-        # children
+    def _children(self):
+        """
+        Returns list of config children
+        """
+        result = []
         for k, v in vars(self).items():
             if issubclass(type(v), BaseConfig):
-                v.update(**kwargs)
+                result.append(v)
+        return result
+
+    def update(self, params):
+
+        # children first...
+        for child in self._children():
+            child.update(params)
+
+        prefix = "" if self.prefix == "" else self.prefix+"_"
+
+        for k in list(params.keys()):
+            if not k.startswith(prefix):
+                continue
+            k_without_prefix = k[len(prefix):]
+            # add and remove if we have this variable
+            if k_without_prefix in self.__dict__:
+                self.__dict__[k_without_prefix] = params[k]
+                del params[k]
+            # have to also check class vars, eventually just use class vars.
+            if k_without_prefix in vars(self.__class__):
+                setattr(self.__class__, k_without_prefix, params[k])
+                del params[k]
 
     def flatten(self):
         params = {}
@@ -134,17 +164,17 @@ class SimpleNoiseScaleConfig(BaseConfig):
     Config settings for simple noise scale
     """
     enabled:bool = False # Enables generation of simple noise scale estimates.
-    labels: str = ['policy','distil','value', 'value_heads']  # value|value_heads|distil|policy
+    labels: str = ['policy', 'distil', 'value', 'value_heads']  # value|value_heads|distil|policy
     period: int = 3  # Generate estimates every n updates.
     max_heads: int = 7  # Limit to this number of heads when doing per head noise estimate.
     b_big: int = 2048
     b_small: int = 128
     fake_noise: bool = False # Replaces value_head gradient with noise based on horizon.
     smoothing_mode: str = "ema" # ema|avg
-    smoothing_horizon_avg: int = 1e6, # how big to make averaging window
-    smoothing_horizon_s: int = 0.2e6, # how much to smooth s
-    smoothing_horizon_g2: int = 1.0e6, # how much to smooth g2
-    smoothing_horizon_policy: int = 5e6, # how much to smooth g2 for policy (normally much higher)
+    smoothing_horizon_avg: int = 1e6 # how big to make averaging window
+    smoothing_horizon_s: int = 0.2e6 # how much to smooth s
+    smoothing_horizon_g2: int = 1.0e6 # how much to smooth g2
+    smoothing_horizon_policy: int = 5e6 # how much to smooth g2 for policy (normally much higher)
 
     def __init__(self, parser):
         super().__init__(prefix="sns", parser=parser)
@@ -238,9 +268,10 @@ class DebugConfig(BaseConfig):
     checkpoint_slides: bool = False  # Generates images containing states during epoch saves.
     print_freq: int = 60  # Number of seconds between debug prints.
     log_freq: int = 300  # Number of seconds between log writes.
+    compress_csv: bool = False # Enables log compression.
 
     def __init__(self, parser: argparse.ArgumentParser):
-        super().__init__(prefix="Debug", parser=parser)
+        super().__init__(prefix="debug", parser=parser)
 
 
 class DistilConfig(BaseConfig):
@@ -248,21 +279,25 @@ class DistilConfig(BaseConfig):
     Config settings for Distilation
     """
 
-    order: str = "after_policy"  # [after_policy|before_policy]
+    order: str = "after_policy" # [after_policy|before_policy]
     beta: float = 1.0
-    target: str = "value"  # [return|value|advantage]
-    batch_size: int = -1  # Size of batch to use when training distil. Negative for rollout_size.
-    adv_lambda: float = 0.6  # Used for return or advantage distil targets.
+    target: str = "value"       # [return|value|advantage]
+    batch_size: int = -1        # Size of batch to use when training distil. Negative for rollout_size.
+    adv_lambda: float = 0.6     # Used for return or advantage distil targets.
     period: int = 1
-    loss: str = "kl_policy" # [mse_logit|mse_policy|kl_policy]
-    max_heads: int = -1  # Max number of heads to apply distillation to, -1 for all.
-    force_ext: bool = False  # Use value_ext instead of value_tvf for distillation.
-    value_loss: str = "mse"  # [mse|clipped_mse|l1|huber]
-    delta: float = 0.1       # delta for huber loss
-    l1_scale: float = 1 / 30  # scaling for l1 loss
+    loss: str = "kl_policy"     # [mse_logit|mse_policy|kl_policy]
+    max_heads: int = -1         # Max number of heads to apply distillation to, -1 for all.
+    force_ext: bool = False     # Use value_ext instead of value_tvf for distillation.
+    value_loss: str = "mse"     # [mse|clipped_mse|l1|huber]
+    delta: float = 0.1          # delta for huber loss
+    l1_scale: float = 1 / 30    # scaling for l1 loss
 
     def __init__(self, parser: argparse.ArgumentParser):
-        super().__init__(prefix="Distil", parser=parser)
+        super().__init__(prefix="distil", parser=parser)
+
+    def auto(self):
+        if DistilConfig.batch_size < 0:
+            DistilConfig.batch_size = DistilConfig.batch_size
 
 class GlobalKLConfig(BaseConfig):
     """
@@ -474,10 +509,6 @@ class Config(BaseConfig):
         parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
         parser.add_argument("--ir_normalize", type=str2bool, default=True, help="Normalizes intrinsic rewards such that they have unit variance")
 
-        # --------------------------------
-        # Temp, remove
-        parser.add_argument("--tmp_median_return", type=str2bool, default=False, help="Use median of return samples rather than mean")
-
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
         self.environment = str()
@@ -585,12 +616,11 @@ class Config(BaseConfig):
 
         self.rnd_experience_proportion = float()
 
-        # noise stuff
         self.precision = str()
 
         self.head_bias = bool()
 
-        self._update_auto_defaults()
+        self.auto()
         self._add_remappings()
         self._parse()
 
@@ -605,12 +635,12 @@ class Config(BaseConfig):
             return self.environment[n % len(self.environment)]
         raise ValueError(f"Invalid type for environment {type(self.environment)} expecting str or list.")
 
-    def _update_auto_defaults(self):
+    def auto(self):
         """
         Apply special config settings.
         """
-        if self.distil.batch_size < 0:
-            self.distil.batch_size = self.batch_size
+        super().auto()
+
 
     def _add_remappings(self):
         """
@@ -629,14 +659,12 @@ class Config(BaseConfig):
         REMAPPED_PARAMS = self.REMAPPED_PARAMS
         args = self
 
-        cmd_args = parser.parse_args(args_override).__dict__
-        args.update(**cmd_args)
+        cmd_args = parser.parse_args(args_override).__dict__.copy()
+        args.update(cmd_args)
 
-        # fix restore using legacy settings
-        if args.restore is True or args.restore == "True":
-            args.restore = "always"
-        if args.restore is False or args.restore == "False":
-            args.restore = "never"
+        # check if anything was missing...
+        if len(cmd_args) > 0:
+            raise ValueError(f"Found the following parameters that could not be linked. {list(cmd_args.keys())}")
 
         # mappings
         for old_name, new_name in REMAPPED_PARAMS.items():
@@ -664,14 +692,6 @@ class Config(BaseConfig):
                     f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
                 vars(args)[new_name] = cast_legacy_value
 
-        # conversions
-        try:
-            # handle environment as an array.
-            args.environment = ast.literal_eval(args.environment)
-        except:
-            # just assume this is a normal unformatted string.
-            args.environment = args.environment
-
         # checks
         if args.reference_policy is not None:
             assert args.architecture == "dual", "Reference policy loading requires a dual network."
@@ -688,17 +708,17 @@ class Config(BaseConfig):
             args.replay_size = 0
 
         # normalization used to be a bool
-        try:
-            bool_value = str2bool(args.reward_normalization)
-            print(
-                f"Warning! Using deprecated version of {FAIL}reward_normalization {ENDC}. This should now be a string, not a bool.")
-            if bool_value:
-                args.reward_normalization = "rms"
-            else:
-                args.reward_normalization = "off"
-        except Exception as e:
-            # this just means we are not using the old bool values
-            pass
+        # try:
+        #     bool_value = str2bool(args.reward_normalization)
+        #     print(
+        #         f"Warning! Using deprecated version of {FAIL}reward_normalization {ENDC}. This should now be a string, not a bool.")
+        #     if bool_value:
+        #         args.reward_normalization = "rms"
+        #     else:
+        #         args.reward_normalization = "off"
+        # except Exception as e:
+        #     # this just means we are not using the old bool values
+        #     pass
 
         # timeout
         if args.timeout == "auto":
