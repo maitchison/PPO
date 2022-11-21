@@ -215,8 +215,6 @@ def main():
 
     ppo.train(actor_critic_model, log)
 
-    utils.release_lock()
-
 def log_code_info():
     """
     Logs information about codebase.

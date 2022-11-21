@@ -110,14 +110,14 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         elif method == "timelimit":
             time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
         elif method == "est_term":
-            est_ep_length = np.percentile(list(self.runner.episode_length_buffer) + list(time), args.tvf.at_percentile).astype(
-                int)
-            est_ep_length += args.tvf.at_minh / 4  # apply small buffer
+            est_ep_length = np.percentile(list(self.runner.episode_length_buffer) + list(time), args.tvf.eta_percentile).astype(
+                int) + args.tvf.eta_buffer
+            est_ep_length += args.tvf.eta_minh / 4  # apply small buffer
             time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
-            est_time_till_termination = np.maximum(est_ep_length - time, args.tvf.at_minh)
+            est_time_till_termination = np.maximum(est_ep_length - time, args.tvf.eta_minh)
             time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.runner.log.watch_mean("*ttt_ep_length",
-                                np.percentile(self.runner.episode_length_buffer, args.tvf.at_percentile).astype(int))
+                                np.percentile(self.runner.episode_length_buffer, args.tvf.eta_percentile).astype(int))
             self.runner.log.watch_mean("*ttt_ep_std", np.std(self.runner.episode_length_buffer))
         else:
             raise ValueError(f"Invalid trimming method {method}")

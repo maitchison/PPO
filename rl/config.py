@@ -159,8 +159,9 @@ class TVFConfig(BaseConfig):
     coef: float = 1.0               # Loss is multiplied by this.
     trimming: str = "off"           # off|timelimit|est_term
     trimming_mode: str = "average"  # interpolate|average|average2|substitute
-    at_minh: int = 128
-    at_percentile: float = 90
+    eta_minh: int = 128              # estimated timelimit algorithm
+    eta_buffer: int = 32
+    eta_percentile: float = 90
     horizon_dropout: float = 0.0    # fraction of horizons to exclude per epoch.
     return_mode: str = "advanced"   # standard|advanced|full "
     return_distribution: str = "exponential"  # fixed|exponential|uniform|hyperbolic|quadratic
@@ -347,7 +348,9 @@ class Config(BaseConfig):
         parser.add_argument("--ignore_lock", type=str2bool, default=False, help="ignores previous lock")
         parser.add_argument("--ignore_device", type=str, default="[]", help="Devices to ignore when using auto")
         parser.add_argument("--save_checkpoints", type=str2bool, default=True)
-        parser.add_argument("--save_initial_checkpoint", type=str2bool, default=True, help="Saves a checkpoint before any training.")
+        parser.add_argument("--save_initial_checkpoint", type=str2bool, default=False, help="Saves a checkpoint before any training.")
+        parser.add_argument("--save_early_checkpoint", type=str2bool, default=False,
+                            help="Saves a checkpoint at 1M steps.")
         parser.add_argument("--output_folder", type=str, default="./")
         parser.add_argument("--hostname", type=str, default=socket.gethostname())
         parser.add_argument("--guid", type=str, default=None)
@@ -506,6 +509,7 @@ class Config(BaseConfig):
         self.ignore_device = str()
         self.save_checkpoints = bool()
         self.save_initial_checkpoint = bool()
+        self.save_early_checkpoint = bool()
         self.output_folder = str()
         self.hostname = str()
         self.guid = object()

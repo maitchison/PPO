@@ -58,6 +58,7 @@ def get_code_date(folder='.'):
 if __name__ == "__main__":
     check_folder("./Run/TVF_BETA1")
     check_folder("./Run/TVF_BETA2")
+    check_folder("./Run/TVF_BETA3")
     check_folder("./Run/TVF_REF")
     print("Done.")
 
