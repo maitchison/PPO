@@ -1,9 +1,9 @@
 import gym
 import numpy as np
-from collections import defaultdict
 import hashlib
 import os
 
+import rl.config
 from . import wrappers, config, ale_roms
 
 # this game's rom gets modified by gym, and so does not match the ALE MD5
@@ -125,7 +125,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     # this global reference will not work on windows when we spawn instead of fork,
     # so make sure to pass args in as an argument.
-    args = args or config.args
+    args:rl.config.Config = args or config.args
 
     env_name = f"ALE/{env_id}-v5"
 
@@ -134,13 +134,13 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         obs_type='rgb',
         # ALE will skip over frames without applying max, so we handle the frameskip with our own wrapper
         frameskip=1,
-        repeat_action_probability=args.repeat_action_probability,
-        full_action_space=args.full_action_space,
+        repeat_action_probability=args.env.repeat_action_probability,
+        full_action_space=args.env.full_action_space,
     )
 
     env = env.unwrapped
 
-    if args.atari_rom_check and env_id not in IGNORE_ROMS_LIST:
+    if args.env.atari_rom_check and env_id not in IGNORE_ROMS_LIST:
         try:
             # this is the atari-py method
             path = env.unwrapped.game_path
@@ -165,18 +165,18 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         np.random.seed(seed)
         env.seed(seed)
 
-    if args.timeout > 0:
-        env = wrappers.TimeLimitWrapper(env, args.timeout)
-
-    if args.per_step_termination_probability > 0:
-        env = wrappers.RandomTerminationWrapper(env, args.per_step_termination_probability)
+    if args.env.per_step_termination_probability > 0:
+        env = wrappers.RandomTerminationWrapper(env, args.env.per_step_termination_probability)
 
     env = wrappers.SaveEnvStateWrapper(env, determanistic=determanistic_saving)
 
-    if args.noop_start:
-        env = wrappers.NoopResetWrapper(env, noop_max=args.noop_duration)
+    if args.env.noop_start:
+        env = wrappers.NoopResetWrapper(env, noop_max=args.env.noop_duration)
 
-    env = wrappers.FrameSkipWrapper(env, min_skip=args.frame_skip, max_skip=args.frame_skip, reduce_op=np.max)
+    env = wrappers.FrameSkipWrapper(env, min_skip=args.env.frame_skip, max_skip=args.env.frame_skip, reduce_op=np.max)
+
+    if args.env.timeout > 0:
+        env = wrappers.TimeLimitWrapper(env, args.env.timeout)
 
     if env_id == "MontezumaRevenge":
         # to record rooms.
@@ -186,40 +186,40 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
     env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
     env = wrappers.EpisodeScoreWrapper(env)
 
-    if args.reward_clipping == "off":
+    if args.env.reward_clipping == "off":
         pass
-    elif args.reward_clipping == "sqrt":
+    elif args.env.reward_clipping == "sqrt":
         env = wrappers.SqrtRewardWrapper(env)
     else:
         try:
-            clip = float(args.reward_clipping)
+            clip = float(args.env.reward_clipping)
         except:
             raise ValueError("reward_clipping should be off, sqrt, or a float")
         env = wrappers.ClipRewardWrapper(env, clip)
 
-    env = wrappers.AtariWrapper(env, width=args.res_x, height=args.res_y)
+    env = wrappers.AtariWrapper(env, width=args.env.res_x, height=args.env.res_y)
 
     if args.debug.zero_obs:
         env = wrappers.ZeroObsWrapper(env)
 
-    env = wrappers.ColorTransformWrapper(env, args.color_mode)
+    env = wrappers.ColorTransformWrapper(env, args.env.color_mode)
 
-    if args.terminal_on_loss_of_life:
+    if args.env.terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
 
-    if args.deferred_rewards != 0:
-        env = wrappers.DeferredRewardWrapper(env, args.deferred_rewards)
+    if args.env.deferred_rewards != 0:
+        env = wrappers.DeferredRewardWrapper(env, args.env.deferred_rewards)
 
-    if args.embed_action:
+    if args.env.embed_action:
         # should go before framestack
         env = wrappers.ActionAwareWrapper(env)
 
-    env = wrappers.FrameStack(env, n_stacks=args.frame_stack)
+    env = wrappers.FrameStack(env, n_stacks=args.env.frame_stack)
 
-    if args.embed_time:
+    if args.env.embed_time:
         env = wrappers.TimeChannelWrapper(env)
 
-    if args.embed_state:
+    if args.env.embed_state:
         env = wrappers.StateHistoryWrapper(env)
 
     # for some reason the rest of my code wants it in this order...

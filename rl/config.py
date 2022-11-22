@@ -27,6 +27,13 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+resolution_map = {
+    "full": (210, 160),
+    "procgen": (64, 64),
+    "nature": (84, 84),
+    "muzero": (96, 96),
+    "half": (105, 80)     # this may produce cleaner resampling
+}
 
 class BaseConfig:
 
@@ -163,21 +170,22 @@ class SimpleNoiseScaleConfig(BaseConfig):
     """
     Config settings for simple noise scale
     """
-    enabled:bool = False # Enables generation of simple noise scale estimates.
+    enabled:bool = False                    # Enables generation of simple noise scale estimates.
     labels: str = ['policy', 'distil', 'value', 'value_heads']  # value|value_heads|distil|policy
-    period: int = 3  # Generate estimates every n updates.
-    max_heads: int = 7  # Limit to this number of heads when doing per head noise estimate.
+    period: int = 3                         # Generate estimates every n updates.
+    max_heads: int = 7                      # Limit to this number of heads when doing per head noise estimate.
     b_big: int = 2048
     b_small: int = 128
-    fake_noise: bool = False # Replaces value_head gradient with noise based on horizon.
-    smoothing_mode: str = "ema" # ema|avg
-    smoothing_horizon_avg: int = 1e6 # how big to make averaging window
-    smoothing_horizon_s: int = 0.2e6 # how much to smooth s
-    smoothing_horizon_g2: int = 1.0e6 # how much to smooth g2
-    smoothing_horizon_policy: int = 5e6 # how much to smooth g2 for policy (normally much higher)
+    fake_noise: bool = False                # Replaces value_head gradient with noise based on horizon.
+    smoothing_mode: str = "ema"             # ema|avg
+    smoothing_horizon_avg: int = 1e6        # how big to make averaging window
+    smoothing_horizon_s: int = 0.2e6        # how much to smooth s
+    smoothing_horizon_g2: int = 1.0e6       # how much to smooth g2
+    smoothing_horizon_policy: int = 5e6     # how much to smooth g2 for policy (normally much higher)
 
     def __init__(self, parser):
         super().__init__(prefix="sns", parser=parser)
+
 
 class TVFConfig(BaseConfig):
     """
@@ -340,6 +348,17 @@ class GlobalKLConfig(BaseConfig):
         super().__init__(prefix="gkl", parser=parser)
 
 
+class RNDConfig(BaseConfig):
+    """
+    Config for random network distilation
+    """
+
+    enabled: bool = False  # Enables the Random Network Distillation (RND) module.
+    experience_proportion: float = 0.25
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="rnd", parser=parser)
+
 class HashConfig(BaseConfig):
     """
     Config settings for State hashing
@@ -359,6 +378,126 @@ class HashConfig(BaseConfig):
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="hash", parser=parser)
 
+class AUXConfig(BaseConfig):
+    """
+    Config optional fourth auxiliary phase.
+    (enable by setting aux_opt_epochs>=1)
+    """
+
+    target: str = 'reward'  # [reward|vtarg]]
+    source: str = 'aux'     # [aux|value]]
+    period: int = 0         #
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="aux", parser=parser)
+
+
+class IRConfig(BaseConfig):
+    """
+    Config for Intrinsic Rewards
+    """
+    propagation: bool = True,   # Allows intrinsic returns to propagate through end of episode.
+    scale: float = 0.3,         # Intrinsic reward scale.
+    center: bool = False,       # Per-batch centering of intrinsic rewards.
+    normalize: bool = True,     # Normalizes intrinsic rewards such that they have unit variance.
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="ir", parser=parser)
+
+
+class EnvConfig(BaseConfig):
+    """
+    Environment Config
+    """
+
+    type: str = "atari"                 # atari|mujoco|procgen
+    warmup_period: int = 250,           # Number of random steps to take before training agent.
+    timeout: str = "auto"               # "Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
+    repeat_action_probability: float = 0.0
+    noop_duration: int = 30             # "maximum number of no-ops to add on reset")
+    per_step_termination_probability: float = 0.0,  #  Probability that each step will result in unexpected termination (used to add noise to value).
+    reward_clipping: str = "off"        # [off|[<R>]|sqrt]
+    reward_normalization: str = "rms"   # "off|rms"
+    reward_normalization_clipping: float = 10  # How much to clip rewards after normalization, negative to disable.
+    deferred_rewards: int = 0,          #  If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.
+
+    # (stuck)
+    max_repeated_actions: int = 100,    # "Agent is given a penalty if it repeats the same action more than this many times.
+    repeated_action_penalty: float = 0.0,  # Penalty if agent repeats the same action more than this many times.
+
+    # discrete action
+    full_action_space: str = False
+
+    # pixel based
+    resolution: str = "nature",         # [full|nature|half|muzero]
+    color_mode: str = "default",        # [default|bw|rgb|yuv|hsv]
+    frame_stack: int = 4,
+    frame_skip: int = 4,
+    embed_time: bool = True,            # Encodes time into observation
+    embed_action: bool = True,          # Encodes actions into observation
+    embed_state: bool = False,          # Encodes state history into observation
+
+    # specific to atari
+    atari_terminal_on_loss_of_life: bool = False
+    atari_rom_check: bool = True        # Makes sure atari MD5 matches expectation.
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="ir", parser=parser)
+
+    @property
+    def is_vision_env(self):
+        """
+        Is this environment pixel based?
+        """
+        return self.type in ['atari', 'procgen']
+
+    @property
+    def res_x(self):
+        return resolution_map[self.resolution][0]
+
+    def res_y(self):
+        return resolution_map[self.resolution][0]
+
+    def verify(self):
+        if self.type == "procgen":
+            assert self.frame_stack == 1, "Frame stacking not supported on procgen yet"
+            assert self.frame_skip == 1, "Frame skipping not supported on procgen yet."
+        if self.type == "mujoco":
+            assert self.frame_stack == 1, "Frame stacking not supported on mujoco yet"
+            assert self.frame_skip == 1, "Frame skipping not supported on mujoco yet."
+
+    @property
+    def noop_start(self):
+        return self.noop_duration > 0
+
+    def auto(self):
+
+        # auto  color
+        assert self.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
+        if self.color_mode == "default":
+            self.color_mode = {
+                'atari': 'bw',
+                'procgen': 'yuv',
+            }.get(self.env.type, 'bw')
+
+        # auto timeout
+        if self.timeout == "auto":
+            if self.type == "atari":
+                EnvConfig.timeout = 27000  # excludes skipped frames
+            elif self.type == "procgen":
+                # might be more fair to just set this so something like 8000 for all envs?
+                # the trimming can auto adapt so it's just when we put the time frac into the obs
+                # maybe we should use log time instead?
+                if args.environment in ['bigfish', 'plunder', 'bossfight']:
+                    EnvConfig.timeout = 8000
+                else:
+                    EnvConfig.timeout = 1000
+            else:
+                EnvConfig.timeout = 0  # unlimited
+        else:
+            EnvConfig.timeout = int(self.timeout)
+
+
 class Config(BaseConfig):
 
     # list of params that have been remapped
@@ -369,7 +508,75 @@ class Config(BaseConfig):
 
         super().__init__()
 
-    def setup(self):
+        # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
+
+        self.environment = str()
+        self.experiment_name = str()
+        self.run_name = str()
+        self.procgen_difficulty = str()
+        self.restore = str()
+        self.initial_model = str()
+        self.reference_policy = object()
+        self.workers = int()
+        self.threads = int()
+        self.epochs = float()
+        self.limit_epochs = object()
+        self.checkpoint_compression = bool()
+        self.save_model_interval = int()
+        self.obs_compression = bool()
+        self.device = str()
+        self.upload_batch = bool()
+        self.disable_logging = bool()
+        self.ignore_lock = bool()
+        self.ignore_device = str()
+        self.save_checkpoints = bool()
+        self.save_initial_checkpoint = bool()
+        self.save_early_checkpoint = bool()
+        self.output_folder = str()
+        self.hostname = str()
+        self.guid = object()
+        self.disable_ev = bool()
+        self.anneal_target_epoch = object()
+        self.mutex_key = str()
+        self.seed = int()
+        self.description = object()
+        self.quiet_mode = bool()
+
+        self.checkpoint_every = int()
+        self.log_folder = object()
+        self.observation_scaling = str()
+        self.observation_normalization = bool()
+        self.observation_normalization_epsilon = float()
+        self.freeze_observation_normalization = bool()
+        self.max_micro_batch_size = int()
+        self.sync_envs = bool()
+        self.benchmark_mode = bool()
+
+        self.override_reward_normalization_gamma = object()
+        self.encoder = str()
+        self.encoder_args = object()
+        self.hidden_units = int()
+        self.architecture = str()
+        self.gamma_int = float()
+        self.gamma = float()
+        self.lambda_policy = float()
+        self.lambda_value = float()
+        self.max_grad_norm = float()
+        self.grad_clip_mode = str()
+
+        self.ppo_vf_coef = float()
+        self.entropy_bonus = float()
+        self.ppo_epsilon = float()
+        self.n_steps = int()
+        self.agents = int()
+        self.advantage_epsilon = float()
+        self.advantage_clipping = object()
+        self.ppo_epsilon_anneal = bool()
+
+        # extra
+        self.head_scale = float()
+        self.precision = str()
+        self.head_bias = bool()
 
         self._parser = parser = argparse.ArgumentParser(description="Trainer for RL")
 
@@ -381,6 +588,10 @@ class Config(BaseConfig):
         self.sns = SimpleNoiseScaleConfig(self._parser)
         self.tvf = TVFConfig(self._parser)
         self.replay = ReplayConfig(self._parser)
+        self.rnd = RNDConfig(self._parser)
+        self.aux = AUXConfig(self._parser)
+        self.ir = IRConfig(self._parser)
+        self.env = EnvConfig(self._parser)
 
         # --------------------------------
 
@@ -391,14 +602,21 @@ class Config(BaseConfig):
         self.rnd_opt = OptimizerConfig('rnd_opt', parser)
 
 
+
+    def setup(self):
+
         # --------------------------------
         # main arguments
+
+        # todo: move these to class
+
+        parser = self._parser
 
         parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
         parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
         parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
         parser.add_argument("--procgen_difficulty", type=str, default="hard", help="[hard|easy]")
-        parser.add_argument("--restore", type=str, default='never', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
+        parser.add_argument("--restore", type=str, default='auto', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
         parser.add_argument("--reference_policy", type=str, default=None, help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
         parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
         parser.add_argument("--threads", type=int, default=2, help="Number of numpy/torch threads. Usually does not improve performance.")
@@ -446,7 +664,6 @@ class Config(BaseConfig):
 
         # --------------------------------
         # Rewards
-        parser.add_argument("--ir_propagation", type=str2bool, default=True, help="allows intrinsic returns to propagate through end of episode.")
         parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
         # --------------------------------
@@ -465,39 +682,6 @@ class Config(BaseConfig):
         parser.add_argument("--head_scale", type=float, default=0.1, help="Scales weights for value and policy heads.")
         parser.add_argument("--head_bias", type=str2bool, default=True, help="Enables bias on output heads")
 
-
-        # --------------------------------
-        # Environment
-        parser.add_argument("--env_type", type=str, default="atari", help="[atari|mujoco|procgen]")
-        parser.add_argument("--warmup_period", type=int, default=250,
-                            help="Number of random steps to take before training agent.")
-        parser.add_argument("--timeout", type=str, default="auto",
-                            help="Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
-        parser.add_argument("--repeat_action_probability", type=float, default=0.0)
-        parser.add_argument("--noop_duration", type=int, default=30, help="maximum number of no-ops to add on reset")
-        parser.add_argument("--per_step_termination_probability", type=float, default=0.0,
-                            help="Probability that each step will result in unexpected termination (used to add noise to value).")
-        parser.add_argument("--reward_clipping", type=str, default="off", help="[off|[<R>]|sqrt]")
-        parser.add_argument("--reward_normalization", type=str, default="rms", help="off|rms|ema")
-        parser.add_argument("--reward_normalization_clipping", type=float, default=10, help="how much to clip rewards after normalization, negative to disable")
-
-        parser.add_argument("--deferred_rewards", type=int, default=0,
-                            help="If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.")
-        # (atari)
-        parser.add_argument("--resolution", type=str, default="nature", help="[full|nature|half|muzero]")
-        parser.add_argument("--color_mode", type=str, default="default", help="default|bw|rgb|yuv|hsv")
-        parser.add_argument("--full_action_space", type=str2bool, default=False)
-        parser.add_argument("--terminal_on_loss_of_life", type=str2bool, default=False)
-        parser.add_argument("--frame_stack", type=int, default=4)
-        parser.add_argument("--frame_skip", type=int, default=4)
-        parser.add_argument("--embed_time", type=str2bool, default=True, help="Encodes time into observation")
-        parser.add_argument("--embed_action", type=str2bool, default=True, help="Encodes actions into observation")
-        parser.add_argument("--embed_state", type=str2bool, default=False, help="Encodes state history into observation")
-        parser.add_argument("--atari_rom_check", type=str2bool, default=True, help="Verifies on load, that the MD5 of atari ROM matches the ALE.")
-        # (stuck)
-        parser.add_argument("--max_repeated_actions", type=int, default=100, help="Agent is given a penalty if it repeats the same action more than this many times.")
-        parser.add_argument("--repeated_action_penalty", type=float, default=0.0, help="Penalty if agent repeats the same action more than this many times.")
-
         # --------------------------------
         # PPO
         parser.add_argument("--ppo_vf_coef", type=float, default=0.5, help="Loss multiplier for default value loss.")
@@ -510,133 +694,10 @@ class Config(BaseConfig):
         parser.add_argument("--ppo_epsilon_anneal", type=str2bool, nargs='?', const=True, default=False,
                             help="Anneals learning rate to 0 (linearly) over training") # remove
 
-        # --------------------------------
-        # Auxiliary phase
-        parser.add_argument("--aux_target", type=str, default='reward', help="[reward|vtarg]]")
-        parser.add_argument("--aux_source", type=str, default='aux', help="[aux|value]]")
-        parser.add_argument("--aux_period", type=int, default=0, help="")
-
-        # -----------------
-        # RND
-        parser.add_argument("--use_rnd", type=str2bool, default=False, help="Enables the Random Network Distillation (RND) module.")
-        parser.add_argument("--rnd_experience_proportion", type=float, default=0.25)
-
-        parser.add_argument("--ir_scale", type=float, default=0.3, help="Intrinsic reward scale.")
-        parser.add_argument("--ir_center", type=str2bool, default=False, help="Per-batch centering of intrinsic rewards.")
-        parser.add_argument("--ir_normalize", type=str2bool, default=True, help="Normalizes intrinsic rewards such that they have unit variance")
-
-        # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
-
-        self.environment = str()
-        self.experiment_name = str()
-        self.run_name = str()
-        self.procgen_difficulty = str()
-        self.restore = str()
-        self.initial_model = str()
-        self.reference_policy = object()
-        self.workers = int()
-        self.threads = int()
-        self.epochs = float()
-        self.limit_epochs = object()
-        self.checkpoint_compression = bool()
-        self.save_model_interval = int()
-        self.obs_compression = bool()
-        self.device = str()
-        self.upload_batch = bool()
-        self.disable_logging = bool()
-        self.ignore_lock = bool()
-        self.ignore_device = str()
-        self.save_checkpoints = bool()
-        self.save_initial_checkpoint = bool()
-        self.save_early_checkpoint = bool()
-        self.output_folder = str()
-        self.hostname = str()
-        self.guid = object()
-        self.disable_ev = bool()
-        self.anneal_target_epoch = object()
-        self.mutex_key = str()
-        self.seed = int()
-        self.description = object()
-        self.quiet_mode = bool()
-
-        self.checkpoint_every = int()
-        self.log_folder = object()
-        self.observation_scaling = str()
-        self.observation_normalization = bool()
-        self.observation_normalization_epsilon = float()
-        self.freeze_observation_normalization = bool()
-        self.max_micro_batch_size = int()
-        self.sync_envs = bool()
-        self.benchmark_mode = bool()
-
-        self.ir_propagation = bool()
-        self.ir_normalize = bool()
-        self.ir_center = bool()
-        self.ir_scale = float()
-
-        self.override_reward_normalization_gamma = object()
-        self.encoder = str()
-        self.encoder_args = object()
-        self.hidden_units = int()
-        self.architecture = str()
-        self.gamma_int = float()
-        self.gamma = float()
-        self.lambda_policy = float()
-        self.lambda_value = float()
-        self.max_grad_norm = float()
-        self.grad_clip_mode = str()
-        self.env_type = str()
-        self.warmup_period = int()
-        self.timeout = int()
-        self.repeat_action_probability = float()
-        self.noop_duration = int()
-        self.per_step_termination_probability = float()
-        self.reward_clipping = str()
-        self.reward_normalization = str()
-        self.reward_normalization_clipping = float()
-        self.deferred_rewards = int()
-        self.resolution = str()
-        self.color_mode = str()
-        self.max_repeated_actions = int()
-        self.repeated_action_penalty = float()
-        self.full_action_space = bool()
-        self.terminal_on_loss_of_life = bool()
-        self.frame_stack = int()
-        self.frame_skip = int()
-        self.embed_time = bool()
-        self.embed_action = bool()
-        self.embed_state = bool()
-        self.atari_rom_check = bool()
-
-        self.ppo_vf_coef = float()
-        self.entropy_bonus = float()
-        self.ppo_epsilon = float()
-        self.n_steps = int()
-        self.agents = int()
-        self.advantage_epsilon = float()
-        self.advantage_clipping = object()
-        self.ppo_epsilon_anneal = bool()
-
-        # extra
-        self.head_scale = float()
-
-        self.aux_target = str()
-        self.aux_source = str()
-        self.aux_period = int()
-
-        self.use_rnd = bool()
-
-        self.rnd_experience_proportion = float()
-
-        self.precision = str()
-
-        self.head_bias = bool()
-
         self._add_remappings()
         self._parse()
         self.auto()
         self.verify()
-
 
     def get_env_name(self, n: int=0):
         """
@@ -653,6 +714,16 @@ class Config(BaseConfig):
         Apply special config settings.
         """
         super().auto()
+
+        # We used to use restore=True instead of restore = "always"
+        if self.restore in ["True", "true", True]:
+            self.restore = "always"
+
+    def verify(self):
+        super().verify()
+
+        valid_restore = ["always", "never", "auto"]
+        assert self.restore in valid_restore, f"Expecting {self.restore} to be one of {valid_restore} but was {self.restore}"
 
 
     def _add_remappings(self):
@@ -708,7 +779,7 @@ class Config(BaseConfig):
         # checks
         if args.reference_policy is not None:
             assert args.architecture == "dual", "Reference policy loading requires a dual network."
-        assert not (args.use_rnd and not args.observation_normalization), "RND requires observation normalization"
+        assert not (args.rnd.enabled and not args.observation_normalization), "RND requires observation normalization"
 
         # set defaults
         if args.tvf.gamma is None:
@@ -717,37 +788,12 @@ class Config(BaseConfig):
         if args.hash.bonus != 0:
             assert args.hash.enabled, "use_hashing must be enabled."
 
-        # timeout
-        if args.timeout == "auto":
-            if args.env_type == "atari":
-                args.timeout = 108000  # includes skipped frames
-            elif args.env_type == "procgen":
-                # might be more fair to just set this so something like 8000 for all envs?
-                # the trimming can auto adapt so it's just when we put the time frac into the obs
-                # maybe we should use log time instead?
-                if args.environment in ['bigfish', 'plunder', 'bossfight']:
-                    args.timeout = 8000
-                else:
-                    args.timeout = 1000
-            else:
-                args.timeout = 0  # unlimited
-
-        else:
-            args.timeout = int(args.timeout)
-
         # auto beta
         for optimizer in [args.policy_opt, args.value_opt, args.distil_opt, args.aux_opt, args.rnd_opt]:
             if optimizer.adam_beta1 < 0:
                 optimizer.adam_beta1 = 1 - (1 / optimizer.n_updates(args.n_steps * args.agents))
                 print(f"Set {optimizer.name} beta1 to {optimizer.adam_beta1}")
 
-        # color mode
-        assert args.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
-        if args.color_mode == "default":
-            args.color_mode = {
-                'atari': 'bw',
-                'procgen': 'rgb',
-            }.get(args.env_type, 'bw')
 
     @property
     def reward_normalization_gamma(self):
@@ -758,12 +804,12 @@ class Config(BaseConfig):
 
     @property
     def use_intrinsic_rewards(self):
-        return self.use_rnd or (self.hash.bonus != 0)
+        return self.rnd.enabled or (self.hash.bonus != 0)
 
     @property
     def tvf_return_n_step(self):
         if self.lambda_value >= 1:
-            return self.timeout//self.frame_skip
+            return self.env.timeout
         else:
             return round(1/(1-self.lambda_value))
 
@@ -773,10 +819,6 @@ class Config(BaseConfig):
             return args.device
         else:
             return self.mutex_key
-
-    @property
-    def noop_start(self):
-        return self.noop_duration > 0
 
     @property
     def batch_size(self):

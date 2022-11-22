@@ -150,7 +150,7 @@ class Runner:
         else:
             self.aux_optimizer = None
 
-        if args.use_rnd:
+        if args.rnd.enabled:
             self.rnd_optimizer = make_optimizer(model.prediction_net.parameters(), args.rnd_opt)
         else:
             self.rnd_optimizer = None
@@ -178,7 +178,7 @@ class Runner:
 
         self.grad_accumulator = {}
 
-        if args.env_type == "mujoco":
+        if args.env.type == "mujoco":
             obs_type = np.float32
             obs_type_torch = torch.float32
         else:
@@ -254,7 +254,7 @@ class Runner:
             }
             assert args.hash.method in hashers.keys(), f"Invalid hashing method '{args.hash.method}' ({hashers.keys()})"
 
-            if args.env_type == "atari":
+            if args.env.type == "atari":
                 # for atari, because of frame stacking only use the first state.
                 hash_state_shape = list(self.state_shape)
                 hash_state_shape[0] = 1
@@ -407,7 +407,7 @@ class Runner:
         if not disable_optimizer:
             data['policy_optimizer_state_dict'] = self.policy_optimizer.state_dict()
             data['value_optimizer_state_dict'] = self.value_optimizer.state_dict()
-            if args.use_rnd:
+            if args.rnd.enabled:
                 data['rnd_optimizer_state_dict'] = self.rnd_optimizer.state_dict()
             if self.distil_optimizer is not None:
                 data['distil_optimizer_state_dict'] = self.distil_optimizer.state_dict()
@@ -472,7 +472,7 @@ class Runner:
 
         self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
         self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
-        if args.use_rnd:
+        if args.rnd.enabled:
             self.rnd_optimizer.load_state_dict(checkpoint['rnd_optimizer_state_dict'])
         if 'distil_optimizer_state_dict' in checkpoint:
             self.distil_optimizer.load_state_dict(checkpoint['distil_optimizer_state_dict'])
@@ -656,7 +656,7 @@ class Runner:
         assert self.obs.dtype == np.uint8, "hashin currently requires 8-bit input"
 
         # give reward for action that lead to a novel state...
-        if args.env_type == "atari":
+        if args.env.type == "atari":
             channel_filter = slice(0, 1)  # just take first channel, might not work for rgb...
         else:
             channel_filter = None  # select all channels.
@@ -730,7 +730,7 @@ class Runner:
             model_out = self.detached_batch_forward(
                 self.obs,
                 output="full",
-                include_rnd=args.use_rnd,
+                include_rnd=args.rnd.enabled,
                 update_normalization=True
             )
 
@@ -755,7 +755,7 @@ class Runner:
                     self.hash_recent_counts[obs_hash] += 1
                     obs_hashes[t, a] = obs_hash
 
-            if args.use_rnd:
+            if args.rnd.enabled:
                 # update the intrinsic rewards
                 self.int_rewards[t] += model_out["rnd_error"].detach().cpu().numpy()
 
@@ -1116,11 +1116,11 @@ class Runner:
 
         N, A, *state_shape = self.prev_obs.shape
 
-        if args.ir_normalize:
+        if args.ir.normalize:
             # normalize returns using EMS
             # this is this how openai did it (i.e. forward rather than backwards)
             for t in range(self.N):
-                terminals = (not args.ir_propagation) * self.terminals[t, :]
+                terminals = (not args.ir.propagation) * self.terminals[t, :]
                 self.ems_norm = (1 - terminals) * args.gamma_int * self.ems_norm + self.int_rewards[t, :]
                 self.intrinsic_returns_rms.update(self.ems_norm.reshape(-1))
 
@@ -1136,14 +1136,14 @@ class Runner:
             self.intrinsic_reward_norm_scale = (1e-5 + self.intrinsic_returns_rms.var ** 0.5)
             self.int_rewards = (self.int_rewards / self.intrinsic_reward_norm_scale)
 
-        if args.ir_center:
+        if args.ir.center:
             self.int_rewards = self.int_rewards - self.int_rewards.mean()
 
         int_advantage = gae(
             self.int_rewards,
             self.int_value[:N],
             self.int_value[N],
-            (not args.ir_propagation) * self.terminals,
+            (not args.ir.propagation) * self.terminals,
             gamma=args.gamma_int,
             lamb=args.lambda_policy
         )
@@ -1193,7 +1193,7 @@ class Runner:
 
         self.advantage = ext_advantage.copy()
         if args.use_intrinsic_rewards:
-            int_advantage = args.ir_scale * self.calculate_intrinsic_returns()
+            int_advantage = args.ir.scale * self.calculate_intrinsic_returns()
             self.advantage += int_advantage
             self.log.watch_mean_std("*adv_int", int_advantage, display_width=0)
             self.log.watch_mean("adv_ratio", ((ext_advantage**2).mean() / (int_advantage**2).mean())**0.5, display_width=0)
@@ -1368,7 +1368,7 @@ class Runner:
         # must be determanistic. The reality is there isn't much difference between exp(-40) and exp(-30) so don't do
         # mse on it.
 
-        if args.env_type == "mujoco":
+        if args.env.type == "mujoco":
             # we are basically calculating the KL here, ignoring the constant term.
             # note: this might get very large when std gets very small... so we add a bias term
             # see https://stats.stackexchange.com/questions/7440/kl-divergence-between-two-univariate-gaussians
@@ -1425,25 +1425,25 @@ class Runner:
 
         model_out = self.model.forward(data["prev_state"], output="full")
 
-        if args.aux_target == "vtarg":
+        if args.aux.target == "vtarg":
             # train actual value predictions on vtarg
             targets = data["aux_vtarg"]
-        elif args.aux_target == "reward":
+        elif args.aux.target == "reward":
             targets = data["aux_reward"]
         else:
-            raise ValueError(f"Invalid aux target, {args.aux_target}.")
+            raise ValueError(f"Invalid aux target, {args.aux.target}.")
 
-        if args.aux_source == "aux":
+        if args.aux.source == "aux":
             value_predictions = model_out["value_aux"][..., 0]
             policy_predictions = model_out["policy_aux"][..., 0]
             value_constraint = 1.0 * torch.square(
                 model_out["value_ext_value"] - data['old_value']).mean()
-        elif args.aux_source == "value":
+        elif args.aux.source == "value":
             value_predictions = model_out["value_ext_value"]
             policy_predictions = model_out["policy_ext_value"]
             value_constraint = 0
         else:
-            raise ValueError(f"Invalid aux target, {args.aux_source}")
+            raise ValueError(f"Invalid aux target, {args.aux.source}")
 
         value_loss = torch.square(targets - value_predictions).mean()
         policy_loss = torch.square(targets - policy_predictions).mean()
@@ -1710,13 +1710,13 @@ class Runner:
     @property
     def reward_scale(self):
         """ The amount rewards have been multiplied by. """
-        if args.reward_normalization == "rms":
+        if args.env.reward_normalization == "rms":
             norm_wrapper = wrappers.get_wrapper(self.vec_env, wrappers.VecNormalizeRewardWrapper)
             return 1.0 / norm_wrapper.std
-        elif args.reward_normalization == "off":
+        elif args.env.reward_normalization == "off":
             return 1.0
         else:
-            raise ValueError(f"Invalid reward normalization {args.reward_normalization}")
+            raise ValueError(f"Invalid reward normalization {args.env.reward_normalization}")
 
     def train_rnd_minibatch(self, data, loss_scale: float = 1.0, **kwargs):
 
@@ -1744,7 +1744,7 @@ class Runner:
         B = args.batch_size
         N, A, *state_shape = self.prev_obs.shape
 
-        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])[:round(B*args.rnd_experience_proportion)]
+        batch_data["prev_state"] = self.prev_obs.reshape([B, *state_shape])[:round(B*args.rnd.experience_proportion)]
 
         for epoch in range(args.rnd_opt.epochs):
             self.train_batch(
@@ -2137,10 +2137,10 @@ class Runner:
             if self.wants_distil_update("after_policy"):
                 self.train_distil()
 
-        if args.aux_opt.epochs > 0 and (args.aux_period == 0 or self.batch_counter % args.aux_period == args.aux_period - 1):
+        if args.aux_opt.epochs > 0 and (args.aux.period == 0 or self.batch_counter % args.aux.period == args.aux.period - 1):
             self.train_aux()
 
-        if args.use_rnd:
+        if args.rnd.enabled:
             self.train_rnd()
 
         self.batch_counter += 1

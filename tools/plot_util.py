@@ -94,7 +94,7 @@ def read_log(file_path):
     # I should probably be using pandas rather than a dictionary tbh.
     try:
         # support gzip
-        X = pd.read_csv(file_path+"/training_log.csv.gz", delimiter=',')
+        X = pd.read_csv(file_path+"/training_log.csv.gz", delimiter=',', compression="gzip")
     except:
         X = pd.read_csv(file_path + "/training_log.csv", delimiter=',')
 
@@ -337,7 +337,12 @@ class RunLog():
             return len(self._fields["env_step"])
 
     def load(self, file_path, skip_rows=0):
-        reader = csv.reader(open(file_path, 'r'))
+
+        if file_path.endswith(".gz"):
+            import gzip
+            reader = csv.reader(gzip.open(file_path, 'rt'))
+        else:
+            reader = csv.reader(open(file_path, 'r'))
         col_names = next(reader, None)
         result = {}
         data = [row for row in reader]

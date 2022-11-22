@@ -460,12 +460,12 @@ def copy_source_files(source, destination, force=False):
         else:
             copy_command = "cp"
 
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "./train.py"), os.path.join(destination,
-                                                                                                      "./train.py")))
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "./rl", "*.py"), os.path.join(destination,
-                                                                                                        "./rl")))
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "./roms", "*.bin"), os.path.join(destination,
-                                                                                                           "./roms")))
+        os.system("{} {} '{}'".format(
+            copy_command, os.path.join(source, "./train.py"), os.path.join(destination,"./train.py")))
+        os.system("{} {} '{}'".format(
+            copy_command, os.path.join(source, "./rl", "*.py"), os.path.join(destination, "./rl")))
+        os.system("{} {} '{}'".format(
+            copy_command, os.path.join(source, "./roms", "*.bin"), os.path.join(destination,"./roms")))
 
         return destination_train_script
     except Exception as e:

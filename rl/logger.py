@@ -54,7 +54,6 @@ class LogVariable():
         self._history = deque(maxlen=history_length)
         self._history_length = history_length
         self._type = type
-        self._ticker = 0
 
     def add_sample(self, value):
         # cast input into the correct type.
@@ -66,7 +65,6 @@ class LogVariable():
             value = str(value)
 
         self._history.append(value)
-        self._ticker += 1
 
     def get_history(self, max_samples=None):
         if max_samples is None:

@@ -8,13 +8,6 @@ import multiprocessing
 
 import gym.version
 
-resolution_map = {
-    "full": (210, 160),
-    "nature": (84, 84),
-    "muzero": (96, 96),
-    "half": (105, 80)     # this may produce cleaner resampling
-}
-
 def get_previous_experiment_guid(experiment_path, run_name):
     """ Looks for previous experiment with same run_name. Returns the guid if found. """
     if not os.path.exists(experiment_path):
@@ -133,13 +126,6 @@ def main():
         while args.agents % args.workers != 0:
             # make sure workers divides number of jobs.
             args.workers -= 1
-
-    # set resolution
-    args.resolution = args.resolution.lower()
-    if args.resolution in resolution_map:
-        args.res_x, args.res_y = resolution_map[args.resolution]
-    else:
-        raise Exception("Invalid resolution " + args.resolution)
 
     # check the output folder is valid...
     assert os.path.isdir(args.output_folder), "Can not find path " + args.output_folder

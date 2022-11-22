@@ -5,6 +5,7 @@ Library for creating vector environments
 from rl.config import args
 
 import numpy as np
+import envpool
 
 import gym
 
@@ -32,7 +33,8 @@ def create_envs_envpool(N=None, monitor_video=False):
     """
     Creates environments using (faster) envpool. Not all features supported et
     """
-    pass
+
+    envs = env
 
 
 def create_envs_classic(N=None, monitor_video=False):
@@ -46,7 +48,7 @@ def create_envs_classic(N=None, monitor_video=False):
     base_seed = args.seed
     if base_seed is None or base_seed < 0:
         base_seed = np.random.randint(0, 9999)
-    env_fns = [lambda i=i: make_env(args.env_type, env_id=args.get_env_name(i), args=args, seed=base_seed + (i * 997),
+    env_fns = [lambda i=i: make_env(args.env.type, env_id=args.get_env_name(i), args=args, seed=base_seed + (i * 997),
                                     monitor_video=monitor_video) for i in range(N)]
 
     if args.sync_envs:
@@ -60,16 +62,16 @@ def create_envs_classic(N=None, monitor_video=False):
         )
 
     # ema normalization is handled externally.
-    if args.reward_normalization == "rms":
+    if args.env.reward_normalization == "rms":
         vec_env = wrappers.VecNormalizeRewardWrapper(
             vec_env,
             gamma=args.reward_normalization_gamma,
             mode="rms",
-            clip=args.reward_normalization_clipping,
+            clip=args.env.reward_normalization_clipping,
         )
 
-    if args.max_repeated_actions > 0 and args.env_type != "mujoco":
-        vec_env = wrappers.VecRepeatedActionPenalty(vec_env, args.max_repeated_actions,
-                                                         args.repeated_action_penalty)
+    if args.env.max_repeated_actions > 0 and args.env.type != "mujoco":
+        vec_env = wrappers.VecRepeatedActionPenalty(vec_env, args.env.max_repeated_actions,
+                                                         args.env.repeated_action_penalty)
 
     return vec_env
