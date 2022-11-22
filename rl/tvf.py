@@ -108,12 +108,12 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         if method == "off":
             return tvf_value_estimates, None
         elif method == "timelimit":
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
+            time_till_termination = np.maximum((args.env.timeout) - time, 0)
         elif method == "est_term":
             est_ep_length = np.percentile(list(self.runner.episode_length_buffer) + list(time), args.tvf.eta_percentile).astype(
                 int) + args.tvf.eta_buffer
             est_ep_length += args.tvf.eta_minh / 4  # apply small buffer
-            time_till_termination = np.maximum((args.timeout / args.frame_skip) - time, 0)
+            time_till_termination = np.maximum((args.env.timeout) - time, 0)
             est_time_till_termination = np.maximum(est_ep_length - time, args.tvf.eta_minh)
             time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.runner.log.watch_mean("*ttt_ep_length",
