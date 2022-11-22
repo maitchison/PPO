@@ -130,7 +130,7 @@ class Runner:
             if cfg.optimizer == "adam":
                 optimizer = torch.optim.Adam
                 optimizer_params.update({
-                    'eps': cfg.adam_eplot_psilon,
+                    'eps': cfg.adam_epsilon,
                     'betas': (cfg.adam_beta1, cfg.adam_beta2),
                 })
             elif cfg.optimizer == "sgd":

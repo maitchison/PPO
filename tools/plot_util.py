@@ -92,7 +92,12 @@ def read_log(file_path):
         params["mini_batch_size"] = int(params["agents"] * params["n_steps"] / params["n_mini_batches"])
 
     # I should probably be using pandas rather than a dictionary tbh.
-    X = pd.read_csv(file_path+"/training_log.csv", delimiter=',')
+    try:
+        # support gzip
+        X = pd.read_csv(file_path+"/training_log.csv.gz", delimiter=',')
+    except:
+        X = pd.read_csv(file_path + "/training_log.csv", delimiter=',')
+
     result = {}
     for column in X:
         result[column] = np.nan_to_num(np.asarray(X[column]), nan=0.0)
@@ -253,7 +258,7 @@ def get_runs(path: Union[str, list], run_filter=None, skip_rows=1):
             continue
         for file in files:
             name = os.path.split(subdir)[-1]
-            if file == "training_log.csv":
+            if file in ["training_log.csv", "training_log.csv.gz"]:
                 data = RunLog(os.path.join(subdir, file), skip_rows=skip_rows)
                 if data is None:
                     continue
