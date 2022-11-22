@@ -31,7 +31,7 @@ class ProcGenWrapper(gym.Wrapper):
         return obs
 
 
-def make(env_id: str, monitor_video=False, seed=None, args=None, difficulty:str='hard', determanistic_saving=True):
+def make(env_id: str, monitor_video=False, seed=None, args=None):
     """
     Construct environment of given name, including any required wrappers.
     @determanistic_saving: When true RND is saved with the environment, so restoring will always produce the same
@@ -49,15 +49,9 @@ def make(env_id: str, monitor_video=False, seed=None, args=None, difficulty:str=
         np.random.seed(seed)
 
     # procgen defaults to using hard, so just use gym to create env.
-    env_args = {'distribution_mode': difficulty}
+    env_args = {'distribution_mode': args.procgen_difficulty}
     if seed is not None:
         env_args['rand_seed'] = seed
-
-    # stub
-    # if seed is None:
-    #     print("Generating procgen env with no seed.")
-    # else:
-    #     print(f"Generating procgen env with seed {seed}.")
 
     env = gym.make(env_name, **env_args)
 

@@ -130,7 +130,7 @@ class Runner:
             if cfg.optimizer == "adam":
                 optimizer = torch.optim.Adam
                 optimizer_params.update({
-                    'eps': cfg.adam_epsilon,
+                    'eps': cfg.adam_eplot_psilon,
                     'betas': (cfg.adam_beta1, cfg.adam_beta2),
                 })
             elif cfg.optimizer == "sgd":
@@ -1157,7 +1157,8 @@ class Runner:
         """
 
         self.returns *= 0
-        self.tvf.tvf_returns *= 0
+        if args.tvf.enabled:
+            self.tvf.tvf_returns *= 0
         N, A, *state_shape = self.prev_obs.shape
 
         self.model.eval()

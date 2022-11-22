@@ -907,7 +907,7 @@ class AtariScoreNormalizer:
     }
 
     def __init__(self):
-        self._normalization_scores = self._load_scores("Atari-Human.csv")
+        self._normalization_scores = self._load_scores("../Atari-Human.csv")
         self._normalization_scores.update(PROCGEN_NORM_CONSTANTS)
         self._normalization_scores.update(MUJOCO_NORM_CONSTANTS)
 

@@ -440,21 +440,24 @@ def copy_source_files(source, destination, force=False):
     """ Copies all source files from source path to destination. Returns path to destination training script. """
     try:
 
-        destination_train_script = os.path.join(destination, "train.py")
+        destination_train_script = os.path.join(destination, "../train.py")
 
         if not force and os.path.exists(destination_train_script):
             return destination_train_script
         # we need to copy across train.py and then all the files under rl...
-        os.makedirs(os.path.join(destination, "rl"), exist_ok=True)
-        os.makedirs(os.path.join(destination, "roms"), exist_ok=True)
+        os.makedirs(os.path.join(destination, "../rl"), exist_ok=True)
+        os.makedirs(os.path.join(destination, "../roms"), exist_ok=True)
         if platform.system() == "Windows":
             copy_command = "copy"
         else:
             copy_command = "cp"
 
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "train.py"), os.path.join(destination, "train.py")))
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "rl", "*.py"), os.path.join(destination, "rl")))
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "roms", "*.bin"), os.path.join(destination, "roms")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "../train.py"), os.path.join(destination,
+                                                                                                      "../train.py")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "../rl", "*.py"), os.path.join(destination,
+                                                                                                        "../rl")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "../roms", "*.bin"), os.path.join(destination,
+                                                                                                           "../roms")))
 
         return destination_train_script
     except Exception as e:

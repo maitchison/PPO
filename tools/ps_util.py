@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import plot_util as pu
+from tools import plot_util as pu
 
 PS_TEMPS = [1.0, 0.5, 0.25, 0.125, 0.0]
 EPOCHS = np.arange(0, 50+1, 5)
