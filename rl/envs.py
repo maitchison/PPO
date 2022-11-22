@@ -5,7 +5,6 @@ Library for creating vector environments
 from rl.config import args
 
 import numpy as np
-import envpool
 import gym.wrappers
 
 import gym
@@ -32,6 +31,9 @@ def create_envs_envpool(N=None, monitor_video=False):
     """
     Creates environments using (faster) envpool. Not all features supported et
     """
+
+    # lazy load, as this might not be on cluster yet...
+    import envpool
 
     # build id
     env_id = f"{args.env.type}:{args.env.name}"
