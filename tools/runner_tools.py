@@ -437,27 +437,35 @@ def get_run_folders(experiment_name, run_name):
     return result
 
 def copy_source_files(source, destination, force=False):
-    """ Copies all source files from source path to destination. Returns path to destination training script. """
+    """
+    Copies all source files from source path to destination. Returns path to destination training script.
+
+    Call this function from the root path, it will then copy files from this folder into the experiment folder.
+
+    """
     try:
 
-        destination_train_script = os.path.join(destination, "../train.py")
+        # stub
+        # print(f"copy from {source} to {destination} and we are in {os.getcwd()}")
+
+        destination_train_script = os.path.join(destination, "./train.py")
 
         if not force and os.path.exists(destination_train_script):
             return destination_train_script
         # we need to copy across train.py and then all the files under rl...
-        os.makedirs(os.path.join(destination, "../rl"), exist_ok=True)
-        os.makedirs(os.path.join(destination, "../roms"), exist_ok=True)
+        os.makedirs(os.path.join(destination, "./rl"), exist_ok=True)
+        os.makedirs(os.path.join(destination, "./roms"), exist_ok=True)
         if platform.system() == "Windows":
             copy_command = "copy"
         else:
             copy_command = "cp"
 
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "../train.py"), os.path.join(destination,
-                                                                                                      "../train.py")))
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "../rl", "*.py"), os.path.join(destination,
-                                                                                                        "../rl")))
-        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "../roms", "*.bin"), os.path.join(destination,
-                                                                                                           "../roms")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "./train.py"), os.path.join(destination,
+                                                                                                      "./train.py")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "./rl", "*.py"), os.path.join(destination,
+                                                                                                        "./rl")))
+        os.system("{} {} '{}'".format(copy_command, os.path.join(source, "./roms", "*.bin"), os.path.join(destination,
+                                                                                                           "./roms")))
 
         return destination_train_script
     except Exception as e:
