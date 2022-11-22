@@ -37,8 +37,8 @@ resolution_map = {
 
 class BaseConfig:
 
-    def __init__(self, prefix='', parser: argparse.ArgumentParser=None):
-        self.prefix = prefix
+    def __init__(self, prefix='', parser: argparse.ArgumentParser = None):
+        self._prefix = prefix
         if parser is not None:
             self._auto_add_params(parser)
 
@@ -46,15 +46,19 @@ class BaseConfig:
         """
         Make sure parameters are ok.
         """
-        for child in self._children():
+        for child in self.get_children():
             child.verify()
 
     def auto(self):
         """
         Apply any auto logic.
         """
-        for child in self._children():
+        for child in self.get_children():
             child.auto()
+
+    @property
+    def prefix(self):
+        return self._prefix
 
     def _auto_add_params(self, parser):
         """
@@ -95,7 +99,7 @@ class BaseConfig:
                 # otherwise "False" will evaluate to True.
                 var_type = str2bool
 
-            prefix_part = "" if (self.prefix == "") else self.prefix.lower() + "_"
+            prefix_part = "" if (self._prefix == "") else self._prefix.lower() + "_"
 
             parser.add_argument(
                 f"--{prefix_part}{var_name}",
@@ -104,7 +108,7 @@ class BaseConfig:
                 help=var_help,
             )
 
-    def _children(self):
+    def get_children(self):
         """
         Returns list of config children
         """
@@ -117,10 +121,10 @@ class BaseConfig:
     def update(self, params):
 
         # children first...
-        for child in self._children():
+        for child in self.get_children():
             child.update(params)
 
-        prefix = "" if self.prefix == "" else self.prefix+"_"
+        prefix = "" if self._prefix == "" else self._prefix + "_"
 
         for k in list(params.keys()):
             if not k.startswith(prefix):
@@ -135,39 +139,51 @@ class BaseConfig:
                 setattr(self.__class__, k_without_prefix, params[k])
                 del params[k]
 
-    def _is_hidden_var(self, x: str):
-        return x.startswith("_") or x in ['prefix']
 
-    def flatten(self):
-        params = {}
+    def _is_hidden_var(self, x: str):
+        return x.startswith("_")
+
+    def get_vars(self):
+        """
+        Returns a dictionary of config variable names:values.
+        """
+        result = {}
+        # object vars... remove eventually
         for k, v in self.__dict__.items():
             if self._is_hidden_var(k):
                 continue
             if issubclass(type(v), BaseConfig):
-                if v.prefix == '':
-                    continue
-                sub_params = v.flatten()
-                prefix = v.prefix
-                params.update({
-                    f"{prefix}_{k}": v for k, v in sub_params.items()
-                })
-            else:
-                params[k] = v
+                continue
+            result[k] = v
+        # class vars (eventually just use these)
+        for k, v in vars(self.__class__).items():
+            if callable(v) or issubclass(type(v), property):
+                # don't want methods
+                continue
+            if self._is_hidden_var(k):
+                continue
+            if issubclass(type(v), BaseConfig):
+                continue
+            result[k] = v
+        return result
+
+    def flatten(self):
+        params = {}
+        # process our vars, output in sorted order.
+        vars = self.get_vars()
+        for k in sorted(vars.keys()):
+            params[k] = vars[k]
+        # process our children
+        for child in self.get_children():
+            if child._prefix == '':
+                continue
+            sub_params = child.flatten()
+            prefix = child._prefix
+            params.update({
+                f"{prefix}_{k}": v for k, v in sub_params.items()
+            })
         return params
 
-
-    def _print_vars(self):
-        """
-        Useful for copy and pasting into the init so we get auto-complete
-        """
-        for k, v in vars(self).items():
-            try:
-                if v is None:
-                    print(f"self.{k} = object()")
-                else:
-                    print(f"self.{k} = {type(v).__name__}()")
-            except:
-                pass
 
 class SimpleNoiseScaleConfig(BaseConfig):
     """
@@ -473,9 +489,6 @@ class EnvConfig(BaseConfig):
     # specific to procgen
     procgen_difficulty: str = "hard"    # [hard|easy]
 
-    def __init__(self, parser: argparse.ArgumentParser):
-        super().__init__(prefix="env", parser=parser)
-
     @property
     def is_vision_env(self):
         """
@@ -534,11 +547,15 @@ class EnvConfig(BaseConfig):
         else:
             EnvConfig.timeout = int(self.timeout)
 
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="env", parser=parser)
+
+
 
 class Config(BaseConfig):
 
     # list of params that have been remapped
-    REMAPPED_PARAMS = {
+    _REMAPPED_PARAMS = {
     }
 
     def __init__(self):
@@ -747,7 +764,7 @@ class Config(BaseConfig):
         """
         Add stubs for parameters that have been removed.
         """
-        for k, v in self.REMAPPED_PARAMS.items():
+        for k, v in self._REMAPPED_PARAMS.items():
             self._parser.add_argument(f"--{k}", type=str, default=None, help=argparse.SUPPRESS)
 
     def _parse(self, args_override=None):
@@ -757,7 +774,7 @@ class Config(BaseConfig):
 
         # clean this up...
         parser = self._parser
-        REMAPPED_PARAMS = self.REMAPPED_PARAMS
+        REMAPPED_PARAMS = self._REMAPPED_PARAMS
         args = self
 
         cmd_args = parser.parse_args(args_override).__dict__.copy()
