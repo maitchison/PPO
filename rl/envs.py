@@ -6,8 +6,10 @@ from rl.config import args
 
 import numpy as np
 import envpool
+import gym.wrappers
 
 import gym
+from gym.vector.vector_env import VectorEnv, VectorEnvWrapper
 
 # should be in rl.envs
 from rl import atari, mujoco, procgen
@@ -28,13 +30,106 @@ def make_env(env_type, env_id, **kwargs):
         raise ValueError(f"Invalid environment type {env_type}")
     return make_fn(env_id, **kwargs)
 
-
 def create_envs_envpool(N=None, monitor_video=False):
     """
     Creates environments using (faster) envpool. Not all features supported et
     """
 
-    envs = env
+    # build id
+    env_id = f"{args.env.type}:{args.env.name}"
+
+    # build gym args
+    gym_args = {}
+    if args.env.type == "procgen":
+        gym_args.update(
+            difficulty = args.env.procgen_difficulty
+        )
+    if args.env.type == "atari":
+        gym_args.update(
+            repeat_action_probability=args.env.repeat_action_probability,
+            full_action_space=args.env.full_action_space,
+        )
+
+    envs = envpool.make_gym(env_id, **gym_args)
+
+    # todo: make sure no timelimit was applied
+
+    if args.env.type == "atari":
+        # todo: rom check
+        pass
+
+    # standard wrappers
+    # label env_id
+    # label seed
+    # set seeds (do above?)
+
+    # todo...
+    # per step termination prob
+    # save env state (might be hard?)
+
+    if args.env.is_vision_env:
+
+        # vision processing... it's quite a long list...
+        # i'll try to integrate these two as much as I can.
+
+        if args.env.type == "atari":
+            # maybe we can change the config to get env pool to do this?
+            assert args.env.color_mode == "bw", f"Envpool generates black and white frames, so {args.env.color_mode} format is not supported."
+            assert args.env.res_x == args.env.res_y, "Atari preprocessing only supports square resolutions."
+
+        # -------------------------
+        # for atari...
+        # -------------------------
+        # noop start
+
+        # [done] frame skip
+        # timelimit
+        # mr info
+        # monitor video
+        # ep score
+        # reward clipping
+        # atari processing (scale?)
+
+        envs = gym.wrappers.AtariPreprocessing(
+            envs,
+            noop_max=args.env.noop_duration,
+            frame_skip=args.env.frame_skip,
+            screen_size=args.env.res_x,
+            terminal_on_life_loss=args.env.atari_terminal_on_loss_of_life,
+            grayscale_obs=False,
+            scale_obs=False,
+        )
+        # zero obs
+        # color transform
+        # terminal on loss of life
+        # differed reward
+        # embed action
+        # [done] framestack
+        # embed time
+        # embed state (remove?)
+        # channels first (if needed)
+        # null action wrapper (won't work anymore... remove, this will make desync impossiable though)
+
+        # -------------------------
+        # for procgen...
+        # -------------------------
+        # timelimit
+        # procgen wrapper
+        # monitor video
+        # color transform
+        # embed time
+        # channels first
+        # ep score
+        # embed action
+        # null action
+    else:
+        # this is really just for mujoco
+        raise Exception("Mujoco not yet supported with envpool.")
+
+    # other standard
+
+    return envs
+
 
 
 def create_envs_classic(N=None, monitor_video=False):

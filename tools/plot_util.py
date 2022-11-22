@@ -20,7 +20,7 @@ import pandas as pd
 
 LOG_CAP = 1e-6 # when computing logs values <= 0 will be replaced with this
 
-PROCGEN_NORM_CONSTANTS = {
+PROCGEN_HARD_CONSTANTS = {
     # from https://github.com/openai/phasic-policy-gradient/blob/7295473f0185c82f9eb9c1e17a373135edd8aacc/phasic_policy_gradient/constants.py#L20
     # these are for hard..
     'coinrun': [5, 10],
@@ -38,6 +38,26 @@ PROCGEN_NORM_CONSTANTS = {
     'climber': [1, 12.6],
     'plunder': [3, 30],
     'ninja': [2, 10],
+    'bossfight': [0.5, 13],
+}
+
+PROCGEN_EASY_CONSTANTS = {
+    # from  https://arxiv.org/pdf/1912.01588.pdf
+    'coinrun': [5, 10],
+    'starpilot': [2.5, 64],
+    'caveflyer': [3.5, 12],
+    'dodgeball': [1.5, 19],
+    'fruitbot': [-1.5, 32.4],
+    'chaser': [0.5, 13],
+    'miner': [1.5, 13],
+    'jumper': [3, 10],
+    'leaper': [3, 10],
+    'maze': [5, 10],
+    'bigfish': [1, 40],
+    'heist': [3.5, 10],
+    'climber': [2, 12.6],
+    'plunder': [4.5, 30],
+    'ninja': [3.5, 10],
     'bossfight': [0.5, 13],
 }
 
@@ -92,11 +112,12 @@ def read_log(file_path):
         params["mini_batch_size"] = int(params["agents"] * params["n_steps"] / params["n_mini_batches"])
 
     # I should probably be using pandas rather than a dictionary tbh.
-    try:
+    log_path = file_path + "/training_log.csv"
+    if os.path.exists(log_path+".gz"):
         # support gzip
-        X = pd.read_csv(file_path+"/training_log.csv.gz", delimiter=',', compression="gzip")
-    except:
-        X = pd.read_csv(file_path + "/training_log.csv", delimiter=',')
+        X = pd.read_csv(log_path+".gz", delimiter=',', compression="gzip")
+    else:
+        X = pd.read_csv(log_path, delimiter=',')
 
     result = {}
     for column in X:
@@ -854,12 +875,17 @@ class AtariScoreNormalizer:
     SUBSETS = {
         # special case...
         'Procgen': (
-            list(PROCGEN_NORM_CONSTANTS.keys()),
+            list(PROCGEN_HARD_CONSTANTS.keys()),
             "mean",
             0
         ),
         'Procgen_4': (
             ["heist", "maze", "bigfish", "bossfight"],
+            "mean",
+            0
+        ),
+        'Procgen_8_Val': (
+            ["starpilot", "fruitbot", "chaser", "leaper", "bigfish", "plunder", "ninja", "bossfight"],
             "mean",
             0
         ),
@@ -918,7 +944,9 @@ class AtariScoreNormalizer:
 
     def __init__(self):
         self._normalization_scores = self._load_scores("../Atari-Human.csv")
-        self._normalization_scores.update(PROCGEN_NORM_CONSTANTS)
+        self._normalization_scores.update(PROCGEN_HARD_CONSTANTS)
+        for k, v in PROCGEN_EASY_CONSTANTS.items():
+            self._normalization_scores[k+"_easy"] = v
         self._normalization_scores.update(MUJOCO_NORM_CONSTANTS)
 
 
@@ -974,21 +1002,34 @@ class AtariScoreNormalizer:
         if subset_name == "Procgen":
             total = 0
             normed_scores = []
-            for k, (low, high) in PROCGEN_NORM_CONSTANTS.items():
+            for k, (low, high) in PROCGEN_HARD_CONSTANTS.items():
                 norm_score = (scores[k] - low) / (high-low)
                 normed_scores.append(norm_score)
-                total += norm_score * (1/len(PROCGEN_NORM_CONSTANTS))
+                total += norm_score * (1 / len(PROCGEN_HARD_CONSTANTS))
             return total
 
         if subset_name == "Procgen_4":
             total = 0
             normed_scores = []
-            for k, (low, high) in PROCGEN_NORM_CONSTANTS.items():
+            for k, (low, high) in PROCGEN_HARD_CONSTANTS.items():
                 if k not in self.SUBSETS['Procgen_4'][0]:
                     continue
                 norm_score = (scores[k] - low) / (high-low)
                 normed_scores.append(norm_score)
-                total += norm_score * (1/len(4))
+                total += norm_score * (1/4)
+            return total
+
+        if subset_name == "Procgen_8_Val":
+            total = 0
+            normed_scores = []
+            for k, (low, high) in PROCGEN_EASY_CONSTANTS.items():
+                if k not in self.SUBSETS['Procgen_8_Val'][0]:
+                    continue
+                norm_score = (scores[k] - low) / (high-low)
+                normed_scores.append(norm_score)
+                total += norm_score * (1/8)
+            # stub:
+            print("using pg_8_val")
             return total
 
         # because montezuma's revenge often gets 0, and has such low weighting, I often don't test on it and just

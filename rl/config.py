@@ -410,7 +410,8 @@ class EnvConfig(BaseConfig):
     Environment Config
     """
 
-    type: str = "atari"                 # atari|mujoco|procgen
+    name:str = "Pong",                  # Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout'].
+    type: str = "atari",                # [atari|mujoco|procgen]
     warmup_period: int = 250,           # Number of random steps to take before training agent.
     timeout: str = "auto"               # "Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
     repeat_action_probability: float = 0.0
@@ -440,6 +441,9 @@ class EnvConfig(BaseConfig):
     # specific to atari
     atari_terminal_on_loss_of_life: bool = False
     atari_rom_check: bool = True        # Makes sure atari MD5 matches expectation.
+
+    # specific to procgen
+    procgen_difficulty: str = "hard"    # [hard|easy]
 
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="ir", parser=parser)
@@ -478,7 +482,7 @@ class EnvConfig(BaseConfig):
             self.color_mode = {
                 'atari': 'bw',
                 'procgen': 'yuv',
-            }.get(self.env.type, 'bw')
+            }.get(self.type, 'bw')
 
         # auto timeout
         if self.timeout == "auto":
@@ -488,7 +492,7 @@ class EnvConfig(BaseConfig):
                 # might be more fair to just set this so something like 8000 for all envs?
                 # the trimming can auto adapt so it's just when we put the time frac into the obs
                 # maybe we should use log time instead?
-                if args.environment in ['bigfish', 'plunder', 'bossfight']:
+                if args.env.name in ['bigfish', 'plunder', 'bossfight']:
                     EnvConfig.timeout = 8000
                 else:
                     EnvConfig.timeout = 1000
@@ -510,7 +514,6 @@ class Config(BaseConfig):
 
         # this is just so we get autocomplete, as well as IDE hints if we spell something wrong
 
-        self.environment = str()
         self.experiment_name = str()
         self.run_name = str()
         self.procgen_difficulty = str()
@@ -612,10 +615,8 @@ class Config(BaseConfig):
 
         parser = self._parser
 
-        parser.add_argument("environment", help="Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout']")
         parser.add_argument("--experiment_name", type=str, default="Run", help="Name of the experiment.")
         parser.add_argument("--run_name", type=str, default="run", help="Name of the run within the experiment.")
-        parser.add_argument("--procgen_difficulty", type=str, default="hard", help="[hard|easy]")
         parser.add_argument("--restore", type=str, default='auto', help="Restores previous model. 'always' will restore, or error, 'never' will not restore, 'auto' will restore if it can.")
         parser.add_argument("--reference_policy", type=str, default=None, help="Path to checkpoint to use for a reference policy. In this case policy will not be updated.")
         parser.add_argument("--workers", type=int, default=-1, help="Number of CPU workers, -1 uses number of CPUs")
