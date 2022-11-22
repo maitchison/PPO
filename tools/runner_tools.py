@@ -645,12 +645,12 @@ class Job:
         params["output_folder"] = "./Run"
         params["experiment_name"] = self.experiment_name
         params["run_name"] = self.run_name
-        params['restore'] = "auto" # restore if we can, but do not error if we can not.
+        params['restore'] = "auto"          # restore if we can, but do not error if we can not.
 
         nice_params = [
-            f"--{k}={nice_format(v)}" for k, v in params.items() if k not in ["env_name"] and v is not None
+            f"--{k}={nice_format(v)}" for k, v in params.items() if v is not None
         ]
-        python_part = "python {} {}".format('train.py', params["env_name"])
+        python_part = "python train.py"
         params_part = " ".join(nice_params)
         return python_part+" "+params_part
 
@@ -702,7 +702,7 @@ class Job:
             self.params["limit_epochs"] = int(next_chunk)
 
         nice_params = [
-            f"--{k}={nice_format(v)}" for k, v in self.params.items() if k not in ["env_name"] and v is not None
+            f"--{k}={nice_format(v)}" for k, v in self.params.items() if v is not None
         ]
 
         if run_async:
@@ -713,12 +713,12 @@ class Job:
                 process_params.append("--"+str(k))
                 process_params.append(str(v))
             process = subprocess.Popen(
-                [*shlex.split(preamble), "python", train_script_path, self.params["env_name"], *process_params],
+                [*shlex.split(preamble), "python", train_script_path, *process_params],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             return process
         else:
-            python_part = preamble+" "+"python \"{}\" {}".format(train_script_path, self.params["env_name"])
+            python_part = preamble+" "+"python \"{}\"".format(train_script_path)
             params_part = " ".join(nice_params)
             params_part_lined = "\n".join(nice_params)
             if verbose:

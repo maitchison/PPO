@@ -84,7 +84,7 @@ class BaseConfig:
             pass
 
         for var_name, var_default in class_vars.items():
-            if var_name.startswith("_") or var_name == "prefix":
+            if self._is_hidden_var(var_name):
                 continue
 
             var_type = var_types.get(var_name, object)
@@ -135,10 +135,13 @@ class BaseConfig:
                 setattr(self.__class__, k_without_prefix, params[k])
                 del params[k]
 
+    def _is_hidden_var(self, x: str):
+        return x.startswith("_") or x in ['prefix']
+
     def flatten(self):
         params = {}
         for k, v in self.__dict__.items():
-            if k.startswith('_'):
+            if self._is_hidden_var(k):
                 continue
             if issubclass(type(v), BaseConfig):
                 if v.prefix == '':

@@ -133,6 +133,12 @@ def read_log(file_path):
     result["params"] = params
     params["batch_size"] = params["agents"] * params["n_steps"]
 
+    print(params)
+
+    # a little bit of remapping to support the old style logs...
+    if "env_name" in params:
+        params["environment"] = params["env_name"]
+
     # this is a fixup for double dunk, where score is 0 at the start before any real scores have arrived.
     if params["environment"] == "DoubleDunk":
         ep_scores = result["ep_score_mean"]

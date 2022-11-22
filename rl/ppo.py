@@ -105,11 +105,11 @@ def train(model: models.TVFModel, log: Logger):
         log.info(f"Initialized with reference policy {Color.OKGREEN}{args.initial_model}{Color.ENDC}.")
     else:
         if has_checkpoint and args.restore in ['auto', 'always']:
-            log.info("Previous checkpoint detected:", end='')
+            log.info("Previous checkpoint detected.")
             checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
             restored_step = runner.load_checkpoint(checkpoint_path)
             log = runner.log
-            log.info("  resumed from step {:.0f}M".format(restored_step / 1000 / 1000))
+            log.info(" -resumed from step {:.0f}M".format(restored_step / 1000 / 1000))
             start_iteration = (restored_step // batch_size) + 1
             walltime = log["walltime"]
             did_restore = True
