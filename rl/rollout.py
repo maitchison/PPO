@@ -6,7 +6,7 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as f
 
 import time as clock
 import json
@@ -28,7 +28,7 @@ from .utils import open_checkpoint
 import collections
 
 
-def add_relative_noise(X:np.ndarray, rel_error:float):
+def add_relative_noise(X: np.ndarray, rel_error: float):
     # does not change the expectation.
     if rel_error <= 0:
         return X
@@ -1383,7 +1383,7 @@ class Runner:
             elif args.distil.loss == "mse_policy":
                 loss_policy = args.distil.beta * 0.5 * torch.square(data["old_log_policy"] - model_out["log_policy"]).mean(dim=-1)
             elif args.distil.loss == "kl_policy":
-                loss_policy = args.distil.beta * F.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none").sum(dim=-1)
+                loss_policy = args.distil.beta * f.kl_div(data["old_log_policy"], model_out["log_policy"], log_target=True, reduction="none").sum(dim=-1)
             else:
                 raise ValueError(f"Invalid distil_loss {args.distil.loss}")
 
@@ -1457,7 +1457,7 @@ class Runner:
         self.log.watch_mean("aux_value_ev", value_ev, history_length=history_length, display_width=0)
         self.log.watch_mean("aux_policy_ev", policy_ev, history_length=history_length, display_width=0)
 
-        policy_constraint = 1.0 * (F.kl_div(data['old_log_policy'], model_out["policy_log_policy"], log_target=True, reduction="batchmean")) # todo find good constant
+        policy_constraint = 1.0 * (f.kl_div(data['old_log_policy'], model_out["policy_log_policy"], log_target=True, reduction="batchmean")) # todo find good constant
 
         loss = value_loss + policy_loss + value_constraint + policy_constraint
 
@@ -1593,7 +1593,7 @@ class Runner:
             with torch.no_grad():
                 # record kl...
                 kl_approx = (old_log_pac - logpac).mean()
-                kl_true = F.kl_div(old_log_policy, logps, log_target=True, reduction="batchmean")
+                kl_true = f.kl_div(old_log_policy, logps, log_target=True, reduction="batchmean")
 
             entropy = calc_entropy(logps)
             original_entropy = calc_entropy(old_log_policy)
@@ -1643,7 +1643,7 @@ class Runner:
             global_states = data["*global_states"]
             global_model_out = self.model.forward(global_states, output="policy", exclude_tvf=True)
             new_global_log_policy = global_model_out["log_policy"]
-            global_kl = F.kl_div(
+            global_kl = f.kl_div(
                 utils.merge_down(old_global_log_policy), utils.merge_down(new_global_log_policy),
                 reduction="batchmean", log_target=True
             )
@@ -1659,7 +1659,7 @@ class Runner:
         # Value learning for PPO mode
         # -------------------------------------------------------------------------
 
-        if args.architecture == "single":
+        if args.model.architecture == "single":
             # negative because we're doing gradient ascent.
             gain = gain - self.train_value_heads(model_out, data)
 
@@ -1795,7 +1795,7 @@ class Runner:
                 self.get_current_actions_std().detach().cpu()
             ).log_prob(torch.from_numpy(self.actions)).reshape(B, self.model.actions)
 
-        if args.architecture == "single":
+        if args.model.architecture == "single":
             # ppo trains value during policy update
             batch_data["returns"] = self.returns.reshape([B, self.VH])
 
@@ -2103,7 +2103,7 @@ class Runner:
     def wants_distil_update(self, location=None):
         location_match = location is None or location == args.distil.order
         return \
-            args.architecture == "dual" and \
+            args.model.architecture == "dual" and \
             args.distil_opt.epochs > 0 and \
             self.batch_counter % args.distil.period == args.distil.period - 1 and \
             location_match
@@ -2131,7 +2131,7 @@ class Runner:
             )
             self.train_policy()
 
-        if args.architecture == "dual":
+        if args.model.architecture == "dual":
             # value learning is handled with policy in PPO mode.
             self.train_value()
             if self.wants_distil_update("after_policy"):

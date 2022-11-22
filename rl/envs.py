@@ -9,9 +9,7 @@ import envpool
 import gym.wrappers
 
 import gym
-from gym.vector.vector_env import VectorEnv, VectorEnvWrapper
 
-# should be in rl.envs
 from rl import atari, mujoco, procgen
 from rl import hybridVecEnv         # this is my vector env, it's a bit clunky, but it gets the job done.
 from rl import wrappers
@@ -143,7 +141,7 @@ def create_envs_classic(N=None, monitor_video=False):
     base_seed = args.seed
     if base_seed is None or base_seed < 0:
         base_seed = np.random.randint(0, 9999)
-    env_fns = [lambda i=i: make_env(args.env.type, env_id=args.get_env_name(i), args=args, seed=base_seed + (i * 997),
+    env_fns = [lambda i=i: make_env(args.env.type, env_id=args.env.name, args=args, seed=base_seed + (i * 997),
                                     monitor_video=monitor_video) for i in range(N)]
 
     if args.sync_envs:

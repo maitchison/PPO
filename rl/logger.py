@@ -310,7 +310,7 @@ class Logger():
         if self.compress_csv:
             file_name = file_name + ".gz"
 
-        open_fn = lambda x: gzip.open(x, 'wt') if self.compress_csv else lambda x: open(x, 'wt')
+        open_fn = lambda x: gzip.open(x, 'wt') if self.compress_csv else open(x, 'wt')
 
         f = open_fn(file_name)
         try:

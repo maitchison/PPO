@@ -203,7 +203,7 @@ class TVFConfig(BaseConfig):
     horizon_dropout: float = 0.0    # fraction of horizons to exclude per epoch.
     return_mode: str = "advanced"   # standard|advanced|full "
     return_distribution: str = "exponential"  # fixed|exponential|uniform|hyperbolic|quadratic
-    return_samples: int = 8,        # Number of n-step samples to use for distributional return calculation.
+    return_samples: int = 8         # Number of n-step samples to use for distributional return calculation.
     return_use_log_interpolation: bool = False # Interpolates in log space.
     max_horizon: int = 30000        # Max horizon for TVF.
     value_heads: int = 128          # Number of value heads to use.
@@ -230,11 +230,11 @@ class OptimizerConfig(BaseConfig):
             return
 
         epoch_defaults = {
-            'value': 2,
-            'policy': 2,
-            'distil': 2,
-            'aux': 0,
-            'rnd': 1,
+            'policy_opt': 2,
+            'value_opt': 1,
+            'distil_opt': 2,
+            'aux_opt': 0,
+            'rnd_opt': 1,
         }
 
         epoch_default = epoch_defaults.get(prefix, 0)
@@ -272,10 +272,10 @@ class DebugConfig(BaseConfig):
     Config settings for debug settings
     """
 
-    zero_obs: bool = False  # Zeros the environments observation. Useful to see if the model can learn from time only.
+    zero_obs: bool = False      # Zeros the environment observation. Useful to see if the model can learn from time only.
     checkpoint_slides: bool = False  # Generates images containing states during epoch saves.
-    print_freq: int = 60  # Number of seconds between debug prints.
-    log_freq: int = 300  # Number of seconds between log writes.
+    print_freq: int = 60        # Number of seconds between debug prints.
+    log_freq: int = 300         # Number of seconds between log writes.
     compress_csv: bool = False  # Enables log compression.
 
     def __init__(self, parser: argparse.ArgumentParser):
@@ -313,7 +313,7 @@ class ReplayConfig(BaseConfig):
     Config settings for replay buffer
     """
 
-    mode: str = "off"         # [overwrite|sequential|uniform|off]
+    mode: str = "off"               # [overwrite|sequential|uniform|off]
     size: int = 0                   # Size of replay buffer. 0=off.")
     mixing: bool = False
     thinning: float = 1.0           # Adds this fraction of experience to replay buffer.
@@ -359,6 +359,10 @@ class RNDConfig(BaseConfig):
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="rnd", parser=parser)
 
+    def verify(self):
+        if self.enabled:
+            assert args.observation_normalization, "RND requires observation normalization"
+
 class HashConfig(BaseConfig):
     """
     Config settings for State hashing
@@ -396,13 +400,34 @@ class IRConfig(BaseConfig):
     """
     Config for Intrinsic Rewards
     """
-    propagation: bool = True,   # Allows intrinsic returns to propagate through end of episode.
-    scale: float = 0.3,         # Intrinsic reward scale.
-    center: bool = False,       # Per-batch centering of intrinsic rewards.
-    normalize: bool = True,     # Normalizes intrinsic rewards such that they have unit variance.
+    propagation: bool = True    # Allows intrinsic returns to propagate through end of episode.
+    scale: float = 0.3          # Intrinsic reward scale.
+    center: bool = False        # Per-batch centering of intrinsic rewards.
+    normalize: bool = True      # Normalizes intrinsic rewards such that they have unit variance.
 
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="ir", parser=parser)
+
+
+class ModelConfig(BaseConfig):
+    """
+    Config for Model
+    """
+
+    encoder: str = "nature"         # Encoder used for all models, [nature|impala]
+    encoder_args: str = None        # Additional arguments for encoder. (encoder specific).
+    hidden_units: int = 256
+    architecture: str = "dual"      # [dual|single]
+    head_scale: float = 0.1         # Scales weights for value and policy heads.
+    head_bias: bool = True          # Enables bias on output heads.
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="model", parser=parser)
+
+    def verify(self):
+        # checks
+        if args.reference_policy is not None:
+            assert self.architecture == "dual", "Reference policy loading requires a dual network."
 
 
 class EnvConfig(BaseConfig):
@@ -410,33 +435,33 @@ class EnvConfig(BaseConfig):
     Environment Config
     """
 
-    name:str = "Pong",                  # Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout'].
-    type: str = "atari",                # [atari|mujoco|procgen]
-    warmup_period: int = 250,           # Number of random steps to take before training agent.
+    name: str = "Pong"                  # Name of environment (e.g. pong) or alternatively a list of environments (e.g.) ['Pong', 'Breakout'].
+    type: str = "atari"                 # [atari|mujoco|procgen]
+    warmup_period: int = 250            # Number of random steps to take before training agent.
     timeout: str = "auto"               # "Set the timeout for the environment, 0=off, (given in unskipped environment steps)")
     repeat_action_probability: float = 0.0
     noop_duration: int = 30             # "maximum number of no-ops to add on reset")
-    per_step_termination_probability: float = 0.0,  #  Probability that each step will result in unexpected termination (used to add noise to value).
+    per_step_termination_probability: float = 0.0   #  Probability that each step will result in unexpected termination (used to add noise to value).
     reward_clipping: str = "off"        # [off|[<R>]|sqrt]
     reward_normalization: str = "rms"   # "off|rms"
     reward_normalization_clipping: float = 10  # How much to clip rewards after normalization, negative to disable.
-    deferred_rewards: int = 0,          #  If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.
+    deferred_rewards: int = 0           #  If positive, all rewards accumulated so far will be given at time step deferred_rewards, then no reward afterwards.
 
     # (stuck)
-    max_repeated_actions: int = 100,    # "Agent is given a penalty if it repeats the same action more than this many times.
-    repeated_action_penalty: float = 0.0,  # Penalty if agent repeats the same action more than this many times.
+    max_repeated_actions: int = 100     # "Agent is given a penalty if it repeats the same action more than this many times.
+    repeated_action_penalty: float = 0.0  # Penalty if agent repeats the same action more than this many times.
 
     # discrete action
     full_action_space: str = False
 
     # pixel based
-    resolution: str = "nature",         # [full|nature|half|muzero]
-    color_mode: str = "default",        # [default|bw|rgb|yuv|hsv]
-    frame_stack: int = 4,
-    frame_skip: int = 4,
-    embed_time: bool = True,            # Encodes time into observation
-    embed_action: bool = True,          # Encodes actions into observation
-    embed_state: bool = False,          # Encodes state history into observation
+    resolution: str = "nature"          # [full|nature|half|muzero]
+    color_mode: str = "default"         # [default|bw|rgb|yuv|hsv]
+    frame_stack: int = None
+    frame_skip: int = None
+    embed_time: bool = True             # Encodes time into observation
+    embed_action: bool = True           # Encodes actions into observation
+    embed_state: bool = False           # Encodes state history into observation
 
     # specific to atari
     atari_terminal_on_loss_of_life: bool = False
@@ -446,7 +471,7 @@ class EnvConfig(BaseConfig):
     procgen_difficulty: str = "hard"    # [hard|easy]
 
     def __init__(self, parser: argparse.ArgumentParser):
-        super().__init__(prefix="ir", parser=parser)
+        super().__init__(prefix="env", parser=parser)
 
     @property
     def is_vision_env(self):
@@ -462,6 +487,10 @@ class EnvConfig(BaseConfig):
     def res_y(self):
         return resolution_map[self.resolution][0]
 
+    @property
+    def noop_start(self):
+        return self.noop_duration > 0
+
     def verify(self):
         if self.type == "procgen":
             assert self.frame_stack == 1, "Frame stacking not supported on procgen yet"
@@ -470,11 +499,12 @@ class EnvConfig(BaseConfig):
             assert self.frame_stack == 1, "Frame stacking not supported on mujoco yet"
             assert self.frame_skip == 1, "Frame skipping not supported on mujoco yet."
 
-    @property
-    def noop_start(self):
-        return self.noop_duration > 0
-
     def auto(self):
+
+        if self.frame_skip in [None, -1]:
+            EnvConfig.frame_skip = 4 if self.type == "atari" else 1
+        if self.frame_stack in [None, -1]:
+            EnvConfig.frame_stack = 4 if self.type == "atari" else 1
 
         # auto  color
         assert self.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
@@ -516,7 +546,6 @@ class Config(BaseConfig):
 
         self.experiment_name = str()
         self.run_name = str()
-        self.procgen_difficulty = str()
         self.restore = str()
         self.initial_model = str()
         self.reference_policy = object()
@@ -556,12 +585,9 @@ class Config(BaseConfig):
         self.benchmark_mode = bool()
 
         self.override_reward_normalization_gamma = object()
-        self.encoder = str()
-        self.encoder_args = object()
-        self.hidden_units = int()
-        self.architecture = str()
-        self.gamma_int = float()
+
         self.gamma = float()
+        self.gamma_int = float()
         self.lambda_policy = float()
         self.lambda_value = float()
         self.max_grad_norm = float()
@@ -595,6 +621,7 @@ class Config(BaseConfig):
         self.aux = AUXConfig(self._parser)
         self.ir = IRConfig(self._parser)
         self.env = EnvConfig(self._parser)
+        self.model = ModelConfig(self._parser)
 
         # --------------------------------
 
@@ -664,24 +691,20 @@ class Config(BaseConfig):
         parser.add_argument("--precision", type=str, default="medium", help="low|medium|high")
 
         # --------------------------------
-        # Rewards
-        parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
+        # Other
 
-        # --------------------------------
-        # Model
-
-        parser.add_argument("--encoder", type=str, default="nature", help="Encoder used for all models, [nature|impala]")
-        parser.add_argument("--encoder_args", type=str, default=None, help="Additional arguments for encoder. (encoder specific)")
-        parser.add_argument("--hidden_units", type=int, default=256)
-        parser.add_argument("--architecture", type=str, default="dual", help="[dual|single]")
-        parser.add_argument("--gamma_int", type=float, default=0.99, help="Discount rate for intrinsic rewards") # tood: rename to int_gamma
         parser.add_argument("--gamma", type=float, default=0.999, help="Discount rate for extrinsic rewards")
+        parser.add_argument("--gamma_int", type=float, default=0.99,
+                            help="Discount rate for intrinsic rewards")  # tood: rename to int_gamma
         parser.add_argument("--lambda_policy", type=float, default=0.95, help="GAE parameter.")
-        parser.add_argument("--lambda_value", type=float, default=0.95, help="lambda to use for return estimations when using PPO or DNA")
+        parser.add_argument("--lambda_value", type=float, default=0.95,
+                            help="lambda to use for return estimations when using PPO or DNA")
         parser.add_argument("--max_grad_norm", type=float, default=20.0, help="Clipping used when global_norm is set.")
         parser.add_argument("--grad_clip_mode", type=str, default="global_norm", help="[off|global_norm]")
-        parser.add_argument("--head_scale", type=float, default=0.1, help="Scales weights for value and policy heads.")
-        parser.add_argument("--head_bias", type=str2bool, default=True, help="Enables bias on output heads")
+
+        # --------------------------------
+        # Rewards
+        parser.add_argument("--override_reward_normalization_gamma", type=float, default=None)
 
         # --------------------------------
         # PPO
@@ -699,16 +722,6 @@ class Config(BaseConfig):
         self._parse()
         self.auto()
         self.verify()
-
-    def get_env_name(self, n: int=0):
-        """
-        environment name for the nth environment
-        """
-        if type(self.environment) is str:
-            return self.environment
-        if type(self.environment) is list:
-            return self.environment[n % len(self.environment)]
-        raise ValueError(f"Invalid type for environment {type(self.environment)} expecting str or list.")
 
     def auto(self):
         """
@@ -776,11 +789,6 @@ class Config(BaseConfig):
                 print(
                     f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
                 vars(args)[new_name] = cast_legacy_value
-
-        # checks
-        if args.reference_policy is not None:
-            assert args.architecture == "dual", "Reference policy loading requires a dual network."
-        assert not (args.rnd.enabled and not args.observation_normalization), "RND requires observation normalization"
 
         # set defaults
         if args.tvf.gamma is None:

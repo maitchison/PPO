@@ -30,7 +30,7 @@ def get_n_actions(space):
         raise ValueError(f"Action space of type {type(space)} not implemented yet.")
 
 
-def make_model(args, log=None):
+def make_model(args:rl.config.Config, log=None):
     """
     Construct model based on env, and arguments.
     """
@@ -38,12 +38,12 @@ def make_model(args, log=None):
     from rl import models, envs
     import torch
 
-    fake_env = envs.make_env(args.env_type, args.get_env_name())
+    fake_env = envs.make_env(args.env.type, args.env.name)
     n_actions = get_n_actions(fake_env.action_space)
     obs_space = fake_env.observation_space.shape
 
     if log is not None:
-        log.info("Playing {} with {} obs_space and {} actions.".format(args.environment, obs_space, n_actions))
+        log.info("Playing {} with {} obs_space and {} actions.".format(args.env.name, obs_space, n_actions))
 
     if args.tvf.enabled:
         tvf_fixed_head_horizons, tvf_weights = rl.tvf.get_value_head_horizons(args.tvf.value_heads, args.tvf.max_horizon, args.tvf.head_spacing, include_weight=True)
@@ -57,18 +57,18 @@ def make_model(args, log=None):
         value_head_names.append('int')
 
     model = models.TVFModel(
-        encoder=args.encoder,
-        encoder_args=args.encoder_args,
+        encoder=args.model.encoder,
+        encoder_args=args.model.encoder_args,
         input_dims=obs_space,
         actions=n_actions,
         device=args.device,
         dtype=torch.float32,
-        use_rnd=args.use_rnd,
-        encoder_activation_fn="tanh" if args.env_type == "mujoco" else "relu",
+        use_rnd=args.rnd.enabled,
+        encoder_activation_fn="tanh" if args.env.type == "mujoco" else "relu",
         tvf_fixed_head_horizons=tvf_fixed_head_horizons,
         tvf_fixed_head_weights=tvf_weights,
-        architecture=args.architecture,
-        hidden_units=args.hidden_units,
+        architecture=args.model.architecture,
+        hidden_units=args.model.hidden_units,
         observation_normalization=args.observation_normalization,
         freeze_observation_normalization=args.freeze_observation_normalization,
         tvf_feature_sparsity=args.tvf.feature_sparsity,
@@ -191,7 +191,7 @@ def main():
     actor_critic_model = make_model(args, log)
 
     if args.reference_policy is not None:
-        assert args.architecture == "dual"
+        assert args.model.architecture == "dual"
         # load only the policy parameters, and the normalization constants
         checkpoint = rollout.open_checkpoint(os.path.join(args.log_folder, args.reference_policy), map_location=args.device)
         policy_checkpoint = {k[len('policy_net.'):]: v for k, v in checkpoint["model_state_dict"].items() if k.startswith("policy_net.")}

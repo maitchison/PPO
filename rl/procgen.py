@@ -4,7 +4,6 @@ Helper to create wrapped mujoco environments
 
 import gym
 import numpy as np
-import cv2
 
 from . import wrappers
 from . import config
@@ -38,9 +37,9 @@ def make(env_id: str, monitor_video=False, seed=None, args=None):
         results. When false RNG is not persisted through saving, which can be helpful when generating return samples.
     """
 
-    args = args or config.args
+    args:config.Config = args or config.args
 
-    assert args.frame_skip == 1, "Frame skip should be 1 for procgen"
+    assert args.env.frame_skip == 1, "Frame skip should be 1 for procgen"
 
     env_name = f"procgen:procgen-{env_id}-v0"
 
@@ -49,7 +48,7 @@ def make(env_id: str, monitor_video=False, seed=None, args=None):
         np.random.seed(seed)
 
     # procgen defaults to using hard, so just use gym to create env.
-    env_args = {'distribution_mode': args.procgen_difficulty}
+    env_args = {'distribution_mode': args.env.procgen_difficulty}
     if seed is not None:
         env_args['rand_seed'] = seed
 
@@ -57,16 +56,16 @@ def make(env_id: str, monitor_video=False, seed=None, args=None):
 
     env = wrappers.LabelEnvWrapper(env, "env_id", env_id)
 
-    if args.timeout > 0:
-        env = wrappers.TimeLimitWrapper(env, args.timeout)
+    if args.env.timeout > 0:
+        env = wrappers.TimeLimitWrapper(env, args.env.timeout)
 
     env = ProcGenWrapper(env)
 
     env = wrappers.MonitorWrapper(env, monitor_video=monitor_video)
 
-    env = wrappers.ColorTransformWrapper(env, args.color_mode)
+    env = wrappers.ColorTransformWrapper(env, args.env.color_mode)
 
-    if args.embed_time:
+    if args.env.embed_time:
         env = wrappers.TimeChannelWrapper(env)
 
     # reset of pipeline expects channels first
@@ -74,7 +73,7 @@ def make(env_id: str, monitor_video=False, seed=None, args=None):
 
     env = wrappers.EpisodeScoreWrapper(env)
 
-    if args.embed_action:
+    if args.env.embed_action:
         # note: this is slightly different to how we do this for atari, where entire history is given...
         # also, make sure this is the correction action...
         # hmmm.. switch to a channel for this.. ?

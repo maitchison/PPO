@@ -77,7 +77,7 @@ def train(model: models.TVFModel, log: Logger):
     final_epoch = min(args.epochs, args.limit_epochs) if args.limit_epochs is not None else args.epochs
     end_iteration = math.ceil((final_epoch * 1e6) / batch_size)
 
-    runner = Runner(model, log, action_dist="gaussian" if args.env_type == "mujoco" else "discrete")
+    runner = Runner(model, log, action_dist="gaussian" if args.env.type == "mujoco" else "discrete")
     runner.vec_env = envs.create_envs_classic()
     runner.reset()
 
@@ -105,11 +105,11 @@ def train(model: models.TVFModel, log: Logger):
         log.info(f"Initialized with reference policy {Color.OKGREEN}{args.initial_model}{Color.ENDC}.")
     else:
         if has_checkpoint and args.restore in ['auto', 'always']:
-            log.info("Previous checkpoint detected.")
+            log.info("Previous checkpoint detected:", end='')
             checkpoint_path = os.path.join(args.log_folder, checkpoints[0][1])
             restored_step = runner.load_checkpoint(checkpoint_path)
             log = runner.log
-            log.info("  (resumed from step {:.0f}M)".format(restored_step / 1000 / 1000))
+            log.info("  resumed from step {:.0f}M".format(restored_step / 1000 / 1000))
             start_iteration = (restored_step // batch_size) + 1
             walltime = log["walltime"]
             did_restore = True
@@ -125,10 +125,10 @@ def train(model: models.TVFModel, log: Logger):
     if not did_restore:
         log.log("To rerun experiment use:")
         log.log("python train.py " + " ".join(shlex.quote(x) for x in sys.argv[1:] if not x.startswith("description")))
-        if args.warmup_period <= 0:
+        if args.env.warmup_period <= 0:
             # some wrappers really want a 1-frame warmup after restoring.
             log.warn("Extending warmup to 1 frame.")
-        desync_envs(runner, 1, max(args.warmup_period, 1))
+        desync_envs(runner, 1, max(args.env.warmup_period, 1))
     else:
         # this is really just the throw a few new frames through the wrappers
         desync_envs(runner, 1, 4, verbose=False)
@@ -138,7 +138,7 @@ def train(model: models.TVFModel, log: Logger):
         params = args.flatten()
         t.write(json.dumps(params, indent=4))
 
-    # todo: make sure this is correct, i.e. from the experiment folder?
+
     # make a copy of training files for reference
     try:
         root_folder, train_script = os.path.split(sys.argv[0])
@@ -181,7 +181,7 @@ def train(model: models.TVFModel, log: Logger):
 
     def save_checkpoint_image():
 
-        if args.env_type not in ["atari", "mujoco"]:
+        if args.env.type not in ["atari", "mujoco"]:
             # not supported yet.
             return
 
@@ -191,7 +191,7 @@ def train(model: models.TVFModel, log: Logger):
 
         A, C, H, W = runner.obs.shape
 
-        if args.color_mode == "bw":
+        if args.env.color_mode == "bw":
             obs = np.zeros((A, 3, H, W), dtype=np.uint8)
             obs[:, 0] = runner.obs[:, 0]
             obs[:, 1] = runner.obs[:, 0]
@@ -331,7 +331,11 @@ def train(model: models.TVFModel, log: Logger):
                 log.info(f"Manual checkpoint saving")
 
         # periodically save checkpoints
-        if ((iteration in checkpoints) and (not did_restore or iteration != start_iteration)) or wants_manual_save:
+        if (
+                (iteration in checkpoints) and
+                (not iteration == end_iteration-1) and
+                (not did_restore or iteration != start_iteration)) or \
+                wants_manual_save:
             save_checkpoint(runner, log)
 
         log_time = (time.time() - log_start_time) / batch_size
