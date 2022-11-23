@@ -141,11 +141,6 @@ if __name__ == "__main__":
     # see https://github.com/pytorch/pytorch/issues/37377 :(
     os.environ["MKL_THREADING_LAYER"] = "GNU"
 
-    # load in the jobs...
-    # import tvf_experiments
-    # tvf_experiments.setup()
-    # import tvf_exp2
-    # tvf_exp2.setup()
     import tvf_exp3
     tvf_exp3.setup()
 

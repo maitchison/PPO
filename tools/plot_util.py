@@ -41,6 +41,27 @@ PROCGEN_HARD_CONSTANTS = {
     'bossfight': [0.5, 13],
 }
 
+PROCGEN_EASY_REF = {
+    # reference scores for poo from https://arxiv.org/pdf/1912.01588.pdf
+    # very approximate... transcribed by eye.
+    'coinrun': 9,
+    'starpilot': 33,
+    'caveflyer': 8,
+    'dodgeball': 8,
+    'fruitbot': 26,
+    'chaser': 7,
+    'miner': 11,
+    'jumper': 8,
+    'leaper': 7,
+    'maze': 10,
+    'bigfish': 20,
+    'heist': 8,
+    'climber': 11,
+    'plunder': 16,
+    'ninja': 8,
+    'bossfight': 9,
+}
+
 PROCGEN_EASY_CONSTANTS = {
     # from  https://arxiv.org/pdf/1912.01588.pdf
     'coinrun': [5, 10],
@@ -154,6 +175,12 @@ def read_log(file_path):
     result["final_epoch"] = round(epochs_done, 1)
 
     game = params["environment"]
+
+    try:
+        if params["env_type"] == "procgen" and params["env_procgen_difficulty"] == "easy":
+            game = game + "_easy"
+    except:
+        pass
 
     result["ep_score_norm"] = np.asarray(
         [asn.normalize(game, score, count) for score, count in zip(result["ep_score_mean"], result["ep_count"])])

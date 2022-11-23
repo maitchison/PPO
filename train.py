@@ -73,10 +73,10 @@ def make_model(args:rl.config.Config, log=None):
         freeze_observation_normalization=args.freeze_observation_normalization,
         tvf_feature_sparsity=args.tvf.feature_sparsity,
         tvf_feature_window=args.tvf.feature_window,
-        head_scale=args.head_scale,
+        head_scale=args.model.head_scale,
         value_head_names=tuple(value_head_names),
         norm_eps=args.observation_normalization_epsilon,
-        head_bias=args.head_bias,
+        head_bias=args.model.head_bias,
         observation_scaling=args.observation_scaling,
     )
     return model

@@ -215,7 +215,7 @@ class TVFConfig(BaseConfig):
     gamma: float = None             # Gamma for TVF, defaults to gamma.
     coef: float = 1.0               # Loss is multiplied by this.
     trimming: str = "off"           # off|timelimit|est_term
-    trimming_mode: str = "average"  # interpolate|average|average2|substitute
+    trimming_mode: str = "average"  # interpolate|average|substitute
     eta_minh: int = 128              # estimated timelimit algorithm
     eta_buffer: int = 32
     eta_percentile: float = 90
@@ -623,9 +623,7 @@ class Config(BaseConfig):
         self.ppo_epsilon_anneal = bool()
 
         # extra
-        self.head_scale = float()
         self.precision = str()
-        self.head_bias = bool()
 
         self._parser = parser = argparse.ArgumentParser(description="Trainer for RL")
 

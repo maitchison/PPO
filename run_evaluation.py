@@ -52,7 +52,8 @@ import matplotlib.transforms
 import matplotlib.colors
 import numpy.random
 from gym.vector import sync_vector_env
-from rl import atari, config, utils, hybridVecEnv, rollout
+import rl
+from rl import config, utils, hybridVecEnv, rollout
 from rl.config import args
 import lz4.frame as lib
 import os
@@ -136,7 +137,7 @@ def backup_open_checkpoint(checkpoint_path: str, **tf_args):
 
 
 def needs_rediscount():
-    return args.tvf_gamma != args.gamma and args.use_tvf
+    return args.tvf.gamma != args.gamma and args.tvf.enabled
 
 
 def load_args(checkpoint_path):
@@ -147,10 +148,11 @@ def load_args(checkpoint_path):
     with open(args_path, 'r') as f:
         checkpoint_args = json.load(f)
         for k, v in checkpoint_args.items():
-            vars(args)[k] = v
+            args.update({k: v})
         args.log_folder = ''
         args.terminal_on_loss_of_life = False # always off for evaluation...
         args.device = eval_args.device
+
 
 # load a model and evaluate performance
 def load_checkpoint(checkpoint_path, device=None):
@@ -164,25 +166,25 @@ def load_checkpoint(checkpoint_path, device=None):
     args.experiment_name = Path(os.path.join(os.path.join(os.getcwd(), checkpoint_path))).parts[-3]
 
     # fix up frameskip, this happens for older versions of the code.
-    if args.frame_skip == 0:
-        args.frame_skip = 4
+    if args.env.frame_skip == 0:
+        args.env.frame_skip = 4
 
     # fix up horizon when in dna mode (used for plotting only)
-    if not args.use_tvf:
+    if not args.tvf.enabled:
         if args.gamma == 1.0:
-            args.tvf_max_horizon = args.timeout // 4
+            args.tvf_max_horizon = args.env.timeout
         else:
             args.tvf_max_horizon = round(3/(1-args.gamma))
 
     # I think not needed, remove?
-    # env = rollout.make_env(env_id=args.get_env_name(), monitor_video=True)
+    # env = rollout.make_env(env_id=args.name, monitor_video=True)
 
     import train
     model = train.make_model(args)
 
     # some older versions might not have the open_checkpoint function... :(
     try:
-        oc = rollout._open_checkpoint
+        oc = rollout.open_checkpoint
     except:
         oc = backup_open_checkpoint
     checkpoint = oc(checkpoint_path, map_location=device)
@@ -246,7 +248,7 @@ def rediscount_TVF(values, new_gamma):
         reward = (values[h] - prev) / old_discount
         prev = values[h]
         discounted_reward_sum += reward * discount
-        old_discount *= args.tvf_gamma
+        old_discount *= args.tvf.gamma
         discount *= new_gamma
         rediscounted_values[h] = discounted_reward_sum
     return rediscounted_values
@@ -274,7 +276,7 @@ def rediscount_TVF_minimize_error(value_mu, value_std, new_gamma):
         reward = (value_mu[k] - prev) / old_discount
         prev = value_mu[k]
         discounted_reward_sum += reward * discount
-        old_discount *= args.tvf_gamma
+        old_discount *= args.tvf.gamma
         discount *= new_gamma
         new_values[k] = discounted_reward_sum
 
@@ -312,7 +314,7 @@ def rediscount_TVF_dcyc(value_mu, value_std, new_gamma, alpha=10):
         discount_factor = np.exp(-0.5*alpha*rho)
         prev = value_mu[k]
         discounted_reward_sum += reward * discount * discount_factor
-        old_discount *= args.tvf_gamma
+        old_discount *= args.tvf.gamma
         discount *= new_gamma
         new_values[k] = discounted_reward_sum
 
@@ -398,7 +400,7 @@ def generate_fake_rollout(num_frames = 30*60):
     Generate a fake rollout for testing
     """
     return {
-        'values': np.zeros([num_frames, args.tvf_value_heads], dtype=np.float32),
+        'values': np.zeros([num_frames, args.tvf.value_heads], dtype=np.float32),
         'time': np.zeros([num_frames], dtype=np.float32),
         'model_values': np.zeros([num_frames], dtype=np.float32),
         'rewards': np.zeros([num_frames], dtype=np.float32),
@@ -411,15 +413,13 @@ def make_envs(
         seed_base:int=0,
         num_envs:int=1,
         force_hybrid_async:bool=False,
-        determanistic_saving=True
 ):
     # create environment(s) if not already given
-    env_fns = [lambda i=i: rollout.make_env(
-        env_type=args.env_type,
-        env_id=args.get_env_name(),
+    env_fns = [lambda i=i: rl.envs.make_env(
+        env_type=args.env.type,
+        env_id=args.env.name,
         monitor_video=include_video,
         seed=(i * 997) + seed_base,
-        determanistic_saving=determanistic_saving,
     ) for i in
                range(num_envs)]
     if num_envs > 1 or force_hybrid_async:
@@ -451,7 +451,6 @@ def generate_rollouts(
     Generates rollouts
 
     @param venvs: If given the environment to use to generate the rollouts
-    @param env_state: If given then initial state of the environments, if not given the environment will be reset.
     @param rewards_only: if true returns only the rewards gained.
     """
 
@@ -485,7 +484,7 @@ def generate_rollouts(
         else:
             buffers.append({
                 'values': [],   # (scaled) values for each horizon of dims [K]
-                'tvf_discounted_values': [],  # values for each horizon discounted with TVF_gamma instead of gamma, [K]
+                'tvf_discounted_values': [],  # values for each horizon discounted with tvf.gamma instead of gamma, [K]
                 'times': [],  # normalized time step
                 'raw_values': [],  # values for each horizon of dims [K]
                 'std': [],   # estimated std of return for each horizon of dims [K]
@@ -504,7 +503,7 @@ def generate_rollouts(
             if include_video:
                 buffers[-1]['frames'] = CompressedStack()  # video frames
 
-    if not args.use_tvf:
+    if not args.tvf.enabled:
         include_horizons = False
 
     if include_horizons is True:
@@ -517,11 +516,11 @@ def generate_rollouts(
         include_horizons = "standard"
 
     if include_horizons == "full":
-        horizons = np.repeat(np.arange(int(args.tvf_max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
+        horizons = np.repeat(np.arange(int(args.tvf.max_horizon*1.05))[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "debug":
         horizons = np.repeat(np.asarray([1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000])[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "last":
-        horizons = np.repeat(np.arange(args.tvf_max_horizon, args.tvf_max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
+        horizons = np.repeat(np.arange(args.tvf.max_horizon, args.tvf.max_horizon+1)[None, :], repeats=num_rollouts, axis=0)
     elif include_horizons == "standard":
         try:
             horizons = model.tvf_fixed_head_horizons
@@ -543,7 +542,6 @@ def generate_rollouts(
             seed_base=seed_base,
             num_envs=mv_return_samples,
             force_hybrid_async=True,
-            determanistic_saving=False, # means that when we restore, RNG will be different.
         )
         multi_envs.reset()
 
@@ -676,13 +674,7 @@ def generate_rollouts(
 
             # 1. first do the simple stuff... rewards etc
             append_buffer('is_running', is_running[i])
-            raw_reward = infos[i].get("raw_reward", rewards[i])
-            try:
-                if args.noisy_zero >= 0:
-                    rewards *= 0
-                    raw_reward *= 0
-            except:
-                pass
+            raw_reward = infos[i].get("raw_reward", rewards[i])                        
             append_buffer('rewards', rewards[i])
             append_buffer('raw_rewards', raw_reward)
 
@@ -805,7 +797,7 @@ def generate_rollouts(
                 frame = utils.compose_frame(agent_layers, rendered_frame, channels)
                 append_buffer('frames', frame)
 
-            if horizons is not None and args.use_tvf:
+            if horizons is not None and args.tvf.enabled:
                 values = model_out["tvf_value"][i, :, 0].detach().cpu().numpy()
                 if needs_rediscount():
                     append_buffer('tvf_discounted_values', values)
@@ -888,10 +880,10 @@ class QuickPlot():
         plt.grid(alpha=0.2)
         if self.log_scale:
             plt.xlabel("$\log_{10}(10+h)$")
-            plt.xlim(1, np.log10(args.tvf_max_horizon + 10))
+            plt.xlim(1, np.log10(args.tvf.max_horizon + 10))
         else:
             plt.xlabel("h")
-            plt.xlim(0, args.tvf_max_horizon)
+            plt.xlim(0, args.tvf.max_horizon)
         plt.ylabel("Score")
         plt.legend(loc="upper left")
         #plt.legend(loc="lower right")
@@ -1063,7 +1055,7 @@ def export_movie(
 
     scale = 4
 
-    env = rollout.make_env(env_type=args.env_type, env_id=args.get_env_name(), monitor_video=True, seed=1)
+    env = rl.envs.make_env(env_type=args.env.type, env_id=args.env.name, monitor_video=True, seed=1)
     _ = env.reset()
     state, reward, done, info = env.step(0)
     rendered_frame = info.get("monitor_obs", state)
@@ -1092,15 +1084,15 @@ def export_movie(
     print(f"score:{int(sum(raw_rewards)):,} ", end='', flush=True)
 
     # work out discounting values to make plotting a little faster
-    discount_weights = args.gamma ** np.arange(0, args.tvf_max_horizon+1)
-    tvf_discount_weights = args.tvf_gamma ** np.arange(0, args.tvf_max_horizon + 1)
+    discount_weights = args.gamma ** np.arange(0, args.tvf.max_horizon+1)
+    tvf_discount_weights = args.tvf.gamma ** np.arange(0, args.tvf.max_horizon + 1)
 
     #  work out how big our graph will be (with a coarse estimate)
     max_true_return = 0.0
     min_true_return = float('inf')
     step_size = max(len(rewards) // 100, 1)
     for t in range(0, len(rewards), step_size):
-        true_rewards = rewards[t:t + args.tvf_max_horizon]
+        true_rewards = rewards[t:t + args.tvf.max_horizon]
         true_returns = true_rewards * discount_weights[:len(true_rewards)]
         final_return = np.sum(true_returns)
         max_true_return = max(max_true_return, final_return)
@@ -1112,7 +1104,7 @@ def export_movie(
             if sample is not None:
                 max_return_sample = max(max_return_sample, sample.max())
 
-    key = "values" if args.use_tvf else "model_values"
+    key = "values" if args.tvf.enabled else "model_values"
     max_value_estimate = np.max(buffer[key]) / REWARD_SCALE
     min_value_estimate = np.min(buffer[key]) / REWARD_SCALE
     y_max = max(max_true_return, max_value_estimate, max_return_sample)
@@ -1157,7 +1149,7 @@ def export_movie(
         frame = np.pad(frame, ((0, 0), (0, plot_width), (0, 0)))
 
         # calculate actual truncated values using real future rewards
-        true_rewards = rewards[t:t+args.tvf_max_horizon]
+        true_rewards = rewards[t:t+args.tvf.max_horizon]
         true_returns = true_rewards * discount_weights[:len(true_rewards)]
         true_returns = np.cumsum(true_returns)
         true_tvf_discounted_returns = true_rewards * tvf_discount_weights[:len(true_rewards)]
@@ -1193,8 +1185,8 @@ def export_movie(
             fig.plot(xs, mean, (0.45,0.45,0.55))
         else:
             # otherwise plot this episodes return
-            if len(true_returns) < args.tvf_max_horizon+1:
-                padded_true_returns = np.zeros([args.tvf_max_horizon+1], dtype=np.float32) + true_returns[-1]
+            if len(true_returns) < args.tvf.max_horizon+1:
+                padded_true_returns = np.zeros([args.tvf.max_horizon+1], dtype=np.float32) + true_returns[-1]
                 padded_true_returns[:len(true_returns)] = true_returns
                 true_returns = padded_true_returns
             xs = list(range(len(true_returns)))
@@ -1205,13 +1197,13 @@ def export_movie(
         fig.plot([CURRENT_HORIZON], [0], 'white')
 
         # plot predicted values
-        if args.use_tvf:
+        if args.tvf.enabled:
             xs = model.tvf_fixed_head_horizons
             ys = buffer["values"][t] / REWARD_SCALE  # model learned scaled rewards
             fig.plot(xs, ys, 'greenyellow')
         else:
             # white dot representing value estimate
-            xs = [round(args.tvf_max_horizon*0.95)-1, args.tvf_max_horizon]
+            xs = [round(args.tvf.max_horizon*0.95)-1, args.tvf.max_horizon]
             y_value = buffer["model_values"][t] / REWARD_SCALE
             ys = [y_value, y_value]
             fig.plot(xs, ys, 'white')
@@ -1232,7 +1224,7 @@ def export_movie(
             xs = list(range(len(buffer["tvf_discounted_values"][t])))
             ys = buffer["tvf_discounted_values"][t] / REWARD_SCALE  # model learned scaled rewards
             fig.plot(xs, ys, 'green')
-            # also plot true score (with tvf_gamma)
+            # also plot true score (with tvf.gamma)
             xs = list(range(len(true_tvf_discounted_returns)))
             ys = true_tvf_discounted_returns
             fig.plot(xs, ys, 'purple')

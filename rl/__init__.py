@@ -1,5 +1,6 @@
 from . import config
 from . import rollout
+from . import envs
 
 # extra
 from . import sns
