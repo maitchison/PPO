@@ -1190,7 +1190,7 @@ class Runner:
                     self.exp_noise = np.random.normal(0, args.side.noise_std, size=[1, self.model.actions])
                     self.exp_noise = np.repeat(self.exp_noise, axis=0, repeats=A)
             for n in range(N):
-                exp_rewards[n, :] = self.exp_noise[range(self.A), self.actions[n]]
+                exp_rewards[n, :] = self.exp_noise[range(self.A), self.actions[n, :]]
         else:
             exp_rewards = 0
 
