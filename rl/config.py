@@ -471,7 +471,7 @@ class EnvConfig(BaseConfig):
     repeated_action_penalty: float = 0.0  # Penalty if agent repeats the same action more than this many times.
 
     # discrete action
-    full_action_space: str = False
+    full_action_space: bool = False
 
     # pixel based
     resolution: str = "nature"          # [full|nature|half|muzero]
@@ -515,6 +515,7 @@ class EnvConfig(BaseConfig):
         if self.type == "mujoco":
             assert self.frame_stack == 1, "Frame stacking not supported on mujoco yet"
             assert self.frame_skip == 1, "Frame skipping not supported on mujoco yet."
+        assert self.full_action_space in [True, False]
 
     def auto(self):
 
