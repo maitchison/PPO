@@ -137,7 +137,7 @@ def backup_open_checkpoint(checkpoint_path: str, **tf_args):
 
 
 def needs_rediscount():
-    return args.tvf.gamma != args.gamma and args.tvf.enabled
+    return args.tvf.enabled and abs(args.gamma - args.tvf.gamma) > 1e-8
 
 
 def load_args(checkpoint_path):

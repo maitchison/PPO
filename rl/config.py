@@ -212,7 +212,7 @@ class TVFConfig(BaseConfig):
     """
 
     enabled: bool = False
-    gamma: float = None             # Gamma for TVF, defaults to gamma.
+    gamma: float = None             # Gamma for TVF, defaults to args.gamma.
     coef: float = 1.0               # Loss is multiplied by this.
     trimming: str = "off"           # off|timelimit|est_term
     trimming_mode: str = "average"  # interpolate|average|substitute
@@ -234,6 +234,12 @@ class TVFConfig(BaseConfig):
 
     def __init__(self, parser):
         super().__init__(prefix="tvf", parser=parser)
+
+    def auto(self):
+        # set defaults
+        if TVFConfig.gamma is None:
+            TVFConfig.gamma = args.gamma
+
 
 class OptimizerConfig(BaseConfig):
     """
@@ -272,6 +278,9 @@ class OptimizerConfig(BaseConfig):
         parser.add_argument(f"--{prefix}_adam_beta1", type=float, default=0.9, help="beta1 parameter for Adam optimizer. Set to -1 for auto")
         parser.add_argument(f"--{prefix}_adam_beta2", type=float, default=0.999, help="beta2 parameter for Adam optimizer")
 
+        # note we use instance variables instead of class variables here as we need
+        # to have multiple instances of this one.
+
         self.optimizer = str()
         self.lr_anneal = bool()
         self.epochs = int()
@@ -284,6 +293,11 @@ class OptimizerConfig(BaseConfig):
 
     def n_updates(self, rollout_size):
         return (rollout_size / self.mini_batch_size) * self.epochs
+
+    def auto(self):
+        if self.adam_beta1 < 0:
+            self.adam_beta1 = 1 - (1 / self.n_updates(args.n_steps * args.agents))
+            print(f"Set {self.name} beta1 to {self.adam_beta1}")
 
 
 class DebugConfig(BaseConfig):
@@ -826,19 +840,8 @@ class Config(BaseConfig):
                     f"Warning! Using deprecated parameter {FAIL}{old_name}{ENDC} was specified but clashes with value assigned to {BOLD}{new_name}{ENDC}. Using legacy value {legacy_value} overwriting {non_legacy_value}.")
                 vars(args)[new_name] = cast_legacy_value
 
-        # set defaults
-        if args.tvf.gamma is None:
-            args.tvf.gamma = args.gamma
-
         if args.hash.bonus != 0:
             assert args.hash.enabled, "use_hashing must be enabled."
-
-        # auto beta
-        for optimizer in [args.policy_opt, args.value_opt, args.distil_opt, args.aux_opt, args.rnd_opt]:
-            if optimizer.adam_beta1 < 0:
-                optimizer.adam_beta1 = 1 - (1 / optimizer.n_updates(args.n_steps * args.agents))
-                print(f"Set {optimizer.name} beta1 to {optimizer.adam_beta1}")
-
 
     @property
     def reward_normalization_gamma(self):
