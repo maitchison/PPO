@@ -204,7 +204,7 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     env = wrappers.ColorTransformWrapper(env, args.env.color_mode)
 
-    if args.env.terminal_on_loss_of_life:
+    if args.env.atari_terminal_on_loss_of_life:
         env = wrappers.EpisodicLifeEnv(env)
 
     if args.env.deferred_rewards != 0:

@@ -1265,7 +1265,7 @@ class ColorTransformWrapper(gym.Wrapper):
         H, W, C = self.env.observation_space.shape
 
         assert C < H, f"Input should be in HWC format, not CHW, shape was {self.env.observation_space.shape}"
-        assert color_mode in ["bw", "rgb", "yuv", "hsv"]
+        assert color_mode in ["bw", "rgb", "yuv", "hsv"], f'Color mode should be one of ["bw", "rgb", "yuv", "hsv"] but was {color_mode}'
         self.expected_input_shape = (H, W, C)
 
         if color_mode in ["bw"]:

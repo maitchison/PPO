@@ -675,7 +675,7 @@ def standard_grid():
     ax.spines['top'].set_visible(False)
 
 
-def eval_runs(runs, y_axes=("ep_score_mean", "ep_length_mean"), include_table=False, table_epochs=None, table_metric=None, **kwargs):
+def eval_runs(runs, y_axes=("ep_score_mean",), include_table=False, table_epochs=None, table_metric=None, **kwargs):
 
     title_args = {}
 
@@ -880,7 +880,7 @@ def plot_eval_error(run_path, error_code='h'):
 
 def plot_experiment(
         runs:list,
-        y_axes=("ep_score_mean", "err_trunc", "ev_ext", "opt_grad"),
+        y_axes=("ep_score_mean",),
         run_filter=None,
         smooth_factor=0.95,
         include_table=False,

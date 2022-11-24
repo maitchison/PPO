@@ -32,7 +32,7 @@ resolution_map = {
     "procgen": (64, 64),
     "nature": (84, 84),
     "muzero": (96, 96),
-    "half": (105, 80)     # this may produce cleaner resampling
+    "half": (105, 80),    # this may produce cleaner resampling
 }
 
 class BaseConfig:
@@ -500,6 +500,7 @@ class EnvConfig(BaseConfig):
     def res_x(self):
         return resolution_map[self.resolution][0]
 
+    @property
     def res_y(self):
         return resolution_map[self.resolution][0]
 
@@ -525,7 +526,7 @@ class EnvConfig(BaseConfig):
         # auto  color
         assert self.color_mode in ["default", "bw", "rgb", "yuv", "hsv"]
         if self.color_mode == "default":
-            self.color_mode = {
+            EnvConfig.color_mode = {
                 'atari': 'bw',
                 'procgen': 'yuv',
             }.get(self.type, 'bw')

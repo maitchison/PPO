@@ -427,3 +427,29 @@ def per_game_plots_atari_57(path, keys):
     fig.delaxes(axs[11][4])
     fig.delaxes(axs[11][3])
     fig.delaxes(axs[11][2])
+
+
+def get_procgen_result(game, code):
+    import csv
+    file_path = f"./procgen_results/{code}/progress-{game}.csv"
+    data = []
+    with open(file_path, 'r') as t:
+        header = t.readline()
+        for line in t:
+            data.append(float(line))
+    return data
+
+def get_procgen_seeded(game, code):
+    results = []
+    for seed in [0, 1, 2]:
+        results.append(get_procgen_result(game, code+"-run"+str(seed)))
+    return np.asarray(results).mean(axis=0)
+
+def get_procgen_norm(code):
+    # start at 0 so plots look better.
+    results = np.zeros([1526+1])
+    for game, (low, high) in PROCGEN_HARD_CONSTANTS.items():
+        game_score = get_procgen_seeded(game, code)
+        assert len(game_score) == len(results[1:]), f"length missmatch {len(game_score)}, {len(results[1:])}"
+        results[1:] += ((game_score - low) / (high - low)) * (1/16)
+    return results
