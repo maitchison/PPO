@@ -227,6 +227,8 @@ class Runner:
         self.terminals = np.zeros([N, A], dtype=np.bool)  # indicates prev_state was a terminal state.
         self.advantage = np.zeros([N, A], dtype=np.float32)  # advantage estimates
 
+        self.exp_noise = np.zeros([A, self.model.actions], dtype=np.float32)
+
         self.all_time = np.zeros([N+1, A], dtype=np.int32)  # time for each step in rollout
         self.time = np.zeros([A], dtype=np.int32)  # current step for all agents
 
@@ -1173,13 +1175,32 @@ class Runner:
         # mostly interested in how noisy these are...
         self.log.watch_mean_std("*ext_value_estimates", ext_value_estimates)
 
+        if args.side.enabled:
+            # advantages:
+            # takes into account the negative rewards of taking a random action
+            # can apply multiple policy updates without enflating entropy.
+            assert args.env.type != "mujoco", "CC not supported yet"
+            # give slight reward for taking given actions. Change this each rollout.
+            # each agent gets a different per action bonus
+            exp_rewards = np.zeros_like(self.ext_rewards)
+            if self.batch_counter % args.side.period == 0:
+                if args.side.per_agent:
+                    self.exp_noise = np.random.normal(0, args.side.noise_std, size=[A, self.model.actions])
+                else:
+                    self.exp_noise = np.random.normal(0, args.side.noise_std, size=[1, self.model.actions])
+                    self.exp_noise = np.repeat(self.exp_noise, axis=0, repeats=A)
+            for n in range(N):
+                exp_rewards[n, :] = self.exp_noise[range(self.A), self.actions[n]]
+        else:
+            exp_rewards = 0
+
         ext_advantage = gae(
-            self.ext_rewards,
+            self.ext_rewards + exp_rewards,
             ext_value_estimates[:N],
             ext_value_estimates[N],
             self.terminals,
             args.gamma,
-            args.lambda_policy
+            args.lambda_policy,
         )
         # calculate ext_returns.
         self.ext_returns[:] = td_lambda(

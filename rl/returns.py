@@ -11,7 +11,6 @@ def gae(
         batch_terminal,
         gamma: float,
         lamb=0.95,
-        normalize=False
     ):
     """
     Calculates GAE based on rollout data.
@@ -27,8 +26,6 @@ def gae(
         delta = batch_rewards[t] + gamma * value_next_t * (1.0 - is_next_new_episode) - batch_value[t]
         batch_advantage[t] = prev_adv = delta + gamma * lamb * (
                 1.0 - is_next_new_episode) * prev_adv
-    if normalize:
-        batch_advantage = (batch_advantage - batch_advantage.mean()) / (batch_advantage.std() + 1e-8)
     return batch_advantage
 
 
@@ -66,5 +63,5 @@ def td_lambda(
         gamma: float,
         lamb=0.95,
 ):
-    advantages = gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb, normalize=False)
+    advantages = gae(batch_rewards, batch_value, final_value_estimate, batch_terminal, gamma, lamb)
     return advantages + batch_value

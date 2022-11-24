@@ -449,6 +449,23 @@ class ModelConfig(BaseConfig):
             assert self.architecture == "dual", "Reference policy loading requires a dual network."
 
 
+class SIDEConfig(BaseConfig):
+    """
+    Config for State-independant Exploration
+    """
+
+    enabled: bool = False           # Enable state independant exploration
+    noise_std: float = 0.01         # noise to add to each action
+    period: int = 1                 # update noise every n rollouts
+    per_agent: bool = False
+
+    def __init__(self, parser: argparse.ArgumentParser):
+        super().__init__(prefix="side", parser=parser)
+
+    def verify(self):
+        pass
+
+
 class EnvConfig(BaseConfig):
     """
     Environment Config
@@ -642,6 +659,7 @@ class Config(BaseConfig):
         self.ir = IRConfig(self._parser)
         self.env = EnvConfig(self._parser)
         self.model = ModelConfig(self._parser)
+        self.side = SIDEConfig(self._parser)
 
         # --------------------------------
 
@@ -650,8 +668,6 @@ class Config(BaseConfig):
         self.distil_opt = OptimizerConfig('distil_opt', parser)
         self.aux_opt = OptimizerConfig('aux_opt', parser)
         self.rnd_opt = OptimizerConfig('rnd_opt', parser)
-
-
 
     def setup(self):
 
