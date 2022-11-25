@@ -153,6 +153,10 @@ def load_args(checkpoint_path):
         args.terminal_on_loss_of_life = False # always off for evaluation...
         args.device = eval_args.device
 
+    # fixup some bugs
+    if args.tvf.gamma is None:
+        args.tvf.gamma = args.gamma
+
 
 # load a model and evaluate performance
 def load_checkpoint(checkpoint_path, device=None):
@@ -1216,8 +1220,6 @@ def export_movie(
             #     ys = [y_value, y_uac]
             #     xs = [round(np.mean(xs)), round(np.mean(xs))]
             #     fig.plot(xs, ys, [1.0, 0.5, 0.0])
-
-
 
         if needs_rediscount():
             # plot originally predicted values (without rediscounting)
