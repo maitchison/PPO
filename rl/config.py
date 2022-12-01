@@ -236,9 +236,14 @@ class TVFConfig(BaseConfig):
         super().__init__(prefix="tvf", parser=parser)
 
     def auto(self):
+        # stub:
+        print("AUTO TVF")
         # set defaults
         if TVFConfig.gamma is None:
             TVFConfig.gamma = args.gamma
+        if TVFConfig.max_horizon <= -1:
+            TVFConfig.max_horizon = args.env.timeout
+            print(f"Auto max_horizon={TVFConfig.max_horizon}")
 
 
 class OptimizerConfig(BaseConfig):
@@ -580,6 +585,9 @@ class EnvConfig(BaseConfig):
         else:
             EnvConfig.timeout = int(self.timeout)
 
+        #stub:
+        print(EnvConfig.timeout)
+
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="env", parser=parser)
 
@@ -666,12 +674,12 @@ class Config(BaseConfig):
         self.gkl = GlobalKLConfig(self._parser)
         self.hash = HashConfig(self._parser)
         self.sns = SimpleNoiseScaleConfig(self._parser)
+        self.env = EnvConfig(self._parser) # before tvf
         self.tvf = TVFConfig(self._parser)
         self.replay = ReplayConfig(self._parser)
         self.rnd = RNDConfig(self._parser)
         self.aux = AUXConfig(self._parser)
         self.ir = IRConfig(self._parser)
-        self.env = EnvConfig(self._parser)
         self.model = ModelConfig(self._parser)
         self.side = SIDEConfig(self._parser)
 
@@ -689,6 +697,9 @@ class Config(BaseConfig):
         # main arguments
 
         # todo: move these to class
+
+        # stub:
+        print("Setup CONFIG")
 
         parser = self._parser
 
@@ -777,6 +788,10 @@ class Config(BaseConfig):
         """
         Apply special config settings.
         """
+
+        # stub
+        print("MAIN AUTO")
+
         super().auto()
 
         # We used to use restore=True instead of restore = "always"

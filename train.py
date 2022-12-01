@@ -227,8 +227,8 @@ def run_unit_tests():
 
 if __name__ == "__main__":
 
-    # run unit tests every time we run
-    # this way we get verification in the log file for each experiment.
+    # stub
+    print("About to setup args.")
 
     rl.config.args.setup()
 
