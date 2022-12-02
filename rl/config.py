@@ -573,13 +573,12 @@ class EnvConfig(BaseConfig):
             if self.type == "atari":
                 EnvConfig.timeout = 27000  # excludes skipped frames
             elif self.type == "procgen":
-                # might be more fair to just set this so something like 8000 for all envs?
-                # the trimming can auto adapt so it's just when we put the time frac into the obs
-                # maybe we should use log time instead?
-                if args.env.name in ['bigfish', 'plunder', 'bossfight']:
-                    EnvConfig.timeout = 8000
-                else:
-                    EnvConfig.timeout = 1000
+                env_timeouts = {
+                    'bigfish': 8000,
+                    'bossfight': 8000,
+                    'plunder': 2000,
+                }
+                EnvConfig.timeout = env_timeouts.get(args.env.name, 1000)
             else:
                 EnvConfig.timeout = 0  # unlimited
         else:
