@@ -1941,6 +1941,15 @@ class Runner:
             epochs += results["mini_batches"] / expected_mini_batches
             if "did_break" in results:
                 break
+        if args.policy_opt.ffe:
+            self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_policy_minibatch,
+                mini_batch_size=args.batch_size,
+                optimizer=self.policy_optimizer,
+                label="policy",
+                epoch=args.policy_opt.epochs+1,
+            )
 
         self.log.watch(f"time_train_policy", (clock.time() - start_time),
                        display_width=6, display_name='t_pol', display_precision=3)
@@ -1968,7 +1977,7 @@ class Runner:
             batch_data["returns"] = self.returns.reshape(N*A, self.VH)
 
         if args.tvf.enabled:
-            # just train ext heads for the moment
+            # just train ext heads for the moment (i.e. no int value or sqr yet)
             batch_data["tvf_returns"] = self.tvf.tvf_returns[:, :, :, -1].reshape(N*A, self.K)
 
             # per horizon noise estimates
@@ -1982,7 +1991,7 @@ class Runner:
                 if args.sns.fake_noise:
                     rl.sns.log_fake_accumulated_gradient_norms(self, optimizer=self.value_optimizer)
 
-        for value_epoch in range(args.value_opt.epochs):
+        def train_small(epoch):
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
@@ -1990,8 +1999,36 @@ class Runner:
                 optimizer=self.value_optimizer,
                 early_stop_loss=args.value_opt.stop_level,
                 label="value",
-                epoch=value_epoch,
+                epoch=epoch,
             )
+
+        def train_large(epoch):
+            self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_value_minibatch,
+                mini_batch_size=args.batch_size if args.value_opt.lbs < 0 else args.value_opt.lbs,
+                optimizer=self.value_optimizer,
+                early_stop_loss=args.value_opt.stop_level,
+                label="value",
+                epoch=epoch,
+            )
+
+        # todo, witch to epoch training mode
+        # normal, full final, and alternating.
+        # also add full mbs.
+        if args.value_opt.afe:
+            if self.batch_counter % 2 == 0:
+                for value_epoch in range(args.value_opt.epochs):
+                    train_small(value_epoch)
+            else:
+                if args.value_opt.ffe:
+                    train_large(args.value_opt.epochs + 1)
+        else:
+            for value_epoch in range(args.value_opt.epochs):
+                train_small(value_epoch)
+
+            if args.value_opt.ffe:
+                train_large(args.value_opt.epochs+1)
 
         self.log.watch(f"time_train_value", (clock.time() - start_time),
                        display_width=6, display_name='t_val', display_precision=3)
@@ -2143,7 +2180,6 @@ class Runner:
         batch_data = self.get_distil_batch(args.distil.batch_size)
 
         for distil_epoch in range(args.distil_opt.epochs):
-
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
@@ -2151,6 +2187,15 @@ class Runner:
                 optimizer=self.distil_optimizer,
                 label="distil",
                 epoch=distil_epoch,
+            )
+        if args.distil_opt.ffe:
+            self.train_batch(
+                batch_data=batch_data,
+                mini_batch_func=self.train_distil_minibatch,
+                mini_batch_size=args.batch_size,
+                optimizer=self.distil_optimizer,
+                label="distil",
+                epoch=args.distil_opt.epochs+1,
             )
 
         self.log.watch(f"time_train_distil", (clock.time() - start_time) / args.distil.period,
