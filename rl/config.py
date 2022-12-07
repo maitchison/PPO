@@ -277,6 +277,9 @@ class OptimizerConfig(BaseConfig):
         parser.add_argument(f"--{prefix}_mini_batch_size", type=int, default=256, help="Number of examples used for each optimization step.")
         # todo: implement anneal
         parser.add_argument(f"--{prefix}_lr", type=float, default=2.5e-4, help="Learning rate for optimizer")
+        parser.add_argument(f"--{prefix}_flood_level", type=float, default=-1, help="Used to stop before we get to a minima")
+        parser.add_argument(f"--{prefix}_stop_level", type=float, default=-1,
+                            help="Used to perform early stopping when loss gets below this threshold")
 
         # adam
         parser.add_argument(f"--{prefix}_adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
@@ -294,6 +297,8 @@ class OptimizerConfig(BaseConfig):
         self.adam_epsilon = float()
         self.adam_beta1 = float()
         self.adam_beta2 = float()
+        self.flood_level = float()
+        self.stop_level = float()
         self.per_epoch_optimizer = str()
 
     def n_updates(self, rollout_size):
@@ -474,9 +479,8 @@ class SIDEConfig(BaseConfig):
     """
 
     enabled: bool = False           # Enable state independant exploration
-    noise_std: float = 0.01         # noise to add to each action
-    period: int = 1                 # update noise every n rollouts
-    per_agent: bool = False
+    noise_std: float = 0.1          # noise to add to each action
+    period: int = 10                # update noise every n rollouts
 
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="side", parser=parser)

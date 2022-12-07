@@ -213,6 +213,13 @@ class ScoreMetric(RunMetric):
     def score(self, run, x_lim=None):
         return compute_score(run, x_lim)
 
+class AltScoreMetric(RunMetric):
+
+    def __init__(self):
+        super().__init__("score")
+
+    def score(self, run, x_lim=None):
+        return compute_score_alt(run, x_lim)
 
 class MeanMetric(RunMetric):
 

@@ -93,6 +93,7 @@ def main():
     from rl import utils, rollout
     from rl import ppo
     from rl.config import args
+    import procgen
     import numpy as np
 
     if args.quiet_mode:
@@ -108,9 +109,16 @@ def main():
 
     log.compress_csv = args.debug.compress_csv
 
-    log.info(f"System is host:<white>{args.hostname}<end> torch:{torch.__version__} cuda:{torch.version.cuda} gym:{gym.version.VERSION} numpy:{np.__version__} ")
-    log.info(f"Using device: <white>{args.device}<end>")
+    versions = [
+        f'torch:{torch.__version__}',
+        f'cuda:{torch.version.cuda}',
+        f'gym:{gym.version.VERSION}',
+        f'procgen:{procgen.__version__}',
+        f'numpy:{np.__version__}',
+    ]
 
+    log.info(f"System is host:<white>{args.hostname}<end> {' '.join(versions)}")
+    log.info(f"Using device: <white>{args.device}<end>")
 
     # check to see if the device we are using has been disallowed
     if args.device in utils.get_disallowed_devices():

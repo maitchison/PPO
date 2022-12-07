@@ -13,6 +13,7 @@ import json
 import gzip
 from typing import Union, Optional, List
 import math
+import scipy
 
 from .logger import Logger
 from . import utils, wrappers, models, compression, config, hash
@@ -235,6 +236,9 @@ class Runner:
         self.ttt_predictions = [[] for _ in range(self.N)]  # our prediction of when a termination will occur.
 
         self.replay_value_estimates = np.zeros([N, A], dtype=np.float32) # what is this?
+
+        # side
+        self.side_target_policy_logp: Optional[torch.Tensor] = None
 
         # intrinsic rewards
         self.int_rewards = np.zeros([N, A], dtype=np.float32)
@@ -921,11 +925,16 @@ class Runner:
 
         aux_fields = {}
 
-        # log how well our termination predictiosn are going
+        # log how well our termination predictions are going
         if len(self.ttt_error_buffer) > 0:
             self.log.watch_stats("teb", self.ttt_error_buffer, display_width=0, history_length=1)
             self.log.watch_stats("teba", np.abs(self.ttt_error_buffer), display_width=0, history_length=1)
             self.log.watch_stats("tebz", np.minimum(self.ttt_error_buffer, 0), display_width=0, history_length=1)
+
+        # measure how close to uniform the times are...
+        ks, _ = scipy.stats.kstest(rvs=self.time / max(self.time), cdf=scipy.stats.uniform.cdf)
+        self.log.watch("ks", ks, display_width=0)
+        self.log.watch_stats("ks_stats", self.time, display_width=0, history_length=1) # std might be helpful?
 
         # calculate targets for ppg
         if args.aux_opt.epochs > 0:
@@ -1175,27 +1184,28 @@ class Runner:
         # mostly interested in how noisy these are...
         self.log.watch_mean_std("*ext_value_estimates", ext_value_estimates)
 
-        if args.side.enabled:
-            # advantages:
-            # takes into account the negative rewards of taking a random action
-            # can apply multiple policy updates without enflating entropy.
-            assert args.env.type != "mujoco", "CC not supported yet"
-            # give slight reward for taking given actions. Change this each rollout.
-            # each agent gets a different per action bonus
-            exp_rewards = np.zeros_like(self.ext_rewards)
-            if self.batch_counter % args.side.period == 0:
-                if args.side.per_agent:
-                    self.exp_noise = np.random.normal(0, args.side.noise_std, size=[A, self.model.actions])
-                else:
-                    self.exp_noise = np.random.normal(0, args.side.noise_std, size=[1, self.model.actions])
-                    self.exp_noise = np.repeat(self.exp_noise, axis=0, repeats=A)
-            for n in range(N):
-                exp_rewards[n, :] = self.exp_noise[range(self.A), self.actions[n, :]]
-        else:
-            exp_rewards = 0
+        # this is the old solution, where we reward the agent for taking certian actions.
+        # if args.side.enabled:
+        #     # advantages:
+        #     # takes into account the negative rewards of taking a random action
+        #     # can apply multiple policy updates without enflating entropy.
+        #     assert args.env.type != "mujoco", "CC not supported yet"
+        #     # give slight reward for taking given actions. Change this each rollout.
+        #     # each agent gets a different per action bonus
+        #     exp_rewards = np.zeros_like(self.ext_rewards)
+        #     if self.batch_counter % args.side.period == 0:
+        #         if args.side.per_agent:
+        #             self.exp_noise = np.random.normal(0, args.side.noise_std, size=[A, self.model.actions])
+        #         else:
+        #             self.exp_noise = np.random.normal(0, args.side.noise_std, size=[1, self.model.actions])
+        #             self.exp_noise = np.repeat(self.exp_noise, axis=0, repeats=A)
+        #     for n in range(N):
+        #         exp_rewards[n, :] = self.exp_noise[range(self.A), self.actions[n, :]]
+        # else:
+        #     exp_rewards = 0
 
         ext_advantage = gae(
-            self.ext_rewards + exp_rewards,
+            self.ext_rewards,
             ext_value_estimates[:N],
             ext_value_estimates[N],
             self.terminals,
@@ -1439,7 +1449,8 @@ class Runner:
         self.log.watch_mean("loss_distil", loss.mean(), history_length=64*args.distil_opt.epochs, display_name="ls_distil", display_width=8)
 
         return {
-            'losses': loss.detach()
+            'loss': loss.detach().mean().item(),
+            'loss_std': loss.detach().std().item(),
         }
 
     def train_aux_minibatch(self, data, loss_scale=1.0, **kwargs):
@@ -1504,6 +1515,20 @@ class Runner:
             value_heads.append("int")
         return value_heads
 
+    def mean_and_flood(self, loss, flood_level=0.0):
+
+        loss = loss.mean()
+
+        if loss < 0:
+            sign = -1
+        else:
+            sign = 1
+        if flood_level > 0:
+            loss = sign*(torch.abs(loss - flood_level) + flood_level)
+
+        return loss
+
+
     def train_value_minibatch(self, data, loss_scale=1.0, single_value_head: Optional[int] = None):
         """
         @param single_value_head: if given trains on just this indexed tvf value head.
@@ -1544,8 +1569,10 @@ class Runner:
         # Generate Gradient
         # -------------------------------------------------------------------------
 
+        # note, we want to log the true loss, not the modified loss.
         loss = loss * loss_scale
-        loss.mean().backward()
+        modified_loss = self.mean_and_flood(loss, args.value_opt.flood_level)
+        modified_loss.backward()
 
         # -------------------------------------------------------------------------
         # Logging
@@ -1554,7 +1581,8 @@ class Runner:
         self.log.watch_mean("loss_value", loss.mean(), display_name=f"ls_value")
 
         return {
-            'losses': loss.detach()
+            'loss': loss.detach().mean().item(),
+            'loss_std': loss.detach().std().item(),
         }
 
     @property
@@ -1577,8 +1605,17 @@ class Runner:
 
     def train_policy_minibatch(self, data, loss_scale=1.0):
 
-        def calc_entropy(x):
-            return -(x.exp() * x).sum(axis=1)
+        def calc_entropy(p):
+            """
+            Input is [*, Actions], and are log probs
+            """
+            return -(p.exp() * p).sum(axis=-1)
+
+        def calc_kl(p, q):
+            return (p.exp() * (p-q)).sum(axis=-1)
+
+        def cross_entropy(p, q):
+            return -(p.exp() * q).sum(axis=-1)
 
         result = {}
 
@@ -1617,9 +1654,29 @@ class Runner:
                 kl_true = f.kl_div(old_log_policy, logps, log_target=True, reduction="batchmean")
 
             entropy = calc_entropy(logps)
-            original_entropy = calc_entropy(old_log_policy)
 
-            gain = gain + entropy * self.current_entropy_bonus
+            if args.side.enabled:
+                # kl penalty for deviating from target
+                # no real need to subtract entropy, just makes the penalty go from [-inf...0]
+                # it also makes this solution equiv to entropy bonus if std = 0
+                side_entropy = calc_entropy(self.side_target_policy_logp)
+                # note: should probably do side_target_policy_logp[None, :]
+                # also note, this was side_entropy, but made it entropy so that we are now actually using
+                # D(p,q), the cross entropy...
+                kl_penalty = calc_kl(logps, self.side_target_policy_logp[None, :]) - entropy
+                gain = gain - kl_penalty * self.current_entropy_bonus
+
+                # just use cross entropy
+                # ce = cross_entropy(logps, self.side_target_policy_logp[None, :])
+                # gain = gain + ce * self.current_entropy_bonus
+                # side_entropy = calc_entropy(self.side_target_policy_logp)
+
+                self.log.watch_mean("side_kl_penalty", kl_penalty.mean(), display_name="skl")
+                self.log.watch_mean("side_target_entropy", side_entropy, display_name="ste")
+
+            else:
+                gain = gain + entropy * self.current_entropy_bonus
+
 
             self.log.watch_mean("entropy", entropy.mean())
             self.log.watch_stats("entropy", entropy, display_width=0)  # super useful...
@@ -1700,7 +1757,8 @@ class Runner:
         self.log.watch_mean("loss_policy", gain.mean(), display_name=f"ls_policy")
 
         result.update({
-            'losses': loss.detach(),
+            'loss': loss.detach().mean().item(),
+            'loss_std': loss.detach().std().item(),
             'kl_approx': float(kl_approx.detach()),  # make sure we don't pass the graph through.
             'kl_true': float(kl_true.detach()),
             'clip_frac': float(clip_frac.detach()),
@@ -1835,6 +1893,26 @@ class Runner:
         self.log.watch_stats("advantages", advantages, display_width=0, history_length=1)
         batch_data["advantages"] = advantages
 
+        # sort out non-uniform entropy bonus
+        if args.side.enabled:
+            # advantages:
+            # takes into account the negative rewards of taking a random action
+            # can apply multiple policy updates without enflating entropy.
+            assert args.env.type != "mujoco", "CC not supported yet"
+            # give slight reward for taking given actions. Change this each rollout.
+            # each agent gets a different per action bonus
+            if (self.side_target_policy_logp is None) or (self.batch_counter % args.side.period == 0):
+                unnormalized_policy_bias = torch.normal(
+                    0, args.side.noise_std,
+                    size=[self.model.actions],
+                    dtype=torch.float32,
+                    device=self.model.device
+                )
+                self.side_target_policy_logp = torch.log_softmax(unnormalized_policy_bias, dim=0)
+                self.side_target_policy_logp.requires_grad = False
+
+
+
         # get global kl states (if needed)
         if args.gkl.enabled:
             assert args.gkl.source == "rollout", "Only rollout source supported at the moment"
@@ -1910,6 +1988,7 @@ class Runner:
                 mini_batch_func=self.train_value_minibatch,
                 mini_batch_size=args.value_opt.mini_batch_size,
                 optimizer=self.value_optimizer,
+                early_stop_loss=args.value_opt.stop_level,
                 label="value",
                 epoch=value_epoch,
             )
@@ -2176,7 +2255,8 @@ class Runner:
             epoch: Optional[int] = None,
             hooks: Union[dict, None] = None,
             thinning: float = 1.0,
-            force_micro_batch_size = None,
+            force_micro_batch_size=None,
+            early_stop_loss=-1,
         ) -> dict:
         """
         Trains agent on current batch of experience
@@ -2294,9 +2374,27 @@ class Runner:
                     context["did_break"] = True
                     break
 
+            # early stopping
+            if early_stop_loss > 0:
+                loss = outputs[-1]['loss']
+                if abs(loss) < early_stop_loss:
+                    context["did_break"] = True
+                    break
+
             self.optimizer_step(optimizer=optimizer, label=label)
 
         # free up memory by releasing grads.
         optimizer.zero_grad(set_to_none=True)
+
+        # logging
+        epoch = epoch if epoch is not None else 0
+
+        if 'loss_std' in outputs[0]:
+            self.log.watch_mean(f"*{label}_{epoch}_loss_first_std", outputs[0]['loss_std'])
+            self.log.watch_mean(f"*{label}_{epoch}_loss_last_std", outputs[-1]['loss_std'])
+
+        self.log.watch_mean(f"*{label}_{epoch}_loss_first", outputs[0]['loss'])
+        self.log.watch_mean(f"*{label}_{epoch}_loss_last", outputs[-1]['loss'])
+        self.log.watch_mean(f"*{label}_{epoch}_updates", len(outputs))
 
         return context
