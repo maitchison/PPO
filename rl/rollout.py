@@ -1599,7 +1599,11 @@ class Runner:
 
     @property
     def current_entropy_bonus(self):
-        return args.entropy_bonus
+        if args.entropy_base_actions > 0:
+            # scale so bonus for uniform distribution is the same.
+            return args.entropy_bonus * (self.model.actions / args.entropy_base_actions)
+        else:
+            return args.entropy_bonus
 
     def train_value_heads(self, model_out, data):
         """
