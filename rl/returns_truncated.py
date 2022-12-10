@@ -91,12 +91,41 @@ def get_return_estimate(
         # each horizon gets a random sample.
         samples = np.random.choice(range(1, len(weights) + 1), size=(K, max_samples), replace=True, p=weights)
         return calc_return(samples)
-    elif mode == "advanced2":
-        # each horizon gets a random sample, but we sample without replacement
+    elif mode == "clipped":
+        # each horizon gets a random sample, but zero out n_steps larger than h.
         C = max_samples
         samples = np.zeros([K, C], dtype=np.int32)
         for k in range(K):
-            samples[k, :] = np.random.choice(range(1, len(weights) + 1), size=C, replace=False, p=weights)
+            max_h = max(required_horizons[k], 1)
+            scaled_weights = weights.copy()
+            scaled_weights[max_h:] = 0
+            scaled_weights = scaled_weights / scaled_weights.sum()
+            samples[k, :] = np.random.choice(range(1, len(weights) + 1), size=C, replace=True, p=scaled_weights)
+        return calc_return(samples)
+    elif mode == "adaptive":
+        # each horizon gets a random sample, but shorter horizons get smaller n_step
+        C = max_samples
+        samples = np.zeros([K, C], dtype=np.int32)
+        for k in range(K):
+            # todo adjust weights properly
+            # weights = get_weights(lambda x: lamb ** x)
+            max_h = max(required_horizons[k] // 2, 1)
+            scaled_weights = weights.copy()
+            scaled_weights[max_h:] = 0
+            scaled_weights = scaled_weights / scaled_weights.sum()
+            samples[k, :] = np.random.choice(range(1, len(weights) + 1), size=C, replace=True, p=scaled_weights)
+        return calc_return(samples)
+    elif mode == "mcx":
+        # MC up to n_step*2 then exponential
+        C = max_samples
+        samples = np.zeros([K, C], dtype=np.int32)
+        for k in range(K):
+            # todo adjust weights properly
+            # weights = get_weights(lambda x: lamb ** x)
+            if required_horizons[k] <= 2*n_step:
+                samples[k, :] = required_horizons[k]
+            else:
+                samples[k, :] = np.random.choice(range(1, len(weights) + 1), size=C, replace=True, p=weights)
         return calc_return(samples)
     elif mode == "full":
         # calculate each horizon and do a weighted average

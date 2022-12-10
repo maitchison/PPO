@@ -274,10 +274,7 @@ class OptimizerConfig(BaseConfig):
         parser.add_argument(f"--{prefix}_per_epoch_optimizer", type=str2bool, default=False)
         parser.add_argument(f"--{prefix}_lr_anneal", type=str2bool, nargs='?', const=True, default=False, help="Anneals learning rate to 0 (linearly) over training")
         parser.add_argument(f"--{prefix}_epochs", type=int, default=epoch_default, help=f"Number of training epochs per {prefix} batch.")
-        parser.add_argument(f"--{prefix}_ffe", type=str2bool, default=False, help=f"Enables final epoch with all examples.")
-        parser.add_argument(f"--{prefix}_lbs", type=int, default=-1, help=f"Batch size to use for large.")
-        parser.add_argument(f"--{prefix}_afe", type=str2bool, default=False,
-                            help=f"Enables alternating full epoch with all examples.")
+        parser.add_argument(f"--{prefix}_batch_mode", type=str, default="default", help=f"Batch method.")
         parser.add_argument(f"--{prefix}_mini_batch_size", type=int, default=256, help="Number of examples used for each optimization step.")
         # todo: implement anneal
         parser.add_argument(f"--{prefix}_lr", type=float, default=2.5e-4, help="Learning rate for optimizer")
@@ -303,9 +300,7 @@ class OptimizerConfig(BaseConfig):
         self.adam_beta2 = float()
         self.flood_level = float()
         self.stop_level = float()
-        self.ffe = bool()
-        self.afe = bool()
-        self.lbs = int()
+        self.batch_mode = bool()
         self.per_epoch_optimizer = str()
 
     def n_updates(self, rollout_size):
