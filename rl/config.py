@@ -661,7 +661,8 @@ class Config(BaseConfig):
 
         self.ppo_vf_coef = float()
         self.entropy_bonus = float()
-        self.entropy_base_actions = int()
+        self.entropy_scaling_base_actions = int()
+        self.entropy_scaling = float()
         self.ppo_epsilon = float()
         self.n_steps = int()
         self.agents = int()
@@ -774,7 +775,8 @@ class Config(BaseConfig):
         # PPO
         parser.add_argument("--ppo_vf_coef", type=float, default=0.5, help="Loss multiplier for default value loss.")
         parser.add_argument("--entropy_bonus", type=float, default=0.01)
-        parser.add_argument("--entropy_base_actions", type=int, default=-1)
+        parser.add_argument("--entropy_scaling_base_actions", type=int, default=18)
+        parser.add_argument("--entropy_scaling", type=str, default="off", help='off|average|uniform')
         parser.add_argument("--ppo_epsilon", type=float, default=0.2, help="PPO epsilon parameter.")
         parser.add_argument("--n_steps", type=int, default=256, help="Number of environment steps per training step.")
         parser.add_argument("--agents", type=int, default=256)
