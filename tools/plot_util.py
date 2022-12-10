@@ -182,8 +182,14 @@ def read_log(file_path):
     except:
         pass
 
+    scale = 1.0
+
+    if params.get("env_type", '') == "procgen":
+        scale = 1/100
+
+
     result["ep_score_norm"] = np.asarray(
-        [asn.normalize(game, score, count) for score, count in zip(result["ep_score_mean"], result["ep_count"])])
+        [scale*asn.normalize(game, score, count) for score, count in zip(result["ep_score_mean"], result["ep_count"])])
 
     if "tvf_horizon_transform" in result:
         result["tvf_horizon_transform"] = "log" if result["tvf_horizon_transform"] == "log" else "off"

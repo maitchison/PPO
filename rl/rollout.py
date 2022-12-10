@@ -1059,12 +1059,24 @@ class Runner:
                 display_width=0,
                 history_length=1
             )
+            self.log.watch_mean(
+                f"nev_{name}" + postfix,
+                not_explained_var,
+                display_width=0,
+                history_length=1
+            )
+            self.log.watch_mean(
+                f"var_{name}" + postfix,
+                var,
+                display_width=0,
+                history_length=1
+            )
 
             # work out ratio between average prediction at horizon and average return at horizon
             # should be close to 1.
             self.log.watch_mean(
                 f"*vr_ratio_{name}",
-                np.mean(value)/(abs(np.mean(target))+1e6),
+                np.mean(value)/(abs(np.mean(target))+1e-6),
                 history_length=1
             )
 
