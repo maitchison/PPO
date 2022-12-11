@@ -1600,17 +1600,22 @@ class Runner:
     @property
     def current_entropy_bonus(self):
         if args.entropy_scaling == "off":
-            return args.entropy_bonus
+            bonus = args.entropy_bonus
         elif args.entropy_scaling == "average":
             # scale as if we perform average instead of sum
             assert args.entropy_scaling_base_actions > 0
-            return args.entropy_bonus * (args.entropy_scaling_base_actions / self.model.actions)
+            bonus = args.entropy_bonus * (args.entropy_scaling_base_actions / self.model.actions)
         elif args.entropy_scaling == "uniform":
             # scale so that bonus for uniform distribution is equiv.
             assert args.entropy_scaling_base_actions > 0
-            return args.entropy_bonus * (math.log(args.entropy_scaling_base_actions) / math.log(self.model.actions))
+            bonus = args.entropy_bonus * (math.log(args.entropy_scaling_base_actions) / math.log(self.model.actions))
         else:
             raise ValueError(f"Invalid entropy_scaling method {args.entropy_scaling}.")
+
+        if args.entropy_anneal:
+            bonus = self.anneal(bonus)
+
+        return bonus
 
 
     def train_value_heads(self, model_out, data):
