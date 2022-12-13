@@ -344,7 +344,7 @@ class DistilConfig(BaseConfig):
     value_loss: str = "mse"     # [mse|clipped_mse|l1|huber]
     delta: float = 0.1          # delta for huber loss
     l1_scale: float = 1 / 30    # scaling for l1 loss
-    delay: float = 1            # number of epochs to wait before using distilation
+    delay: float = 0             # number of epochs to wait before using distilation
     use_policy_opt: bool = False # uses shared optimizer statistics for policy and distilation.
 
     def __init__(self, parser: argparse.ArgumentParser):
