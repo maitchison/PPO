@@ -1617,6 +1617,12 @@ class Runner:
 
         return bonus
 
+    @property
+    def current_advantage_epsilon(self):
+        if args.advantage_epsilon_anneal_factor > 0:
+            return args.advantage_epsilon * (1/args.advantage_epsilon_anneal_factor)**(self.step/10e6)
+        else:
+            return args.advantage_epsilon
 
     def train_value_heads(self, model_out, data):
         """
@@ -1912,7 +1918,8 @@ class Runner:
         self.log.watch_stats("advantages_raw", advantages, display_width=0, history_length=1)
 
         # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
-        advantages = (advantages - advantages.mean()) / (advantages.std() + args.advantage_epsilon)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + self.current_advantage_epsilon)
+        self.log.watch_stats("*advantage_epsilon", self.current_advantage_epsilon, history_length=1)
         self.log.watch_stats("advantages_norm", advantages, display_width=0, history_length=1)
 
         if args.advantage_clipping is not None:
@@ -2281,6 +2288,7 @@ class Runner:
         return \
             args.model.architecture == "dual" and \
             args.distil_opt.epochs > 0 and \
+            self.step >= args.distil.delay and \
             self.batch_counter % args.distil.period == args.distil.period - 1 and \
             location_match
 

@@ -344,6 +344,7 @@ class DistilConfig(BaseConfig):
     value_loss: str = "mse"     # [mse|clipped_mse|l1|huber]
     delta: float = 0.1          # delta for huber loss
     l1_scale: float = 1 / 30    # scaling for l1 loss
+    delay: int = 0              # number of steps to wait before using distilation
 
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="distil", parser=parser)
@@ -668,6 +669,7 @@ class Config(BaseConfig):
         self.n_steps = int()
         self.agents = int()
         self.advantage_epsilon = float()
+        self.advantage_epsilon_anneal_factor = float()
         self.advantage_clipping = object()
         self.ppo_epsilon_anneal = bool()
 
@@ -783,6 +785,7 @@ class Config(BaseConfig):
         parser.add_argument("--n_steps", type=int, default=256, help="Number of environment steps per training step.")
         parser.add_argument("--agents", type=int, default=256)
         parser.add_argument("--advantage_epsilon", type=float, default=1e-8, help="Epsilon used when normalizing advantages.")
+        parser.add_argument("--advantage_epsilon_anneal_factor", type=float, default=0)
         parser.add_argument("--advantage_clipping", type=float, default=None, help="Advantages will be clipped to this, (after normalization)")
         parser.add_argument("--ppo_epsilon_anneal", type=str2bool, nargs='?', const=True, default=False,
                             help="Anneals learning rate to 0 (linearly) over training") # remove
