@@ -142,7 +142,7 @@ class Runner:
 
         self.policy_optimizer = make_optimizer(model.policy_net.parameters(), args.policy_opt)
         self.value_optimizer = make_optimizer(model.value_net.parameters(), args.value_opt)
-        if args.distil_opt.epochs > 0:
+        if args.distil_opt.epochs > 0 and not args.distil.use_policy_opt:
             self.distil_optimizer = make_optimizer(model.policy_net.parameters(), args.distil_opt)
         else:
             self.distil_optimizer = None
@@ -1620,7 +1620,7 @@ class Runner:
     @property
     def current_advantage_epsilon(self):
         if args.advantage_epsilon_anneal_factor > 0:
-            return args.advantage_epsilon * (1/args.advantage_epsilon_anneal_factor)**(self.step/10e6)
+            return args.advantage_epsilon * max((1/args.advantage_epsilon_anneal_factor)**(self.step/10e6), 1e-8)
         else:
             return args.advantage_epsilon
 
@@ -1919,7 +1919,7 @@ class Runner:
 
         # we should normalize at the mini_batch level, but it's so much easier to do this at the batch level.
         advantages = (advantages - advantages.mean()) / (advantages.std() + self.current_advantage_epsilon)
-        self.log.watch_stats("*advantage_epsilon", self.current_advantage_epsilon, history_length=1)
+        self.log.watch("*advantage_epsilon", self.current_advantage_epsilon, history_length=1)
         self.log.watch_stats("advantages_norm", advantages, display_width=0, history_length=1)
 
         if args.advantage_clipping is not None:
@@ -2231,7 +2231,7 @@ class Runner:
                 batch_data=batch_data,
                 mini_batch_func=self.train_distil_minibatch,
                 mini_batch_size=args.distil_opt.mini_batch_size,
-                optimizer=self.distil_optimizer,
+                optimizer=self.policy_optimizer if args.distil.use_policy_opt else self.distil_optimizer,
                 label="distil",
                 epoch=distil_epoch,
             )
@@ -2288,7 +2288,7 @@ class Runner:
         return \
             args.model.architecture == "dual" and \
             args.distil_opt.epochs > 0 and \
-            self.step >= args.distil.delay and \
+            self.step >= (args.distil.delay * 1e6) and \
             self.batch_counter % args.distil.period == args.distil.period - 1 and \
             location_match
 
