@@ -701,9 +701,16 @@ class Job:
                 next_chunk = (round(details["completed_epochs"] / chunk_size) * chunk_size) + chunk_size
             self.params["limit_epochs"] = int(next_chunk)
 
-        nice_params = [
-            f"--{k}={nice_format(v)}" for k, v in self.params.items() if v is not None
-        ]
+        if self.params.get('legacy', False):
+            print("!"*60)
+            print("Running legacy train.py")
+            print("!"*60)
+            assert "env_name" in self.params, "env_name must be defined in legacy mode"
+            EXCLUDE = ['legacy', 'env_name', 'environment', 'save_early_checkpoint', 'save_initial_checkpoint']
+            nice_params = [f"--{k}={nice_format(v)}" for k, v in self.params.items() if v is not None and k not in EXCLUDE]
+            nice_params = [self.params['env_name']]+nice_params
+        else:
+            nice_params = [f"--{k}={nice_format(v)}" for k, v in self.params.items() if v is not None]
 
         if run_async:
             process_params = []

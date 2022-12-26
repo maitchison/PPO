@@ -216,7 +216,9 @@ class TVFConfig(BaseConfig):
     coef: float = 1.0               # Loss is multiplied by this.
     trimming: str = "off"           # off|timelimit|est_term
     trimming_mode: str = "average"  # interpolate|average|substitute
-    eta_minh: int = 128              # estimated timelimit algorithm
+    trim_advantages: str = "trimmed"  # trimmed|untrimmed|average
+    trim_clip: float = -1           # if >= clips how much trimming can change value estimate.
+    eta_minh: int = 128             # estimated timelimit algorithm
     eta_buffer: int = 32
     eta_percentile: float = 90
     horizon_dropout: float = 0.0    # fraction of horizons to exclude per epoch.
@@ -236,12 +238,10 @@ class TVFConfig(BaseConfig):
         super().__init__(prefix="tvf", parser=parser)
 
     def auto(self):
-        # stub:
-        print("AUTO TVF")
         # set defaults
         if TVFConfig.gamma is None:
             TVFConfig.gamma = args.gamma
-        if TVFConfig.max_horizon <= -1:
+        if TVFConfig.max_horizon < 0:
             TVFConfig.max_horizon = args.env.timeout
             print(f"Auto max_horizon={TVFConfig.max_horizon}")
 
@@ -278,14 +278,14 @@ class OptimizerConfig(BaseConfig):
         parser.add_argument(f"--{prefix}_mini_batch_size", type=int, default=256, help="Number of examples used for each optimization step.")
         # todo: implement anneal
         parser.add_argument(f"--{prefix}_lr", type=float, default=2.5e-4, help="Learning rate for optimizer")
-        parser.add_argument(f"--{prefix}_flood_level", type=float, default=-1, help="Used to stop before we get to a minima")
-        parser.add_argument(f"--{prefix}_stop_level", type=float, default=-1,
-                            help="Used to perform early stopping when loss gets below this threshold")
 
         # adam
         parser.add_argument(f"--{prefix}_adam_epsilon", type=float, default=1e-5, help="Epsilon parameter for Adam optimizer")
         parser.add_argument(f"--{prefix}_adam_beta1", type=float, default=0.9, help="beta1 parameter for Adam optimizer. Set to -1 for auto")
         parser.add_argument(f"--{prefix}_adam_beta2", type=float, default=0.999, help="beta2 parameter for Adam optimizer")
+
+        # advantaive MBS
+        parser.add_argument(f"--{prefix}_delta_threshold", type=float, default=-1, help="Used to automatically apply mini-batches when gradient error falls below threshold.")
 
         # note we use instance variables instead of class variables here as we need
         # to have multiple instances of this one.
@@ -298,10 +298,9 @@ class OptimizerConfig(BaseConfig):
         self.adam_epsilon = float()
         self.adam_beta1 = float()
         self.adam_beta2 = float()
-        self.flood_level = float()
-        self.stop_level = float()
         self.batch_mode = bool()
         self.per_epoch_optimizer = str()
+        self.delta_threshold = float()
 
     def n_updates(self, rollout_size):
         return (rollout_size / self.mini_batch_size) * self.epochs
@@ -587,6 +586,12 @@ class EnvConfig(BaseConfig):
                     'plunder': 2000,
                 }
                 EnvConfig.timeout = env_timeouts.get(args.env.name, 1000)
+            elif self.type == "mujoco":
+                if args.env.name.lower() == "reacher":
+                    EnvConfig.timeout = 50
+                else:
+                    EnvConfig.timeout = 1000
+                EnvConfig.timeout += 1 # add one frame so timelimit exceeds actual env timelimit.
             else:
                 EnvConfig.timeout = 0  # unlimited
         else:

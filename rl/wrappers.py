@@ -1200,6 +1200,38 @@ class AtariWrapper(gym.Wrapper):
         return self._process_frame(obs)
 
 
+class TimeFeatureWrapper(gym.Wrapper):
+    """
+    Adds time as a input feature
+    Input should R^D
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        assert len(self.env.observation_space.shape) == 1, f"Input should in R^D, shape was {self.env.observation_space.shape}"
+        D = self.env.observation_space.shape[0]
+        self.observation_space = gym.spaces.Box(0, 255, (D+1,), dtype=self.env.observation_space.dtype)
+
+    @staticmethod
+    def _process_frame(obs: np.ndarray, time: float):
+        D = obs.shape[0]
+        new_obs = np.zeros((D+1,), dtype=obs.dtype)
+        new_obs[:-1] = obs
+        new_obs[-1] = time
+        return new_obs
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        assert 'time_frac' in info, "must include timelimit wrapper before TimeChannelWrapper"
+        obs = self._process_frame(obs, info['time_frac'])
+        return obs, reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        return self._process_frame(obs, 0)
+
+
 class TimeChannelWrapper(gym.Wrapper):
     """
     Adds time as a channel

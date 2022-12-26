@@ -787,8 +787,10 @@ class Runner:
             # take advantage of the fact that V_h = V_min(h, remaining_time).
             if args.tvf.enabled:
                 start_time = clock.time()
-                tvf_values = model_out["tvf_value"].cpu().numpy()
-                self.tvf.tvf_value[t], ttt = self.tvf.trim_horizons(
+                tvf_values = model_out["tvf_value"].cpu().numpy() # A,K,VH
+                tvf_values[:, 0, :] = 0 # first value head should always be zero.
+                self.tvf.tvf_untrimmed_value[t] = tvf_values
+                self.tvf.tvf_value[t], self.tvf.tvf_final_value[t], ttt = self.tvf.trim_horizons(
                     tvf_values,
                     prev_time,
                     method=args.tvf.trimming,
@@ -876,8 +878,11 @@ class Runner:
         self.value[-1] = final_model_out["value"].cpu().numpy()
 
         if args.tvf.enabled:
-            self.tvf.tvf_value[-1], ttt = self.tvf.trim_horizons(
-                final_model_out["tvf_value"].cpu().numpy(),
+            last_tvf_value = final_model_out["tvf_value"].cpu().numpy()
+            last_tvf_value[:, 0, :] = 0  # first value head should always be zero.
+            self.tvf.tvf_untrimmed_value[-1] = last_tvf_value
+            self.tvf.tvf_value[-1], self.tvf.tvf_final_value[-1], ttt = self.tvf.trim_horizons(
+                last_tvf_value,
                 self.time,
                 method=args.tvf.trimming,
                 mode=args.tvf.trimming_mode
@@ -1193,28 +1198,11 @@ class Runner:
             # in this case just use the value networks value estimate
             ext_value_estimates = self.ext_value
 
+        # when using trimming we want low bias for return estimations, but low variance for advantages, so
+        # recalculate trimming using averaging.
+
         # mostly interested in how noisy these are...
         self.log.watch_mean_std("*ext_value_estimates", ext_value_estimates)
-
-        # this is the old solution, where we reward the agent for taking certian actions.
-        # if args.side.enabled:
-        #     # advantages:
-        #     # takes into account the negative rewards of taking a random action
-        #     # can apply multiple policy updates without enflating entropy.
-        #     assert args.env.type != "mujoco", "CC not supported yet"
-        #     # give slight reward for taking given actions. Change this each rollout.
-        #     # each agent gets a different per action bonus
-        #     exp_rewards = np.zeros_like(self.ext_rewards)
-        #     if self.batch_counter % args.side.period == 0:
-        #         if args.side.per_agent:
-        #             self.exp_noise = np.random.normal(0, args.side.noise_std, size=[A, self.model.actions])
-        #         else:
-        #             self.exp_noise = np.random.normal(0, args.side.noise_std, size=[1, self.model.actions])
-        #             self.exp_noise = np.repeat(self.exp_noise, axis=0, repeats=A)
-        #     for n in range(N):
-        #         exp_rewards[n, :] = self.exp_noise[range(self.A), self.actions[n, :]]
-        # else:
-        #     exp_rewards = 0
 
         ext_advantage = gae(
             self.ext_rewards,
@@ -1313,7 +1301,6 @@ class Runner:
                 param_norm = p.grad.data.norm(2)
                 grad_norm += param_norm.item() ** 2
             return grad_norm ** 0.5
-
 
         grad_norm = None
 
@@ -1527,20 +1514,6 @@ class Runner:
             value_heads.append("int")
         return value_heads
 
-    def mean_and_flood(self, loss, flood_level=0.0):
-
-        loss = loss.mean()
-
-        if loss < 0:
-            sign = -1
-        else:
-            sign = 1
-        if flood_level > 0:
-            loss = sign*(torch.abs(loss - flood_level) + flood_level)
-
-        return loss
-
-
     def train_value_minibatch(self, data, loss_scale=1.0, single_value_head: Optional[int] = None):
         """
         @param single_value_head: if given trains on just this indexed tvf value head.
@@ -1583,8 +1556,8 @@ class Runner:
 
         # note, we want to log the true loss, not the modified loss.
         loss = loss * loss_scale
-        modified_loss = self.mean_and_flood(loss, args.value_opt.flood_level)
-        modified_loss.backward()
+        mean_loss = loss.mean()
+        mean_loss.backward()
 
         # -------------------------------------------------------------------------
         # Logging
@@ -1866,6 +1839,7 @@ class Runner:
                 mini_batch_func=self.train_rnd_minibatch,
                 mini_batch_size=args.rnd_opt.mini_batch_size,
                 optimizer=self.rnd_optimizer,
+                delta_threshold=args.rnd_opt.delta_threshold,
                 epoch=epoch,
                 label="rnd",
             )
@@ -1970,6 +1944,7 @@ class Runner:
                 mini_batch_func=self.train_policy_minibatch,
                 mini_batch_size=args.policy_opt.mini_batch_size,
                 optimizer=self.policy_optimizer,
+                delta_threshold=args.policy_opt.delta_threshold,
                 label="policy",
                 epoch=epoch,
             )
@@ -2018,64 +1993,16 @@ class Runner:
                 if args.sns.fake_noise:
                     rl.sns.log_fake_accumulated_gradient_norms(self, optimizer=self.value_optimizer)
 
-        def train_small(epoch):
+        for epoch in range(args.value_opt.epochs):
             self.train_batch(
                 batch_data=batch_data,
                 mini_batch_func=self.train_value_minibatch,
                 mini_batch_size=args.value_opt.mini_batch_size,
                 optimizer=self.value_optimizer,
-                early_stop_loss=args.value_opt.stop_level,
                 label="value",
+                delta_threshold=args.value_opt.delta_threshold,
                 epoch=epoch,
             )
-
-        for epoch in range(args.value_opt.epochs):
-            if args.value_opt.batch_mode == "default":
-                self.train_batch(
-                    batch_data=batch_data,
-                    mini_batch_func=self.train_value_minibatch,
-                    mini_batch_size=args.value_opt.mini_batch_size,
-                    optimizer=self.value_optimizer,
-                    early_stop_loss=args.value_opt.stop_level,
-                    label="value",
-                    epoch=epoch,
-                )
-            elif args.value_opt.batch_mode == "big_small":
-                self.train_batch(
-                    batch_data=batch_data,
-                    mini_batch_func=self.train_value_minibatch,
-                    mini_batch_size=args.value_opt.mini_batch_size,
-                    optimizer=self.value_optimizer,
-                    early_stop_loss=args.value_opt.stop_level,
-                    label="value",
-                    epoch=epoch,
-                    batch_slice=slice(None, args.batch_size//2),
-                )
-                self.train_batch(
-                    batch_data=batch_data,
-                    mini_batch_func=self.train_value_minibatch,
-                    mini_batch_size=args.value_opt.mini_batch_size * 8,  # large always 8x
-                    optimizer=self.value_optimizer,
-                    early_stop_loss=args.value_opt.stop_level,
-                    label="value",
-                    epoch=epoch,
-                    batch_slice=slice(args.batch_size // 2, None),
-                )
-            elif args.value_opt.batch_mode == "mixed":
-                # 1k
-                assert args.batch_size == 64*1024, "Mixed training hard coded for 64k batch size."
-                for i in range(4):
-                    self.train_batch(
-                        batch_data=batch_data,
-                        mini_batch_func=self.train_value_minibatch,
-                        mini_batch_size=args.value_opt.mini_batch_size*(2**i),
-                        optimizer=self.value_optimizer,
-                        early_stop_loss=args.value_opt.stop_level,
-                        label="value",
-                        epoch=epoch,
-                        batch_slice=slice(i*16*1024, (i+1)*16*1024),
-                    )
-
 
         self.log.watch(f"time_train_value", (clock.time() - start_time),
                        display_width=6, display_name='t_val', display_precision=3)
@@ -2147,7 +2074,7 @@ class Runner:
             # get targets from rollout
             if args.tvf.enabled and not args.distil.force_ext: # tvf_value is [N, A, K, VH]
                 assert args.distil.target == "value", "Only value targets supported for TVF distil"
-                batch_data["distil_targets"] = utils.merge_down(self.tvf.tvf_value[:self.N, :, :, 0]) # N*A, K
+                batch_data["distil_targets"] = utils.merge_down(self.tvf.tvf_untrimmed_value[:self.N, :, :, 0]) # N*A, K
             else:
                 if args.distil.target == "value":
                     batch_data["distil_targets"] = utils.merge_down(self.ext_value[:self.N])
@@ -2232,6 +2159,7 @@ class Runner:
                 mini_batch_func=self.train_distil_minibatch,
                 mini_batch_size=args.distil_opt.mini_batch_size,
                 optimizer=self.policy_optimizer if args.distil.use_policy_opt else self.distil_optimizer,
+                delta_threshold=args.distil_opt.delta_threshold,
                 label="distil",
                 epoch=distil_epoch,
             )
@@ -2276,6 +2204,7 @@ class Runner:
                 mini_batch_func=self.train_aux_minibatch,
                 mini_batch_size=args.aux_opt.mini_batch_size,
                 optimizer=self.aux_optimizer,
+                delta_threshold=args.aux_opt.delta_threshold,
                 epoch=aux_epoch,
                 label="aux",
             )
@@ -2340,11 +2269,10 @@ class Runner:
             hooks: Union[dict, None] = None,
             thinning: float = 1.0,
             force_micro_batch_size=None,
-            early_stop_loss=-1,
-            batch_slice=None
+            delta_threshold=None,
         ) -> dict:
         """
-        Trains agent on current batch of experience
+        Trains agent on current batch of experience using microbatching
 
         Thinning: uses this proportion of the batch_data.
 
@@ -2353,6 +2281,11 @@ class Runner:
             'outputs' output from each mini_batch update
             'did_break'=True (only if training terminated early)
         """
+
+        # todo: just pass in optimizer args maybe?
+
+        if delta_threshold is not None and delta_threshold > 0:
+            raise Exception("Not supported")
 
         if args.upload_batch:
             assert batch_data["prev_state"].dtype != object, "obs_compression can no be enabled with upload_batch."
@@ -2388,9 +2321,6 @@ class Runner:
         micro_batches = mini_batch_size // micro_batch_size
 
         ordering = list(range(batch_size))
-        if batch_slice is not None:
-            ordering = ordering[batch_slice]
-            mini_batches = len(ordering) // mini_batch_size
         np.random.shuffle(ordering)
 
         micro_batch_counter = 0
@@ -2459,13 +2389,6 @@ class Runner:
 
             if hooks is not None and "after_mini_batch" in hooks:
                 if hooks["after_mini_batch"](context):
-                    context["did_break"] = True
-                    break
-
-            # early stopping
-            if early_stop_loss > 0:
-                loss = outputs[-1]['loss']
-                if abs(loss) < early_stop_loss:
                     context["did_break"] = True
                     break
 

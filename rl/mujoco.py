@@ -35,9 +35,9 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
 
     # this global reference will not work on windows when we spawn instead of fork,
     # so make sure to pass args in as an argument.
-    args = args or config.args
+    args:config.Config = args or config.args
 
-    assert args.frame_skip == 1, "Frame skip should be 1 for mujoco"
+    assert args.env.frame_skip == 1, "Frame skip should be 1 for mujoco"
 
     env_name = f"{env_id}-v2"
 
@@ -49,8 +49,11 @@ def make(env_id:str, monitor_video=False, seed=None, args=None, determanistic_sa
         np.random.seed(seed)
         env.seed(seed)
 
-    if args.timeout > 0:
-        env = wrappers.TimeLimitWrapper(env, args.timeout)
+    if args.env.timeout > 0:
+        env = wrappers.TimeLimitWrapper(env, args.env.timeout)
+
+    if args.env.embed_time:
+        env = wrappers.TimeFeatureWrapper(env)
 
     env = F32Wrapper(env)
 

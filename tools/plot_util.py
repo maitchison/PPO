@@ -494,6 +494,8 @@ def compare_runs(
         jitter=0.0,
         figsize=(16, 4),
         show_group_runs=False,
+        print_group_stats=False,
+        y_transform=None,
         run_filter=None, # not used
 ):
     """
@@ -503,6 +505,9 @@ def compare_runs(
 
     if title is None:
         title = "Training Graph"
+
+    if y_transform is not None and type(y_transform) is not dict:
+        y_transform = {'ep_score_mean': y_transform}
 
     if len(runs) == 0:
         return
@@ -549,7 +554,10 @@ def compare_runs(
             continue
 
         try:
-            ys = np.asarray(run_data[y_axis])
+            if y_transform is not None and y_axis in y_transform:
+                ys = np.asarray([y_transform[y_axis](y) for y in run_data[y_axis]])
+            else:
+                ys = np.asarray(run_data[y_axis])
         except:
             # problem with data...
             print(f"Warning, skipping {run_name}.")
@@ -634,14 +642,17 @@ def compare_runs(
 
         ys = []
         ys_std_err = []
+        y_n = []
         for y_sample in all_ys:
             y_sample = [x for x in y_sample if x is not None]
             if len(y_sample) == 0:
                 ys.append(0)
                 ys_std_err.append(0)
+                y_n.append(0)
             else:
                 ys.append(np.mean(y_sample))
                 ys_std_err.append(np.std(y_sample) / (len(y_sample)**0.5))
+                y_n.append(len(y_sample))
         ys = np.asarray(ys)
         ys_std_err = np.asarray(ys_std_err)
 
@@ -656,6 +667,9 @@ def compare_runs(
         if show_group_runs:
             for x_raw, y_raw in zip(group_xs, group_ys):
                 plt.plot(x_raw, y_raw, alpha=0.10, c=color, linestyle="--", zorder=-10)
+
+        if print_group_stats:
+            print(f"{title} {run_label} & {ys[-1]:.1f} (+- {ys_std_err[-1]:.1f}) [n={y_n[-1]}]  \\\\")
 
         plt.fill_between(xs, smooth(ys_low, smooth_factor), smooth(ys_high, smooth_factor), alpha=0.15 * alpha, color=color)
         plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,

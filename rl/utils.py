@@ -122,7 +122,7 @@ def get_disallowed_devices():
 
 def list_grad(opt):
     """
-    Returns a list of parameters data from an optimizer
+    Returns a list of parameters grad data from an optimizer
     """
     parameters = []
     for group in opt.param_groups:
@@ -161,7 +161,7 @@ def optimizer_grad_norm(optimizer):
     return calc_norm(parameters)
 
 
-def check_for_exteme_or_nan(X, name="array", extreme_limit=10000):
+def check_for_extreme_or_nan(X, name="array", extreme_limit=10000):
     """ Makes sure elements in array are non NaN and are within reasonable limits. """
 
     mean = np.mean(X)

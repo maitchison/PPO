@@ -25,6 +25,8 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         K = len(parent.tvf_horizons)
 
         self.tvf_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)
+        self.tvf_untrimmed_value = np.zeros([N + 1, A, K, VH], dtype=np.float32)  # our ext value estimate
+        self.tvf_final_value = np.zeros([N + 1, A], dtype=np.float32) # our final value estimate
         self.tvf_returns = np.zeros([N, A, K, VH], dtype=np.float32)
 
     def on_train_value_minibatch(self, model_out, data, **kwargs):
@@ -73,14 +75,17 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
 
         return tvf_loss
 
+    def _reset(self):
+        self.tvf_value *= 0
+        self.tvf_untrimmed_value *= 0
+        self.tvf_final_value *= 0
+        self.tvf_returns *= 0
 
     def on_reset(self):
-        self.tvf_value *= 0
-        self.tvf_returns *= 0
+        self._reset()
 
     def on_before_generate_rollout(self):
-        self.tvf_value *= 0
-        self.tvf_returns *= 0
+        self._reset()
 
     def trim_horizons(self, tvf_value_estimates, time, method: str = "timelimit", mode: str = "interpolate"):
         """
@@ -94,26 +99,28 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         @param time: np array of dims [A] containing time associated with the states that generated these estimates.
         @returns new trimmed estimates of [A, K, VH],
         @returns predicted_time_till_termination of [A, K]
+        @returns ext_value_estimate, estimate of value at infinite horizon of dims [A]
         """
 
-        old_value_estimates = tvf_value_estimates
+        old_value_estimates = tvf_value_estimates.copy()  # don't modify input
         tvf_value_estimates = tvf_value_estimates.copy()  # don't modify input
 
         # by definition h=0 is 0.0
         assert self.runner.tvf_horizons[0] == 0, "First horizon must be zero"
         tvf_value_estimates[:, 0, :] = 0  # always make sure h=0 is fixed to zero.
+        old_value_estimates[:, 0, :] = 0  # always make sure h=0 is fixed to zero.
 
         # step 1: work out the trimmed horizon
         # output is [A]
         if method == "off":
-            return tvf_value_estimates, None
+            return tvf_value_estimates, 0, None
         elif method == "timelimit":
-            time_till_termination = np.maximum((args.env.timeout) - time, 0)
+            time_till_termination = np.maximum(args.env.timeout - time, 0)
         elif method == "est_term":
             est_ep_length = np.percentile(list(self.runner.episode_length_buffer) + list(time), args.tvf.eta_percentile).astype(
                 int) + args.tvf.eta_buffer
             est_ep_length += args.tvf.eta_minh / 4  # apply small buffer
-            time_till_termination = np.maximum((args.env.timeout) - time, 0)
+            time_till_termination = np.maximum(args.env.timeout - time, 0)
             est_time_till_termination = np.maximum(est_ep_length - time, args.tvf.eta_minh)
             time_till_termination = np.minimum(time_till_termination, est_time_till_termination)
             self.runner.log.watch_mean("*ttt_ep_length",
@@ -123,6 +130,9 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
             raise ValueError(f"Invalid trimming method {method}")
 
         self.runner.log.watch_stats("ttt", time_till_termination, display_width=0, history_length=4)
+
+        A, K, VH = tvf_value_estimates.shape
+        trimmed_ks = np.searchsorted(self.runner.tvf_horizons, time_till_termination)
 
         # step 2: calculate new estimates
         if mode == "interpolate":
@@ -134,9 +144,6 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
                 return np.log10(10 + x) - 1
 
             scale = log_scale
-
-            A, K, VH = tvf_value_estimates.shape
-            trimmed_ks = np.searchsorted(self.runner.tvf_horizons, time_till_termination)
             trimmed_value_estimate = horizon_interpolate(
                 scale(np.asarray(self.runner.tvf_horizons)),
                 old_value_estimates[..., 0],  # select final value head
@@ -147,7 +154,6 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         elif mode == "average":
             # average up to h but no further
             # implementation is a bit slow, drop if it's not better.
-            trimmed_ks = np.searchsorted(self.runner.tvf_horizons, time_till_termination)
             for a, trimmed_k in enumerate(trimmed_ks):
                 if trimmed_k >= len(self.runner.tvf_horizons) - 1:
                     # this means no trimming
@@ -163,18 +169,42 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         elif mode == "substitute":
             # just use the smallest h we can, very simple.
             untrimmed_ks = np.arange(self.runner.K)[None, :]
-            trimmed_ks = np.searchsorted(self.runner.tvf_horizons, time_till_termination)[:, None]
-            trimmed_ks = np.minimum(trimmed_ks, untrimmed_ks)
-            tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], trimmed_ks, axis=1)
+            modified_trimmed_ks = trimmed_ks[:, None].copy()
+            modified_trimmed_ks = np.minimum(modified_trimmed_ks, untrimmed_ks)
+            tvf_value_estimates = np.take_along_axis(tvf_value_estimates[:, :, 0], modified_trimmed_ks, axis=1)
             tvf_value_estimates = tvf_value_estimates[:, :, None]
+        elif mode == "random":
+            # randomly pick a valid horizon
+            # the idea here is that each horizon (on each agent) gets a slightly different estimate.
+            # if this works well optimize...
+            for a, trimmed_k in zip(range(A), trimmed_ks):
+                new_ks = np.arange(K)
+                for k in range(trimmed_k, K):
+                    # leave horizons before trimming point as is,
+                    # latter horizons use a random horizon less than or equal to their own horizon
+                    new_ks[k] = np.random.randint(trimmed_k, k+1)
+                tvf_value_estimates[a, range(K)] = old_value_estimates[a, new_ks]
         else:
             raise ValueError(f"Invalid trimming mode {mode}")
+
+        # calculate ext_value used for advantages by averaging over all valid horizons using
+        # untrimmed estimates
+        final_value_estimates = np.zeros([A], dtype=np.float32)
+        for a, trimmed_k in enumerate(trimmed_ks):
+            trimmed_k = min(trimmed_k, K-1) # make sure there is always one sample.
+            final_value_estimates[a] = old_value_estimates[a, trimmed_k:, 0].mean() # just the ext_value head.
+
+        # clip differences if needed...
+        if args.tvf.trim_clip >= 0:
+            clipped_delta = np.clip(tvf_value_estimates - old_value_estimates, -args.tvf.trim_clip, +args.tvf.trim_clip)
+            tvf_value_estimates = old_value_estimates + clipped_delta
 
         # monitor how much we modified the return estimates...
         # if max is large then maybe there's an off-by-one bug on time.
         delta = np.abs(tvf_value_estimates - old_value_estimates)
+
         self.runner.log.watch_stats("ved", delta.ravel(), display_width=0, history_length=4)
-        return tvf_value_estimates, time_till_termination
+        return tvf_value_estimates, final_value_estimates, time_till_termination
 
     def calculate_tvf_returns(
             self,
@@ -288,10 +318,37 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
         VALUE_HEAD_INDEX = self.runner.value_heads.index('ext')
 
         # [N, A, K]
-        tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
+        trimmed_tvf_values = self.tvf_value[:, :, :, VALUE_HEAD_INDEX]
+        untrimmed_tvf_values = self.tvf_untrimmed_value[:, :, :, VALUE_HEAD_INDEX]
 
         if abs(new_gamma - args.tvf.gamma) < 1e-8:
-            return tvf_values[:, :, -1]
+            if args.tvf.trimming_mode == "off":
+                return untrimmed_tvf_values[:, :, -1]
+
+            # simple case no discounting...
+            if args.tvf.trim_advantages == "trimmed":
+                # just return the longest trimmed horizon...
+                return trimmed_tvf_values[:, :, -1]
+            elif args.tvf.trim_advantages == "average":
+                # during trimming we store the average of all valid horizons in this variable.
+                return self.tvf_final_value
+            elif args.tvf.trim_advantages == "untrimmed":
+                # use final untrimmed horizon
+                return untrimmed_tvf_values[:, :, -1]
+            else:
+                raise ValueError(f"Invalid advantage trimming mode {args.tvf.trim_advantages}.")
+
+        assert args.tvf.trim_advantages != "average", "Average advantage trimming not supported with rediscounting."
+
+        if args.tvf.trim_advantages == "trimmed":
+            tvf_values = trimmed_tvf_values
+        elif args.tvf.trim_advantages == "untrimmed":
+            tvf_values = untrimmed_tvf_values
+        else:
+            raise ValueError()
+
+        # stub:
+        print("FYI we are rediscounting...")
 
         # otherwise... we need to rediscount...
         return rl.tvf.get_rediscounted_value_estimate(

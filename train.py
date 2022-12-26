@@ -113,8 +113,8 @@ def main():
         f'torch:{torch.__version__}',
         f'cuda:{torch.version.cuda}',
         f'gym:{gym.version.VERSION}',
-        f'procgen:{procgen.__version__}',
         f'numpy:{np.__version__}',
+        f'procgen:{procgen.__version__}'.strip(),
     ]
 
     log.info(f"System is host:<white>{args.hostname}<end> {' '.join(versions)}")
@@ -251,11 +251,17 @@ if __name__ == "__main__":
     # special setup for mujoco
     if "--env_type=mujoco" in sys.argv:
         print("Setting up for mujoco")
-        mujoco_path="/home/matthew/.mujoco/mujoco210/bin"
-        # print("Old path was", os.environ["LD_LIBRARY_PATH"])
+        mujoco_path = os.path.expanduser("~/.mujoco/mujoco210/bin")
+        print(" -old path:", os.environ["LD_LIBRARY_PATH"])
         if mujoco_path not in os.environ.get("LD_LIBRARY_PATH", ""):
-            print(" - updating path.")
-            os.environ["LD_LIBRARY_PATH"] = f":{mujoco_path}:/usr/lib/nvidia"
+            nvidia_path = "/usr/lib/nvidia"
+            os.environ["LD_LIBRARY_PATH"] = f"{mujoco_path}:{nvidia_path}"
+
+        print(" -new path:", os.environ["LD_LIBRARY_PATH"])
+
+        # import and show version.
+        import mujoco_py
+        print(mujoco_py.__version__)
 
     from rl import logger, code_diff
 
