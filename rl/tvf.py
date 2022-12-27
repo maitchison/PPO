@@ -46,12 +46,11 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
             targets = targets[:, required_tvf_heads]
 
         # this will be [B, K]
-        tvf_loss = 0.5 * torch.square(targets - predictions)
+        tvf_loss = args.tvf.coef * 0.5 * torch.square(targets - predictions)
 
         # account for weights due to duplicate head removal
-        if args.tvf.enabled:
-            head_filter = required_tvf_heads if required_tvf_heads is not None else slice(None, None)
-            tvf_loss = tvf_loss * torch.from_numpy(self.runner.tvf_weights[head_filter])[None, :].to(self.runner.model.device)
+        head_filter = required_tvf_heads if required_tvf_heads is not None else slice(None, None)
+        tvf_loss = tvf_loss * torch.from_numpy(self.runner.tvf_weights[head_filter])[None, :].to(self.runner.model.device)
 
         # h_weighting adjustment
         if args.tvf.head_weighting == "h_weighted" and single_value_head is None:
@@ -69,7 +68,9 @@ class TVFRunnerModule(rl.rollout.RunnerModule):
             mask = torch.bernoulli(torch.ones_like(tvf_loss)*keep_prob) / keep_prob
             tvf_loss = tvf_loss * mask
 
-        tvf_loss = tvf_loss.mean(dim=-1) # mean over horizons
+        # mean over horizons generates a loss that is far too small, dividing by sqrt of the number of heads seems
+        # like a good compromise and seems to give a gradient scale that remains invariant to the number of heads.
+        tvf_loss = (tvf_loss.shape[-1]**0.5) * tvf_loss.mean(dim=-1)
 
         self.runner.log.watch_mean("loss_tvf", tvf_loss.mean(), history_length=64 * args.value_opt.epochs, display_name="ls_tvf", display_width=8)
 

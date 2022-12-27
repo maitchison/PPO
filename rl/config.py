@@ -597,9 +597,6 @@ class EnvConfig(BaseConfig):
         else:
             EnvConfig.timeout = int(self.timeout)
 
-        #stub:
-        print(EnvConfig.timeout)
-
     def __init__(self, parser: argparse.ArgumentParser):
         super().__init__(prefix="env", parser=parser)
 

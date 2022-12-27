@@ -235,9 +235,6 @@ def run_unit_tests():
 
 if __name__ == "__main__":
 
-    # stub
-    print("About to setup args.")
-
     rl.config.args.setup()
 
     # install procgen... this is a bit dodgy, but it'll get things working on the cluster
