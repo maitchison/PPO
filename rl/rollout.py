@@ -1385,13 +1385,9 @@ class Runner:
         # apply discount reweighing
         loss_value = loss_value * weights
 
-        # normalize the loss
-        # this is required as return magnitude can differ by a factor of 10x or 0.1x,
-        # which can happen if we apply different discounts to the environment. This makes
-        # beta hard to tune.
-
         if len(loss_value.shape) == 2:
-            loss_value = loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
+            horizon_count = loss_value.shape[-1]
+            loss_value = (horizon_count**0.5) * loss_value.mean(axis=-1) # mean across final dim if targets / predictions were vector.
         loss = loss_value
 
         # note: mse on logits is a bad idea. The reason is we might get logits of -40 for settings where a policy
