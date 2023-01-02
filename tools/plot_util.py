@@ -473,6 +473,7 @@ class RunLog():
 def compare_runs(
         runs: list,
         x_lim=None,
+        x_min=None,
         x_axis="env_step",
         y_axis="ep_score_mean",
         x_start=None,
@@ -495,6 +496,8 @@ def compare_runs(
         figsize=(16, 4),
         show_group_runs=False,
         print_group_stats=False,
+        error_stds=1.96,
+        show_n=False,
         y_transform=None,
         run_filter=None, # not used
 ):
@@ -517,6 +520,15 @@ def compare_runs(
     plt.grid()
 
     plt.title(title)
+
+    def transform(X):
+        if y_transform is not None and y_axis in y_transform:
+            try:
+                return np.asarray([y_transform[y_axis](x) for x in X])
+            except:
+                return y_transform[y_axis](X)
+        else:
+            return X
 
     cmap = plt.cm.get_cmap('tab10')
     counter = 0
@@ -554,10 +566,7 @@ def compare_runs(
             continue
 
         try:
-            if y_transform is not None and y_axis in y_transform:
-                ys = np.asarray([y_transform[y_axis](y) for y in run_data[y_axis]])
-            else:
-                ys = np.asarray(run_data[y_axis])
+            ys = np.asarray(run_data[y_axis])
         except:
             # problem with data...
             print(f"Warning, skipping {run_name}.")
@@ -569,6 +578,8 @@ def compare_runs(
         # filter
         if x_lim:
             xs, ys = zip(*([x, y] for x, y in zip(xs, ys) if x < x_lim))
+        if x_min:
+            xs, ys = zip(*([x, y] for x, y in zip(xs, ys) if x > x_min))
 
         if smooth_factor is None:
             smooth_factor = 0.995 ** (run_data["batch_size"] / 2048)
@@ -621,8 +632,8 @@ def compare_runs(
                 group_style_names[line_style].add(group)
                 continue
 
-        plt.plot(xs[x_start:], ys[x_start:], alpha=ghost_alpha * alpha, c=color, linestyle=line_style)
-        plt.plot(xs[x_start:], smooth(ys[x_start:], smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
+        plt.plot(xs[x_start:], transform(ys[x_start:]), alpha=ghost_alpha * alpha, c=color, linestyle=line_style)
+        plt.plot(xs[x_start:], transform(smooth(ys[x_start:], smooth_factor)), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
                  linestyle=line_style, zorder=zorder)
 
     if x_axis_name != '':
@@ -656,10 +667,8 @@ def compare_runs(
         ys = np.asarray(ys)
         ys_std_err = np.asarray(ys_std_err)
 
-        #ys_low = [np.max(y_sample) for y_sample in all_ys]
-        #ys_high = [np.min(y_sample) for y_sample in all_ys]
-        ys_low = ys - ys_std_err
-        ys_high = ys + ys_std_err
+        ys_low = ys - ys_std_err * error_stds
+        ys_high = ys + ys_std_err * error_stds
 
         if color is None:
             color = cmap.colors[default_color_index]
@@ -671,9 +680,21 @@ def compare_runs(
         if print_group_stats:
             print(f"{title} {run_label} & {ys[-1]:.1f} (+- {ys_std_err[-1]:.1f}) [n={y_n[-1]}]  \\\\")
 
-        plt.fill_between(xs, smooth(ys_low, smooth_factor), smooth(ys_high, smooth_factor), alpha=0.15 * alpha, color=color)
-        plt.plot(xs, smooth(ys, smooth_factor), label=run_label if alpha == 1.0 else None, alpha=alpha, c=color,
+        plt.fill_between(xs, transform(smooth(ys_low, smooth_factor)), transform(smooth(ys_high, smooth_factor)),
+                         alpha=0.15 * alpha, color=color)
+        plt.plot(xs, transform(smooth(ys, smooth_factor)), label=run_label if alpha == 1.0 else None, alpha=alpha,
+                 c=color,
                  linestyle=ls, zorder=zorder)
+
+        if show_n:
+            old_n = None
+            counter = 0
+            for x, y, n in zip(xs, smooth(ys, smooth_factor), y_n):
+                if n != old_n or counter > 25000:
+                    plt.text(x, transform(y), str(n), color="black", fontsize=8)
+                    old_n = n
+                    counter = 0
+                counter += 1
 
         default_color_index += 1
 

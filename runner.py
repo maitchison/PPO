@@ -47,25 +47,6 @@ TEMPLATE_MLVC = SlurmTemplate("mlvc", """#!/bin/bash
 #SBATCH --job-name=%JOBNAME%          # Job name
 #SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
-#SBATCH --ntasks=20                   # More than 24 seems to crash prolog?
-#SBATCH --mem=32G                     # 6GB per job is about right
-#SBATCH --time=48:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:2080ti:2           # Two jobs per one GPU, 2080ti is fine, but the AMD cores attached to the 3090 are much faster.
-#SBATCH --output=%j.log     # Standard output and error log
-pwd; hostname; date
-echo "--- training ---"
-cd ~
-cd PPO     
-%CMD%
-echo "--- done ---"
-date
-""", n_gpus=2, n_jobs=4)
-
-TEMPLATE_ML = SlurmTemplate("cpu", """#!/bin/bash
-#SBATCH --job-name=%JOBNAME%          # Job name
-#SBATCH --mail-type=END,FAIL    # Mail events (NONE, BEGIN, END, FAIL, ALL)
-#SBATCH --mail-user=matthew.aitchison@anu.edu.au     # Where to send mail
 #SBATCH --ntasks=24                   # More than 24 seems to crash prolog?
 #SBATCH --mem=30G                     # 6GB per job is about right
 #SBATCH --time=48:00:00               # Jobs take about 20-hours to run, but can be a bit faster 
@@ -158,7 +139,7 @@ if __name__ == "__main__":
         print_experiments(job_filter)
     elif mode == "slurm":
         print(f"Generating slurm scripts.")
-        for template in [TEMPLATE_MLVC, TEMPLATE_GPUSVR]:
+        for template in [TEMPLATE_MLVC, TEMPLATE_GPUSVR, TEMPLATE_MLVC]:
             generate_slurm(experiment=experiment_filter or "job",  job_filter=job_filter, st=template)
         print("Done.")
     elif mode == "clash":

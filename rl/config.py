@@ -581,9 +581,11 @@ class EnvConfig(BaseConfig):
                 EnvConfig.timeout = 27000  # excludes skipped frames
             elif self.type == "procgen":
                 env_timeouts = {
-                    'bigfish': 8000,
+                    'bigfish': 6000, # from source code
                     'bossfight': 8000,
-                    'plunder': 2000,
+                    'plunder': 4000, # from source code
+                    # jumper is 2000 if in memory mode.
+                    # leaper and maze are 500
                 }
                 EnvConfig.timeout = env_timeouts.get(args.env.name, 1000)
             elif self.type == "mujoco":
