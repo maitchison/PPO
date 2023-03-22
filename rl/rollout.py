@@ -1402,7 +1402,7 @@ class Runner:
             delta = torch.square(data["old_raw_policy"] - model_out["raw_policy"]) / (
                         epsilon + 2 * self.get_current_actions_std().detach() ** 2)
             loss_policy = args.distil.beta * 0.5 * delta.mean(dim=-1)
-            loss = loss + loss_policy
+            
         else:
             if args.distil.loss == "mse_logit":
                 loss_policy = args.distil.beta * 0.5 * torch.square(data["old_raw_policy"] - model_out["raw_policy"]).mean(dim=-1)
